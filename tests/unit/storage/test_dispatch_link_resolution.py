@@ -505,3 +505,27 @@ def test_retained_replay_binds_the_dispatch_the_sidecar_names(tmp_path: Path) ->
     block_id, method, reason, dispatch_block = tuple(edge[0])
     assert dispatch_block is not None
     assert (block_id, method, reason) == (dispatch_block, "parent-tool-use-id", None)
+
+
+def test_retained_sidecar_remains_evidence_after_new_acquisition_moves(tmp_path: Path) -> None:
+    from contextlib import closing
+
+    with closing(_index_conn(tmp_path / "index.db")) as index, closing(_source_conn(tmp_path / "source.db")) as source:
+        _seed_sidecar(source, parent_dir=_PARENT, agent_id="a1", tool_use_id="call_1")
+        _write_parent(index, _parent_records([("call_1", "a1")], with_result=False), source_conn=source)
+        old_raw = _seed_child_transcript(source, "a1")
+        child_id = _write_child(index, "a1", source_conn=source, raw_id=old_raw)
+        native_id = index.execute("SELECT native_id FROM sessions WHERE session_id = ?", (child_id,)).fetchone()[0]
+        source.execute("UPDATE raw_sessions SET native_id = ? WHERE raw_id = ?", (native_id, old_raw))
+        source.commit()
+        new_path = _subagent_path(_PARENT, "a1", ".jsonl").replace("/proj/", "/moved/")
+        new_raw = _seed_raw(
+            source,
+            raw_id="moved-child",
+            source_path=new_path,
+            payload=b"\n".join(json.dumps(row).encode() for row in _child_records("a1")),
+        )
+        _write_child(index, "a1", source_conn=source, raw_id=new_raw)
+        edge = _link(index, child_id)
+        assert edge["parent_tool_use_block_id"] == _tool_use_block_id(index, "call_1")
+        assert _dispatch_reason(edge) is None

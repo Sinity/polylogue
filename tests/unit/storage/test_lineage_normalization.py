@@ -5431,3 +5431,86 @@ def test_prepared_child_write_refuses_once_the_parent_drops_an_inherited_attachm
     conn.commit()
     assert _composed_attachments(conn, child_id) == [(child_id, "m1", "shared.txt")]
     conn.close()
+
+
+def test_late_prefix_attachment_boundary_keeps_only_one_sql_batch(tmp_path: Path) -> None:
+    from collections.abc import Sequence
+    from contextlib import closing
+    from typing import overload
+
+    from polylogue.storage.sqlite.archive_tiers.write import _stored_attachment_shared_prefix_limit
+
+    class LazyPrefix(Sequence[tuple[str, str]]):
+        def __init__(self, prefix: str) -> None:
+            self.prefix = prefix
+            self.reads = 0
+
+        def __len__(self) -> int:
+            return 100_000
+
+        @overload
+        def __getitem__(self, index: int) -> tuple[str, str]: ...
+
+        @overload
+        def __getitem__(self, index: slice) -> list[tuple[str, str]]: ...
+
+        def __getitem__(self, index: int | slice) -> tuple[str, str] | list[tuple[str, str]]:
+            if isinstance(index, slice):
+                raise AssertionError("must not materialize a prefix slice")
+            if not 0 <= index < len(self):
+                raise IndexError(index)
+            self.reads += 1
+            return f"{self.prefix}-{index}", "signature"
+
+    child, parent = LazyPrefix("child"), LazyPrefix("parent")
+    with closing(sqlite3.connect(tmp_path / "prefix.db")) as conn:
+        conn.execute(
+            "CREATE TABLE attachment_refs (message_id TEXT, attachment_id TEXT, PRIMARY KEY(message_id, attachment_id))"
+        )
+        conn.execute("INSERT INTO attachment_refs VALUES ('child-0', 'unique-file')")
+        assert _stored_attachment_shared_prefix_limit(conn, child, parent, len(child)) == 0
+    assert child.reads <= 500
+    assert parent.reads == 1
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["direct", "prepared"])
+@pytest.mark.parametrize("grandchild", [False, True], ids=["child", "nested"])
+def test_parent_replacement_preserves_already_inherited_attachments(
+    tmp_path: Path, prepared: bool, grandchild: bool
+) -> None:
+    from contextlib import closing
+
+    with closing(_connect(tmp_path / "index.db")) as conn:
+        parent = _codex_session("parent", ["m0", "m1"])
+        parent_id = write_parsed_session_to_archive(
+            conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]})
+        )
+        child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+            update={"attachments": [_prefix_attachment("m1")]}
+        )
+        child_id = write_parsed_session_to_archive(conn, child)
+        ids = [child_id]
+        if grandchild:
+            grand = _codex_session("grand", ["m0", "m1", "y2"], parent="child").model_copy(
+                update={"attachments": [_prefix_attachment("m1")]}
+            )
+            ids.append(write_parsed_session_to_archive(conn, grand))
+        assert _composed_attachments(conn, child_id) == [(parent_id, "m1", "shared.txt")]
+        if prepared:
+            carrier = _write_module.prepare_session_write(conn, parent, merge_append=False)
+            try:
+                write_parsed_session_to_archive(
+                    conn, parent, content_hash=str(session_content_hash(parent)), prepared_write=carrier
+                )
+            finally:
+                carrier.close()
+        else:
+            write_parsed_session_to_archive(conn, parent)
+        assert _composed_attachments(conn, parent_id) == []
+        assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
+        for session_id in ids:
+            attachments = _composed_attachments(conn, session_id)
+            assert [(message, name) for _, message, name in attachments] == [("m1", "shared.txt")]
+            assert all(owner != parent_id for owner, _, _ in attachments)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE ref_count <= 0").fetchone()[0] == 0

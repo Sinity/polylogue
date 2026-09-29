@@ -158,6 +158,46 @@ def test_session_reads_resolve_attachment_bytes_in_the_opened_archive(
             "borrowed.txt": AttachmentAvailabilityState.MISSING,
         }
 
+    import asyncio
+
+    from polylogue.storage.repository import SessionRepository
+
+    async def read_repository() -> list[dict[str | None, AttachmentAvailabilityState | None]]:
+        async with SessionRepository(db_path=selected / "index.db") as repository:
+            single = await repository.get(session_id)
+            batch = await repository.get_many([session_id])
+            assert single is not None
+            assert len(batch) == 1
+            return [
+                {
+                    attachment.name: attachment.availability.state if attachment.availability else None
+                    for message in hydrated.messages
+                    for attachment in message.attachments
+                }
+                for hydrated in (single, batch[0])
+            ]
+
+    for states in asyncio.run(read_repository()):
+        assert states == {
+            "held.txt": AttachmentAvailabilityState.AVAILABLE,
+            "borrowed.txt": AttachmentAvailabilityState.MISSING,
+        }
+
+
+def test_connection_blob_store_unwinds_promoted_index_root(tmp_path: Path) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.blob_store import blob_store_for_connection
+
+    generation = tmp_path / ".index-generations" / "selected-generation"
+    generation.mkdir(parents=True)
+    payload = b"archive root owns bytes, not the selected index generation"
+    digest = sha256(payload).hexdigest()
+    BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    with closing(sqlite3.connect(generation / "index.db")) as conn:
+        assert blob_store_for_connection(conn).read_all(digest) == payload
+    assert not (generation / "blob").exists()
+
 
 def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_path: Path) -> None:
     """A stale read must refuse before query SQL can leak a raw SQLite error."""

@@ -1152,19 +1152,23 @@ def _stored_attachment_shared_prefix_limit(
     boundary the child would have taken had the parent been written first.
     """
     limit = shared
-    ordinal_by_message = {child_composed[ordinal][0]: ordinal for ordinal in range(shared)}
-    message_ids = iter(ordinal_by_message)
-    while batch := tuple(islice(message_ids, 500)):
+    for start in range(0, shared, 500):
+        # The composed sequences may be disk-backed. Keep only one SQL batch
+        # resident, and stop once the earliest attachment boundary is known.
+        ordinal_by_message = {child_composed[ordinal][0]: ordinal for ordinal in range(start, min(start + 500, shared))}
+        batch = tuple(ordinal_by_message)
         placeholders = ",".join("?" for _ in batch)
         for message_id, attachment_id in conn.execute(
             f"SELECT message_id, attachment_id FROM attachment_refs WHERE message_id IN ({placeholders})",
             batch,
-        ).fetchall():
+        ):
             ordinal = ordinal_by_message[str(message_id)]
             if ordinal < limit and not _message_references_attachment(
                 conn, parent_composed[ordinal][0], str(attachment_id)
             ):
                 limit = ordinal
+        if limit < shared:
+            return limit
     return limit
 
 
@@ -11963,10 +11967,30 @@ def _settle_inherited_prefixes(
                 # whole pre-write prefix instead of shortening the transcript.
                 reanchored = _reanchor_inherited_rows(conn, child)
                 if reanchored is not None:
-                    conn.executemany(
-                        f"INSERT OR REPLACE INTO temp.{_GUARD_PREFIX}reanchors VALUES (?, ?)", reanchored.items()
+                    # Message identity alone does not preserve its materials.
+                    # A replacement can keep every message while dropping the
+                    # attachment refs a child previously inherited. Compare the
+                    # existing guard snapshot before deciding to keep sharing;
+                    # its normal materialization below restores lost refs/bytes.
+                    attachments_survive = all(
+                        _message_references_attachment(
+                            conn, reanchored.get(str(message_id), str(message_id)), str(attachment_id)
+                        )
+                        for message_id, attachment_id in conn.execute(
+                            f"""SELECT a.message_id, a.attachment_id
+                                FROM {_snapshot_table("attachment_refs")} AS a
+                                WHERE a.message_id IN (
+                                    SELECT message_id FROM temp.{_GUARD_PREFIX}before
+                                    WHERE child = ? AND owner <> ?
+                                )""",
+                            (child, child),
+                        )
                     )
-                    continue
+                    if attachments_survive:
+                        conn.executemany(
+                            f"INSERT OR REPLACE INTO temp.{_GUARD_PREFIX}reanchors VALUES (?, ?)", reanchored.items()
+                        )
+                        continue
             _materialize_inherited_prefix(
                 conn,
                 child,
@@ -13389,13 +13413,36 @@ def _session_provider_values(conn: sqlite3.Connection, session_id: str) -> set[s
     return values
 
 
-def _session_acquisition_path(conn: sqlite3.Connection, source_conn: sqlite3.Connection, session_id: str) -> str | None:
-    """The source path of the raw acquisition a stored session was written from."""
-    row = conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-    if row is None or row[0] is None:
-        return None
-    raw = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (str(row[0]),)).fetchone()
-    return None if raw is None else str(raw[0])
+def _session_acquisition_paths(
+    conn: sqlite3.Connection, source_conn: sqlite3.Connection, session_id: str
+) -> Iterator[str]:
+    """Indexed acquisition paths bound to this session, including retained copies.
+
+    A new winning raw must not make a prior acquisition's sidecar disappear.
+    Current raw_id is exact even before native identity is enriched; retained
+    acquisitions use the existing (origin, native_id) index and only identities
+    with no conflicting canonical claimant. No archive-wide source scan.
+    """
+    row = conn.execute("SELECT raw_id, origin, native_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    if row is None:
+        return
+    raw_id, origin, native_id = row
+    if raw_id is not None:
+        raw = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+        if raw is not None:
+            yield str(raw[0])
+    for value in _session_provider_values(conn, session_id) | {str(native_id)}:
+        conflicting = conn.execute(
+            "SELECT 1 FROM session_identity_claims WHERE origin = ? AND identity_namespace = 'provider-session' "
+            "AND provider_value = ? AND claimant_session_id != ? LIMIT 1",
+            (origin, value, session_id),
+        ).fetchone()
+        if conflicting is not None:
+            continue
+        for acquisition in source_conn.execute(
+            "SELECT DISTINCT source_path FROM raw_sessions WHERE origin = ? AND native_id = ?", (origin, value)
+        ):
+            yield str(acquisition[0])
 
 
 def _split_source_path(path: str) -> tuple[str, str, str]:
@@ -13417,7 +13464,7 @@ def _sidecar_candidate_paths(
     child_session_id: str,
     parent_values: set[str],
     stems: set[str],
-) -> set[str]:
+) -> Iterator[str]:
     """Exact source paths where the child's dispatch sidecar can be stored.
 
     Claude Code writes ``<dir>/<parent>.jsonl``, and the child's transcript
@@ -13427,20 +13474,14 @@ def _sidecar_candidate_paths(
     ``subagents`` directory. A session with no recorded acquisition path
     contributes no candidate.
     """
-    candidates: set[str] = set()
-    child_path = _session_acquisition_path(conn, source_conn, child_session_id)
-    if child_path is not None:
+    for child_path in _session_acquisition_paths(conn, source_conn, child_session_id):
         directory, _name, _separator = _split_source_path(child_path)
-        candidates.update(f"{directory}{stem}.meta.json" for stem in stems)
-    parent_path = _session_acquisition_path(conn, source_conn, parent_session_id)
-    if parent_path is not None:
+        yield from (f"{directory}{stem}.meta.json" for stem in stems)
+    for parent_path in _session_acquisition_paths(conn, source_conn, parent_session_id):
         directory, name, separator = _split_source_path(parent_path)
         parent_stem = name.removesuffix(".jsonl").removesuffix(".ndjson")
         if parent_stem in parent_values:
-            candidates.update(
-                f"{directory}{parent_stem}{separator}subagents{separator}{stem}.meta.json" for stem in stems
-            )
-    return candidates
+            yield from (f"{directory}{parent_stem}{separator}subagents{separator}{stem}.meta.json" for stem in stems)
 
 
 def _sidecar_dispatch_tool_ids(
@@ -13504,7 +13545,7 @@ def _sidecar_paths_dispatch_tool_ids(
     """
     tool_ids: set[str] = set()
     store = blob_store_for_connection(source_conn)
-    for sidecar_path in sorted(sidecar_paths):
+    for sidecar_path in sidecar_paths:
         # Only ``source_path`` is constrained in SQL, so the planner can serve
         # the probe from ``idx_raw_sessions_source_path`` alone; an ``origin``
         # term would let it walk every Claude raw through the origin index.
@@ -13512,7 +13553,7 @@ def _sidecar_paths_dispatch_tool_ids(
             "SELECT source_path, blob_hash, origin FROM raw_sessions WHERE source_path = ? "
             "ORDER BY source_index, raw_id",
             (sidecar_path,),
-        ).fetchall()
+        )
         for source_path, blob_hash, row_origin in rows:
             if row_origin != origin:
                 continue

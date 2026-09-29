@@ -58,7 +58,10 @@ def _with_profile(summary: SessionSummary, profile: SessionProfile | None) -> Se
 
 class RepositoryArchiveSessionMixin:
     if TYPE_CHECKING:
+        from polylogue.storage.blob_store import BlobStore
+
         _backend: RepositoryBackendProtocol
+        _read_blob_store: BlobStore
         queries: SQLiteQueryStore
 
         # Provided by RepositoryInsightProfileReadMixin in the composed repository.
@@ -139,6 +142,7 @@ class RepositoryArchiveSessionMixin:
             att_records,
             session_event_records,
             tags=tags_by_id.get(resolved_session_id, ()),
+            blob_store=self._read_blob_store,
         )
 
     async def view(self, session_id: str) -> Session | None:
@@ -333,6 +337,7 @@ class RepositoryArchiveSessionMixin:
                 atts_by_id.get(session_id, []),
                 session_events_by_id.get(session_id, []),
                 tags=tags_by_id.get(session_id, ()),
+                blob_store=self._read_blob_store,
             )
             for session_id in present_ids
         ]

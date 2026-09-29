@@ -71,6 +71,10 @@ class SessionRepository(
         """
         active_backend = backend if backend is not None else SQLiteBackend(db_path=db_path)
         self._backend: SQLiteBackend = active_backend
+        from polylogue.storage.archive_identity import archive_root_for_index_path
+        from polylogue.storage.blob_store import BlobStore
+
+        self._read_blob_store = BlobStore(archive_root_for_index_path(active_backend.db_path) / "blob")
         self._archive_root: Path | None = archive_root
         self._source_backend: SQLiteBackend | None = (
             SQLiteBackend(db_path=archive_root / "source.db") if archive_root is not None else None
