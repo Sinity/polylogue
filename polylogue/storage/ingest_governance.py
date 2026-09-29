@@ -834,7 +834,6 @@ def publish_ingest_cohort(
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
-    defer_fts: bool = False,
 ) -> CohortPublication:
     """Publish only a still-current cohort; never reparse or reopen attachments."""
     reason = _cohort_still_current(writer_archive, prepared)
@@ -887,7 +886,6 @@ def publish_ingest_cohort(
         manage_transaction=manage_transaction,
         bulk_fts=bulk_fts,
         bulk_build=bulk_build,
-        defer_fts=defer_fts,
         preacquired_attachment_blobs=attachments,
         preacquired_attachment_refs=attachment_refs,
         prepared_by_raw_id=prepared.prepared_rows_by_raw_id,

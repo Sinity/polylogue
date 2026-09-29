@@ -112,7 +112,6 @@ def assert_session_fts_exact_sync(
     session_id: str,
     *,
     bulk_build: bool = False,
-    allow_pending: bool = False,
 ) -> None:
     """Fail unless the current session's indexable blocks have exact FTS rows.
 
@@ -134,7 +133,7 @@ def assert_session_fts_exact_sync(
     }
     if not _MESSAGE_FTS_TRIGGERS.issubset(triggers):
         raise RuntimeError("raw revision application requires canonical message FTS triggers")
-    if bulk_build or allow_pending:
+    if bulk_build:
         return
     expected, indexed = conn.execute(
         """

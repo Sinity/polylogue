@@ -4671,7 +4671,6 @@ async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution
             [raw_id],
             parse_result,
             None,
-            repair_message_fts=False,
         )
     finally:
         await repository.close()
@@ -4776,7 +4775,6 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
             [raw_id],
             parse_result,
             None,
-            repair_message_fts=False,
         )
     finally:
         await repository.close()
@@ -4909,7 +4907,6 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
             [raw_id],
             parse_result,
             None,
-            repair_message_fts=False,
         )
     finally:
         await repository.close()

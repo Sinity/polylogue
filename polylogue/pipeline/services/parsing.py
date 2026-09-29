@@ -120,7 +120,6 @@ class ParsingService:
         provider: str | None = None,
         progress_callback: ProgressCallback | None = None,
         force_write: bool = False,
-        repair_message_fts: bool = True,
         max_pass_seconds: float | None = None,
     ) -> ParseResult:
         return await parse_from_raw(
@@ -129,7 +128,6 @@ class ParsingService:
             provider=provider,
             progress_callback=progress_callback,
             force_write=force_write,
-            repair_message_fts=repair_message_fts,
             max_pass_seconds=max_pass_seconds,
         )
 

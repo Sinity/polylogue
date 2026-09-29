@@ -117,7 +117,7 @@ def test_write_gateway_can_skip_fts_repairs_when_triggers_maintained_rows(
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
-        lambda _conn, _ids, **_kwargs: repaired.append("messages"),
+        lambda _conn, _ids: repaired.append("messages"),
     )
 
     with open_connection(db_path) as conn:
@@ -140,11 +140,11 @@ def test_write_gateway_repairs_fts_when_requested_even_if_live_triggers_exist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "archive.db"
-    repaired: list[tuple[tuple[str, ...], bool | None]] = []
+    repaired: list[tuple[str, ...]] = []
 
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
-        lambda _conn, ids, **kwargs: repaired.append((tuple(ids), kwargs.get("record_exact_snapshot"))),
+        lambda _conn, ids: repaired.append(tuple(ids)),
     )
 
     with open_connection(db_path) as conn:
@@ -158,7 +158,7 @@ def test_write_gateway_repairs_fts_when_requested_even_if_live_triggers_exist(
         )
 
     assert result.status == COMMITTED
-    assert repaired == [(("c1",), False)]
+    assert repaired == [("c1",)]
 
 
 def test_write_gateway_repairs_fts_when_live_triggers_were_missing(
@@ -170,7 +170,7 @@ def test_write_gateway_repairs_fts_when_live_triggers_were_missing(
 
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
-        lambda _conn, _ids, **_kwargs: repaired.append("messages"),
+        lambda _conn, _ids: repaired.append("messages"),
     )
 
     with open_connection(db_path) as conn:

@@ -62,10 +62,6 @@ class _SourceTierBackendLike(_BulkConnectionBackendLike, Protocol):
     ) -> None: ...
 
 
-class _ConnectionBackendLike(Protocol):
-    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
-
-
 @dataclass(slots=True)
 class _RawIngestOutcome:
     raw_id: str

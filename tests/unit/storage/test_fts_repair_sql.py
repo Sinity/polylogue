@@ -98,7 +98,7 @@ def test_incremental_fts_repair_uses_direct_fts_rowid_deletes(test_conn: sqlite3
     traced: list[str] = []
     test_conn.set_trace_callback(traced.append)
     try:
-        repair_message_fts_index_sync(test_conn, [session_id], record_exact_snapshot=False)
+        repair_message_fts_index_sync(test_conn, [session_id])
     finally:
         test_conn.set_trace_callback(None)
 
@@ -144,11 +144,7 @@ def test_targeted_repair_never_runs_an_archive_wide_exact_snapshot(
         lambda _conn: (_ for _ in ()).throw(AssertionError("targeted repair attempted an exact snapshot")),
     )
 
-    repair_message_fts_index_sync(
-        test_conn,
-        ["unknown-export:conv-no-duplicate-exact"],
-        record_exact_snapshot=True,
-    )
+    repair_message_fts_index_sync(test_conn, ["unknown-export:conv-no-duplicate-exact"])
 
 
 def test_global_missing_fts_sql_is_rowid_bounded() -> None:
@@ -483,7 +479,7 @@ def test_repair_message_fts_batch_commits_once(test_conn: sqlite3.Connection) ->
     traced: list[str] = []
     test_conn.set_trace_callback(traced.append)
     try:
-        repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+        repair_message_fts_index_sync(test_conn, session_ids)
     finally:
         test_conn.set_trace_callback(None)
 
@@ -531,7 +527,7 @@ def test_repair_message_fts_batch_is_all_or_nothing(
 
     monkeypatch.setattr(derivation_module, "replace_fts_partition_sync", failing_replace)
     with pytest.raises(RuntimeError, match="interrupted mid-batch"):
-        repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+        repair_message_fts_index_sync(test_conn, session_ids)
     monkeypatch.undo()
 
     assert len(calls) == 3
@@ -558,7 +554,7 @@ def test_repair_message_fts_defers_to_a_caller_transaction(test_conn: sqlite3.Co
     traced: list[str] = []
     test_conn.set_trace_callback(traced.append)
     try:
-        repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+        repair_message_fts_index_sync(test_conn, session_ids)
     finally:
         test_conn.set_trace_callback(None)
 
@@ -600,7 +596,7 @@ def test_in_transaction_partition_replace_never_hashes_the_partition_input(
         return real_input_for(self, conn, key)
 
     monkeypatch.setattr(FtsDerivationAdapter, "input_for", counting_input_for)
-    repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+    repair_message_fts_index_sync(test_conn, session_ids)
     monkeypatch.undo()
 
     assert calls == []

@@ -602,9 +602,7 @@ async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
 
             monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", interrupt_after_index_commit)
         with pytest.raises(RuntimeError, match="simulated loss"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         if failure_boundary == "before-index-commit":
             monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", original_commit_boundary)
         else:
@@ -633,9 +631,7 @@ async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
             # The pending prepare was witnessed only by the replaced index, so
             # it was never accepted or delivered. Refusing it would strand the
             # raw on every restarted build; the new incarnation re-prepares it.
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
     finally:
         await repository.close()
 
@@ -735,9 +731,7 @@ async def test_public_marker_retry_replaces_uncommitted_pending_carrier(
 
         monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", interrupt_before_index_commit)
         with pytest.raises(RuntimeError, match="before first index commit"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_ids[0]], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_ids[0]], ParseResult(), None)
         monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", original_commit_boundary)
 
         with sqlite3.connect(tmp_path / "source.db") as source:
@@ -754,9 +748,7 @@ async def test_public_marker_retry_replaces_uncommitted_pending_carrier(
         # The second raw writes the same normalized session in the unchanged
         # index incarnation. It has a distinct request identity and cannot
         # replace the first raw's pending byte carrier.
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_ids[1]], ParseResult(), None)
         with sqlite3.connect(tmp_path / "index.db") as index:
             assert index.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[1],)
 
@@ -765,9 +757,7 @@ async def test_public_marker_retry_replaces_uncommitted_pending_carrier(
         # skip. The uncommitted pending carrier is replaced by that no-op
         # interpretation; the intervening raw's carrier owns the marker.
         retry_result = ParseResult()
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids[0]], retry_result, None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_ids[0]], retry_result, None)
     finally:
         await repository.close()
 
@@ -870,9 +860,7 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
             "polylogue.config.load_polylogue_config",
             lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
         )
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids[0]], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_ids[0]], ParseResult(), None)
         raw_state_boundary = ingest_batch_core._persist_batch_raw_state_updates
 
         async def interrupt_after_index_commit(*_args: object, **_kwargs: object) -> float:
@@ -880,9 +868,7 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
 
         monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", interrupt_after_index_commit)
         with pytest.raises(RuntimeError, match="after append index commit"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_ids[1]], ParseResult(), None)
         monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", raw_state_boundary)
         with sqlite3.connect(tmp_path / "source.db") as source:
             pending = source.execute(
@@ -918,7 +904,6 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
                 ParseResult(),
                 None,
                 force_write=True,
-                repair_message_fts=False,
             )
         assert _index_message_state(tmp_path / "index.db") == original_index
         with sqlite3.connect(tmp_path / "source.db") as source:
@@ -933,9 +918,7 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
 
         # Ordinary retry reuses the exact current-witness carrier and completes
         # source acceptance without rewriting the already committed append.
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_ids[1]], ParseResult(), None)
         assert _index_message_state(tmp_path / "index.db") == original_index
         original_accepted = _accepted_marker_state(tmp_path / "source.db", raw_ids[1])
         assert original_accepted is not None and original_accepted[0] == 2
@@ -949,7 +932,6 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
                 ParseResult(),
                 None,
                 force_write=True,
-                repair_message_fts=False,
             )
         assert _index_message_state(tmp_path / "index.db") == original_index
         assert _accepted_marker_state(tmp_path / "source.db", raw_ids[1]) == original_accepted
@@ -998,9 +980,7 @@ async def test_public_batch_rebuild_reingests_and_rewitnesses_exact_accepted_car
         lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
     )
     try:
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         with sqlite3.connect(tmp_path / "source.db") as source:
             original = source.execute(
                 "SELECT sequence, payload, index_incarnation_id FROM accepted_marker_inputs WHERE raw_id = ?",
@@ -1023,17 +1003,13 @@ async def test_public_batch_rebuild_reingests_and_rewitnesses_exact_accepted_car
         await repository.close()
         repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
         service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         with sqlite3.connect(tmp_path / "index.db") as index:
             assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
             witness = index.execute("SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses").fetchone()
             assert witness is not None
             rebuilt_incarnation = witness[1]
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
     finally:
         await repository.close()
 
@@ -1118,9 +1094,7 @@ async def test_public_drive_marker_retry_keeps_identity_across_revision_binding_
     monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", fail_first_index_commit)
     try:
         with pytest.raises(RuntimeError, match="injected crash before Drive index commit"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         with sqlite3.connect(tmp_path / "source.db") as source:
             pending = source.execute(
                 "SELECT request_key, carrier_digest, payload FROM pending_accepted_marker_inputs"
@@ -1144,9 +1118,7 @@ async def test_public_drive_marker_retry_keeps_identity_across_revision_binding_
         # but the request identity uses only immutable acquisition evidence.
         assert retry_facts["revision"] is None
         assert retry_facts["native_id"] is None
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         state_after_retry = _index_message_state(tmp_path / "index.db")
         accepted_after_retry = _accepted_marker_state(tmp_path / "source.db", raw_id)
         assert accepted_after_retry is not None and accepted_after_retry[0] == 1
@@ -1154,9 +1126,7 @@ async def test_public_drive_marker_retry_keeps_identity_across_revision_binding_
         candidates = json.loads(accepted_payload)["sessions"][0]["candidates"]
         assert [item["match"]["body"] for item in candidates] == ["drive marker"]
 
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         assert _index_message_state(tmp_path / "index.db") == state_after_retry
         assert _accepted_marker_state(tmp_path / "source.db", raw_id) == accepted_after_retry
         assert parse_calls == [("::note: drive marker",)] * 3
@@ -1232,16 +1202,12 @@ async def test_public_mirror_replay_restages_without_rewriting_witnessed_session
 
     monkeypatch.setattr(ingest_batch_core, "stage_payload_async", observe_stage_payload)
     try:
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         state_after_first = _index_message_state(tmp_path / "index.db")
         accepted_after_first = _accepted_marker_state(tmp_path / "source.db", raw_id)
         assert accepted_after_first is not None and accepted_after_first[0] == 1
 
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         assert _index_message_state(tmp_path / "index.db") == state_after_first
         assert _accepted_marker_state(tmp_path / "source.db", raw_id) == accepted_after_first
         assert parse_calls == 2
@@ -1325,9 +1291,7 @@ async def test_public_primary_pending_witness_retry_preserves_defer_then_finaliz
     monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", interrupt_source_finalization)
     try:
         with pytest.raises(RuntimeError, match="after PRIMARY index commit"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", raw_state_boundary)
         with sqlite3.connect(tmp_path / "source.db") as source:
             pending = source.execute(
@@ -1345,9 +1309,7 @@ async def test_public_primary_pending_witness_retry_preserves_defer_then_finaliz
 
         # PRIMARY remains authoritative: an unconfirmed duplicate is deferred
         # before the marker reuse shortcut and leaves pending source state.
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         assert _index_message_state(tmp_path / "index.db") == first_index_state
         with sqlite3.connect(tmp_path / "source.db") as source:
             assert (
@@ -1362,9 +1324,7 @@ async def test_public_primary_pending_witness_retry_preserves_defer_then_finaliz
 
         # Once PRIMARY admission succeeds, current-witness reuse skips only
         # the session write; source finalization and Sinex restaging proceed.
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         accepted = _accepted_marker_state(tmp_path / "source.db", raw_id)
         assert accepted is not None and accepted[0] == 1
         assert bytes(cast(bytes, accepted[1])) == bytes(cast(bytes, pending[2]))
@@ -1451,7 +1411,7 @@ async def test_public_child_before_parent_retry_keeps_its_accepted_carrier(
             lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
         )
         await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids["child"]], ParseResult(), None, repair_message_fts=False
+            service, repository.backend, [raw_ids["child"]], ParseResult(), None
         )
         with sqlite3.connect(tmp_path / "source.db") as source:
             first = source.execute(
@@ -1464,7 +1424,7 @@ async def test_public_child_before_parent_retry_keeps_its_accepted_carrier(
         child_accepted = _accepted_marker_state(tmp_path / "source.db", raw_ids["child"])
 
         await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids["parent"]], ParseResult(), None, repair_message_fts=False
+            service, repository.backend, [raw_ids["parent"]], ParseResult(), None
         )
         index_after_parent = _index_message_state(tmp_path / "index.db")
         assert index_after_parent[0] == (("codex-session:child",), ("codex-session:parent",))
@@ -1478,7 +1438,7 @@ async def test_public_child_before_parent_retry_keeps_its_accepted_carrier(
         # this as an ordinary retry before lineage preparation, preserving the
         # accepted bytes and existing physical child rows.
         await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids["child"]], ParseResult(), None, repair_message_fts=False
+            service, repository.backend, [raw_ids["child"]], ParseResult(), None
         )
         assert _index_message_state(tmp_path / "index.db") == index_after_parent
         assert _accepted_marker_state(tmp_path / "source.db", raw_ids["child"]) == child_accepted
@@ -1554,9 +1514,7 @@ async def test_public_partial_multi_session_raw_rolls_back_before_marker_witness
     service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
     try:
         with pytest.raises(AcceptedMarkerInputRefusedError, match="partially written raw marker input"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
     finally:
         await repository.close()
 
@@ -1613,9 +1571,7 @@ async def test_public_duplicate_normalized_session_ids_refuse_before_index_write
     service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
     try:
         with pytest.raises(AcceptedMarkerInputRefusedError, match="duplicate normalized session IDs"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
     finally:
         await repository.close()
 
@@ -1717,9 +1673,7 @@ async def test_witnessed_replay_restores_a_session_deleted_after_commit(
         lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
     )
     try:
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
         with sqlite3.connect(tmp_path / "index.db") as index:
             index.execute("PRAGMA foreign_keys = ON")
             assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (1,)
@@ -1727,9 +1681,7 @@ async def test_witnessed_replay_restores_a_session_deleted_after_commit(
             assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
             assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (1,)
 
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-        )
+        await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
 
         with sqlite3.connect(tmp_path / "index.db") as index:
             assert index.execute("SELECT session_id FROM sessions").fetchall() == [("codex-session:session",)]

@@ -137,9 +137,7 @@ async def test_late_parent_supersedes_the_childs_prefix_markers(
     service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
     try:
         for raw_id in raw_ids:  # child first, then its parent
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
     finally:
         await repository.close()
 

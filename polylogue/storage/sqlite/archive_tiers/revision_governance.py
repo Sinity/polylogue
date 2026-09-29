@@ -3367,7 +3367,6 @@ def apply_raw_revision_replay(
     bulk_build: bool = False,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
-    defer_fts: bool = False,
     skip_already_applied: bool = False,
     prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
@@ -3705,14 +3704,9 @@ def apply_raw_revision_replay(
                 session_id=session_id,
                 raw_id=plan.accepted_raw_ids[-1],
             )
-        if not bulk_build and not defer_fts:
-            repair_message_fts_index_sync(store._conn, [session_id], record_exact_snapshot=False)
-        assert_session_fts_exact_sync(
-            store._conn,
-            session_id,
-            bulk_build=bulk_build,
-            allow_pending=defer_fts,
-        )
+        if not bulk_build:
+            repair_message_fts_index_sync(store._conn, [session_id])
+        assert_session_fts_exact_sync(store._conn, session_id, bulk_build=bulk_build)
         stored = store._conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         if stored is None or not isinstance(stored[0], bytes):
             raise RuntimeError("accepted revision did not produce a hashed session")
@@ -3905,7 +3899,6 @@ def apply_raw_membership_classification(
     bulk_build: bool = False,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
-    defer_fts: bool = False,
     preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
     preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
     prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
@@ -4197,14 +4190,9 @@ def apply_raw_membership_classification(
                     key = f"{stage_timing_prefix}.index_parsed_write"
                     stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_id = result.session_id
-                if not bulk_build and not defer_fts:
-                    repair_message_fts_index_sync(store._conn, [session_id], record_exact_snapshot=False)
-                assert_session_fts_exact_sync(
-                    store._conn,
-                    session_id,
-                    bulk_build=bulk_build,
-                    allow_pending=defer_fts,
-                )
+                if not bulk_build:
+                    repair_message_fts_index_sync(store._conn, [session_id])
+                assert_session_fts_exact_sync(store._conn, session_id, bulk_build=bulk_build)
                 stored = store._conn.execute(
                     "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
                 ).fetchone()

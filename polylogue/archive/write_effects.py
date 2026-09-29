@@ -206,7 +206,7 @@ def _repair_message_fts_should_run(ctx: WriteEffectContext) -> bool:
 def _repair_message_fts_effect(ctx: WriteEffectContext) -> None:
     from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 
-    repair_message_fts_index_sync(ctx.conn, ctx.changed_session_ids, record_exact_snapshot=False)
+    repair_message_fts_index_sync(ctx.conn, ctx.changed_session_ids)
 
 
 def _invalidate_search_cache_should_run(ctx: WriteEffectContext) -> bool:
@@ -392,8 +392,10 @@ def commit_archive_write_effects(
             - ``effect_scope``: ``"archive-index"`` (the default) runs
               registered index effects; ``"user-overlay"`` commits a
               declared user.db writer without index effects.
-            - ``repair_message_fts``: bool, default True — set False to skip
-              the message-FTS repair effect even when session IDs changed.
+            - ``repair_message_fts``: bool, default True. Only a writer that
+              has already settled the FTS rows of ``changed_session_ids``
+              itself sets it False (session deletion clears them before the
+              rows they index are gone).
             - ``_connection``: (optional) forwarded from the gateway when an
               external connection is already in use.
 

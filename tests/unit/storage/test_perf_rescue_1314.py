@@ -145,7 +145,7 @@ def test_search_session_hits_returns_current_fts_membership(isolated_bench_db_1k
     with sqlite3.connect(isolated_bench_db_1k) as conn:
         restore_fts_triggers_sync(conn)
         conn.execute("DELETE FROM blocks WHERE session_id = ?", (retired,))
-        repair_message_fts_index_sync(conn, [retired], record_exact_snapshot=False)
+        repair_message_fts_index_sync(conn, [retired])
         conn.commit()
 
     with open_bench_store(isolated_bench_db_1k) as store:
