@@ -4102,6 +4102,23 @@ def is_schema_session_stream(payload: Sequence[object]) -> bool:
     return _session_stream_supported(payload, for_schema=True)
 
 
+def _is_bare_token_usage_record(item: object) -> bool:
+    """An older top-level ``token_usage_record``: named counters beside ``type``.
+
+    It has no ``payload``, ``id`` or ``timestamp``, so the generic plausibility
+    test refuses it, yet the parser extracts exactly these counters. Only a
+    record that states at least one known counter qualifies; the type name
+    alone is not evidence.
+    """
+    record = _dict_record(item)
+    return (
+        record is not None
+        and _record_type(record) == "token_usage_record"
+        and "payload" not in record
+        and bool(_codex_token_usage_payload(_dict_record(record.get("usage")) or record))
+    )
+
+
 def _session_stream_supported(payload: Sequence[object], *, for_schema: bool) -> bool:
     has_session_header = False
     has_message = False
@@ -4121,12 +4138,17 @@ def _session_stream_supported(payload: Sequence[object], *, for_schema: bool) ->
 
     for index, item in enumerate(payload, start=1):
         schema_direct = isinstance(item, dict) and item.get("type") in schema_direct_types
-        if not schema_direct and not _is_plausibly_codex_record(item):
+        bare_usage = _is_bare_token_usage_record(item)
+        if not schema_direct and not bare_usage and not _is_plausibly_codex_record(item):
             return False
         record = _dict_record(item)
         if record is None or _validate_record(record, index=index, context="session stream") is None:
             return False
         record_type = _record_type(record)
+        if bare_usage:
+            # Counters beside ``type`` carry no generation of their own, so
+            # the record joins either stream shape without marking it.
+            continue
         if schema_direct:
             if _is_envelope(record):
                 return False

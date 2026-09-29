@@ -233,6 +233,7 @@ class ArchiveBlockRow:
     tool_input: str | None = None
     metadata: str | None = None
     language: str | None = None
+    name: str | None = None
     # Legacy structural fields retained for compatibility. tool_outcome is the
     # canonical closed outcome vocabulary for admitted tool blocks.
     tool_result_is_error: int | None = None
@@ -4474,6 +4475,7 @@ def _iter_block_rows(
                 "semantic_type": _sqlite_text(semantic_type),
                 "media_type": _sqlite_text(block.media_type),
                 "language": _sqlite_text(language),
+                "name": _sqlite_text(_block_name(block)),
                 "tool_result_is_error": _sqlite_bool(is_error),
                 "tool_result_exit_code": exit_code,
                 "tool_outcome": getattr(block, "tool_outcome", None),
@@ -14150,6 +14152,14 @@ def _block_language(block: ParsedContentBlock) -> str | None:
     metadata = block.metadata or {}
     value = metadata.get("language")
     return str(value) if value is not None else None
+
+
+def _block_name(block: ParsedContentBlock) -> str | None:
+    """``metadata["name"]`` of a media block is the sole input to ``blocks.name``."""
+    if _block_type(block) not in (BlockType.DOCUMENT, BlockType.IMAGE):
+        return None
+    value = (block.metadata or {}).get("name")
+    return value if isinstance(value, str) and value else None
 
 
 def _semantic_type(block: ParsedContentBlock) -> str | None:

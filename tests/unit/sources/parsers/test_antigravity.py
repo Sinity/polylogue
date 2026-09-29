@@ -451,3 +451,138 @@ def test_single_parent_reference_still_asserts_its_edge(tmp_path: Path) -> None:
     session = list(parse_trajectory_db(path))[0]
 
     assert session.parent_session_provider_id == "parent-1"
+
+
+def _steps_db(path: Path, steps: list[tuple[int, str, str]]) -> Path:
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+        CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+        """
+    )
+    connection.execute("INSERT INTO trajectory_meta VALUES ('trajectory-1', 'cascade-1')")
+    connection.executemany(
+        "INSERT INTO steps VALUES (?, ?, 'v1', ?)", [(idx, step_type, payload) for idx, step_type, payload in steps]
+    )
+    connection.commit()
+    connection.close()
+    return path
+
+
+def test_trajectory_id_less_tool_steps_get_step_keyed_ids_and_pair_their_result(tmp_path: Path) -> None:
+    """An ID-less call is keyed by its own step; its adjacent result reports it.
+
+    Anti-vacuity: drop the synthesized id and the call and file edit carry
+    ``tool_id=None`` again, so the result cannot pair and no file edit can
+    be keyed.
+    """
+    path = _trajectory_db(tmp_path / "conversation.db")
+
+    [first] = list(parse_trajectory_db(path))
+    [again] = list(parse_trajectory_db(path))
+
+    call, result, edit = (first.messages[index].blocks[0] for index in (1, 2, 3))
+    assert call.type is BlockType.TOOL_USE
+    assert call.tool_id == "trajectory:step:1:tool"
+    assert result.type is BlockType.TOOL_RESULT
+    assert result.tool_id == call.tool_id
+    assert edit.type is BlockType.TOOL_USE
+    assert edit.tool_id == "trajectory:step:3:tool"
+    assert edit.file_edit is not None
+    assert [message.blocks[0].tool_id for message in again.messages] == [
+        message.blocks[0].tool_id for message in first.messages
+    ]
+
+
+def test_trajectory_id_less_tool_steps_persist_their_pairing_and_file_edit(tmp_path: Path) -> None:
+    """The archive writer pairs the synthesized ids and keys the file edit."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    [session] = list(parse_trajectory_db(_trajectory_db(tmp_path / "conversation.db")))
+
+    with ArchiveStore(tmp_path / "archive") as archive:
+        session_id = write_index_session(archive, session)
+        index_path = archive.index_db_path
+    with sqlite3.connect(index_path) as conn:
+        uses = conn.execute(
+            "SELECT tool_id, tool_outcome, block_id FROM blocks "
+            "WHERE session_id = ? AND block_type = 'tool_use' ORDER BY tool_id",
+            (session_id,),
+        ).fetchall()
+        edits = conn.execute(
+            "SELECT tool_use_block_id, file_path, old_string, new_string FROM file_edits WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+
+    assert [(tool_id, outcome) for tool_id, outcome, _block in uses] == [
+        ("trajectory:step:1:tool", "ok"),
+        ("trajectory:step:3:tool", "no_result"),
+    ]
+    edit_block_id = uses[1][2]
+    assert edits == [(edit_block_id, "README.md", "old", "new")]
+
+
+@pytest.mark.parametrize(
+    ("steps", "paired"),
+    [
+        # Two calls in flight: nothing says which one the result reports.
+        (
+            [
+                (0, "terminal_command", '{"tool_name":"shell","command":"a"}'),
+                (1, "terminal_command", '{"tool_name":"shell","command":"b"}'),
+                (2, "tool_result", '{"tool_name":"shell","output":"x","status":"success"}'),
+            ],
+            False,
+        ),
+        # A step between the call and the result breaks the adjacency.
+        (
+            [
+                (0, "terminal_command", '{"tool_name":"shell","command":"a"}'),
+                (1, "message", '{"role":"assistant","text":"waiting"}'),
+                (2, "tool_result", '{"tool_name":"shell","output":"x","status":"success"}'),
+            ],
+            False,
+        ),
+        # A declared tool name that differs refutes the pairing.
+        (
+            [
+                (0, "terminal_command", '{"tool_name":"shell","command":"a"}'),
+                (1, "tool_result", '{"tool_name":"browser","output":"x","status":"success"}'),
+            ],
+            False,
+        ),
+        # An id-bearing call is answered by its own id, never by adjacency.
+        (
+            [
+                (0, "terminal_command", '{"tool_name":"shell","command":"a","call_id":"c-1"}'),
+                (1, "tool_result", '{"tool_name":"shell","output":"x","status":"success"}'),
+            ],
+            False,
+        ),
+        (
+            [
+                (0, "terminal_command", '{"tool_name":"shell","command":"a"}'),
+                (1, "tool_result", '{"output":"x","status":"success"}'),
+            ],
+            True,
+        ),
+    ],
+    ids=["two-in-flight", "interleaved-step", "name-mismatch", "id-bearing-call", "adjacent"],
+)
+def test_trajectory_id_less_result_pairs_only_an_unambiguous_adjacent_call(
+    tmp_path: Path, steps: list[tuple[int, str, str]], paired: bool
+) -> None:
+    [session] = list(parse_trajectory_db(_steps_db(tmp_path / "conversation.db", steps)))
+
+    [result] = [
+        block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    ]
+    call_ids = {
+        block.tool_id for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_USE
+    }
+    if paired:
+        assert result.tool_id in call_ids
+    else:
+        assert result.tool_id is None

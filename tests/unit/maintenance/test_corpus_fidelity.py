@@ -461,64 +461,74 @@ def test_candidate_index_corpus_gate_reads_durable_source_and_inactive_index(
     assert check.status is OutcomeStatus.ERROR
 
 
+def _clear_attributed_events(conn: sqlite3.Connection, session_id: str) -> int:
+    """Drop the clone's source-attributed events so a test's count is exact."""
+    conn.execute(
+        """
+        DELETE FROM session_events
+        WHERE session_id = ?
+          AND (source_message_id IS NOT NULL OR source_message_provider_id IS NOT NULL)
+        """,
+        (session_id,),
+    )
+    return int(conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0])
+
+
+def _insert_event(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    source_message_id: str | None = None,
+    source_message_provider_id: str | None = None,
+    event_type: str = "message_revision",
+) -> None:
+    position = int(
+        conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM session_events WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    )
+    conn.execute(
+        """
+        INSERT INTO session_events(
+            session_id, source_message_id, source_message_provider_id, position, event_type, payload_json
+        ) VALUES (?, ?, ?, ?, ?, '{"summary": "fixture event"}')
+        """,
+        (session_id, source_message_id, source_message_provider_id, position, event_type),
+    )
+
+
+def _record_best_revision(root: Path, session_id: str, *, raw_id: str, message_count: int) -> None:
+    origin, native_id = session_id.split(":", 1)
+    with _connect(root / "source.db") as conn:
+        _insert_raw(conn, raw_id=raw_id, origin=origin, native_id=native_id, logical_source_key=f"fixture:{native_id}")
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                f"fixture:{native_id}",
+                native_id,
+                f"rev-{raw_id}",
+                hashlib.sha256(raw_id.encode()).digest(),
+                message_count,
+            ),
+        )
+
+
 def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
     corpus_fidelity_archive: SeededArchiveArtifact,
     tmp_path: Path,
 ) -> None:
     root = _clone(corpus_fidelity_archive, tmp_path / "event-reclassification")
     session_id = _first_session_id(root)
-    origin, native_id = session_id.split(":", 1)
     with _connect(root / "index.db") as conn:
-        message_count = int(
-            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
-        )
-        event_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) FROM session_events
-                WHERE session_id = ?
-                  AND (source_message_id IS NOT NULL OR source_message_provider_id IS NOT NULL)
-                """,
-                (session_id,),
-            ).fetchone()[0]
-        )
-        next_position = int(
-            conn.execute(
-                "SELECT COALESCE(MAX(position), -1) + 1 FROM session_events WHERE session_id = ?", (session_id,)
-            ).fetchone()[0]
-        )
-        conn.execute(
-            """
-            INSERT INTO session_events(
-                session_id, source_message_provider_id, position, event_type, payload_json
-            ) VALUES (?, 'fixture-missing-message', ?, 'message_revision',
-                      '{"summary": "event represented a historical message"}')
-            """,
-            (session_id, next_position),
-        )
-    with _connect(root / "source.db") as conn:
-        _insert_raw(
-            conn,
-            raw_id="raw-event-reclassification",
-            origin=origin,
-            native_id=native_id,
-            logical_source_key=f"fixture:{native_id}",
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_session_memberships(
-                raw_id, logical_source_key, provider_session_id, source_revision,
-                normalized_content_hash, message_count
-            ) VALUES (?, ?, ?, 'rev-reclassified', ?, ?)
-            """,
-            (
-                "raw-event-reclassification",
-                f"fixture:{native_id}",
-                native_id,
-                b"g" * 32,
-                message_count + event_count + 1,
-            ),
-        )
+        message_count = _clear_attributed_events(conn, session_id)
+        _insert_event(conn, session_id, source_message_provider_id="fixture-missing-message")
+    _record_best_revision(root, session_id, raw_id="raw-event-reclassification", message_count=message_count + 1)
 
     report, check = _check(root, "corpus-revision-fidelity")
 
@@ -529,62 +539,76 @@ def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
     assert check.evidence["denominators"]["event_reclassified_documents"] == 1
 
 
+@pytest.mark.parametrize(
+    "event_link",
+    ["native_id", "native_id_with_whitespace", "message_id", "same_missing_message_twice"],
+)
+def test_revision_gate_counts_only_events_that_replace_a_missing_message(
+    corpus_fidelity_archive: SeededArchiveArtifact,
+    tmp_path: Path,
+    event_link: str,
+) -> None:
+    """An event beside its own retained message explains no other shortfall.
+
+    A Codex ``event_msg`` user_message yields both a message and an event
+    naming the same client id. Anti-vacuity: count every source-attributed
+    event and that event, or a second event for one missing message, makes up
+    for a genuinely missing message, relabelled ``event_reclassified``.
+    """
+    root = _clone(corpus_fidelity_archive, tmp_path / event_link)
+    with _connect(root / "index.db") as conn:
+        # A directly stored session whose messages carry provider-native ids,
+        # so an event can name one the way the writer links it.
+        row = conn.execute(
+            """
+            SELECT session_id, message_id, native_id FROM messages
+            WHERE native_id IS NOT NULL
+              AND session_id NOT IN (
+                  SELECT src_session_id FROM session_links WHERE inheritance = 'prefix-sharing'
+              )
+            ORDER BY session_id, position
+            LIMIT 1
+            """
+        ).fetchone()
+        assert row is not None
+        session_id, message_id, native_id = row
+        message_count = _clear_attributed_events(conn, session_id)
+        if event_link in {"native_id", "native_id_with_whitespace"}:
+            if event_link == "native_id_with_whitespace":
+                native_id = f" {native_id} "
+                conn.execute("UPDATE messages SET native_id = ? WHERE message_id = ?", (native_id, message_id))
+            _insert_event(conn, session_id, source_message_provider_id=native_id)
+            best = message_count + 1
+        elif event_link == "message_id":
+            _insert_event(conn, session_id, source_message_id=message_id)
+            best = message_count + 1
+        else:
+            _insert_event(conn, session_id, source_message_provider_id="fixture-missing-message")
+            _insert_event(conn, session_id, source_message_provider_id="fixture-missing-message", event_type="other")
+            best = message_count + 2
+    _record_best_revision(root, session_id, raw_id=f"raw-{event_link}", message_count=best)
+
+    report, check = _check(root, "corpus-revision-fidelity")
+
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unexplained_shortfall"] == 1
+    assert check.evidence["explained_by_event_reclassification"] == 0
+    [worst] = [item for item in check.evidence["worst"] if item["session_id"] == session_id]
+    assert worst["reasons"] == ["direct_count_shortfall"]
+    assert worst["replacement_events"] == (1 if event_link == "same_missing_message_twice" else 0)
+
+
 def test_revision_gate_rejects_unattributed_event_as_message_replacement(
     corpus_fidelity_archive: SeededArchiveArtifact,
     tmp_path: Path,
 ) -> None:
     root = _clone(corpus_fidelity_archive, tmp_path / "unattributed-event")
     session_id = _first_session_id(root)
-    origin, native_id = session_id.split(":", 1)
     with _connect(root / "index.db") as conn:
-        message_count = int(
-            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
-        )
-        attributed_event_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) FROM session_events
-                WHERE session_id = ?
-                  AND (source_message_id IS NOT NULL OR source_message_provider_id IS NOT NULL)
-                """,
-                (session_id,),
-            ).fetchone()[0]
-        )
-        next_position = int(
-            conn.execute(
-                "SELECT COALESCE(MAX(position), -1) + 1 FROM session_events WHERE session_id = ?", (session_id,)
-            ).fetchone()[0]
-        )
-        conn.execute(
-            """
-            INSERT INTO session_events(session_id, position, event_type, payload_json)
-            VALUES (?, ?, 'fixture-arbitrary', '{"summary": "unrelated timeline event"}')
-            """,
-            (session_id, next_position),
-        )
-    with _connect(root / "source.db") as conn:
-        _insert_raw(
-            conn,
-            raw_id="raw-unattributed-event",
-            origin=origin,
-            native_id=native_id,
-            logical_source_key=f"fixture:{native_id}",
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_session_memberships(
-                raw_id, logical_source_key, provider_session_id, source_revision,
-                normalized_content_hash, message_count
-            ) VALUES (?, ?, ?, 'rev-unattributed-event', ?, ?)
-            """,
-            (
-                "raw-unattributed-event",
-                f"fixture:{native_id}",
-                native_id,
-                b"h" * 32,
-                message_count + attributed_event_count + 1,
-            ),
-        )
+        message_count = _clear_attributed_events(conn, session_id)
+        _insert_event(conn, session_id, event_type="fixture-arbitrary")
+    _record_best_revision(root, session_id, raw_id="raw-unattributed-event", message_count=message_count + 1)
 
     report, check = _check(root, "corpus-revision-fidelity")
 

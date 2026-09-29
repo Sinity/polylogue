@@ -308,6 +308,36 @@ class TestMediaBlockRendering:
         assert "Spec https://example.com/spec.pdf (application/pdf)" in plaintext
         assert "Archive (text/plain)" in plaintext
 
+    def test_document_body_renders_once_under_its_name_in_every_format(self) -> None:
+        """A document block's carried body is content, not a reference to drop.
+
+        Anti-vacuity: the media renderers used to emit only ``[notes.md]``,
+        losing the body a project document or quoted page carries.
+        """
+        body = "# Heading\n<script>alert(1)</script>\n```py\nx = 1\n```"
+        [block] = [RenderableBlock(type=BlockType.DOCUMENT.value, name="notes.md", text=body)]
+
+        markdown = render_blocks_markdown([block])
+        html = render_blocks_html([block])
+        plaintext = render_blocks_plaintext([block])
+
+        # The body is fenced past its own longest backtick run, so its heading
+        # and code fence stay inside the document.
+        assert markdown == f"[notes.md]\n\n````\n{body}\n````"
+        assert '<span class="media-name">notes.md</span>' in html
+        assert '<pre class="media-text"># Heading\n&lt;script&gt;alert(1)&lt;/script&gt;' in html
+        assert "<script>" not in html
+        assert plaintext == f"notes.md\n{body}"
+        for rendered in (markdown, html, plaintext):
+            assert rendered.count("Heading") == 1
+
+    def test_document_without_body_keeps_the_reference_only(self) -> None:
+        block = RenderableBlock(type=BlockType.DOCUMENT.value, name="empty.md", text="   ")
+
+        assert render_blocks_markdown([block]) == "[empty.md]"
+        assert render_blocks_plaintext([block]) == "empty.md"
+        assert "media-text" not in render_blocks_html([block])
+
 
 class TestToolUseInputSummary:
     """`_tool_input_summary`'s folded one-line summary for tool_use blocks.

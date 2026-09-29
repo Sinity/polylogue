@@ -9,8 +9,9 @@ import shutil
 import sqlite3
 import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import partial
 from itertools import islice
 from pathlib import Path
@@ -26,6 +27,8 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
+    JsonlDecodeError,
+    PartialJsonStreamError,
     _json_subtree,
     _root_envelope_without,
     _skip_json_subtree,
@@ -155,6 +158,39 @@ class VerificationCancelledError(Exception):
     """A digest pass stopped at a chunk boundary because its caller was cancelled."""
 
 
+class DecodeFailure(StrEnum):
+    """Which JSON decode boundary refused a source's bytes."""
+
+    #: A JSON document or JSON stream did not decode.
+    DOCUMENT = "document"
+    #: A complete (newline-terminated or final) JSONL record did not decode.
+    JSONL_RECORD = "jsonl_record"
+
+
+class PreparedDecodeError(ValueError):
+    """A worker's decode failure, raised again by the writer with its kind.
+
+    An exception does not survive the worker boundary with its type (the
+    carrier is pickled, and ``JsonlDecodeError`` cannot be rebuilt from its
+    message), so the carrier names the kind and the writer raises this.
+    """
+
+    def __init__(self, kind: DecodeFailure, detail: str) -> None:
+        self.kind = kind
+        super().__init__(detail)
+
+
+def classify_decode_failure(error: BaseException) -> DecodeFailure | None:
+    """Name the decode boundary ``error`` came from, or ``None`` if it is not a decode failure."""
+    if isinstance(error, PreparedDecodeError):
+        return error.kind
+    if isinstance(error, JsonlDecodeError):
+        return DecodeFailure.JSONL_RECORD
+    if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError, PartialJsonStreamError)):
+        return DecodeFailure.DOCUMENT
+    return None
+
+
 def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -163,6 +199,34 @@ def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str
                 raise VerificationCancelledError(str(path))
             digest.update(chunk)
     return digest.hexdigest()
+
+
+@contextmanager
+def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str]]:
+    """Copy one revision of ``source`` into private scratch and name its digest.
+
+    Everything that decides how a revision is interpreted -- provider
+    sampling, the JSONL frontier, the parse and the seal -- reads the copy,
+    whose digest was taken from the very bytes written into it. A source
+    replaced or rewritten while it is prepared therefore cannot pair one
+    revision's digest with another revision's interpretation; the writer
+    rejects the carrier when its own capture hashes differently. The copy
+    keeps the source's file name, which decides JSON and JSONL handling.
+    """
+    holder = directory / f"source-{uuid.uuid4().hex}"
+    holder.mkdir(parents=True)
+    snapshot = holder / source.name
+    try:
+        digest = hashlib.sha256()
+        with source.open("rb") as reader, snapshot.open("xb") as writer:
+            for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+                digest.update(chunk)
+                writer.write(chunk)
+        os.chmod(snapshot, 0o400)
+        yield snapshot, digest.hexdigest()
+    finally:
+        with suppress(FileNotFoundError):
+            shutil.rmtree(holder)
 
 
 def _iter_prefix_lines(handle: BinaryIO, prefix_size: int) -> Iterator[bytes]:
@@ -580,6 +644,9 @@ class PreparedJsonl:
     #: failing preparation began. Publication must not apply the failure to a
     #: capture of any other revision.
     failed_observation: tuple[int, int, int] | None = None
+    #: For a terminal failure, which decode boundary refused the bytes, or
+    #: ``None`` when the failure was not a decode failure.
+    decode_failure: DecodeFailure | None = None
 
     @classmethod
     def seal(
@@ -993,6 +1060,8 @@ def prepare_jsonl_blob(
     classify_otel_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_bundle_members: Callable[[Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
+    source_sha256: str | None = None,
+    strict_jsonl_records: bool = False,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC.
 
@@ -1000,6 +1069,12 @@ def prepare_jsonl_blob(
     rule (``require_positive_conversational_evidence``) runs here, before any
     ``prepare_session``/``prepare_sessions`` callback, on every provider
     branch. A caller consuming the artifact does not apply it again.
+
+    ``source_sha256`` is the digest of ``blob_path`` when the caller already
+    read it to decide how to prepare it; the seal then binds that decision's
+    bytes. ``strict_jsonl_records`` refuses a complete JSONL record that does
+    not decode for every provider, as live acquisition does, instead of only
+    for ``Provider.UNKNOWN``.
     """
     directory = Path(shard_directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -1019,7 +1094,7 @@ def prepare_jsonl_blob(
     try:
         provider = Provider.from_string(provider_value)
         store = SqliteMessageStore(sessions_path)
-        before_hash = _source_digest(source)
+        before_hash = source_sha256 if source_sha256 is not None else _source_digest(source)
         record_container: str | None = None
         stream_prefix: str | None = None
         bundle_count = 0
@@ -1995,7 +2070,7 @@ def prepare_jsonl_blob(
                 records = _iter_json_stream(
                     record_input,  # type: ignore[arg-type]
                     Path(source_path).name,
-                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                    fail_on_decode_error=strict_jsonl_records or provider is Provider.UNKNOWN,
                 )
                 if prepare_records is not None:
                     records = prepare_records(records)
@@ -2071,7 +2146,17 @@ def prepare_jsonl_blob(
                     error_hash = before_hash
                 else:
                     retryable = True
-        return PreparedJsonl(error_hash, None, None, f"{type(exc).__name__}: {exc}"[:500], deferred=retryable)
+        return PreparedJsonl(
+            error_hash,
+            None,
+            None,
+            f"{type(exc).__name__}: {exc}"[:500],
+            deferred=retryable,
+            # Only a failure bound to hashed bytes speaks for a capture. Its
+            # provider token parsed before the source was hashed.
+            resolved_provider=Provider.from_string(provider_value) if error_hash is not None else None,
+            decode_failure=None if retryable else classify_decode_failure(exc),
+        )
     finally:
         if store is not None:
             store.close()

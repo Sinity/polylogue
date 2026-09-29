@@ -580,37 +580,23 @@ async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
         assert conn.execute("SELECT origin FROM raw_sessions").fetchone()[0] == "gemini-cli-session"
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("malformed_initial", [False, True])
-async def test_changed_json_after_preparation_uses_captured_provider(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed_initial: bool
-) -> None:
-    """A stale worker's provider or parse error cannot label captured bytes."""
-    import polylogue.sources.live.cursor as cursor_module
+def _gemini_cli_document(session_id: str) -> bytes:
+    return json.dumps(
+        {
+            "sessionId": session_id,
+            "startTime": "2026-03-16T09:40:00.000Z",
+            "lastUpdated": "2026-03-16T09:41:00.000Z",
+            "kind": "chat",
+            "messages": [{"id": "u1", "timestamp": "2026-03-16T09:40:01.000Z", "type": "user", "content": ["hello"]}],
+        }
+    ).encode()
 
-    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
-    source = tmp_path / "inbox" / "session.json"
-    source.parent.mkdir()
-    source.write_text(
-        json.dumps(
-            {
-                "sessionId": "gemini-before-copy",
-                "startTime": "2026-03-16T09:40:00.000Z",
-                "lastUpdated": "2026-03-16T09:41:00.000Z",
-                "kind": "chat",
-                "messages": [
-                    {"id": "u1", "timestamp": "2026-03-16T09:40:01.000Z", "type": "user", "content": ["hello"]}
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    if malformed_initial:
-        source.write_bytes(b'{"broken":')
-    chatgpt = json.dumps(
+
+def _chatgpt_document(conversation_id: str) -> bytes:
+    return json.dumps(
         [
             {
-                "id": "chatgpt-after-copy",
+                "id": conversation_id,
                 "title": "captured chat",
                 "create_time": 1,
                 "current_node": "m",
@@ -630,6 +616,36 @@ async def test_changed_json_after_preparation_uses_captured_provider(
             }
         ]
     ).encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed_initial", [False, True])
+async def test_changed_json_after_preparation_defers_without_writer_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed_initial: bool
+) -> None:
+    """A stale worker's provider or parse error cannot label captured bytes.
+
+    Without a carrier for the captured bytes, the writer does not decode the
+    document to classify it: the capture is released, the path is deferred
+    with its debt recorded, and the next pass retains the bytes once, under
+    the provider its own preparation detected. Anti-vacuity: classifying the
+    captured blob in the writer calls the patched detector and fails here;
+    retaining the capture under the source's provider admits a second raw
+    identity for the same bytes on the next pass.
+    """
+    import polylogue.sources.live.batch as batch
+    import polylogue.sources.live.cursor as cursor_module
+
+    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
+
+    def writer_decode(*_args: object, **_kwargs: object) -> NoReturn:
+        raise AssertionError("the writer decoded a stage-owned JSON document to classify it")
+
+    monkeypatch.setattr(batch, "detect_provider_from_path_sample_evidence", writer_decode)
+    source = tmp_path / "inbox" / "session.json"
+    source.parent.mkdir()
+    source.write_bytes(b'{"broken":' if malformed_initial else _gemini_cli_document("gemini-before-copy"))
+    chatgpt = _chatgpt_document("chatgpt-after-copy")
     original_copy = ArchiveBlobPublisher.write_from_fileobj
     changed = False
 
@@ -659,18 +675,75 @@ async def test_changed_json_after_preparation_uses_captured_provider(
         read_snapshot=open_operation_read,
     )
     try:
-        first = await processor.ingest_files([source], emit_event=False)
-        assert changed and str(source) in first.deferred_paths
+        with plog.capture() as records:
+            first = await processor.ingest_files([source], emit_event=False)
+        assert changed
+        assert str(source) in first.deferred_paths
+        assert first.failed_file_count == 0
+        assert [record for record in records if record["event"] == "live.ingest.json_capture_deferred"]
         with _connect(archive_root / "source.db") as conn:
-            assert [row["origin"] for row in conn.execute("SELECT origin FROM raw_sessions")] == [
-                origin_from_provider(Provider.CHATGPT).value
-            ]
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        with _connect(archive_root / "ops.db") as conn:
+            debt = conn.execute(
+                "SELECT stage, status FROM convergence_debt WHERE target_type = 'source_path'"
+            ).fetchone()
+        assert debt is not None and tuple(debt) == ("live_ingest_deferred", "deferred")
+
         second = await processor.ingest_files([source], emit_event=False)
         assert second.ingested_session_count == 1
-        with _connect(archive_root / "source.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     finally:
         stage.shutdown()
+    with _connect(archive_root / "source.db") as conn:
+        rows = conn.execute("SELECT origin, hex(blob_hash) FROM raw_sessions").fetchall()
+    assert [tuple(row) for row in rows] == [
+        (origin_from_provider(Provider.CHATGPT).value, hashlib.sha256(chatgpt).hexdigest().upper())
+    ]
+
+
+def test_path_worker_binds_provider_parse_and_seal_to_one_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source replaced mid-preparation cannot mix two revisions in one carrier.
+
+    Anti-vacuity: sample the provider from the live path and then parse and
+    hash it again, and the carrier holds the replacement's digest with the
+    original's provider, which the writer accepts for a capture of the
+    replacement.
+    """
+    import polylogue.sources.live.batch_support as batch_support
+
+    source = tmp_path / "inbox" / "session.json"
+    source.parent.mkdir()
+    original = _gemini_cli_document("gemini-original")
+    replacement = _chatgpt_document("chatgpt-replacement")
+    source.write_bytes(original)
+    real_detect = batch_support._detect_provider_from_path_sample
+    replaced = False
+
+    def detect_then_replace(path: Path, fallback_provider: Provider, **kwargs: bool) -> Provider:
+        nonlocal replaced
+        provider = real_detect(path, fallback_provider, **kwargs)
+        staged = source.with_name("replacement.json")
+        staged.write_bytes(replacement)
+        staged.replace(source)
+        replaced = True
+        return provider
+
+    monkeypatch.setattr(batch_support, "_detect_provider_from_path_sample", detect_then_replace)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
+    try:
+        assert stage.warm_paths([(str(source), Provider.UNKNOWN, False)]) == frozenset()
+        assert replaced
+        carrier = stage._path_results[str(source)]
+        assert carrier.error is None
+        assert carrier.blob_hash == hashlib.sha256(original).hexdigest()
+        assert carrier.resolved_provider is Provider.GEMINI_CLI
+        refused = stage.pop_path(str(source), blob_hash=hashlib.sha256(replacement).hexdigest())
+        assert refused is not None and refused.deferred
+        assert refused.error == "captured source changed after preparation"
+    finally:
+        stage.shutdown()
+    assert list((tmp_path / "shards").iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -2036,6 +2109,169 @@ async def test_killed_path_worker_retains_one_raw_and_retries_through_intake(tmp
         stage.shutdown()
 
 
+@pytest.mark.uses_real_clock("a real worker process dies while the pool is idle")
+@pytest.mark.parametrize("pending_completion", [False, True])
+def test_a_pool_broken_while_idle_is_replaced_at_the_next_submission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pending_completion: bool,
+) -> None:
+    """A worker that dies with no preparation outstanding cannot poison the stage.
+
+    Anti-vacuity: record the failed submission as a deferred result and keep
+    the broken executor, and every later preparation reports
+    ``worker submission failed: BrokenProcessPool`` until the daemon restarts.
+    """
+    first, second = _write_fixture_corpus(tmp_path / "sessions", count=2)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    try:
+        broken = stage._executor
+        with pytest.raises(BrokenProcessPool):
+            broken.submit(_dead_process_worker).result(timeout=15)
+        assert not stage._path_futures
+        if pending_completion:
+            from concurrent.futures import Future
+
+            import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+            # The process manager can report a broken submit before all its
+            # sibling futures have been signalled. Never await them here.
+            pending: Future[Any] = Future()
+            pending.set_running_or_notify_cancel()
+            stage._path_futures[str(first)] = pending
+            try:
+                with monkeypatch.context() as guard:
+
+                    def refuse_wait(*_args: Any, **_kwargs: Any) -> None:
+                        raise AssertionError("broken submit waited for an unsignalled sibling")
+
+                    guard.setattr(parse_prefetch, "wait", refuse_wait)
+                    assert stage._replace_pool_broken_before_submit()
+                assert not stage._path_futures
+                stage._path_results.clear()
+            finally:
+                # A deliberately unsignalled test future must not hang cleanup
+                # if a regression raises before the stage forgets it.
+                if not pending.done():
+                    pending.set_exception(BrokenProcessPool("synthetic pending worker completion"))
+        for path in (first, second):
+            assert stage.warm_paths([(str(path), Provider.CODEX, True)]) == frozenset()
+            result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+            assert result is not None and result.error is None
+            result.discard()
+        assert stage._executor is not broken
+    finally:
+        stage.shutdown()
+
+
+_UNKNOWN_RECORD = b'{"id":"unknown-1","messages":[{"id":"m1","role":"user","content":"hello"}]}\n'
+
+
+@pytest.mark.asyncio
+async def test_path_worker_decode_failure_reaches_terminal_unknown_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker's decode failure keeps its identity through the writer.
+
+    Anti-vacuity: re-raise the carrier's failure as an untyped error, and the
+    unknown-provider raw is marked failed and retried with no
+    ``terminal_unknown_json_decode`` evidence.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "mixed.jsonl"
+    path.write_bytes(_UNKNOWN_RECORD + b'{"broken":}\n' + _UNKNOWN_RECORD.replace(b"unknown-1", b"unknown-2"))
+    prepared = 0
+    real_worker = parse_prefetch.live_parse_path_worker
+
+    def counted_worker(*args: Any, **kwargs: Any) -> object:
+        nonlocal prepared
+        prepared += 1
+        return real_worker(*args, **kwargs)
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", counted_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        first = await processor.ingest_files([path], emit_event=False)
+        assert prepared == 1
+        second = await processor.ingest_files([path], emit_event=False)
+    finally:
+        stage.shutdown()
+    assert first.failed_file_count == 0 and first.succeeded_file_count == 1
+    assert second.failed_file_count == 0
+    with _connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+        artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
+    assert (artifact[0], artifact[1]) == ("terminal_unknown_json_decode", "decode_failed")
+    lifecycle = read_raw_failure_lifecycle(archive_root / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepared_off_writer", [False, True])
+async def test_known_provider_jsonl_with_a_malformed_middle_record_is_terminal(
+    tmp_path: Path, prepared_off_writer: bool
+) -> None:
+    """A complete malformed record cannot be skipped on the way to the frontier.
+
+    The valid records around it do not make the capture an ordinary success:
+    the raw is retained with terminal corrupt-input evidence, as a malformed
+    final record already is, and its unchanged observation is not retried.
+    Anti-vacuity: decode known-provider JSONL leniently, in the writer or in
+    the path worker, and the malformed line is skipped with a warning while
+    the session publishes and the cursor reaches EOF with no evidence.
+    """
+    rows = _codex_session_bytes("codex-torn", (("user", "before"), ("assistant", "after"))).splitlines(keepends=True)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "torn.jsonl"
+    path.write_bytes(b"".join(rows[:2]) + b'{"type":"response_item","payload":\n' + b"".join(rows[2:]))
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards") if prepared_off_writer else None
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        first = await processor.ingest_files([path], emit_event=False)
+        second = await processor.ingest_files([path], emit_event=False)
+    finally:
+        if stage is not None:
+            stage.shutdown()
+    assert first.failed_file_count == 0 and first.succeeded_file_count == 1
+    assert second.failed_file_count == 0
+    with _connect(archive_root / "source.db") as conn:
+        raws = conn.execute("SELECT blob_size, parse_error FROM raw_sessions").fetchall()
+        artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
+    assert len(raws) == 1
+    assert raws[0][0] == path.stat().st_size
+    assert raws[0][1] is not None
+    assert (artifact[0], artifact[1]) == ("terminal_corrupt_input", "decode_failed")
+    with _connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    lifecycle = read_raw_failure_lifecycle(archive_root / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+
+
 def test_path_preparation_refuses_source_changed_after_worker_seal(tmp_path: Path) -> None:
     import hashlib
 
@@ -2938,3 +3174,64 @@ def test_a_slow_preparation_that_keeps_advancing_is_never_stopped(
         assert not stage._path_worker_losses
     finally:
         stage.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_site", ["discovery", "preparation"])
+async def test_preparation_exception_does_not_restore_whole_json_writer_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_site: str,
+) -> None:
+    import polylogue.sources.live.batch as batch
+    import polylogue.sources.live.cursor as cursor_module
+
+    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
+    source = tmp_path / "inbox" / "chatgpt.json"
+    source.parent.mkdir()
+    payload = _chatgpt_document("preparation-retry")
+    source.write_bytes(payload)
+    archive_root = tmp_path / "archive"
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="inbox", root=source.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+
+    def forbid_writer_decode(*_args: Any, **_kwargs: Any) -> NoReturn:
+        raise AssertionError("whole JSON decoding re-entered the writer after preparation failed")
+
+    monkeypatch.setattr(batch, "detect_provider_from_path_sample_evidence", forbid_writer_decode)
+    owner = batch if failure_site == "discovery" else stage
+    method = "_live_parse_stage_path_candidates" if failure_site == "discovery" else "warm_paths"
+    original = getattr(owner, method)
+    failed_once = False
+
+    def fail_once(*args: Any, **kwargs: Any) -> Any:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("synthetic pre-writer preparation exception")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, method, fail_once)
+    try:
+        first = await processor.ingest_files([source], emit_event=False)
+        assert failed_once and first.failed_file_count == 0
+        assert str(source) in first.deferred_paths
+        with _connect(archive_root / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        second = await processor.ingest_files([source], emit_event=False)
+        assert second.ingested_session_count == 1
+        with _connect(archive_root / "source.db") as conn:
+            assert [tuple(row) for row in conn.execute("SELECT origin, hex(blob_hash) FROM raw_sessions")] == [
+                (origin_from_provider(Provider.CHATGPT).value, hashlib.sha256(payload).hexdigest().upper()),
+            ]
+    finally:
+        stage.shutdown()
+        await archive.close()

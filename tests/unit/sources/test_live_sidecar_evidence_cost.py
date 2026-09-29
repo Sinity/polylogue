@@ -279,3 +279,50 @@ async def test_a_source_tier_without_raw_sessions_pins_no_evidence(
             assert processor._pinned_history_sidecars == {str(path): False for path in sidecars}
     finally:
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_cursor_evidence_is_pinned_after_writer_admission(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An intervening source writer invalidates the earlier page's evidence."""
+    from typing import Any
+
+    root = workspace_env["data_root"] / "projects"
+    root.mkdir(parents=True)
+    owner, sidecars = _build_tree(root, sidecar_count=1)
+    sidecar = sidecars[0]
+    archive, cursor, processor = _make_processor(workspace_env, root)
+    original = processor._run_ops_write
+    excised = False
+
+    def excise_retained_sidecar() -> None:
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM raw_sessions WHERE source_path = ?",
+                    (str(sidecar),),
+                ).fetchone()
+                is not None
+            )
+            conn.execute("DELETE FROM raw_artifacts WHERE source_path = ?", (str(sidecar),))
+            conn.execute("DELETE FROM history_sidecars WHERE source_path = ?", (str(sidecar),))
+            conn.execute("DELETE FROM raw_sessions WHERE source_path = ?", (str(sidecar),))
+
+    async def admit_with_intervening_excision(actor: str, function: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal excised
+        if actor == "cursor_full" and not excised:
+            excised = True
+            await original("test_source_excision", excise_retained_sidecar)
+        return await original(actor, function, *args, **kwargs)
+
+    monkeypatch.setattr(processor, "_run_ops_write", admit_with_intervening_excision)
+    try:
+        await processor.ingest_files([owner, sidecar], emit_event=False)
+        assert excised
+        assert not processor._history_sidecar_retained(sidecar)
+        record = cursor.get_record(sidecar)
+        assert record is None or record.byte_offset == 0
+    finally:
+        await archive.close()

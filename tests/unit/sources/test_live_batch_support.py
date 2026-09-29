@@ -9774,3 +9774,186 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     assert metrics.succeeded_file_count == 1
     assert str(second) in metrics.deferred_paths
     assert deferred == [second]
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude-code"])
+def test_append_publication_does_not_hide_growth_after_planning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    """The prefix proof cannot bless later complete records as a probed tail."""
+    native_id = "publication-growth"
+    if provider == "codex":
+        path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id=native_id)
+        later = (
+            b'{"type":"response_item","payload":{"type":"message","id":"message-2",'
+            b'"role":"assistant","content":[{"type":"output_text","text":"two"}]}}\n'
+        )
+    else:
+
+        def message(number: int) -> bytes:
+            return (
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": f"message-{number}",
+                        "parentUuid": f"message-{number - 1}",
+                        "sessionId": native_id,
+                        "timestamp": f"2026-06-02T00:00:0{number}Z",
+                        "message": {"role": "assistant", "content": f"reply {number}"},
+                    }
+                )
+                + "\n"
+            ).encode()
+
+        path, plan, owner, processor = _seed_claude_live_append_plan(
+            tmp_path,
+            native_id=native_id,
+            append=message(1),
+        )
+        later = message(2)
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    with path.open("ab") as handle:
+        handle.write(later)
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, plan.mtime_ns + 1_000_000))
+
+    assert processor._record_append_cursor(plan) is True
+    recorded = processor._cursor.get_record(path)
+    assert recorded is not None
+    assert recorded.byte_offset == plan.last_complete_newline
+    assert recorded.byte_size == plan.stat_size
+    assert recorded.byte_size < path.stat().st_size
+    # Avoid a vacuous True from the parser-version invalidation branch.
+    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "test-parser")
+    watcher = LiveWatcher(
+        cast(Any, owner)._polylogue,
+        (WatchSource(name=provider, root=path.parent),),
+        cursor=processor._cursor,
+    )
+    assert watcher._needs_work(path) is True
+    following = processor._append_plan(path)
+    assert isinstance(following, _AppendPlan)
+    assert ingest_append_plans(cast(Any, owner), [following]).succeeded == [following]
+    assert processor._record_append_cursor(following) is True
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (3,)
+
+
+def test_append_budget_refusal_retains_retryable_raw_without_poisoning_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frozen_clock: Any,
+) -> None:
+    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+    from polylogue.sources.live import append_ingest
+
+    path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="append-budget")
+    before = processor._cursor.get_record(path)
+    assert before is not None
+    original = append_ingest._write_append_raw_payload
+
+    def delayed_capture(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        frozen_clock.advance(31)
+        return result
+
+    monkeypatch.setattr(append_ingest, "_write_append_raw_payload", delayed_capture)
+    token = enter_write_hold("watcher.live_ingest.append", 30)
+    try:
+        with pytest.raises(WriteHoldBudgetError) as caught:
+            ingest_append_plans(cast(Any, owner), [plan])
+        assert caught.value.checkpoint == "append_parse"
+    finally:
+        exit_write_hold(token)
+    after = processor._cursor.get_record(path)
+    assert after is not None
+    assert after.byte_offset == before.byte_offset
+    assert after.failure_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parse_error FROM raw_sessions WHERE source_path = ? AND source_index = -1",
+            (str(path),),
+        ).fetchall() == [(None,)]
+
+    monkeypatch.setattr(append_ingest, "_write_append_raw_payload", original)
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    assert processor._record_append_cursor(plan) is True
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)
+
+
+def test_append_refuses_a_malformed_middle_record(tmp_path: Path) -> None:
+    from hashlib import sha256
+
+    path, initial, owner, processor = _seed_live_append_plan(tmp_path, native_id="malformed-middle")
+    before = processor._cursor.get_record(path)
+    assert before is not None
+    original = path.read_bytes()[: initial.start_offset]
+    malformed = initial.payload + b"{definitely not json}\n" + initial.payload.replace(b"message-1", b"message-2")
+    path.write_bytes(original + malformed)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    result = ingest_append_plans(cast(Any, owner), [plan])
+    assert result.succeeded == []
+    assert result.failed == [plan]
+    after = processor._cursor.get_record(path)
+    assert after is not None and after.byte_offset == before.byte_offset
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        [(_raw_id, retained_hash, error)] = conn.execute(
+            "SELECT raw_id, hex(blob_hash), parse_error FROM raw_sessions WHERE source_path = ? AND source_index = -1",
+            (str(path),),
+        ).fetchall()
+    assert retained_hash.lower() == sha256(malformed).hexdigest()
+    assert error
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
+
+
+def test_claude_live_append_keeps_latest_relocated_directory_first(tmp_path: Path) -> None:
+    def record(number: int, relocated: str | None = None) -> bytes:
+        item = {
+            "type": "assistant",
+            "uuid": f"message-{number}",
+            "cwd": "/a/original",
+            "sessionId": "moved-session",
+            "timestamp": f"2026-06-02T00:00:0{number}Z",
+            "message": {"role": "assistant", "content": f"reply {number}"},
+        }
+        payload = (json.dumps(item) + "\n").encode()
+        if relocated is not None:
+            # Relocation is its own producer record, not a message attribute.
+            moved = {
+                "type": "relocated",
+                "sessionId": "moved-session",
+                "relocatedCwd": relocated,
+                "timestamp": item["timestamp"],
+            }
+            payload = (json.dumps(moved) + "\n").encode() + payload
+        return payload
+
+    path, first, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="moved-session",
+        append=record(1),
+    )
+    assert ingest_append_plans(cast(Any, owner), [first]).succeeded == [first]
+    assert processor._record_append_cursor(first)
+    for number, moved in ((2, "/z/moved"), (3, "/y/latest")):
+        with path.open("ab") as handle:
+            handle.write(record(number, moved))
+        plan = processor._append_plan(path)
+        assert isinstance(plan, _AppendPlan)
+        assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+        assert processor._record_append_cursor(plan)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            paths = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT path FROM session_working_dirs WHERE session_id = ? ORDER BY position, path",
+                    ("claude-code-session:moved-session",),
+                )
+            ]
+        assert paths[0] == moved
+        assert "/a/original" in paths

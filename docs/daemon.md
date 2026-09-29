@@ -29,6 +29,9 @@ as durable remediation references in status. A Codex state snapshot
 ingest finalizes it with a terminal `non_session` receipt, and each
 materialization pass finalizes any retained snapshot still lacking that
 receipt from its immutable blob before consulting the cursor-authority gate.
+The same `~/.codex` source retains the install-level `session_index.jsonl` and
+`history.jsonl` as raw evidence for Codex titles and prompt history; it admits
+no other JSONL.
 Operators can inspect and record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier`.
 
 Accepted ingest records changed session IDs in its terminal audit receipt. Up to 10,000 IDs are inline. Larger ingests append sorted pages of at most 256 IDs to the same operation's continuity-backed audit events before finalization; the receipt records their operation reference, exact count, page count, and digest. The local API reads those durable pages after completion and checks their order, count, and digest before returning the full `ParseResult.processed_ids` set. Profile target evidence uses the same audit route when more than 40 insight pages are needed; `AuditRepository.resolve_ingest_insight_pages` returns every typed target and checks the pages against the terminal count and digest. A source item with more than 10,000 raw IDs stores 256-raw attribution pages, including each raw's unresolved flag, and keeps exact counts and a digest in its input receipt. Completed operations resolve these pages from audit history rather than deriving them from the current index.
@@ -738,6 +741,20 @@ embedding and session-profile work already runs outside it.
 
 Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.
+
+JSON and JSONL files are prepared off the writer hold by the watcher's parse
+stage (`polylogue/sources/live/parse_prefetch.py`). A worker copies the file
+into its attempt scratch first and samples the provider, finds the JSONL
+frontier and parses from that copy, so the carrier's digest and its provider
+describe one revision; the writer accepts a carrier only when its own capture
+hashes the same. When a JSON document the stage prepared has no carrier for
+its captured bytes (the file changed after preparation, or preparation was
+deferred), the writer does not decode the capture to classify it: it releases
+that capture, reports `live.ingest.json_capture_deferred`, and defers the path
+to a later pass whose preparation matches what it captures. A complete JSONL
+record that does not decode is refused for every provider: the raw is retained
+with `terminal_corrupt_input` evidence (`terminal_unknown_json_decode` for an
+unknown provider) instead of being skipped on the way to the cursor frontier.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published

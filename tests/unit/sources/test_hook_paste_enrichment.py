@@ -332,3 +332,104 @@ def test_a_journal_file_is_no_longer_a_paste_evidence_carrier(tmp_path: Path) ->
     )
 
     assert hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db") == 0
+
+
+def test_replaying_paste_evidence_does_not_move_it_to_a_nearby_prompt(tmp_path: Path) -> None:
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    source_db = _source_tier(tmp_path)
+    _seed_paste_candidate(index_db, native_id="old-session")
+    _seed_hook_event(
+        source_db,
+        origin="codex-session",
+        session_native_id="old-session",
+        event_id="paste",
+        record=_paste_record("session_id", "old-session"),
+    )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """INSERT INTO messages (
+                session_id, native_id, role, position, content_hash, occurred_at_ms
+            ) VALUES (?, ?, 'user', 1, ?, ?)""",
+            ("codex-session:old-session", "m2", b"n" * 32, _HOOK_TIME_MS + 200),
+        )
+    selected = ["codex-session:old-session"]
+    assert hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db", session_ids=selected) == 1
+    assert hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db", session_ids=selected) == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT position, has_paste FROM messages ORDER BY position").fetchall() == [(0, 1), (1, 0)]
+        assert conn.execute("SELECT paste_count FROM sessions").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("debt_write_fails", [False, True])
+def test_late_hook_publication_schedules_its_old_session_not_the_next_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    debt_write_fails: bool,
+) -> None:
+    from polylogue.daemon.convergence_stages import make_hook_paste_enrichment_stage
+    from polylogue.sources.hooks import append_hook_event
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.storage.index_generation import ActiveWriterLease
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.hook_carriers import acquire_hook_carriers, materialize_hook_carriers
+
+    initialize_active_archive_root(tmp_path)
+    index_db, source_db = tmp_path / "index.db", tmp_path / "source.db"
+    _seed_paste_candidate(index_db, native_id="old-session")
+    _seed_paste_candidate(index_db, native_id="next-batch-session")
+    append_hook_event(
+        event_type="UserPromptSubmit",
+        session_id="old-session",
+        provider="codex",
+        timestamp="2026-05-07T12:00:00Z",
+        event_id="late-paste-event",
+        payload={"session_id": "old-session", "prompt": "Inspect [Pasted text #1]"},
+        root=tmp_path / "hooks",
+    )
+    acquire_hook_carriers(tmp_path)
+    original = CursorStore.apply_convergence_debt_batch
+    if debt_write_fails:
+
+        def refuse_paste_debt(self: CursorStore, entries: Any) -> None:
+            selected = tuple(entries)
+            if any(write.stage == "hook_paste_enrichment" for entry in selected for write in entry.writes):
+                raise RuntimeError("synthetic ops publication refusal")
+            original(self, selected)
+
+        monkeypatch.setattr(CursorStore, "apply_convergence_debt_batch", refuse_paste_debt)
+        with pytest.raises(AssertionError, match="hook carriers will not materialize"):
+            materialize_hook_carriers(tmp_path)
+        with sqlite3.connect(source_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (0,)
+        monkeypatch.setattr(CursorStore, "apply_convergence_debt_batch", original)
+
+    assert materialize_hook_carriers(tmp_path) == 1
+    # Reopen the scheduling store as after a restart following carrier commit.
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        subjects = conn.execute(
+            "SELECT target_id FROM convergence_debt WHERE stage = 'hook_paste_enrichment' AND target_type = 'session_id'"
+        ).fetchall()
+    assert subjects == [("codex-session:old-session",)]
+    assert (
+        hook_paste_enrichment.enrich_paste_from_hooks(
+            tmp_path / "ops.db",
+            session_ids=["codex-session:next-batch-session"],
+        )
+        == 0
+    )
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT SUM(has_paste) FROM messages").fetchone() == (0,)
+    stage = make_hook_paste_enrichment_stage(tmp_path / "ops.db")
+    assert stage.execute_sessions is not None
+    lease = ActiveWriterLease(tmp_path)
+    lease.acquire()
+    try:
+        assert stage.execute_sessions([subject for (subject,) in subjects]) is True
+    finally:
+        lease.close()
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id, paste_count FROM sessions ORDER BY native_id").fetchall() == [
+            ("next-batch-session", 0),
+            ("old-session", 1),
+        ]

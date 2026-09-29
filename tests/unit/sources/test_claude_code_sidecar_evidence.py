@@ -11,6 +11,8 @@ reproduces exactly that silent-loss bug.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from polylogue.core.enums import BranchType, SessionKind, TitleSource
 from polylogue.sources.dispatch import merge_parsed_session_chunks
 from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
@@ -912,8 +914,8 @@ def test_started_record_pairs_a_dispatch_with_no_result() -> None:
 def test_relocated_record_corrects_the_session_working_directory() -> None:
     """The provider's own cwd correction reaches the working-directory set.
 
-    Anti-vacuity: drop the ``acc.cwds.add`` in the ``relocated`` branch and
-    ``working_directories`` keeps only the stale original.
+    Anti-vacuity: drop the ``relocated_cwds`` append in the ``relocated``
+    branch and ``working_directories`` keeps only the stale original.
     """
     parsed = parse_code(
         [
@@ -931,6 +933,83 @@ def test_relocated_record_corrects_the_session_working_directory() -> None:
     assert parsed.working_directories == ["/work/moved", "/work/original"]
     events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [("claude_session_relocated", {"relocated_cwd": "/work/moved", "summary": "/work/moved"})]
+
+
+def _cwd_record(uuid: str, cwd: str) -> dict[str, object]:
+    return {
+        "type": "user",
+        "uuid": uuid,
+        "sessionId": "sess-moved",
+        "cwd": cwd,
+        "message": {"role": "user", "content": uuid},
+    }
+
+
+def test_relocated_cwd_leads_working_directories_over_stale_and_later_paths() -> None:
+    """The relocated cwd comes first even where sorting would put it last.
+
+    Anti-vacuity: sort every cwd together and ``/a/original`` (then
+    ``/b/later``) sorts ahead of ``/z/moved``, so resume opens the stale path.
+    """
+    parsed = parse_code(
+        [
+            _cwd_record("u1", "/a/original"),
+            {"type": "relocated", "sessionId": "sess-moved", "relocatedCwd": "/y/first-move"},
+            {"type": "relocated", "sessionId": "sess-moved", "relocatedCwd": "/z/moved"},
+            _cwd_record("u2", "/b/later"),
+            _cwd_record("u3", "/a/original"),
+        ],
+        "sess-moved",
+    )
+
+    assert parsed.working_directories == ["/z/moved", "/y/first-move", "/a/original", "/b/later"]
+
+
+def test_chunk_merge_keeps_the_relocated_cwd_first_across_revisions() -> None:
+    """Replay composes a base revision with its tails through the chunk merge.
+
+    Anti-vacuity: a sorted union of the chunks' directories puts
+    ``/a/original`` back in front, whichever chunk carried the relocation.
+    """
+    base = parse_code([_cwd_record("u1", "/a/original")], "sess-moved")
+    relocating_tail = parse_code(
+        [
+            {"type": "relocated", "sessionId": "sess-moved", "relocatedCwd": "/z/moved"},
+            _cwd_record("u2", "/z/moved"),
+        ],
+        "sess-moved",
+    )
+    stale_tail = parse_code([_cwd_record("u3", "/a/original")], "sess-moved")
+
+    [relocated] = merge_parsed_session_chunks([base, relocating_tail])
+    [later] = merge_parsed_session_chunks([relocated, stale_tail])
+
+    assert relocated.working_directories == ["/z/moved", "/a/original"]
+    assert later.working_directories == ["/z/moved", "/a/original"]
+
+
+def test_resume_route_opens_the_relocated_cwd_after_persistence(tmp_path: Path) -> None:
+    """The stored order is the one ``continue`` resumes in."""
+    from polylogue.archive.hydration import archive_envelope_to_session
+    from polylogue.archive.resume_routing import route_resume
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    parsed = parse_code(
+        [
+            _cwd_record("u1", "/a/original"),
+            {"type": "relocated", "sessionId": "sess-moved", "relocatedCwd": "/z/moved"},
+        ],
+        "sess-moved",
+    )
+    with ArchiveStore(tmp_path / "archive") as archive:
+        session_id = write_index_session(archive, parsed)
+        session = archive_envelope_to_session(archive.read_session(session_id))
+
+    route = route_resume(session)
+
+    assert session.working_directories == ("/z/moved", "/a/original")
+    assert route.cwd == "/z/moved"
 
 
 def test_worktree_state_record_persists_session_topology() -> None:
