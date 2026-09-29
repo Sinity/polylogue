@@ -251,7 +251,27 @@
     },
     "self-inspection": {
       "facts": {
-      "capability_declaration_count": 58,
+        "read_view_ids": [
+          "agent-policies",
+          "chronicle",
+          "context",
+          "context-image",
+          "correlation",
+          "dialogue",
+          "effective_context",
+          "events",
+          "file-edits",
+          "hooks",
+          "lineage",
+          "messages",
+          "neighbors",
+          "raw",
+          "summary",
+          "temporal",
+          "topology",
+          "transcript",
+          "web-content"
+        ],
         "selected_units": [
           "assertion"
         ],
@@ -260,7 +280,7 @@
       "required_evidence_refs": [],
       "source_refs": [
         "source:polylogue/archive/query/expression.py",
-        "source:polylogue/archive/query/capability_catalog.py"
+        "source:polylogue/archive/viewport/profiles.py"
       ]
     }
   },

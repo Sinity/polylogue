@@ -1652,6 +1652,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                             "subject": subject,
                             **page,
                             "read_views": list(session_list_projection_names()),
+                            "read_view_profiles": await hooks.get_polylogue().list_read_view_profiles(),
                         }
                     )
                 )
