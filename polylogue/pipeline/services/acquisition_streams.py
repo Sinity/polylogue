@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from functools import partial
 from itertools import islice
 from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument
+from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.sources.parsers.base import RawSessionData
@@ -211,12 +213,25 @@ async def iter_raw_record_stream(
             progress_callback=progress_callback,
         )
 
+    # One acquisition time per container pass: retained replay ranks a path's
+    # observations by acquisition time and, within one pass, binds the first
+    # member in central-directory order as live assembly does. A per-record
+    # clock would order duplicate members of one ZIP by read time instead.
+    container_pass: tuple[str, str] | None = None
     async for raw_data in raw_stream:
         if not raw_data.raw_bytes and not raw_data.blob_hash:
             continue
         raw_source_path = raw_data.source_path
+        acquired_at: str | None = None
+        container = split_zip_member_text(raw_source_path) if raw_data.addressing_mode is not None else None
+        if container is not None:
+            if container_pass is None or container_pass[0] != container[0]:
+                container_pass = (container[0], datetime.now(UTC).isoformat())
+            acquired_at = container_pass[1]
         try:
-            record = make_raw_record(raw_data, source.name, blob_root=blob_root, blob_store=blob_store)
+            record = make_raw_record(
+                raw_data, source.name, blob_root=blob_root, blob_store=blob_store, acquired_at=acquired_at
+            )
             if blob_store is not None and raw_data.raw_bytes:
                 from polylogue.storage.blob_publication import flush_blob_publications
 

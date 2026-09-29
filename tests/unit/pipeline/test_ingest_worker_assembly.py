@@ -820,3 +820,42 @@ async def test_retained_zip_sidecar_binds_the_member_live_assembly_binds(blob_st
     _write_chatgpt_zip(zip_path, ["reexported.png"])
     await _acquire_evidence(archive_root, source, [zip_path])
     assert _resolved_library_names(archive_root, zip_path) == ("reexported.png", "reexported.png")
+
+
+@pytest.mark.asyncio
+async def test_source_walk_stamps_one_acquisition_time_per_zip_pass(tmp_path: Path) -> None:
+    """Every member of one ZIP pass carries the pass's acquisition time.
+
+    Retained replay ranks a path's observations by acquisition time and binds
+    the lowest member ordinal within one time, so duplicate members of one
+    export must not be ordered by the moment each happened to be read.
+
+    Anti-vacuity: stamp each record with its own clock in
+    ``iter_raw_record_stream`` and the two ``library_files.json`` members get
+    different acquisition times.
+    """
+    from polylogue.config import Source
+    from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
+
+    root = tmp_path / "inbox"
+    root.mkdir()
+    first_zip = root / "chatgpt-export.zip"
+    second_zip = root / "chatgpt-export-later.zip"
+    _write_chatgpt_zip(first_zip, ["first.png", "second.png"])
+    _write_chatgpt_zip(second_zip, ["later.png"])
+
+    records = [
+        record
+        async for record in iter_raw_record_stream(
+            Source(name="chatgpt", path=root), blob_store=BlobStore(tmp_path / "archive" / "blob")
+        )
+    ]
+
+    by_container: dict[str, set[str | None]] = {}
+    for record in records:
+        container = record.source_path.split(".zip:", 1)[0]
+        by_container.setdefault(container, set()).add(record.acquired_at)
+    first_members = [record for record in records if record.source_path.startswith(f"{first_zip}:")]
+    assert len([record for record in first_members if record.source_path.endswith("library_files.json")]) == 2
+    assert all(len(times) == 1 for times in by_container.values()), by_container
+    assert len(by_container) == 2
