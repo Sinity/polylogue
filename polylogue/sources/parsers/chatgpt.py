@@ -1782,10 +1782,13 @@ def _collect_message_entries(
         if tool_call_input is None and tool_target is not None:
             if tool_args not in (None, [], {}, ""):
                 tool_call_input = {"args": tool_args}
-            elif role is Role.ASSISTANT and content.get("content_type", "text") == "text":
-                # A tool addressed with no arguments (``computer.initialize``
-                # with ``args: {}`` or none) is still a call: lowering it to
-                # TEXT left its result node with nothing to pair with.
+            elif tool_command is not None and role is Role.ASSISTANT and content.get("content_type", "text") == "text":
+                # ``metadata.command`` states the call outright, so a command
+                # with no arguments (``computer.initialize`` with ``args: {}``
+                # or none) is still a call: lowering it to TEXT left its
+                # result node with nothing to pair with. A bare ``recipient``
+                # does not: prose addressed to a tool (an image caption)
+                # stays text unless it parses as the call's JSON input.
                 tool_call_input = {}
 
         # Build structured content blocks
