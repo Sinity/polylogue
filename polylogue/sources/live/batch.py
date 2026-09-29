@@ -2528,6 +2528,7 @@ class LiveBatchProcessor:
             byte_size=byte_size,
             captured_content_hash=captured_content_hash,
             captured_file_observation=captured_file_observation,
+            captured_observed_at_ns=captured_observed_at_ns,
         )
         bytes_read += final_prefix_proof.bytes_read
         if final_prefix_proof.outcome == "deferred":

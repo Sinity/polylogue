@@ -10010,7 +10010,7 @@ def test_full_cursor_reuses_a_settled_unchanged_capture_observation(
     margin = live_batch._SETTLED_OBSERVATION_MARGIN_NS
     observed_at_ns = captured_stat.st_ctime_ns + (margin + 1 if settled else margin // 2)
 
-    read_bytes = processor._record_full_cursor(
+    processor._record_full_cursor(
         path,
         raw_fingerprint=sha256(captured).hexdigest(),
         raw_byte_size=len(captured),
@@ -10025,8 +10025,8 @@ def test_full_cursor_reuses_a_settled_unchanged_capture_observation(
     assert record is not None
     assert record.byte_offset == len(captured)
     assert record.content_fingerprint == sha256(captured).hexdigest()
-    assert read_bytes == (0 if settled else len(captured))
-    assert hashed == ([] if settled else [len(captured)])
+    # The racy case proves the prefix before and after deriving the cursor.
+    assert hashed == ([] if settled else [len(captured), len(captured)])
 
 
 def test_settled_observation_does_not_hide_a_same_size_rewrite(tmp_path: Path) -> None:

@@ -164,8 +164,14 @@ def _logical_table_digests(path: Path, *, tables: tuple[str, ...] | None = None)
     return {table: digest.hexdigest() for table, digest in table_digests.items()}
 
 
+#: Write-history state, not archive product: each relation's query-frame
+#: epoch counts the writes that touched it, so two routes to the same rows
+#: (per-session writes versus one shard copy) finish with different epochs.
+_WRITE_HISTORY_TABLES = frozenset({"query_unit_frame_state"})
+
+
 def _stable_finished_table_digests(path: Path) -> dict[str, str]:
-    """Digest archive rows, excluding FTS5 implementation tables."""
+    """Digest archive rows, excluding FTS5 implementation tables and write-history epochs."""
     with sqlite3.connect(path) as conn:
         tables = tuple(
             str(name)
@@ -174,6 +180,7 @@ def _stable_finished_table_digests(path: Path) -> dict[str, str]:
             )
             if not str(sql).lstrip().upper().startswith("CREATE VIRTUAL TABLE")
             and not str(name).startswith("messages_fts_")
+            and str(name) not in _WRITE_HISTORY_TABLES
         )
     return _logical_table_digests(path, tables=tables)
 
