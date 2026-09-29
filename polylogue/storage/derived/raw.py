@@ -1249,6 +1249,11 @@ class RawObservationDerivation:
                     pipeline_decode=False,
                     use_session_shards=replacement.prepared_inputs is not None,
                     bulk_fts=True,
+                    # One publication is one component of a pass: each
+                    # replayed session proves its own FTS rows, and the
+                    # archive-wide audit belongs to the daemon's
+                    # fts_readiness_binding stage after the burst.
+                    exact_fts_audit=False,
                 )
             except RetainedPreparationRetryableError:
                 return False

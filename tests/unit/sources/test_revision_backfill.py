@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import ItemsView, Iterator
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
@@ -3016,6 +3016,77 @@ def test_chain_inherits_only_its_interior_members(monkeypatch: pytest.MonkeyPatc
     assert _census_facts(tmp_path, raw_ids[0])[0] is None
     for inherited in raw_ids[2:-1]:
         assert _census_facts(tmp_path, inherited) == ("codex-session:chain", "byte_proven", ("codex-session:chain",))
+
+
+def _independent_growing_chains(root: Path, *, chains: int, turns: int) -> dict[str, list[str]]:
+    """``chains`` rollout files, each re-captured while it grows, oldest capture first."""
+    bootstrap_archive_root(root)
+    raw_ids: dict[str, list[str]] = {}
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for chain in range(chains):
+            session = f"chain-{chain}"
+            payload = b'{"type":"session_meta","payload":{"id":"%s","timestamp":"2026-07-01T00:00:00Z"}}\n' % (
+                session.encode()
+            )
+            captures = [payload]
+            for index in range(turns):
+                payload = payload + _chain_turn(index)
+                captures.append(payload)
+            raw_ids[session] = [
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=capture,
+                    source_path=f"{session}.jsonl",
+                    acquired_at_ms=chain * 100 + acquired_at_ms,
+                )
+                for acquired_at_ms, capture in enumerate(captures, start=1)
+            ]
+    return raw_ids
+
+
+def test_chain_census_finds_learned_keys_without_scanning_every_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A deferred chain member's key lookup costs the same for 2 chains or 6.
+
+    Input: independently growing rollout files, each with superseded
+    byte-prefix captures. Every chain head and probe is looked up once per
+    deferred member, so a lookup that walks every learned logical key makes
+    the census quadratic in the number of files.
+
+    Wrong outcome prevented: ``provisional_full_raw_ids.items()`` scanned per
+    lookup. Anti-vacuity: restore the linear scan in the census's
+    ``bound_logical_key`` and the scan count below grows with the chain count,
+    so the two runs differ. The interior members still inherit their own
+    chain's key, which pins the reverse map's semantics.
+    """
+    original_state = revision_backfill._RevisionCensusState
+    scans: list[int] = []
+
+    class CountingKeys(dict[str, set[str]]):
+        def items(self) -> ItemsView[str, set[str]]:  # type: ignore[override]
+            scans[-1] += 1
+            return super().items()
+
+    def counting_state(*args: Any, **kwargs: Any) -> Any:
+        state = original_state(*args, **kwargs)
+        state.provisional_full_raw_ids = CountingKeys(state.provisional_full_raw_ids)
+        return state
+
+    monkeypatch.setattr(revision_backfill, "_RevisionCensusState", counting_state)
+
+    for chains in (2, 6):
+        root = tmp_path / f"chains-{chains}"
+        raw_ids = _independent_growing_chains(root, chains=chains, turns=4)
+        scans.append(0)
+        backfill_historical_revision_evidence(root, max_payload_bytes=None)
+        for session, chain in raw_ids.items():
+            key = f"codex-session:{session}"
+            assert _census_facts(root, chain[0])[0] is None
+            for inherited in chain[2:-1]:
+                assert _census_facts(root, inherited) == (key, "byte_proven", (key,))
+
+    assert scans[0] == scans[1]
 
 
 def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

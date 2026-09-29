@@ -207,6 +207,53 @@ def test_retained_replay_resolves_the_projected_state_title(tmp_path: Path) -> N
     assert enriched[0].title_source is TitleSource.ORIGIN
 
 
+def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path: Path) -> None:
+    """Publication validates an UNKNOWN raw's carrier with the provider the worker resolved.
+
+    Input: a Codex rollout retained as ``unknown-export`` for a thread with a
+    retained state title. The worker resolves the raw to Codex and seals a
+    Codex-evidence dependency digest.
+
+    Wrong outcome prevented: the publisher recomputed that digest under the
+    stored ``Provider.UNKNOWN``, the digests never matched, and every attempt
+    was refused as retryable. Anti-vacuity: validate with the descriptor's
+    provider in ``_prepared_retained_outcome`` and the final ``publish`` below
+    returns False. A real title change between preparation and publication
+    still refuses the carrier.
+    """
+    from polylogue.operations.raw_observation_derivation import (
+        make_raw_observation_derivation,
+        raw_observation_frame,
+    )
+
+    archive_root = _archive_with_retained_state_export(tmp_path)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=_rollout_bytes(),
+            source_path=str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl"),
+            acquired_at_ms=1_767_000_000_001,
+        )
+        archive.commit()
+    adapter = make_raw_observation_derivation(archive_root)
+    frame = raw_observation_frame(archive_root)
+
+    stale = adapter.compute(frame, raw_id)
+    assert stale.prepared_inputs is not None
+    artifact = stale.prepared_inputs[raw_id].prepared_artifact
+    assert artifact is not None and artifact.resolved_provider is Provider.CODEX
+    state_path = tmp_path / "state_5.sqlite"
+    state_path.unlink()
+    _write_state_db(state_path, title="Renamed thread title")
+    _record_state_export(archive_root, state_path, acquired_at_ms=1_767_000_000_002)
+    assert adapter.publish(frame, stale) is False
+
+    assert adapter.publish(frame, adapter.compute(frame, raw_id)) is True
+    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        row = index_conn.execute("SELECT title FROM sessions WHERE native_id = ?", (_THREAD_ID,)).fetchone()
+    assert row == ("Renamed thread title",)
+
+
 @pytest.mark.parametrize("initial_order", (("a", "b"), ("b", "a")))
 def test_state_projection_keeps_disjoint_roots_and_omitted_evidence(
     tmp_path: Path, initial_order: tuple[str, str]
