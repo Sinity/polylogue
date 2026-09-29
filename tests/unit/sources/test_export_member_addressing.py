@@ -147,15 +147,17 @@ def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: 
     assert entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO
 
     stored_path = f"{stored_zip}:conversations.json"
-    assert zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(stored_path, payload=expected, source_index=0),
         source_path=stored_path,
         zip_payload_cache={},
-    ) == (expected, None)
+    )
+    assert error is None
+    assert unit is not None and unit.byte_identity == _sha(expected)
 
     high_ratio_path = f"{high_ratio_zip}:conversations.json"
     cache: dict[str, tuple[MemberCandidate, ...]] = {}
-    assert zip_reacquisition_payload(
+    assert zip_reacquired_unit(
         _row(high_ratio_path, payload=expected, source_index=0),
         source_path=high_ratio_path,
         zip_payload_cache=cache,
