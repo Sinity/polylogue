@@ -959,9 +959,11 @@ def _retained_blob(archive_root: Path, raw_id: str) -> Path:
 def test_a_chain_that_does_not_reproduce_the_revision_leaves_it_unretained(tmp_path: Path, defect: str) -> None:
     """Metadata alone never proves retention: every defect keeps the revision demanded.
 
+    A quarantined tail names no predecessor, so it never joins a chain.
+
     Anti-vacuity: accept a chain by its offsets without reading the blobs and
-    the corrupt, rewritten and missing cases pass; drop the contiguity or
-    authority checks and the hole and unproven-tail cases pass.
+    the corrupt, rewritten and missing cases pass; drop the contiguity check
+    and the hole case passes, since its bytes concatenate to the revision.
     """
     capture = _CODEX_META + _codex_turn(1)
     tail = _codex_turn(2)
@@ -981,7 +983,40 @@ def test_a_chain_that_does_not_reproduce_the_revision_leaves_it_unretained(tmp_p
     if defect == "missing_blob":
         tail_blob.unlink()
 
-    with pytest.raises(ProductionBaselineError, match="unretained revision"):
+    with pytest.raises(ProductionBaselineError, match="unretained revision") as raised:
+        baseline.verify(archive_root / "source.db")
+    assert not isinstance(raised.value, ProductionBaselineReadUnavailableError)
+
+
+def test_a_retained_blob_read_fault_is_retryable_not_unretained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient read of retained bytes cannot settle the build as unretained.
+
+    Anti-vacuity: fold every blob ``OSError`` into "not proven" and verify
+    raises the permanent ``unretained revision`` refusal instead.
+    """
+    from polylogue.sources.live import production_baseline
+
+    earlier = _CODEX_META + _codex_turn(1)
+    path, baseline = _baselined_growing_file(tmp_path, earlier)
+    path.write_bytes(earlier + _codex_turn(2))
+    archive_root = tmp_path / "archive"
+    _retain_chain(archive_root, path, path.read_bytes())
+
+    class FaultingBlob:
+        def open(self, _mode: str) -> Any:
+            raise OSError(errno.EIO, "blob read failed")
+
+    class FaultingBlobStore:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def blob_path(self, _blob_hash: str) -> FaultingBlob:
+            return FaultingBlob()
+
+    monkeypatch.setattr(production_baseline, "BlobStore", FaultingBlobStore)
+    with pytest.raises(ProductionBaselineReadUnavailableError, match="retained blob"):
         baseline.verify(archive_root / "source.db")
 
 

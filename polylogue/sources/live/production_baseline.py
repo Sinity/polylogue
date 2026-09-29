@@ -324,8 +324,12 @@ def _retained_as_prefix(conn: sqlite3.Connection, blobs: BlobStore, row: SourceD
             (row.path,),
         )
     }
+    # Covers over the same blobs read the same bytes; each is hashed once.
+    blob_sequences = {tuple(member.blob_hash for member in cover) for cover in _prefix_covers(rows, size)}
+    sizes = {member.blob_hash: member.blob_size for member in rows.values()}
     return any(
-        _prefix_digest(blobs, cover, size) == row.revision for cover in sorted(_prefix_covers(rows, size), key=len)
+        _prefix_digest(blobs, tuple((blob_hash, sizes[blob_hash]) for blob_hash in sequence), size) == row.revision
+        for sequence in sorted(blob_sequences, key=len)
     )
 
 
@@ -404,14 +408,19 @@ def _prefix_covers(rows: Mapping[str, _RetainedPathRow], size: int) -> set[tuple
     return covers
 
 
-def _prefix_digest(blobs: BlobStore, cover: tuple[_RetainedPathRow, ...], size: int) -> str | None:
-    """Stream the first ``size`` bytes of ``cover``'s blobs; None when any is short or unreadable."""
+def _prefix_digest(blobs: BlobStore, cover: tuple[tuple[str, int], ...], size: int) -> str | None:
+    """Stream the first ``size`` bytes of ``cover``'s ``(blob_hash, blob_size)`` members.
+
+    None when a blob is absent, short or otherwise not the retained bytes. A
+    read fault a later read can clear is raised, typed retryable, rather than
+    reported as a revision the archive does not hold.
+    """
     digest = hashlib.sha256()
     remaining = size
-    try:
-        for member in cover:
-            take = min(member.blob_size, remaining)
-            with blobs.blob_path(member.blob_hash).open("rb") as stream:
+    for blob_hash, blob_size in cover:
+        take = min(blob_size, remaining)
+        try:
+            with blobs.blob_path(blob_hash).open("rb") as stream:
                 while take:
                     chunk = stream.read(min(1024 * 1024, take))
                     if not chunk:
@@ -419,10 +428,14 @@ def _prefix_digest(blobs: BlobStore, cover: tuple[_RetainedPathRow, ...], size: 
                     digest.update(chunk)
                     take -= len(chunk)
                     remaining -= len(chunk)
-            if not remaining:
-                break
-    except (OSError, ValueError):
-        return None
+        except OSError as exc:
+            if retryable_read_fault(exc):
+                raise ProductionBaselineReadUnavailableError(f"retained blob {blob_hash} is unreadable: {exc}") from exc
+            return None
+        except ValueError:
+            return None
+        if not remaining:
+            break
     return digest.hexdigest() if not remaining else None
 
 
