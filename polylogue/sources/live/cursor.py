@@ -562,17 +562,30 @@ class CursorStore:
         Retained raw observations are rediscovered from source membership by
         fair intake. Rewound file cursors retain acquisition's independent
         obligation to revisit an interrupted input.
+
+        The attempts stay ``running`` until the rewind has read source state.
+        A running attempt is the only record of which paths owe a rewind, so
+        marking it first and then failing the read (an expired frame, a busy
+        tier) left those cursors permanently ahead on every later startup.
         """
-        now_ms = to_epoch_ms(datetime.now(UTC), numeric_unit="milliseconds")
         interrupted_source_paths: list[str] = []
 
-        def write() -> None:
+        def read() -> None:
             with self._connect_ops() as conn:
                 rows = conn.execute(
                     "SELECT source_path, source_paths_json FROM ingest_attempts WHERE status = 'running'"
                 ).fetchall()
-                for source_path, source_paths_json in rows:
-                    interrupted_source_paths.extend(_ingest_attempt_source_paths(source_path, source_paths_json))
+            for source_path, source_paths_json in rows:
+                interrupted_source_paths.extend(_ingest_attempt_source_paths(source_path, source_paths_json))
+
+        if not best_effort_cursor_write("archive ops interrupted attempt read", read):
+            return
+        if not self._rewind_interrupted_unparsed_cursors(interrupted_source_paths):
+            return
+        now_ms = to_epoch_ms(datetime.now(UTC), numeric_unit="milliseconds")
+
+        def write() -> None:
+            with self._connect_ops() as conn:
                 conn.execute(
                     """
                     UPDATE ingest_attempts
@@ -588,9 +601,8 @@ class CursorStore:
                 conn.commit()
 
         best_effort_cursor_write("archive ops interrupted attempt recovery", write)
-        self._rewind_interrupted_unparsed_cursors(interrupted_source_paths)
 
-    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> None:
+    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> bool:
         """Reopen cursors that outran a raw row left unparsed by interruption.
 
         Full ingest admits source bytes before parsing them. If the daemon
@@ -600,15 +612,21 @@ class CursorStore:
         frontier checks and catch-up cannot treat the path as consumed.
         Decided ambiguous membership is already terminal authority and stays
         cursor-complete.
+
+        Returns true only when source state was read and every
+        rewind was written, so the caller keeps the attempts as the recovery
+        obligation otherwise. A read that keeps expiring propagates, with the
+        attempts still ``running`` for the next startup.
         """
         paths = tuple(dict.fromkeys(path for path in source_paths if path))
         if not paths:
-            return
+            return True
         source_db = self._ops_db_path.with_name("source.db")
         if not source_db.exists():
-            return
+            return True
+        unparsed: set[str] = set()
+        read_complete = True
         try:
-            unparsed: set[str] = set()
             with read_frame(source_db, tier=ArchiveTier.SOURCE, timeout_class="background-read") as frame:
                 for offset in range(0, len(paths), _INTERRUPTED_SOURCE_PATH_PAGE_SIZE):
                     page = tuple(paths[offset : offset + _INTERRUPTED_SOURCE_PATH_PAGE_SIZE])
@@ -641,9 +659,12 @@ class CursorStore:
                 "archive ops interrupted recovery: could not inspect source parse state",
                 exc_info=True,
             )
-            return
+            read_complete = False
+        if not read_complete:
+            # Not read: the attempts remain the recovery obligation.
+            return False
         if not unparsed:
-            return
+            return True
 
         def write() -> None:
             with self._connect_ops() as conn:
@@ -666,7 +687,7 @@ class CursorStore:
                         manage_transaction=False,
                     )
 
-        best_effort_cursor_write("archive ops rewind interrupted unparsed cursor", write)
+        return best_effort_cursor_write("archive ops rewind interrupted unparsed cursor", write)
 
     def _migrate_legacy_convergence_debt_stages(self) -> None:
         """Move retired stage names and subject types onto their retry routes."""

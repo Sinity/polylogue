@@ -17,6 +17,7 @@ from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
+from polylogue.sources import value_bounds
 
 logger = get_logger(__name__)
 
@@ -27,14 +28,22 @@ JsonReadable: TypeAlias = IO[bytes]
 
 
 def normalize_ijson_stdlib_numbers(value: object) -> object:
-    """Match ``json.load`` numbers while retaining only one decoded record."""
+    """Match ``json.load`` numbers while retaining only one decoded record.
+
+    Every object-streaming route passes each decoded member through here, so
+    this is also where one member's scalars meet SQLite's storable-value
+    limit (``polylogue.sources.value_bounds``).
+    """
     if isinstance(value, Decimal):
         return float(value)
-    if isinstance(value, list):
+    if isinstance(value, str):
+        value_bounds.require_storable_string(value)
+    elif isinstance(value, list):
         for index, item in enumerate(value):
             value[index] = normalize_ijson_stdlib_numbers(item)
     elif isinstance(value, dict):
         for key, item in value.items():
+            value_bounds.require_storable_string(key, kind="object key")
             value[key] = normalize_ijson_stdlib_numbers(item)
     return value
 
@@ -1147,7 +1156,13 @@ def iter_grok_export_events(
 
 
 def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:
-    """Yield complete array members; a corrupt suffix raises after its prefix."""
+    """Yield complete array members; a corrupt suffix raises after its prefix.
+
+    Members keep ijson's ``Decimal`` numbers for the bundle parsers. The
+    storable-value limit is not applied to decoded members: a field the
+    parser ignores never reaches storage, and every value that does is
+    bounded, typed, where it is written (``prepared_message_sink._write_row``).
+    """
     yield from ijson.items(handle, prefix)
 
 

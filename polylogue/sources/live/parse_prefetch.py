@@ -49,9 +49,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from polylogue.core.enums import Provider
 from polylogue.logging import WARNING, carry_context, emit, get_logger
-from polylogue.sources.assembly import enrich_live_session
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
+from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw, prepare_live_retained_raws
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
 from polylogue.sources.prepared_jsonl import VerificationCancelledError, prepare_jsonl_blob
@@ -232,7 +232,6 @@ def live_parse_worker(
                 )
             )
             sessions = parse_payload(provider, payloads, fallback_id, source_path=source_path)
-        sessions = [enrich_live_session(provider, session) for session in sessions]
         return cache_key, sessions, None
     except Exception as exc:
         return cache_key, None, exc
@@ -252,6 +251,15 @@ class LiveParsedEntry:
     shard_path: Path | None
 
 
+@dataclass(frozen=True, slots=True)
+class LiveEnrichmentEvidence:
+    """Picklable archive coordinates for worker-side retained enrichment."""
+
+    source_db_path: str
+    index_db_path: str
+    blob_root: str
+
+
 def live_parse_path_worker(
     provider_value: str,
     source_path: str,
@@ -260,9 +268,18 @@ def live_parse_path_worker(
     is_stream: bool,
     shard_directory: str,
     attempt_directory: str | None = None,
+    evidence: LiveEnrichmentEvidence | None = None,
 ) -> LivePathPreparation:
+    """Seal one live source with the same interpretation retained replay uses.
+
+    ``evidence`` names the archive's source/index databases and blob root.
+    With it, every admitted session is enriched from retained archive evidence
+    exactly as retained replay would enrich the same bytes. ``None`` is only
+    for callers with no archive (the stage then publishes parsed content).
+    """
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, jsonl_complete_prefix_path
+    from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 
     source = Path(source_path)
     provider = _detect_provider_from_path_sample(source, Provider.from_string(provider_value))
@@ -274,16 +291,74 @@ def live_parse_path_worker(
         else None
     )
     # Apply evidence filtering before sealing so publication can use the indexed sequence.
-    return prepare_jsonl_blob(
-        source_path,
-        source_path,
-        provider.value,
-        fallback_id,
-        is_stream=is_stream,
-        shard_directory=shard_directory,
-        attempt_directory=None if attempt_directory is None else Path(attempt_directory),
-        parse_prefix_size=parse_prefix_size,
-        prepare_session=lambda session: enrich_live_session(provider, session),
+    if evidence is None:
+        return prepare_jsonl_blob(
+            source_path,
+            source_path,
+            provider.value,
+            fallback_id,
+            is_stream=is_stream,
+            shard_directory=shard_directory,
+            attempt_directory=None if attempt_directory is None else Path(attempt_directory),
+            parse_prefix_size=parse_prefix_size,
+            prepare_session=lambda session: session,
+            sidecar_resolver=FilesystemSidecarResolver(),
+        )
+    from polylogue.sources.revision_backfill import open_retained_session_enricher
+
+    with open_retained_session_enricher(
+        provider,
+        source_path=source_path,
+        source_db_path=evidence.source_db_path,
+        index_db_path=evidence.index_db_path,
+        blob_root=evidence.blob_root,
+    ) as enrich:
+        # The evidence read here predates the writer's admission of this
+        # pass. The sealed digest lets the writer detect evidence that moved
+        # in between (a sidecar admitted in the same pass) and re-enrich.
+        return prepare_jsonl_blob(
+            source_path,
+            source_path,
+            provider.value,
+            fallback_id,
+            is_stream=is_stream,
+            shard_directory=shard_directory,
+            attempt_directory=None if attempt_directory is None else Path(attempt_directory),
+            parse_prefix_size=parse_prefix_size,
+            prepare_session=enrich,
+            # The live parse joins tool-output sidecars from the source tree
+            # (as ``parse_payload`` does by default); a sealed carrier without
+            # them would keep masked excerpts the live route replaces.
+            sidecar_resolver=FilesystemSidecarResolver(),
+            preparation_dependency=lambda: (
+                enrich.dependency_digest(),
+                str(Path(evidence.index_db_path).resolve()),
+            ),
+        )
+
+
+def _publication_index_path(archive_root: Path) -> Path:
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    generation = active_cold_build_generation(archive_root)
+    if generation is not None:
+        return Path(generation.generation.index_path)
+    return resolve_active_index_path(archive_root)
+
+
+def _enrichment_evidence(archive_root: Path | None) -> LiveEnrichmentEvidence | None:
+    """Worker coordinates for the index the writer will publish into.
+
+    A cold build's candidate, otherwise the active generation. The writer
+    rejects a carrier enriched elsewhere.
+    """
+    if archive_root is None:
+        return None
+    return LiveEnrichmentEvidence(
+        source_db_path=str(archive_root / "source.db"),
+        index_db_path=str(_publication_index_path(archive_root)),
+        blob_root=str(archive_root / "blob"),
     )
 
 
@@ -294,6 +369,7 @@ def live_lookahead_path_worker(
     *,
     shard_directory: str,
     attempt_directory: str | None = None,
+    evidence: LiveEnrichmentEvidence | None = None,
 ) -> LivePathPreparation:
     """Select and prepare one read-ahead path inside the executor.
 
@@ -326,6 +402,7 @@ def live_lookahead_path_worker(
         is_stream=is_stream,
         shard_directory=shard_directory,
         attempt_directory=attempt_directory,
+        evidence=evidence,
     )
 
 
@@ -492,6 +569,7 @@ class LiveParseStage:
         #: warning to show for it.
         self.shard_build_failure_count = 0
         self._path_results: dict[str, LivePathPreparation] = {}
+        self._retained_by_path: dict[str, dict[str, PreparedLiveRetainedRaw]] = {}
         self._path_futures: dict[str, Future[LivePathPreparation]] = {}
         #: Paths submitted by ``prefetch_paths`` that no warm has claimed yet,
         #: with the warm count at submission. A prefetch is a guess about what
@@ -655,13 +733,16 @@ class LiveParseStage:
                         None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
                     )
             return frozenset()
-        self._warm_until(list(candidates), cancelled=cancelled)
+        evidence = _enrichment_evidence(archive_root)
+        self._warm_until(list(candidates), cancelled=cancelled, evidence=evidence)
         if cancelled.is_set():
             self._drop_stale_speculation()
             return frozenset()
         retry = self._discard_retryable(claimed)
         if retry:
-            self._warm_until([candidate for candidate in candidates if candidate[0] in retry], cancelled=cancelled)
+            self._warm_until(
+                [candidate for candidate in candidates if candidate[0] in retry], cancelled=cancelled, evidence=evidence
+            )
         if cancelled.is_set():
             self._drop_stale_speculation()
             return frozenset()
@@ -708,7 +789,11 @@ class LiveParseStage:
         return dropped
 
     def _warm_until(
-        self, candidates: list[tuple[str, Provider, bool]], *, cancelled: threading.Event | None = None
+        self,
+        candidates: list[tuple[str, Provider, bool]],
+        *,
+        cancelled: threading.Event | None = None,
+        evidence: LiveEnrichmentEvidence | None = None,
     ) -> None:
         """Submit ``candidates`` as capacity allows and wait until each is prepared.
 
@@ -736,7 +821,7 @@ class LiveParseStage:
                 return
             # Resubmit everything without a result or a future: a reap may
             # have cancelled this warm's own work as collateral.
-            remaining = self._submit_path_candidates(list(candidates))
+            remaining = self._submit_path_candidates(list(candidates), evidence=evidence)
             selected = [future for path, future in self._path_futures.items() if path in wanted]
             if not remaining and not selected:
                 break
@@ -917,7 +1002,9 @@ class LiveParseStage:
             if result is not None:
                 result.discard()
 
-    def prefetch_paths(self, paths: Sequence[str], *, fallback_provider: Provider) -> int:
+    def prefetch_paths(
+        self, paths: Sequence[str], *, fallback_provider: Provider, archive_root: Path | None = None
+    ) -> int:
         """Start preparing paths a later ``warm_paths`` will ask for, without waiting.
 
         The writer publishes one source group (and one page) while the next
@@ -929,6 +1016,8 @@ class LiveParseStage:
         same byte budget, which charges it from submission; a path that does
         not fit is left for the warm that needs it. Results are claimed and
         verified by the ordinary ``warm_paths`` and ``pop_path`` route.
+        ``archive_root`` enriches read-ahead from the same retained evidence
+        a required warm would use, so a claimed carrier is not re-prepared.
         Returns the number of paths newly submitted.
         """
         if self._shard_directory is None or self._cleanup_blocked or self._closing:
@@ -936,9 +1025,11 @@ class LiveParseStage:
         with self._stage_lock:
             if self._closing:
                 return 0
-            return self._prefetch_paths_locked(paths, fallback_provider=fallback_provider)
+            return self._prefetch_paths_locked(paths, fallback_provider=fallback_provider, archive_root=archive_root)
 
-    def _prefetch_paths_locked(self, paths: Sequence[str], *, fallback_provider: Provider) -> int:
+    def _prefetch_paths_locked(
+        self, paths: Sequence[str], *, fallback_provider: Provider, archive_root: Path | None
+    ) -> int:
         self._stage_calls += 1
         self._collect_finished()
         submitted: list[str] = []
@@ -946,6 +1037,7 @@ class LiveParseStage:
             [(source_path, fallback_provider, False) for source_path in paths],
             speculative=True,
             submitted=submitted,
+            evidence=_enrichment_evidence(archive_root),
         )
         for source_path in submitted:
             self._speculative[source_path] = self._stage_calls
@@ -958,6 +1050,7 @@ class LiveParseStage:
         *,
         speculative: bool = False,
         submitted: list[str] | None = None,
+        evidence: LiveEnrichmentEvidence | None = None,
     ) -> list[tuple[str, Provider, bool]]:
         """Submit every candidate that fits the worker and byte budget; return the rest.
 
@@ -998,6 +1091,7 @@ class LiveParseStage:
                         Path(source_path).stem,
                         shard_directory=str(self._attempt_root),
                         attempt_directory=str(attempt_directory),
+                        **({} if evidence is None else {"evidence": evidence}),
                     )
                 else:
                     future = self._executor.submit(
@@ -1008,6 +1102,7 @@ class LiveParseStage:
                         is_stream=is_stream,
                         shard_directory=str(self._attempt_root),
                         attempt_directory=str(attempt_directory),
+                        **({} if evidence is None else {"evidence": evidence}),
                     )
             except Exception as exc:
                 if attempt_directory is not None:
@@ -1079,13 +1174,16 @@ class LiveParseStage:
                 )
             return frozenset()
 
-        def prepare_one(path: str, result: LivePathPreparation) -> tuple[LivePathPreparation, frozenset[str]]:
+        def prepare_one(
+            path: str, result: LivePathPreparation
+        ) -> tuple[LivePathPreparation, frozenset[str], dict[str, PreparedLiveRetainedRaw]]:
             # Each task owns its read transaction. Sharing one SQLite
             # connection across threads would also share its snapshot state.
             writes: list[PreparedSessionWrite] = []
             session_ids: set[str] = set()
+            retained: dict[str, PreparedLiveRetainedRaw] = {}
             if cancelled is not None and cancelled.is_set():
-                return result, frozenset()
+                return result, frozenset(), {}
             opened_snapshot = False
             try:
                 with read_snapshot(archive_root) as pinned:
@@ -1115,7 +1213,7 @@ class LiveParseStage:
                             # snapshot is installed, so stop here.
                             for partial in writes:
                                 partial.close()
-                            return result, frozenset()
+                            return result, frozenset(), {}
                         session_id = archive_session_id(
                             origin_from_provider(session.source_name).value,
                             session.provider_session_id,
@@ -1138,10 +1236,22 @@ class LiveParseStage:
                                 else None,
                             )
                         )
-                return replace(result, prepared_writes=tuple(writes)), frozenset(session_ids)
+                    if result.attempt_directory is not None:
+                        retained = prepare_live_retained_raws(
+                            archive,
+                            logical_keys=session_ids,
+                            current_raw_id=expected_raw_id,
+                            directory=result.attempt_directory / "retained",
+                            worker_executor=self._executor,
+                            index_db_path=_publication_index_path(Path(archive.archive_root)),
+                            stop=None if cancelled is None else cancelled.is_set,
+                        )
+                return replace(result, prepared_writes=tuple(writes)), frozenset(session_ids), retained
             except Exception as exc:
                 for prepared in writes:
                     prepared.close()
+                for member in retained.values():
+                    member.discard()
                 result.discard()
                 return (
                     LivePathPreparation(
@@ -1156,6 +1266,7 @@ class LiveParseStage:
                         deferred=True,
                     ),
                     frozenset(),
+                    {},
                 )
 
         # Bound reconciliation to the same path admission width as parsing.
@@ -1167,8 +1278,10 @@ class LiveParseStage:
             futures = {
                 path: executor.submit(carry_context(prepare_one), path, result) for path, result in pending.items()
             }
+            broken_pool = False
             for path, future in futures.items():
-                prepared, session_ids = future.result()
+                prepared, session_ids, retained = future.result()
+                broken_pool |= prepared.error is not None and "BrokenProcessPool" in prepared.error
                 overlaps = bool(session_ids & claimed_sessions)
                 # A held path still claims its sessions: a later path sharing
                 # any of them waits behind it, so overlap closes transitively.
@@ -1176,10 +1289,18 @@ class LiveParseStage:
                 if prepared.error is None and ((cancelled is not None and cancelled.is_set()) or overlaps):
                     for write in prepared.prepared_writes:
                         write.close()
+                    for member in retained.values():
+                        member.discard()
                     if overlaps:
                         held.add(path)
                     continue
+                for member in self._retained_by_path.pop(path, {}).values():
+                    member.discard()
                 self._path_results[path] = prepared
+                if retained:
+                    self._retained_by_path[path] = retained
+        if broken_pool:
+            self._restart_broken_process_pool()
         return frozenset(held)
 
     def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
@@ -1363,7 +1484,9 @@ class LiveParseStage:
             self._path_results[pending_path] = LivePathPreparation(None, None, None, reason, deferred=True)
             if attempt_directory is not None:
                 self._remove_attempt_directory(attempt_directory)
-        if self._cleanup_blocked:
+        if self._cleanup_blocked or self._closing:
+            # Shutdown owns the executor once it starts; a pool created now
+            # would outlive the stage and could seal carriers after cleanup.
             return
         self._executor = process_pool_executor(max_workers=self._worker_count)
 
@@ -1383,16 +1506,19 @@ class LiveParseStage:
             # Retryable worker failures may have no hash and must retain their
             # original reason.
             if result.blob_hash is not None and result.blob_hash != blob_hash:
+                self._discard_retained_path(source_path)
                 result.discard()
                 return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
             return result
         if result.blob_hash != blob_hash:
+            self._discard_retained_path(source_path)
             result.discard()
             return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
         if result.error is None:
             try:
                 result.verify_files(full=False)
             except (OSError, ValueError) as exc:
+                self._discard_retained_path(source_path)
                 result.discard()
                 return LivePathPreparation(
                     None,
@@ -1402,6 +1528,14 @@ class LiveParseStage:
                     deferred=True,
                 )
         return result
+
+    def take_retained_path(self, source_path: str) -> dict[str, PreparedLiveRetainedRaw]:
+        """Transfer sealed retained members alongside one accepted path carrier."""
+        return self._retained_by_path.pop(source_path, {})
+
+    def _discard_retained_path(self, source_path: str) -> None:
+        for member in self._retained_by_path.pop(source_path, {}).values():
+            member.discard()
 
     def resolved_path_provider(self, source_path: str) -> Provider | None:
         """Return a sealed worker's detection before durable source admission."""
@@ -1516,6 +1650,8 @@ class LiveParseStage:
         for result in self._path_results.values():
             result.discard()
         self._path_results.clear()
+        for source_path in tuple(self._retained_by_path):
+            self._discard_retained_path(source_path)
         if self._attempt_root is not None:
             try:
                 residues = tuple(self._attempt_root.iterdir())

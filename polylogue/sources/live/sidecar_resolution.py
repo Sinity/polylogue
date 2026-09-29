@@ -30,7 +30,7 @@ saw -- a file that was never acquired is absent from both.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +57,10 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.tier_access import TierRefusal, open_tier_reader
 
 logger = get_logger(__name__)
+
+#: One retained revision of a sibling transcript: blob hash, revision kind, blob
+#: size, append start and end offsets, raw id, recorded predecessor raw id.
+_RevisionRow = tuple[str, str, int, int | None, int | None, str, str | None]
 
 __all__ = [
     "FilesystemSidecarResolver",
@@ -232,41 +236,116 @@ class RetainedSidecarResolver:
     def _retained_siblings(self, conn: sqlite3.Connection, source_path: str | Path) -> tuple[SiblingTranscript, ...]:
         """Retained transcripts sharing this scope, excluding ``source_path``.
 
-        The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. An append
-        delta is a partial view of its file, so a full revision of the same
-        path is preferred when the archive holds one -- a sibling index only
-        corroborates ownership, and a partial one can only over-report debt.
+        The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. A sibling
+        that grew through append ingest is its newest full revision followed
+        by the append chain descended from it: each step is the one append
+        whose recorded predecessor is the chain's last raw and which starts
+        where the chain ends. An append of another revision, or two competing
+        steps, stops the chain rather than guess, so a superseded revision
+        never contributes tool ids. A shorter index can only over-report
+        debt, a wrong one would hide it.
         """
         path = Path(source_path)
         session_dir = path.parent.parent if path.parent.name == "subagents" else path.parent / path.stem
         root_path = session_dir.parent / f"{session_dir.name}.jsonl"
         low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
+        # Revisions are ranked by their newest durable ``raw_payload``
+        # receipt, as ``retained_assembly`` ranks currency: bytes that return
+        # to an earlier value reuse that raw row, so ``acquired_at_ms`` is its
+        # first sighting and would rank an intervening revision newest.
         rows = conn.execute(
             """
-            SELECT source_path, hex(blob_hash), revision_kind
-            FROM raw_sessions
-            WHERE source_path = ? OR (source_path >= ? AND source_path < ?)
-            ORDER BY
-                CASE WHEN revision_kind = 'append' THEN 1 ELSE 0 END,
-                blob_size DESC,
-                acquired_at_ms DESC,
-                raw_id DESC
+            SELECT r.source_path, hex(r.blob_hash), r.revision_kind, r.blob_size,
+                   r.append_start_offset, r.append_end_offset, r.raw_id, r.predecessor_raw_id
+            FROM raw_sessions AS r
+            WHERE r.source_path = ? OR (r.source_path >= ? AND r.source_path < ?)
+            ORDER BY r.source_path,
+                COALESCE((SELECT b.acquired_at_ms FROM blob_refs AS b
+                          WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
+                          ORDER BY b.acquired_at_ms DESC, b.rowid DESC LIMIT 1), r.acquired_at_ms),
+                COALESCE((SELECT b.rowid FROM blob_refs AS b
+                          WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
+                          ORDER BY b.acquired_at_ms DESC, b.rowid DESC LIMIT 1), r.rowid),
+                r.raw_id
             """,
             (root_path.as_posix(), low, high),
         ).fetchall()
         own = path.as_posix()
-        chosen: dict[str, str] = {}
-        for candidate_path, blob_hash, _revision_kind in rows:
+        revisions: dict[str, list[_RevisionRow]] = {}
+        for (
+            candidate_path,
+            blob_hash,
+            revision_kind,
+            blob_size,
+            append_start,
+            append_end,
+            raw_id,
+            predecessor_raw_id,
+        ) in rows:
             candidate = str(candidate_path)
             if candidate == own:
                 continue
             if candidate != root_path.as_posix() and not candidate.endswith(".jsonl"):
                 continue
-            chosen.setdefault(candidate, str(blob_hash).lower())
-        return tuple(
-            SiblingTranscript(coordinate=candidate, open_records=self._records_from_blob(blob_hash))
-            for candidate, blob_hash in sorted(chosen.items())
-        )
+            revisions.setdefault(candidate, []).append(
+                (
+                    str(blob_hash).lower(),
+                    str(revision_kind),
+                    int(blob_size or 0),
+                    int(append_start) if append_start is not None else None,
+                    int(append_end) if append_end is not None else None,
+                    str(raw_id),
+                    str(predecessor_raw_id) if predecessor_raw_id is not None else None,
+                )
+            )
+        siblings: list[SiblingTranscript] = []
+        for candidate, candidate_rows in sorted(revisions.items()):
+            fulls = [row for row in candidate_rows if row[1] != "append"]
+            if not fulls:
+                # Only deltas retained: the largest is the best partial view.
+                largest = max(candidate_rows, key=lambda row: row[2])
+                siblings.append(
+                    SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs([largest[0]]))
+                )
+                continue
+            baseline = fulls[-1]
+            blob_hashes = [baseline[0]]
+            end = baseline[2]
+            last_raw_id = baseline[5]
+            # Rows are in receipt order. A step must be admitted after the
+            # selected baseline and after the previous step: a historical
+            # append of the same revision (``A -> A+X -> B -> A``) predates
+            # the current ``A`` and is not part of it.
+            last_position = max(index for index, row in enumerate(candidate_rows) if row is baseline)
+            # Appends indexed by recorded predecessor, so each step reads only
+            # the rows naming the chain's last raw: a file grown through
+            # thousands of appends is walked in linear time.
+            appends_by_predecessor: dict[str, list[tuple[int, _RevisionRow]]] = {}
+            for index, row in enumerate(candidate_rows):
+                if row[1] == "append" and row[3] is not None and row[6] is not None:
+                    appends_by_predecessor.setdefault(row[6], []).append((index, row))
+            while True:
+                steps = [
+                    (index, row)
+                    for index, row in appends_by_predecessor.get(last_raw_id, ())
+                    if index > last_position and row[3] == end and row[4] is not None and row[4] > end
+                ]
+                if len(steps) != 1:
+                    break
+                last_position, step = steps[0]
+                blob_hashes.append(step[0])
+                assert step[4] is not None
+                end = step[4]
+                last_raw_id = step[5]
+            siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
+        return tuple(siblings)
+
+    def _records_from_blobs(self, blob_hashes: list[str]) -> Callable[[], Iterator[object]]:
+        def open_records() -> Iterator[object]:
+            for blob_hash in blob_hashes:
+                yield from self._records_from_blob(blob_hash)()
+
+        return open_records
 
     def _blob_path(self, blob_hash: str) -> Path:
         """Locate retained bytes in the archive this resolver was given.
@@ -295,7 +374,7 @@ class RetainedSidecarResolver:
 
         return read
 
-    def _records_from_blob(self, blob_hash: str):  # type: ignore[no-untyped-def]
+    def _records_from_blob(self, blob_hash: str) -> Callable[[], Iterator[object]]:
         def open_records() -> Iterator[object]:
             with self._blob_path(blob_hash).open("rb") as handle:
                 yield from iter_jsonl_records(lambda: iter(handle))

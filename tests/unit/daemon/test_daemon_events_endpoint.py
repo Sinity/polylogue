@@ -106,6 +106,20 @@ def empty_events_db(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPa
     return events_path
 
 
+@pytest.fixture
+def live_batch_archive(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An isolated archive whose ``ops.db`` ledger the daemon's batch emitter names.
+
+    The daemon passes its own archive root to ``_emit_live_batch_event``;
+    readers here resolve the same ledger.
+    """
+    from polylogue.daemon import events as events_mod
+
+    archive_root = workspace_env["archive_root"]
+    monkeypatch.setattr(events_mod, "_events_db_path", lambda: archive_root / "ops.db")
+    return archive_root
+
+
 class TestEventsPollFallback:
     """``GET /api/events?poll=1`` returns JSON envelopes for ETag-style polling."""
 
@@ -614,7 +628,7 @@ class TestLiveBatchEventFanOut:
     fails here even without a full live-ingest fixture.
     """
 
-    def test_batch_with_new_and_updated_sessions_emits_scoped_events(self, empty_events_db: Path) -> None:
+    def test_batch_with_new_and_updated_sessions_emits_scoped_events(self, live_batch_archive: Path) -> None:
         from polylogue.daemon.cli import _emit_live_batch_event
         from polylogue.daemon.events import query_daemon_events
 
@@ -626,6 +640,7 @@ class TestLiveBatchEventFanOut:
                 "new_sessions": [{"source_name": "codex", "session_id": "codex:new-1"}],
                 "updated_sessions": [{"source_name": "claude-code", "session_id": "claude-code:existing-1"}],
             },
+            archive_root_path=live_batch_archive,
         )
         events = query_daemon_events(limit=10)
         by_kind: dict[str, list[dict[str, object]]] = {}
@@ -648,7 +663,7 @@ class TestLiveBatchEventFanOut:
         assert message_session_ids == {"codex:new-1", "claude-code:existing-1"}
         assert None not in message_session_ids
 
-    def test_batch_touching_only_session_b_never_names_session_a(self, empty_events_db: Path) -> None:
+    def test_batch_touching_only_session_b_never_names_session_a(self, live_batch_archive: Path) -> None:
         """The exact regression the bead describes: session A must be unaffected."""
         from polylogue.daemon.cli import _emit_live_batch_event
         from polylogue.daemon.events import query_daemon_events
@@ -661,6 +676,7 @@ class TestLiveBatchEventFanOut:
                 "new_sessions": [],
                 "updated_sessions": [{"source_name": "codex", "session_id": "codex:session-b"}],
             },
+            archive_root_path=live_batch_archive,
         )
         events = query_daemon_events(limit=10)
         seen_session_ids = {
@@ -671,7 +687,7 @@ class TestLiveBatchEventFanOut:
         assert seen_session_ids == {"codex:session-b"}
         assert "codex:session-a" not in seen_session_ids
 
-    def test_batch_without_resolved_identity_falls_back_to_unscoped_aggregate(self, empty_events_db: Path) -> None:
+    def test_batch_without_resolved_identity_falls_back_to_unscoped_aggregate(self, live_batch_archive: Path) -> None:
         """No source path yet threads identity through -- preserve the old signal."""
         from polylogue.daemon.cli import _emit_live_batch_event
         from polylogue.daemon.events import query_daemon_events
@@ -679,6 +695,7 @@ class TestLiveBatchEventFanOut:
         _emit_live_batch_event(
             "ingestion_batch",
             {"succeeded_file_count": 1, "failed_file_count": 0},
+            archive_root_path=live_batch_archive,
         )
         events = query_daemon_events(limit=10)
         kinds = {cast("str", event["kind"]) for event in events}
@@ -688,7 +705,7 @@ class TestLiveBatchEventFanOut:
                 assert cast("dict[str, object]", event["payload"])["session_id"] is None
 
     def test_batch_and_its_session_events_land_in_one_ledger_transaction(
-        self, empty_events_db: Path, monkeypatch: pytest.MonkeyPatch
+        self, live_batch_archive: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Anti-vacuity: emitting each fanned-out event on its own opens the
         ledger once per event (five here) instead of once for the batch."""
@@ -713,6 +730,7 @@ class TestLiveBatchEventFanOut:
                     {"source_name": "codex", "session_id": "codex:b"},
                 ],
             },
+            archive_root_path=live_batch_archive,
         )
         assert len(opened) == 1
         kinds = [cast("str", event["kind"]) for event in reversed(events_module.query_daemon_events(limit=10))]
@@ -724,11 +742,15 @@ class TestLiveBatchEventFanOut:
             "message.appended",
         ]
 
-    def test_zero_succeeded_batch_emits_no_granular_events(self, empty_events_db: Path) -> None:
+    def test_zero_succeeded_batch_emits_no_granular_events(self, live_batch_archive: Path) -> None:
         from polylogue.daemon.cli import _emit_live_batch_event
         from polylogue.daemon.events import query_daemon_events
 
-        _emit_live_batch_event("ingestion_batch", {"succeeded_file_count": 0, "failed_file_count": 3})
+        _emit_live_batch_event(
+            "ingestion_batch",
+            {"succeeded_file_count": 0, "failed_file_count": 3},
+            archive_root_path=live_batch_archive,
+        )
         events = query_daemon_events(limit=10)
         assert {cast("str", event["kind"]) for event in events} == {"ingestion_batch"}
 

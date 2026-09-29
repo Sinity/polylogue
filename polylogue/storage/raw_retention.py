@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.core.sqlite_introspection import column_exists as _column_exists
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -185,9 +186,9 @@ def _active_index_raw_authority(
     if not index_db_path.is_file():
         raise RawRetentionSafetyError(f"index tier is unavailable: {index_db_path}")
     try:
-        uri = f"{index_db_path.resolve().as_uri()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
-            conn.execute("PRAGMA query_only = ON")
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with closing(open_readonly_connection(index_db_path.resolve(), timeout_class="background-read")) as conn:
             if raw_ids is None:
                 session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
             else:
@@ -204,7 +205,7 @@ def _active_index_raw_authority(
                 eligible_rows = _index_rows_for_logical_source_keys(
                     conn, _INDEX_RETENTION_ELIGIBLE_SQL, logical_source_keys
                 )
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, SchemaSkew) as exc:
         raise RawRetentionSafetyError(f"index tier raw authority is unreadable: {exc}") from exc
     session_raw_ids = frozenset(str(row[0]) for row in session_rows if row[0] is not None and str(row[0]))
     heads = tuple(
@@ -2164,9 +2165,9 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, _OpsCursorAuthority
     if not ops_db_path.is_file():
         raise RawRetentionSafetyError(f"ops tier is unavailable: {ops_db_path}")
     try:
-        uri = f"{ops_db_path.resolve().as_uri()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
-            conn.execute("PRAGMA query_only = ON")
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with closing(open_readonly_connection(ops_db_path.resolve(), timeout_class="background-read")) as conn:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'ingest_cursor'"
             ).fetchone()
@@ -2182,7 +2183,7 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, _OpsCursorAuthority
                 WHERE COALESCE(excluded, 0) = 0 AND byte_offset IS NOT NULL
                 """,
             ).fetchall()
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, SchemaSkew) as exc:
         raise RawRetentionSafetyError(f"ops tier raw cursor authority is unreadable: {exc}") from exc
     return {
         str(row[0]): _OpsCursorAuthority(

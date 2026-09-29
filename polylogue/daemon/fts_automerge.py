@@ -120,7 +120,7 @@ def run_periodic_fts_merge_sync(db: Path) -> None:
     try:
         from polylogue.storage.sqlite.connection_profile import open_connection
 
-        conn = open_connection(db, timeout=5.0)
+        conn = open_connection(db, timeout=5.0, archive_root=db.parent)
         # Converge the tuning first: on a wiped archive the index did not
         # exist at daemon startup, so this pass is the only thing that will
         # ever take the surfaces off FTS5's default automerge=8.

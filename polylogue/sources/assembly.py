@@ -121,17 +121,6 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
     return None
 
 
-def enrich_live_session(provider: Provider, session: ParsedSession) -> ParsedSession:
-    """Apply provider assembly without sidecars, as every live parse path must.
-
-    Live ingest parses records directly rather than through the emitter. The
-    in-hold parse, the prefetch worker and the off-writer path preparation all
-    call this, so their sessions (and the hashes prepared from them) agree.
-    """
-    assembly = get_assembly_spec(provider)
-    return session if assembly is None else assembly.enrich_session(session, {})
-
-
 __all__ = [
     "ClaudeCodeHistoryPasteIndex",
     "ClaudeCodeSessionIndex",
@@ -139,7 +128,6 @@ __all__ = [
     "CodexThreadNames",
     "ProviderAssemblySpec",
     "SidecarData",
-    "enrich_live_session",
     "_ChatGPTSidecarData",
     "_CodexSidecarData",
     "_ClaudeCodeSidecarData",

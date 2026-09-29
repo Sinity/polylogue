@@ -216,7 +216,8 @@ class SqliteVecRuntimeMixin:
         if self._snapshot_connection is not None:
             return self._snapshot_connection
         self._assert_lifecycle_binding()
-        conn = open_connection(self.db_path.resolve(strict=False))
+        db = self.db_path.resolve(strict=False)
+        conn = open_connection(db, archive_root=db.parent)
         conn.row_factory = sqlite3.Row
 
         if getattr(self, "_legacy_compatibility", False):
