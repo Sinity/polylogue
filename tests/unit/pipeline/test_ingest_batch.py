@@ -3342,7 +3342,6 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
         ingest_workers: int | None,
         measure_ingest_result_size: bool,
         force_write: bool,
-        repair_message_fts: bool,
         ingest_result_chunk_size: int,
         suspend_fts_triggers: bool,
     ) -> _IngestBatchSummary:
@@ -3357,7 +3356,6 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
                 "ingest_workers": ingest_workers,
                 "measure_ingest_result_size": measure_ingest_result_size,
                 "force_write": force_write,
-                "repair_message_fts": repair_message_fts,
                 "ingest_result_chunk_size": ingest_result_chunk_size,
                 "suspend_fts_triggers": suspend_fts_triggers,
             }
