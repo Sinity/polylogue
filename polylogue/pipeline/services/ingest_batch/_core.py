@@ -1190,10 +1190,7 @@ def _drive_structural_growth_predecessor(
     """
     # Import lazily: this classifier is only needed for this Drive-specific
     # lineage branch, so it stays out of the batch module's import graph and
-    # off the ingest-worker entry point's startup cost.  (The import cycle the
-    # comment here used to name does not exist: sources/live/__init__.py is
-    # fully lazy and sources/live/admission.py references neither
-    # batch_support nor ingest_batch.)
+    # off the ingest-worker entry point's startup cost.
     from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
 
     new_row = source_conn.execute(
