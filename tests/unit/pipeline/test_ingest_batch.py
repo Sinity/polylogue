@@ -5069,3 +5069,156 @@ def test_a_skipped_excised_raw_keeps_its_refusal_reason() -> None:
     update = _skipped_raw_state_update(outcome=outcome, parsed_at="2026-01-01T00:00:00Z", validation_mode="advisory")  # type: ignore[arg-type]
 
     assert str(update.validation_error).startswith("content_excised")
+
+
+def test_publication_payloads_carry_no_excised_sidecar_text(tmp_path: Path) -> None:
+    """A Sinex payload is encoded from the session with excised sidecars redacted.
+
+    Anti-vacuity (Codex P1, #5696): encode ``cdata.parsed_session`` before the
+    write's redaction and the staged payload carries the excised tool output.
+    """
+    from polylogue.pipeline.services.ingest_batch._core import _prepare_publication_payloads
+    from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+
+    full_text = "excised sidecar output bound for sinex " * 200
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
+    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
+    kept = "kept sidecar output " * 200
+    excised = _excised_sidecar_session("claude-code-session:sidecar-published", full_text)
+    clean = _excised_sidecar_session("claude-code-session:sidecar-clean", kept)
+    ir = IngestRecordResult(raw_id="raw-published", sessions=[excised, clean])
+
+    with sqlite3.connect(source_db) as source_conn:
+        payloads = _prepare_publication_payloads(
+            ir,
+            summary=_IngestBatchSummary(),
+            publication_mode=PublicationMode.MIRROR,
+            blob_publisher=publisher,
+            source_conn=source_conn,
+        )
+
+    staged = b"".join(segment for payload in payloads for _name, segment in payload.segments)
+    assert len(payloads) == 2
+    assert full_text.encode("utf-8") not in staged
+    assert kept.encode("utf-8") in staged
+
+
+def test_a_refused_sidecar_session_hands_its_receipts_to_the_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blobs a refused session already published are handed over for consumption.
+
+    Anti-vacuity (Codex P2, #5696): raise the excision refusal before the
+    receipts reach ``pending_attachment_receipts`` and the attachment's
+    reservation is never consumed, keeping its blob GC-live.
+    """
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    full_text = "excised sidecar beside an attachment " * 200
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
+    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
+    session_id = "claude-code-session:sidecar-with-attachment"
+    sidecar = _excised_sidecar_session(session_id, full_text)
+    attachment = b"attachment bytes that published fine"
+    session = _session_data(
+        session_id,
+        content_hash=f"{session_id}-hash",
+        provider=Provider.CLAUDE_CODE,
+        message_tuples=[
+            _message_tuple(
+                "msg-1",
+                session_id,
+                role="assistant",
+                text="ran a command",
+                content_hash=f"{session_id}-msg-hash",
+                sort_key=1777636900.0,
+            )
+        ],
+        block_tuples=[
+            (
+                "msg-1",
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT, outcome_unknown_reason="not_reported", tool_id="toolu_1", text=full_text
+                ),
+            )
+        ],
+        action_tuples=[_sidecar_matched_event("toolu_1")],
+        attachment_tuples=[_attachment_tuple("att-1", inline_bytes=attachment)],
+        attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "msg-1")],
+    )
+    assert sidecar.session_id == session.session_id
+    monkeypatch.setattr(ingest_batch_core, "_sidecars_redactable", lambda *_args: False)
+    pending: list[tuple[str, bytes]] = []
+
+    with (
+        open_connection(tmp_path / "index.db") as conn,
+        sqlite3.connect(source_db) as source_conn,
+        pytest.raises(ContentExcisedError),
+    ):
+        _write_session(
+            conn, session, blob_publisher=publisher, source_conn=source_conn, pending_attachment_receipts=pending
+        )
+
+    assert sha256(attachment).digest() in {blob_hash for _receipt, blob_hash in pending}
+
+
+def test_a_grouped_raw_with_one_excised_session_still_records_its_written_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raw whose other session wrote is not settled as skipped.
+
+    Anti-vacuity (Codex P2, #5696): mark the raw skipped at the first
+    excision refusal and its written sibling's raw is durably recorded as a
+    ``content_excised`` skip.
+    """
+    from polylogue.core.enums import IngestOutcome
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-grouped",
+        source_name="codex",
+        source_path="/sources/grouped.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+
+    def session(name: str) -> Any:
+        session_id = f"codex-session:{name}"
+        return _session_data(
+            session_id,
+            content_hash=name,
+            raw_id=raw_record.raw_id,
+            message_tuples=[
+                _message_tuple(f"msg-{name}", session_id, role="assistant", text=name, content_hash=name, sort_key=1.0)
+            ],
+        )
+
+    refused, written = session("refused"), session("written")
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[refused, written]),
+    )
+    real_write = ingest_batch_core._write_session
+
+    def refuse_one(conn: sqlite3.Connection, payload: Any, **kwargs: Any) -> Any:
+        if payload.session_id == refused.session_id:
+            raise ContentExcisedError(blob_hash=bytes(32), source_path="sidecar:excised")
+        return real_write(conn, payload, **kwargs)
+
+    monkeypatch.setattr(ingest_batch_core, "_write_session", refuse_one)
+    summary = _process_ingest_batch_sync(
+        [raw_record],
+        db_path=archive_root / "index.db",
+        archive_root_str=str(archive_root),
+        blob_root_str=str(archive_root / "blob"),
+        validation_mode="advisory",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    assert summary.excised_skips == 1
+    assert raw_record.raw_id not in summary.skipped_raw_ids
+    assert summary.outcomes[raw_record.raw_id].outcome_code != IngestOutcome.VALIDATION_REJECTED.value

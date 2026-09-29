@@ -684,7 +684,7 @@ _EXCISED_SIDECAR_TEXT = "[sidecar content excised; publication refused]"
 
 def _drop_refused_sidecar_blob_hashes(
     session_to_write: ParsedSession,
-    blob_publisher: ArchiveBlobPublisher,
+    blob_publisher: ArchiveBlobPublisher | None,
     *,
     source_conn: sqlite3.Connection | None = None,
     redactable: bool = True,
@@ -712,7 +712,7 @@ def _drop_refused_sidecar_blob_hashes(
     """
 
     def refused(blob_hash: str) -> bool:
-        if publication_refused(blob_publisher, blob_hash):
+        if blob_publisher is not None and publication_refused(blob_publisher, blob_hash):
             return True
         if source_conn is None:
             return False
@@ -768,6 +768,53 @@ def _drop_refused_sidecar_blob_hashes(
     return session_to_write.model_copy(update={"session_events": updated_events, "messages": updated_messages})
 
 
+def _sidecars_redactable(payload: SessionWritePayload, session: ParsedSession) -> bool:
+    """Whether refused sidecar text in *session* can be rewritten in place."""
+    return payload.prepared_write is None and not isinstance(session.messages, SqliteMessageSink)
+
+
+def _publishable_sessions(
+    ir: IngestRecordResult,
+    *,
+    blob_publisher: ArchiveBlobPublisher | None,
+    source_conn: sqlite3.Connection | None,
+) -> list[tuple[SessionWritePayload, ParsedSession]]:
+    """Each session of *ir* as it may leave the archive, excised sidecars removed.
+
+    Publication encodes a session before its index write, so the write's
+    redaction comes too late for it: the excision ledger decides here, and a
+    session whose excised text cannot be redacted is not published at all
+    (its write is refused the same way).
+    """
+    publishable: list[tuple[SessionWritePayload, ParsedSession]] = []
+    for cdata in ir.sessions:
+        session = cdata.parsed_session
+        texts = _replaced_sidecar_texts(session) if blob_publisher is not None or source_conn is not None else {}
+        if texts:
+            # The write names each sidecar by the hash of its bytes; name
+            # them the same way here, without publishing, to ask the ledger.
+            hashed = _with_sidecar_blob_hashes(
+                session,
+                {
+                    tool_use_id: hashlib.sha256(_sidecar_blob_bytes(text)).hexdigest()
+                    for tool_use_id, text in texts.items()
+                },
+            )
+            try:
+                redacted = _drop_refused_sidecar_blob_hashes(
+                    hashed,
+                    blob_publisher,
+                    source_conn=source_conn,
+                    redactable=_sidecars_redactable(cdata, session),
+                )
+            except ContentExcisedError:
+                continue
+            if redacted is not hashed:
+                session = redacted
+        publishable.append((cdata, session))
+    return publishable
+
+
 def _preacquire_sidecar_blobs(
     session_to_write: ParsedSession,
     blob_publisher: ArchiveBlobPublisher,
@@ -802,33 +849,14 @@ def _preacquire_sidecar_blobs(
     Returns the queued ``(blob_hash, size, already_present)`` entries; the
     caller counts them only after the flush, which may refuse excised bytes.
     """
-    matched_tool_use_ids = {
-        tool_use_id
-        for event in session_to_write.session_events
-        if event.event_type in _SIDECAR_EVENT_TYPES
-        and event.payload.get("acquisition_status") == "matched"
-        and event.payload.get("content_replaced")
-        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
-    }
-    if not matched_tool_use_ids:
-        return session_to_write, []
-
-    text_by_tool_use_id: dict[str, str] = {
-        block.tool_id: block.text
-        for message in session_to_write.messages
-        for block in message.blocks
-        if block.type is BlockType.TOOL_RESULT
-        and block.tool_id is not None
-        and block.tool_id in matched_tool_use_ids
-        and block.text is not None
-    }
+    text_by_tool_use_id = _replaced_sidecar_texts(session_to_write)
     if not text_by_tool_use_id:
         return session_to_write, []
 
     blob_hash_by_tool_use_id: dict[str, str] = {}
     queued: list[tuple[str, int, bool]] = []
     for tool_use_id, text in text_by_tool_use_id.items():
-        encoded = unicodedata.normalize("NFC", text).encode("utf-8")
+        encoded = _sidecar_blob_bytes(text)
         precomputed_hash = hashlib.sha256(encoded).hexdigest()
         already_present = blob_publisher.exists(precomputed_hash)
         hash_hex, size = blob_publisher.write_from_bytes(encoded)
@@ -838,15 +866,46 @@ def _preacquire_sidecar_blobs(
         if receipt_id is not None:
             publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
 
+    return _with_sidecar_blob_hashes(session_to_write, blob_hash_by_tool_use_id), queued
+
+
+def _replaced_sidecar_texts(session: ParsedSession) -> dict[str, str]:
+    """The full text of each matched sidecar that replaced its block's preview."""
+    matched_tool_use_ids = {
+        tool_use_id
+        for event in session.session_events
+        if event.event_type in _SIDECAR_EVENT_TYPES
+        and event.payload.get("acquisition_status") == "matched"
+        and event.payload.get("content_replaced")
+        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
+    }
+    if not matched_tool_use_ids:
+        return {}
+    return {
+        block.tool_id: block.text
+        for message in session.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT
+        and block.tool_id is not None
+        and block.tool_id in matched_tool_use_ids
+        and block.text is not None
+    }
+
+
+def _sidecar_blob_bytes(text: str) -> bytes:
+    return unicodedata.normalize("NFC", text).encode("utf-8")
+
+
+def _with_sidecar_blob_hashes(session: ParsedSession, blob_hash_by_tool_use_id: Mapping[str, str]) -> ParsedSession:
     updated_events = [
         event.model_copy(update={"payload": {**event.payload, "blob_hash": blob_hash_by_tool_use_id[tool_use_id]}})
         if event.event_type in _SIDECAR_EVENT_TYPES
         and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
         and tool_use_id in blob_hash_by_tool_use_id
         else event
-        for event in session_to_write.session_events
+        for event in session.session_events
     ]
-    return session_to_write.model_copy(update={"session_events": updated_events}), queued
+    return session.model_copy(update={"session_events": updated_events})
 
 
 def _sidecar_blob_counts(queued: list[tuple[str, int, bool]], blob_publisher: ArchiveBlobPublisher) -> dict[str, int]:
@@ -1528,12 +1587,20 @@ def _write_session(
         )
         blob_publisher.flush()
         counts.update(_sidecar_blob_counts(queued_sidecar_blobs, blob_publisher))
-        session_to_write = _drop_refused_sidecar_blob_hashes(
-            session_to_write,
-            blob_publisher,
-            source_conn=source_conn,
-            redactable=payload.prepared_write is None and not isinstance(session_to_write.messages, SqliteMessageSink),
-        )
+        try:
+            session_to_write = _drop_refused_sidecar_blob_hashes(
+                session_to_write,
+                blob_publisher,
+                source_conn=source_conn,
+                redactable=_sidecars_redactable(payload, session_to_write),
+            )
+        except ContentExcisedError:
+            # The attachment and sidecar blobs this session already published
+            # hold reservations; hand them to the batch's post-commit
+            # consumption so a refused session leaves none GC-live.
+            if pending_attachment_receipts is not None:
+                pending_attachment_receipts.extend(publication_receipts)
+            raise
     for attachment in session_to_write.attachments:
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
@@ -1997,15 +2064,9 @@ def _write_session_entry(
             error_detail=str(exc)[:512],
         )
         summary.excised_skips += 1
-        summary.skipped_raw_ids.add(raw_id)
-        outcome = summary.outcomes.get(raw_id)
-        if outcome is not None:
-            summary.outcomes[raw_id] = replace(
-                outcome,
-                outcome_code=IngestOutcome.VALIDATION_REJECTED.value,
-                retryable=False,
-                diagnostic=f"content_excised: {exc}"[:500],
-            )
+        # The raw is classified once all its sessions have drained: a grouped
+        # raw whose sibling session still writes is not a skipped raw.
+        summary.excised_raw_diagnostics.setdefault(raw_id, f"content_excised: {exc}"[:500])
         return False
     except Exception as exc:
         # A storage fault fails every session alike; recording it as this
@@ -2443,6 +2504,8 @@ def _prepare_publication_payloads(
     *,
     summary: _IngestBatchSummary,
     publication_mode: PublicationMode = PublicationMode.OFF,
+    blob_publisher: ArchiveBlobPublisher | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> tuple[PublicationPayload, ...]:
     """Encode one raw record before any of its index rows are written.
 
@@ -2455,10 +2518,10 @@ def _prepare_publication_payloads(
         return ()
     payloads: list[PublicationPayload] = []
     payload_bytes = 0
-    for cdata in ir.sessions:
+    for cdata, session in _publishable_sessions(ir, blob_publisher=blob_publisher, source_conn=source_conn):
         remaining_bytes = _SINEX_STAGED_PAYLOAD_LIMIT_BYTES - summary.publication_payload_bytes - payload_bytes
         payload = encode_parsed_session_publication(
-            cdata.parsed_session,
+            session,
             session_id=cdata.session_id,
             max_payload_bytes=remaining_bytes,
         )
@@ -2514,6 +2577,8 @@ def _drain_ingest_result(
             ir,
             summary=summary,
             publication_mode=publication_mode,
+            blob_publisher=blob_publisher,
+            source_conn=source_conn,
         )
     except PublicationEncodingError as exc:
         logger.error(
@@ -2571,8 +2636,17 @@ def _drain_ingest_result(
             fresh_build_batch=fresh_build_batch,
             drive_plans=drive_plans,
         )
+    excised_diagnostic = summary.excised_raw_diagnostics.pop(ir.raw_id, None)
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
+        outcome = summary.outcomes.get(ir.raw_id)
+        if excised_diagnostic is not None and outcome is not None:
+            summary.outcomes[ir.raw_id] = replace(
+                outcome,
+                outcome_code=IngestOutcome.VALIDATION_REJECTED.value,
+                retryable=False,
+                diagnostic=excised_diagnostic,
+            )
     # Keep the reconciled payload for both changed and duplicate revisions.
     # The source-tier raw acceptance transaction restages duplicates
     # idempotently, which also provides a safe backfill path when an operator

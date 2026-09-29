@@ -92,6 +92,10 @@ class _IngestBatchSummary:
     failed_raw_ids: dict[str, str] = field(default_factory=dict)
     #: Sessions refused because they carry content the operator excised.
     excised_skips: int = 0
+    #: The excision diagnostic of each raw with a session refused for excised
+    #: content, held until every session of that raw has drained: a sibling
+    #: session that still writes leaves the raw an ordinary success.
+    excised_raw_diagnostics: dict[str, str] = field(default_factory=dict)
     skipped_raw_ids: set[str] = field(default_factory=set)
     processed_ids: set[str] = field(default_factory=set)
     changed_session_ids: list[str] = field(default_factory=list)
