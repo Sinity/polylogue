@@ -15,6 +15,22 @@ from polylogue.rendering.semantic_card_models import (
     TranscriptProse,
 )
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _printable(text: str) -> str:
+    """Escape lone surrogates, which no UTF-8 destination can write.
+
+    The archive keeps them exact (provider JSON admits them); this rendering
+    boundary shows each as its ``\\uXXXX`` escape so a session holding one is
+    still displayable. A decoded Python string holds only unpaired surrogates.
+    """
+    return (
+        text
+        if text.isascii() or _LONE_SURROGATE.search(text) is None
+        else _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", text)
+    )
+
 
 def render_semantic_transcript_markdown(transcript: SemanticTranscript) -> str:
     """Render one ordered semantic transcript without reclassification."""
@@ -29,7 +45,7 @@ def render_semantic_transcript_markdown(transcript: SemanticTranscript) -> str:
             rendered.append(_render_notice(entry.notice))
     if not rendered:
         return ""
-    return "\n\n---\n\n".join(rendered).rstrip() + "\n"
+    return _printable("\n\n---\n\n".join(rendered).rstrip() + "\n")
 
 
 def render_semantic_card_markdown(card: SemanticCard) -> str:
@@ -88,7 +104,7 @@ def render_semantic_card_markdown(card: SemanticCard) -> str:
 def render_semantic_cards_markdown(cards: Iterable[SemanticCard]) -> str:
     """Render cards without prose for compatibility fallback surfaces."""
 
-    return "\n\n---\n\n".join(render_semantic_card_markdown(card) for card in cards)
+    return _printable("\n\n---\n\n".join(render_semantic_card_markdown(card) for card in cards))
 
 
 def _render_prose(prose: TranscriptProse) -> str:

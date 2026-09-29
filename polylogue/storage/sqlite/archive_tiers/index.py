@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.archive.topology.edge import topology_status_composes_sql, topology_status_excluded_sql
+from polylogue.core.tool_identity import sql_coalesced_json_extract
 from polylogue.storage.derived.session.input_binding import (
     SESSION_ATTACHMENT_PROJECTION_COLUMNS,
     SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS,
@@ -590,6 +591,10 @@ def _profile_demand_sql(session_id: str) -> str:
 # DDL/schema identity requires the normal daemon reconvergence before a
 # generation is served.
 INDEX_SCHEMA_VERSION = 1
+
+#: The surrogate-safe projection the tool columns use: a lone-surrogate
+#: escape in ``tool_input.model`` must not materialize invalid UTF-8.
+_REQUESTED_MODEL_SQL = sql_coalesced_json_extract("a.tool_input", ("model",))
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
@@ -2005,7 +2010,7 @@ WITH dispatch_actions AS (
         a.is_error                             AS result_is_error,
         a.exit_code                            AS result_exit_code,
         m.model_name                           AS dispatch_turn_model,
-        json_extract(a.tool_input, '$.model')  AS requested_model
+        {_REQUESTED_MODEL_SQL}  AS requested_model
     FROM actions a
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'

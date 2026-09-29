@@ -18,6 +18,7 @@ from polylogue.archive.query.transaction import (
     archive_snapshot_epoch,
     validate_continuation_epoch,
 )
+from polylogue.core.tool_identity import sql_coalesced_json_extract
 from polylogue.operations.session_contracts import (
     Coverage,
     RawContent,
@@ -40,6 +41,9 @@ from polylogue.operations.session_contracts import (
     SessionTimeline,
     TimelineEvent,
 )
+
+_EVENT_SUMMARY_SQL = sql_coalesced_json_extract("e.payload_json", ("summary",))
+_EVENT_TEXT_ONLY_SQL = sql_coalesced_json_extract("e.payload_json", ("text",))
 
 PagedRequest = TypeVar("PagedRequest", SessionList, SessionSearch, SessionRead, SessionTimeline)
 
@@ -246,7 +250,8 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
 
     def read(archive: Any) -> SessionPage[TimelineEvent]:
         framed = _frame(archive, tx)
-        scope = """WITH events AS (
+        scope = (
+            """WITH events AS (
             SELECT 'message:' || m.message_id AS reference, m.session_id, s.origin,
                    'message' AS kind, m.role AS event_type, m.occurred_at_ms AS timestamp_ms,
                    NULL AS event_id, m.message_id,
@@ -258,6 +263,8 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
                    -- polylogue-kc8eq retired the stored ``summary`` column as a
                    -- write-time render of the payload. Preserve its Python
                    -- truthiness fallback before rendering the timeline text.
+                   -- The rendered value keeps a stored lone-surrogate escape
+                   -- spelled out; bare json_extract would yield invalid UTF-8.
                    CASE
                      WHEN json_type(e.payload_json, '$.summary') IS NULL
                        OR json_type(e.payload_json, '$.summary') = 'null'
@@ -276,12 +283,17 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
                          OR (json_type(e.payload_json, '$.text') IN ('array', 'object')
                              AND NOT EXISTS (SELECT 1 FROM json_each(e.payload_json, '$.text')))
                        THEN ''
-                       ELSE json_extract(e.payload_json, '$.text')
+                       ELSE """
+            + _EVENT_TEXT_ONLY_SQL
+            + """
                      END
-                     ELSE json_extract(e.payload_json, '$.summary')
+                     ELSE """
+            + _EVENT_SUMMARY_SQL
+            + """
                    END
             FROM session_events e JOIN sessions s ON s.session_id=e.session_id
         ) """
+        )
         where = "WHERE (? IS NULL OR origin=?) AND (? IS NULL OR instr(lower(text), lower(?))>0)"
         origin = request.origin.value if request.origin is not None else None
         params: tuple[object, ...] = (origin, origin, request.expression, request.expression)

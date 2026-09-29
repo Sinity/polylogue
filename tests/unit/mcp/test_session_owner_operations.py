@@ -659,3 +659,34 @@ async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw
         )
         assert raw.model_dump()["items"]
     assert [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths] == before
+
+
+@pytest.mark.asyncio
+async def test_timeline_reads_a_lone_surrogate_event_summary(tmp_path: Path) -> None:
+    """A session event whose summary keeps a lone surrogate stays readable.
+
+    Anti-vacuity: extract ``payload_json.summary`` with bare ``json_extract``
+    again and the timeline read raises ``Could not decode to UTF-8``.
+    """
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="surrogate-event",
+                title="Surrogate event",
+                messages=[],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="compaction",
+                        timestamp="2026-01-01T12:00:00Z",
+                        payload={"summary": "kept \ud800 text"},
+                    )
+                ],
+            ),
+        )
+    async with Polylogue(archive_root=root) as api:
+        timeline = await execute_session_operation(api, SessionTimeline(limit=5))
+
+    assert [item.text for item in timeline.items] == ["kept \\ud800 text"]
