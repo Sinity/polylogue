@@ -63,6 +63,26 @@ BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision a
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v5"
 
 
+def raw_receipt_order_sql(table_alias: str = "r") -> str:
+    """SQL expression ranking a raw by its latest ``raw_payload`` receipt.
+
+    Currency among raws is decided by durable receipt order: ``blob_refs``
+    re-records a raw's payload receipt on every observation (``INSERT OR
+    REPLACE``), so the receipt's ``rowid`` is a monotonic observation
+    sequence. ``raw_sessions.acquired_at_ms`` is the first time the bytes were
+    seen, and a live source that goes A -> B -> A re-mints A's content-derived
+    raw id, so ordering by it keeps B current; ordering by a receipt's wall
+    clock breaks on a clock rollback. The source tier is never ``VACUUM``-ed,
+    which is what keeps this implicit ``rowid`` stable; a migration that
+    rebuilds ``blob_refs`` must copy ``rowid`` explicitly. A raw with no
+    receipt yields NULL and ranks oldest under ``DESC``.
+    """
+    return f"""(
+        SELECT MAX(receipt.rowid) FROM blob_refs AS receipt
+        WHERE receipt.ref_id = {table_alias}.raw_id AND receipt.ref_type = 'raw_payload'
+    )"""
+
+
 def decided_unresolved_membership_sql(table_alias: str = "r") -> str:
     """SQL predicate for a raw whose membership arbitration concluded unresolved.
 

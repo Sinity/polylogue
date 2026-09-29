@@ -231,3 +231,26 @@ def test_title_read_propagates_an_interrupted_read(index_conn: sqlite3.Connectio
     index_conn.set_progress_handler(lambda: 1, 1)
     with pytest.raises(sqlite3.OperationalError, match="interrupted"):
         read_thread_titles(index_conn, thread_ids=["parent-thread"])
+
+
+def test_a_later_receipt_wins_even_when_its_clock_rolled_back(index_conn: sqlite3.Connection) -> None:
+    """A -> B -> A after a wall-clock rollback: A's second receipt is newer by
+    receipt order although its stamp is older than B's. Anti-vacuity: rank by
+    ``observed_at_ms`` first and B's title stays current."""
+    _write(index_conn, raw_id="raw-b", blob_hash="blob-b", observed_at_ms=300, observation_order=2)
+
+    assert (
+        _write(
+            index_conn,
+            threads=[ThreadRecord("parent-thread", "Returned title", 1_000)],
+            raw_id="raw-a",
+            blob_hash="blob-a",
+            observed_at_ms=250,
+            observation_order=3,
+        )
+        is True
+    )
+    assert read_thread_titles(index_conn) == {"parent-thread": "Returned title"}
+    provenance = read_provenance(index_conn)
+    assert provenance is not None
+    assert (provenance.raw_id, provenance.observation_order) == ("raw-a", 3)

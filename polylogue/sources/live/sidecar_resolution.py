@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.logging import get_logger
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     resolve_tool_outputs_dir,
@@ -209,11 +210,11 @@ class RetainedSidecarResolver:
         prefix = f"{directory.as_posix()}/"
         low, high = _prefix_range(prefix)
         rows = conn.execute(
-            """
+            f"""
             SELECT source_path, hex(blob_hash), blob_size, file_mtime_ms
             FROM raw_sessions
             WHERE source_path >= ? AND source_path < ?
-            ORDER BY acquired_at_ms DESC, raw_id DESC
+            ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
             """,
             (low, high),
         ).fetchall()
@@ -254,18 +255,13 @@ class RetainedSidecarResolver:
         # to an earlier value reuse that raw row, so ``acquired_at_ms`` is its
         # first sighting and would rank an intervening revision newest.
         rows = conn.execute(
-            """
+            f"""
             SELECT r.source_path, hex(r.blob_hash), r.revision_kind, r.blob_size,
                    r.append_start_offset, r.append_end_offset, r.raw_id, r.predecessor_raw_id
             FROM raw_sessions AS r
             WHERE r.source_path = ? OR (r.source_path >= ? AND r.source_path < ?)
             ORDER BY r.source_path,
-                COALESCE((SELECT b.acquired_at_ms FROM blob_refs AS b
-                          WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
-                          ORDER BY b.acquired_at_ms DESC, b.rowid DESC LIMIT 1), r.acquired_at_ms),
-                COALESCE((SELECT b.rowid FROM blob_refs AS b
-                          WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
-                          ORDER BY b.acquired_at_ms DESC, b.rowid DESC LIMIT 1), r.rowid),
+                {raw_receipt_order_sql("r")},
                 r.raw_id
             """,
             (root_path.as_posix(), low, high),

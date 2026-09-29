@@ -36,6 +36,7 @@ from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
     is_work_event_raw_id,
     logical_head_cohort_sql,
+    raw_receipt_order_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.raw_coordinates import zip_member_coordinate
@@ -556,7 +557,7 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
                     OVER (PARTITION BY r.origin, {cohort_expr}) AS any_indexed,
                 ROW_NUMBER() OVER (
                     PARTITION BY r.origin, {cohort_expr}
-                    ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                    ORDER BY {raw_receipt_order_sql("r")} DESC, r.raw_id DESC
                 ) AS rn
             FROM raw_sessions r
             {blocked_join}

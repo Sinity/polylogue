@@ -15,7 +15,7 @@ from ijson.common import ObjectBuilder
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
-from polylogue.archive.revision_authority import logical_head_cohort_sql
+from polylogue.archive.revision_authority import logical_head_cohort_sql, raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, JSONValue, require_json_value
 from polylogue.core.provider_identity import (
@@ -339,7 +339,7 @@ def _iter_schema_units_from_db(
                         validated_at_ms, validation_status,
                         ROW_NUMBER() OVER (
                             PARTITION BY {effective_origin}, {logical_cohort_expr}
-                            ORDER BY acquired_at_ms DESC, raw_id DESC
+                            ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
                         ) AS rn
                     FROM raw_sessions
                     WHERE {effective_origin} IN ({placeholders})

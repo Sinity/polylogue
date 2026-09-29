@@ -3089,14 +3089,20 @@ def raw_revision_observed_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -
 
 
 def raw_revision_observation_order(store: RawRevisionGovernanceHost, raw_id: str) -> tuple[int, int]:
-    """Return the latest observation timestamp and its durable receipt order."""
+    """Return the latest observation's timestamp and its durable receipt order.
+
+    The latest observation is the newest ``raw_payload`` receipt by its
+    monotonic insertion order (``rowid``), never by its wall-clock stamp: a
+    clock rollback between two observations must not reorder them. Callers
+    order by the second element; the timestamp is reported, not ranked.
+    """
     conn = store._ensure_source_conn()
     row = conn.execute(
         """
         SELECT acquired_at_ms, rowid
         FROM blob_refs
         WHERE ref_id = ? AND ref_type = 'raw_payload'
-        ORDER BY acquired_at_ms DESC, rowid DESC
+        ORDER BY rowid DESC
         LIMIT 1
         """,
         (raw_id,),

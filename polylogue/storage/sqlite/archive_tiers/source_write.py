@@ -1616,7 +1616,7 @@ def upsert_raw_artifact(
                     """
                     SELECT acquired_at_ms, rowid FROM blob_refs
                     WHERE ref_id = ? AND ref_type = 'raw_payload'
-                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    ORDER BY rowid DESC LIMIT 1
                     """,
                     (raw_id,),
                 ).fetchone()
@@ -1624,7 +1624,7 @@ def upsert_raw_artifact(
                     """
                     SELECT acquired_at_ms, rowid FROM blob_refs
                     WHERE ref_id = ? AND ref_type = 'raw_payload'
-                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    ORDER BY rowid DESC LIMIT 1
                     """,
                     (str(existing[1]),),
                 ).fetchone()
@@ -1648,8 +1648,9 @@ def upsert_raw_artifact(
                     raise KeyError(raw_id)
                 if existing_observation is None:
                     raise KeyError(str(existing[1]))
-                existing_order = (int(existing_observation[0]), int(existing_observation[1]))
-                incoming_order = (int(incoming_observation[0]), int(incoming_observation[1]))
+                # Receipt insertion order decides; a wall-clock stamp can roll back.
+                existing_order = int(existing_observation[1])
+                incoming_order = int(incoming_observation[1])
                 if existing_order >= incoming_order:
                     conn.execute(
                         "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",

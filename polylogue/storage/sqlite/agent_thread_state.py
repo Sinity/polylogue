@@ -113,7 +113,7 @@ def read_provenance(conn: sqlite3.Connection, *, source_scope: str | None = None
             row = conn.execute(
                 "SELECT source_evidence_ref, corpus_snapshot_ref, observed_at_ms, observation_order "
                 "FROM work_evidence_graphs WHERE graph_id LIKE ? AND source_evidence_ref IS NOT NULL "
-                "ORDER BY observed_at_ms DESC, observation_order DESC, source_evidence_ref DESC, graph_id DESC "
+                "ORDER BY observation_order DESC, source_evidence_ref DESC, graph_id DESC "
                 "LIMIT 1",
                 (f"{GRAPH_PREFIX}%",),
             ).fetchone()
@@ -160,15 +160,13 @@ def write_thread_state_graph(
     says which observation is current.
     """
     current = read_provenance(conn, source_scope=source_scope)
-    # Receipt timestamps and rowids are normally unique, but callers can
-    # legitimately replay synthetic receipts with equal ordering fields.
-    # Include the content identity as a final tie-break so equal-key replay is
-    # deterministic rather than dependent on which raw arrived first.
-    incoming_key = (observed_at_ms, observation_order, raw_id, blob_hash)
-    if (
-        current is not None
-        and (current.observed_at_ms, current.observation_order, current.raw_id, current.blob_hash) > incoming_key
-    ):
+    # The durable receipt order decides; the wall-clock stamp is reported
+    # only, because a clock rollback between observations must not reorder
+    # them. Receipt orders are normally unique, but callers can legitimately
+    # replay synthetic receipts with equal orders, so the content identity is
+    # a final tie-break that keeps equal-key replay deterministic.
+    incoming_key = (observation_order, raw_id, blob_hash)
+    if current is not None and (current.observation_order, current.raw_id, current.blob_hash) > incoming_key:
         return False
 
     graph_id = thread_state_graph_id(source_scope)
@@ -331,7 +329,7 @@ def write_thread_state_graph(
 #: before any cross-scope receipt ordering applies.
 _RECENCY = (
     "ORDER BY CASE WHEN {alias}.association_state = 'superseded' THEN 1 ELSE 0 END, "
-    "g.observed_at_ms DESC, g.observation_order DESC, g.graph_id DESC"
+    "g.observation_order DESC, g.graph_id DESC"
 )
 
 
