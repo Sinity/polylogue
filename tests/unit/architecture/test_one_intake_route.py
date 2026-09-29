@@ -54,6 +54,8 @@ RETIRED_NAMES = {
     "run_live_watcher": "the standalone watcher entry point",
     "_drain_hook_spools": "watcher hook-spool drain",
     "drain_hook_event_spool": "watcher hook-spool drain",
+    "FairAdmissionScheduler": "the unwired source-admission round-robin scheduler",
+    "AdmissionFailure": "the unwired source-admission round-robin scheduler",
 }
 
 

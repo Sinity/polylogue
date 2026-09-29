@@ -295,7 +295,8 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Codex Review Guide",
         "review/codex-review-guide.md",
-        "Hosted-reviewer finding format, severity scale, cross-cutting checks, and noise list.",
+        "Review checklist shared by Codex and authors' self-review, exhaustive-review rule, finding format, "
+        "severity scale, and noise list.",
         "operations",
     ),
     # Evidence and product

@@ -1000,7 +1000,9 @@ async def test_lookahead_reads_no_source_on_the_admission_path(tmp_path: Path) -
     submitted: list[tuple[list[str], Provider]] = []
 
     class RecordingStage:
-        def prefetch_paths(self, paths: list[str], *, fallback_provider: Provider) -> int:
+        def prefetch_paths(
+            self, paths: list[str], *, fallback_provider: Provider, archive_root: Path | None = None
+        ) -> int:
             submitted.append((list(paths), fallback_provider))
             return len(paths)
 

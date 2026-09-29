@@ -255,8 +255,10 @@ def arm_write_lease_enforcement(*, armed: bool = True, process_wide: bool = Fals
     boundary; tests and one-shot callers keep the default local scope.
     """
     global _PROCESS_ENFORCEMENT, _PROCESS_ENFORCEMENT_USERS, _PROCESS_ENFORCEMENT_SUPPRESSORS
+    # A process-wide arming is carried by the counters alone. Also saving and
+    # restoring the thread-local flag made overlapping invocations that exit
+    # out of order restore a stale ``armed=True`` and leave the thread armed.
     previous = getattr(_ENFORCEMENT, "armed", _ENFORCEMENT_DEFAULT)
-    _ENFORCEMENT.armed = armed
     if process_wide:
         with _PROCESS_ENFORCEMENT_LOCK:
             if armed:
@@ -264,11 +266,14 @@ def arm_write_lease_enforcement(*, armed: bool = True, process_wide: bool = Fals
             else:
                 _PROCESS_ENFORCEMENT_SUPPRESSORS += 1
             _PROCESS_ENFORCEMENT = _PROCESS_ENFORCEMENT_USERS > 0 and _PROCESS_ENFORCEMENT_SUPPRESSORS == 0
+    else:
+        _ENFORCEMENT.armed = armed
     try:
         yield
     finally:
-        _ENFORCEMENT.armed = previous
-        if process_wide:
+        if not process_wide:
+            _ENFORCEMENT.armed = previous
+        else:
             with _PROCESS_ENFORCEMENT_LOCK:
                 if armed:
                     _PROCESS_ENFORCEMENT_USERS -= 1
@@ -469,13 +474,13 @@ def write_lease(
         # inherited it through free-threading contextvar propagation got the
         # parent's authority simply by asking for a nested lease. Re-run the
         # same identity check every write-mode open runs.
-        require_write_lease(f"nested write lease for {actor}")
-        if (
-            archive_root is not None
-            and held.archive_root is not None
-            and Path(archive_root).resolve() != held.archive_root.resolve()
-        ):
-            raise UnleasedWriteError("nested write lease requested for a different archive root")
+        # Re-entry names no new archive: without an explicit root it is the
+        # held lease's own identity, and an explicit root must match it. Each
+        # write-mode open inside the hold still names its archive itself.
+        require_write_lease(
+            f"nested write lease for {actor}",
+            archive_root=archive_root if archive_root is not None else held.archive_root,
+        )
         if coordinator is not None and held.coordinator is not None and coordinator is not held.coordinator:
             raise UnleasedWriteError("nested write lease requested by a different coordinator")
         yield held

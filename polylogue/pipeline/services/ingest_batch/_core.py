@@ -1388,6 +1388,7 @@ def _write_session(
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         if _needs_session_fts_repair(conn, payload.session_id):
             counts[_FTS_REPAIR_COUNT_KEY] = 1
+        _bind_session_enrichment(conn, source_conn, payload)
         return False, counts
 
     if (
@@ -1512,6 +1513,8 @@ def _write_session(
         counts["skipped_attachments"] = payload.attachment_count
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         return False, counts
+    if not (writer_outcomes and writer_outcomes[0].suppression_skipped):
+        _bind_session_enrichment(conn, source_conn, payload)
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
     if attachment_owner_resolutions is not None and writer_outcomes:
@@ -1530,6 +1533,45 @@ def _write_session(
     counts["session_events"] = len(session_to_write.session_events)
 
     return True, counts
+
+
+def _bind_session_enrichment(
+    conn: sqlite3.Connection, source_conn: sqlite3.Connection | None, payload: SessionWritePayload
+) -> None:
+    """Bind this accepted session to its enrichment evidence, if still current.
+
+    The parsed session carries the key of the evidence it was enriched from
+    (stamped by the worker or retained enricher). Without a source handle, a
+    carried key, or with evidence that moved since, nothing is bound and
+    inspection re-derives the session on the retained route.
+    """
+    from polylogue.sources.revision_backfill import (
+        provider_binds_enrichment,
+        record_session_enrichment_binding,
+        session_enrichment_evidence_key,
+    )
+
+    if source_conn is None or not payload.raw_id or not provider_binds_enrichment(payload.parsed_session.source_name):
+        return
+
+    row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (payload.raw_id,)).fetchone()
+    native = conn.execute("SELECT native_id FROM sessions WHERE session_id = ?", (payload.session_id,)).fetchone()
+    main = next((entry for entry in source_conn.execute("PRAGMA database_list") if entry[1] == "main"), None)
+    if row is None or row[0] is None or native is None or main is None or not main[2]:
+        return
+    record_session_enrichment_binding(
+        conn,
+        session_id=payload.session_id,
+        carried_key=payload.parsed_session.enrichment_evidence_key,
+        current_key=session_enrichment_evidence_key(
+            provider=payload.parsed_session.source_name,
+            source_path=str(row[0]),
+            native_id=str(native[0]),
+            index_conn=conn,
+            source_conn=source_conn,
+            blob_root=Path(main[2]).parent / "blob",
+        ),
+    )
 
 
 def _refresh_session_raw_link(conn: sqlite3.Connection, session_id: str, raw_id: str | None) -> bool:

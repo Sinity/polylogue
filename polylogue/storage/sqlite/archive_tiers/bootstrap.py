@@ -1154,7 +1154,7 @@ def open_initialized_tier_connection(
             archive_root=archive_root,
         )
     else:
-        conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False)
+        conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False, archive_root=archive_root)
     try:
         stored_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version

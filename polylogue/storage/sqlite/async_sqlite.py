@@ -43,7 +43,7 @@ from polylogue.storage.sqlite.queries import (
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, ensure_schema_async
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
-from polylogue.storage.sqlite.write_lease import require_write_lease
+from polylogue.storage.sqlite.write_lease import current_write_lease, require_write_lease, write_lease_enforced
 
 
 async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements: tuple[str, ...]) -> None:
@@ -205,14 +205,27 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
         # Bootstrap itself creates writable tier files. Enforce archive
         # ownership before any directory or database mutation in constructor.
         require_write_lease(f"async backend bootstrap({backend._db_path})", archive_root=archive_root)
-    backend._db_path.parent.mkdir(parents=True, exist_ok=True)
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
     # Existing tier files do not prove format lineage; admit the root through
-    # its marker before constructing sync or async connections.
-    initialize_active_archive_root(archive_root)
-    if backend._db_path.exists():
-        backend._db_path.chmod(0o600)
+    # its marker before constructing sync or async connections. A caller with
+    # write authority admits it through the active-root bootstrap, which may
+    # also settle pending bootstrap state. A daemon-armed caller without the
+    # lease (the live batch probing ``Polylogue.backend``) may not write, so
+    # it is admitted read-only: the format-marker proof plus a validating
+    # read-only open of the index, which raises ``SchemaSkew`` for an index
+    # this runtime cannot serve, and no filesystem mutation at all.
+    if needs_bootstrap or current_write_lease() is not None or not write_lease_enforced():
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+        backend._db_path.parent.mkdir(parents=True, exist_ok=True)
+        initialize_active_archive_root(archive_root)
+        if backend._db_path.exists():
+            backend._db_path.chmod(0o600)
+    else:
+        from polylogue.storage.sqlite.archive_tiers.archive_plan import assert_archive_format_lineage
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        assert_archive_format_lineage(archive_root)
+        open_readonly_connection(backend._db_path, tier=ArchiveTier.INDEX).close()
 
     backend._write_lock = asyncio.Lock()
     backend._schema_lock = asyncio.Lock()

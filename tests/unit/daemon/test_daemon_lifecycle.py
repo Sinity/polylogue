@@ -267,3 +267,29 @@ def test_atexit_sentinel_marks_python_exit_without_claiming_a_clean_stop(
     assert status["state"] == "stopped"
     assert status["exit_kind"] == "atexit"
     assert process_heartbeat_age_seconds() is not None
+
+
+def test_lifecycle_writes_name_the_archive_their_root_bound_lease_owns(tmp_path: Path) -> None:
+    """The daemon's lifecycle row and signal marker land under its archive-bound lease.
+
+    ``polylogued run`` holds a writer lease bound to its archive root, and a
+    bound lease refuses a write that omits its archive identity. Anti-vacuity:
+    drop ``archive_root=`` from either ``open_daemon_connection`` call in
+    ``polylogue/daemon/lifecycle.py`` and this raises ``UnleasedWriteError``
+    (start) or leaves ``signal`` NULL (the best-effort signal write swallows it).
+    """
+    from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
+
+    with arm_write_lease_enforcement():
+        with write_lease("daemon.lifecycle.start", archive_root=tmp_path):
+            lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+        lifecycle.record_signal_best_effort(signal.SIGTERM)
+        with write_lease("daemon.lifecycle.stop", archive_root=tmp_path):
+            lifecycle.stop(exit_kind="signal")
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT signal, exit_kind FROM daemon_lifecycle WHERE run_id = ?",
+            (lifecycle.run_id,),
+        ).fetchone()
+    assert row == ("SIGTERM", "signal")
