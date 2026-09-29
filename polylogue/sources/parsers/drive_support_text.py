@@ -37,21 +37,35 @@ def chunk_timestamp(chunk: Mapping[str, object], default_timestamp: str | None) 
     return default_timestamp
 
 
-def select_timestamp(values: list[str | None], *, latest: bool) -> str | None:
-    candidates: list[tuple[datetime, str]] = []
-    seen: set[str] = set()
-    for value in values:
-        if not isinstance(value, str) or not value or value in seen:
-            continue
+class TimestampBounds:
+    """The earliest and latest parseable chunk timestamps, in one pass.
+
+    Equal instants keep the first spelling for the earliest bound and the
+    last *distinct* spelling for the latest, as a stable sort of the
+    deduplicated spellings would: ``Z``, ``+00:00``, ``Z`` keeps ``+00:00``.
+    Only spellings at the current latest instant are remembered, so memory
+    stays bounded by that instant's spellings.
+    """
+
+    def __init__(self) -> None:
+        self.earliest: tuple[datetime, str] | None = None
+        self.latest: tuple[datetime, str] | None = None
+        self._latest_spellings: set[str] = set()
+
+    def observe(self, value: str | None) -> None:
+        if not isinstance(value, str) or not value:
+            return
         parsed = parse_timestamp(value)
         if parsed is None:
-            continue
-        seen.add(value)
-        candidates.append((parsed, value))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0])
-    return candidates[-1][1] if latest else candidates[0][1]
+            return
+        if self.earliest is None or parsed < self.earliest[0]:
+            self.earliest = (parsed, value)
+        if self.latest is None or parsed > self.latest[0]:
+            self.latest = (parsed, value)
+            self._latest_spellings = {value}
+        elif parsed == self.latest[0] and value not in self._latest_spellings:
+            self.latest = (parsed, value)
+            self._latest_spellings.add(value)
 
 
-__all__ = ["chunk_timestamp", "extract_text_from_chunk", "select_timestamp"]
+__all__ = ["TimestampBounds", "chunk_timestamp", "extract_text_from_chunk"]

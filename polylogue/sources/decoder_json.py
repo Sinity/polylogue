@@ -12,22 +12,14 @@ from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 
 import ijson
 
+from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
+from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
-ENCODING_GUESSES: tuple[str, ...] = (
-    "utf-8",
-    "utf-8-sig",
-    "utf-16",
-    "utf-16-le",
-    "utf-16-be",
-    "utf-32",
-    "utf-32-le",
-    "utf-32-be",
-)
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = dict[str, "JsonValue"] | list["JsonValue"] | JsonScalar
@@ -117,7 +109,7 @@ def _is_json_value(value: object) -> TypeGuard[JsonValue]:
 
 def decode_json_bytes_with(logger_obj: LoggerLike, blob: bytes) -> str | None:
     """Decode a JSON payload from bytes, trying multiple encodings."""
-    for encoding in ENCODING_GUESSES:
+    for encoding in JSON_TEXT_ENCODINGS:
         try:
             decoded = blob.decode(encoding)
         except UnicodeError:
@@ -190,10 +182,10 @@ def _iter_jsonl_stream(
     pending_line_number: int | None = None
     first_decode_error_line: int | None = None
 
-    for line in handle:
+    for line in bounded_lines(handle):
         physical_line_number += 1
-        raw = line.strip()
-        if not raw:
+        raw = None if isinstance(line, OversizedRecord) else line.strip()
+        if raw is not None and not raw:
             continue
         if pending is not None:
             records, new_errors, error_line = _yield_jsonl_pending(
@@ -212,6 +204,19 @@ def _iter_jsonl_stream(
                 elif error_count == 4:
                     logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
             yield from records
+            pending = None
+        if isinstance(line, OversizedRecord):
+            # Refused by name at the record bound, never allocated.
+            error_count += 1
+            if first_decode_error_line is None:
+                first_decode_error_line = physical_line_number
+            logger_obj.warning(
+                "Skipping JSONL record of %d bytes at line %d in %s: beyond the record bound",
+                line.size,
+                physical_line_number,
+                path_name,
+            )
+            continue
         pending = raw
         pending_line_number = physical_line_number
 
@@ -239,6 +244,20 @@ def _iter_jsonl_stream(
         logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
 
 
+def _stdlib_prefixed_items(handle: JsonReadable, prefix: str) -> list[JsonValue] | None:
+    """The ``prefix`` items of the whole document as ``json.load`` reads it, or ``None``."""
+    handle.seek(0)
+    try:
+        data = json.load(handle)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if prefix == "sessions.item" and isinstance(data, dict):
+        data = data.get("sessions")
+    if prefix in {"item", "sessions.item"} and isinstance(data, list) and _is_json_value(data):
+        return cast(list[JsonValue], data)
+    return None
+
+
 def _stream_prefixed_items(
     logger_obj: LoggerLike,
     ijson_module: IjsonModuleLike,
@@ -262,6 +281,12 @@ def _stream_prefixed_items(
             # silently truncates the session set, so surface a typed error
             # instead. A JSONError with zero items found is a normal
             # "wrong prefix, try the next strategy" signal and is swallowed.
+            recovered = _stdlib_prefixed_items(handle, prefix)
+            if recovered is not None:
+                # ijson refused bytes the decoder's own ``json.load`` fallback
+                # accepts (directly encoded surrogates, NaN): the document is
+                # whole, so it is read that way instead of reported partial.
+                return (True, recovered)
             offset = _json_error_offset(exc)
             logger_obj.warning(
                 "Partial JSON stream decode of %s (strategy %s): corruption after %d record(s)%s",
@@ -279,6 +304,9 @@ def _stream_prefixed_items(
         return (found_any, records)
     except Exception as exc:
         if found_any:
+            recovered = _stdlib_prefixed_items(handle, prefix)
+            if recovered is not None:
+                return (True, recovered)
             # Same failure, and therefore the same handling as the JSONError
             # branch above: records were already recovered, so returning the
             # partial set silently truncates the session set. Only the
@@ -551,13 +579,28 @@ class _FutureTypeFrame:
     key: str | None = None
     own_types: dict[str, str | None] = field(default_factory=dict)
     first_child: str | None = None
+    # Map children keyed by their owning key: a repeated key replaces the
+    # earlier value's candidate in place, matching the decoder's
+    # last-value-wins dict (first-key position, last value).
+    child_types: dict[str, str | None] = field(default_factory=dict)
 
     def selected(self) -> str | None:
         if self.kind == "map":
             for key in ("type", "content_type", "kind", "record_type"):
                 if value := self.own_types.get(key):
                     return value
+            for candidate in self.child_types.values():
+                if candidate is not None:
+                    return candidate
+            return None
         return self.first_child
+
+    def adopt_child(self, selected: str | None) -> None:
+        """Record a closed child container's candidate under this frame."""
+        if self.kind == "map":
+            self.child_types[self.key or ""] = selected
+        elif selected is not None and self.first_child is None:
+            self.first_child = selected
 
 
 def _future_wire_type(value: object) -> str | None:
@@ -566,6 +609,154 @@ def _future_wire_type(value: object) -> str | None:
     if value.startswith(("future_", "unknown_", "unsupported_")) or value in {"future", "unknown", "unsupported"}:
         return value
     return None
+
+
+class _FirstFutureType:
+    """Select a document's future wire type in ``_unknown_wire_type`` order.
+
+    Parser admission records the first such type of one outer record. This
+    follows the same traversal over parse events, after the root map opens.
+    """
+
+    _TYPE_KEYS = frozenset({"type", "content_type", "kind", "record_type"})
+
+    def __init__(self) -> None:
+        self._frames = [_FutureTypeFrame("map")]
+        self.value: str | None = None
+
+    def observe(self, event: str, value: object) -> None:
+        frame = self._frames[-1] if self._frames else None
+        if frame is None:
+            return
+        if event == "map_key":
+            frame.key = str(value)
+        elif event in {"start_map", "start_array"}:
+            if frame.kind == "map" and frame.key in self._TYPE_KEYS:
+                frame.own_types[frame.key or ""] = None
+            self._frames.append(_FutureTypeFrame("map" if event == "start_map" else "array"))
+        elif event in {"end_map", "end_array"}:
+            selected = self._frames.pop().selected()
+            if self._frames:
+                self._frames[-1].adopt_child(selected)
+            else:
+                self.value = selected
+        elif frame.kind == "map":
+            if frame.key in self._TYPE_KEYS:
+                frame.own_types[frame.key or ""] = _future_wire_type(value) if event == "string" else None
+            frame.child_types[frame.key or ""] = None
+
+
+def _root_envelope_without(
+    handle: JsonReadable,
+    streamed: frozenset[str],
+    rerouted_root_keys: frozenset[str],
+) -> tuple[dict[str, JsonValue], dict[str, int]] | None:
+    """Build a root object without the arrays that a caller streams separately.
+
+    Returns the remaining document, how many arrays each ``streamed`` path
+    held, and, under ``__admission_future_type``, the first future wire type
+    parser admission would report. A root key in ``rerouted_root_keys``, a
+    streamed path holding a non-array, or invalid JSON refuses the document.
+    The pass reads the complete input, so a truncated suffix refuses it too.
+    """
+    builder = ijson.common.ObjectBuilder()
+    future_type = _FirstFutureType()
+    arrays = dict.fromkeys(streamed, 0)
+    # A repeated key on the way to a streamed array would make the decoder
+    # keep only its last value, while the stream would already have taken the
+    # overwritten array; such documents stay on the collecting route.
+    guarded = {".".join(path.split(".")[: depth + 1]) for path in streamed for depth in range(path.count(".") + 1)}
+    seen_guarded: set[str] = set()
+    skipped: str | None = None
+    expect_array: str | None = None
+    try:
+        events = ijson.parse(handle)
+        first = next(events, None)
+        if first != ("", "start_map", None):
+            return None
+        builder.event("start_map", None)
+        for prefix, event, value in events:
+            future_type.observe(event, value)
+            if expect_array is not None:
+                if event != "start_array":
+                    return None
+                skipped, expect_array = expect_array, None
+                continue
+            if skipped is not None:
+                if prefix == skipped and event == "end_array":
+                    skipped = None
+                continue
+            if event == "map_key":
+                path = f"{prefix}.{value}" if prefix else str(value)
+                if not prefix and path in rerouted_root_keys:
+                    return None
+                if path in guarded:
+                    if path in seen_guarded:
+                        return None
+                    seen_guarded.add(path)
+                if path in arrays:
+                    arrays[path] += 1
+                    expect_array = path
+                    continue
+            builder.event(event, value)
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    envelope = normalize_ijson_stdlib_numbers(builder.value)
+    if not isinstance(envelope, dict):
+        return None
+    if "__admission_future_type" in envelope:
+        # The streamed parsers read this key as probe metadata; a source
+        # document that carries it stays on the object parser.
+        return None
+    if future_type.value is not None:
+        envelope["__admission_future_type"] = future_type.value
+    return cast(dict[str, JsonValue], envelope), arrays
+
+
+def claude_ai_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
+    """Prove one claude.ai conversation and keep every root field but its messages.
+
+    Shapes the object parser routes elsewhere (account memories, projects,
+    browser captures, ``sessions`` wrappers) stay on that route.
+    """
+    result = _root_envelope_without(
+        handle,
+        frozenset({"chat_messages"}),
+        frozenset({"sessions", "account_uuid", "docs", "polylogue_capture_kind"}),
+    )
+    if result is None or result[1]["chat_messages"] != 1:
+        return None
+    return result[0]
+
+
+def drive_chunked_prompt_envelope(handle: JsonReadable) -> tuple[dict[str, JsonValue], str] | None:
+    """Prove one AI Studio chunked prompt and name the chunk array it streams.
+
+    Returns every document field except that array, and its ijson prefix.
+    The parser reads ``chunkedPrompt.chunks`` whenever ``chunkedPrompt`` is a
+    non-empty object, and the root ``chunks`` otherwise. Records the Drive
+    lowering sends to another parser (Gemini CLI checkpoints, message
+    objects, ChatGPT fragments, lone chunks, session wrappers, browser
+    captures) stay on that route, as does a document holding both arrays.
+    """
+    result = _root_envelope_without(
+        handle,
+        frozenset({"chunkedPrompt.chunks", "chunks"}),
+        frozenset({"sessions", "messages", "mapping", "sessionId", "role", "author", "polylogue_capture_kind"}),
+    )
+    if result is None:
+        return None
+    envelope, arrays = result
+    prompt = envelope.get("chunkedPrompt")
+    if isinstance(prompt, dict) and (prompt or arrays["chunkedPrompt.chunks"]):
+        if arrays["chunkedPrompt.chunks"] != 1 or arrays["chunks"]:
+            return None
+        return envelope, "chunkedPrompt.chunks"
+    if arrays["chunks"] != 1 or arrays["chunkedPrompt.chunks"]:
+        return None
+    return envelope, "chunks"
 
 
 def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
@@ -632,13 +823,14 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
             if event in {"end_array", "end_map"}:
                 selected = frames.pop().selected()
                 if frames:
-                    if selected is not None and frames[-1].first_child is None:
-                        frames[-1].first_child = selected
+                    frames[-1].adopt_child(selected)
                 else:
                     first_future_type = selected
                 continue
-            if frames[-1].kind == "map" and frames[-1].key in {"type", "content_type", "kind", "record_type"}:
-                frames[-1].own_types[frames[-1].key or ""] = _future_wire_type(value) if event == "string" else None
+            if frames[-1].kind == "map":
+                if frames[-1].key in {"type", "content_type", "kind", "record_type"}:
+                    frames[-1].own_types[frames[-1].key or ""] = _future_wire_type(value) if event == "string" else None
+                frames[-1].child_types[frames[-1].key or ""] = None
             if len(frames) == 1 and prefix == current_key:
                 if current_key in scalar_fields:
                     envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
@@ -675,10 +867,15 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
 def grok_export_item_count(
     handle: JsonReadable,
     *,
-    on_item: Callable[[int, bool], None] | None = None,
+    on_item: Callable[[int, bool, str | None], None] | None = None,
     on_positive_marker: Callable[[bool], None] | None = None,
 ) -> int | None:
-    """Validate a Grok object and report each member's shape without decoding it."""
+    """Validate a Grok object and report each member's shape without decoding it.
+
+    ``on_item`` also receives the member's first future wire type, which the
+    per-conversation parser admission reports; the collecting lowering admits
+    conversation members only, so a future type elsewhere carries no event.
+    """
     count = 0
     keys = 0
     arrays = 0
@@ -686,6 +883,7 @@ def grok_export_item_count(
     member_is_map = False
     member_conversation = False
     member_responses = False
+    member_future_type: _FirstFutureType | None = None
     valid_members = 0
     taxonomy_keys: set[str] = set()
     taxonomy_values: dict[str, bool] = {}
@@ -730,29 +928,21 @@ def grok_export_item_count(
     )
 
     def finish_member() -> None:
-        nonlocal valid_members
+        nonlocal valid_members, member_future_type
         valid = member_is_map and member_conversation and member_responses
         valid_members += int(valid)
+        future_type = member_future_type.value if member_future_type is not None else None
+        member_future_type = None
         if on_item is not None:
-            on_item(count - 1, valid)
+            on_item(count - 1, valid, future_type)
 
     try:
         events = ijson.parse(handle)
         if next(events, None) != ("", "start_map", None):
             return None
         for prefix, event, value in events:
-            if (
-                event == "string"
-                and prefix.rsplit(".", 1)[-1] in {"type", "content_type", "kind", "record_type"}
-                and isinstance(value, str)
-                and (
-                    value.startswith(("future_", "unknown_", "unsupported_"))
-                    or value in {"future", "unknown", "unsupported"}
-                )
-            ):
-                # The ordinary admission wrapper emits an evidence event for
-                # future wire types; retain that exact path for such exports.
-                return None
+            if member_future_type is not None:
+                member_future_type.observe(event, value)
             if prefix == "" and event == "map_key":
                 root_field_count = min(root_field_count + 1, 17)
                 if value in {"sessions", "polylogue_capture_kind"}:
@@ -809,6 +999,7 @@ def grok_export_item_count(
                 count += 1
                 member_keys.clear()
                 member_is_map = event == "start_map"
+                member_future_type = _FirstFutureType() if member_is_map else None
                 member_conversation = False
                 member_responses = False
                 if event not in {"start_map", "start_array"}:
@@ -961,7 +1152,6 @@ def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[J
 
 
 __all__ = [
-    "ENCODING_GUESSES",
     "IjsonModuleLike",
     "JsonlDecodeError",
     "JsonReadable",

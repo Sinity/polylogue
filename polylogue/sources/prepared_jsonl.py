@@ -26,8 +26,11 @@ from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
     _json_subtree,
+    _root_envelope_without,
     _skip_json_subtree,
+    claude_ai_object_envelope,
     claude_design_object_envelope,
+    drive_chunked_prompt_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
     hermes_snapshot_envelope,
@@ -48,7 +51,9 @@ from polylogue.sources.dispatch import (
 from polylogue.sources.parsers import (
     browser_capture,
     chatgpt,
+    drive,
     grok,
+    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -56,9 +61,11 @@ from polylogue.sources.parsers import (
 )
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.base_support import _unknown_wire_type
-from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
+from polylogue.sources.parsers.claude.ai_parser import parse_ai_stream, parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
+    ClaudeAttachmentScratch,
+    ClaudeChatEvidence,
     GeminiToolOutputIndex,
     SqliteAttachmentSink,
     SqliteMessageSink,
@@ -194,6 +201,30 @@ class PreparedFileSeal:
     @property
     def identity(self) -> tuple[int, int, int, int, int]:
         return self.device, self.inode, self.size, self.mtime_ns, self.ctime_ns
+
+
+def _hermes_atif_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], bool] | None:
+    """Prove one Hermes ATIF trajectory and report whether it has subagents.
+
+    Hermes lowering tries ATOF event lists, state and verification exports
+    before ATIF, so documents those detectors claim stay on that route. ATIF
+    lowering has no admission ledger, so no future wire type is carried.
+    """
+    result = _root_envelope_without(handle, frozenset({"steps", "subagent_trajectories"}), frozenset({"atof_version"}))
+    if result is None:
+        return None
+    envelope, arrays = result
+    envelope.pop("__admission_future_type", None)
+    if arrays["steps"] != 1 or arrays["subagent_trajectories"] > 1:
+        return None
+    witness: dict[str, JSONValue] = {**envelope, "steps": []}
+    if (
+        not hermes_spans.looks_like_atif_payload(witness)
+        or hermes_state.looks_like_state_db_payload(witness)
+        or hermes_verification.looks_like_verification_evidence_db_payload(witness)
+    ):
+        return None
+    return envelope, arrays["subagent_trajectories"] == 1
 
 
 def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -623,6 +654,9 @@ def prepare_jsonl_blob(
     classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
     classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_claude_ai_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_drive_chunked_object: Callable[[dict[str, JSONValue]], bool] | None = None,
+    classify_hermes_atif_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
@@ -649,6 +683,9 @@ def prepare_jsonl_blob(
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
         design_envelope: dict[str, JSONValue] | None = None
+        claude_ai_envelope: dict[str, JSONValue] | None = None
+        drive_chunked: tuple[dict[str, JSONValue], str] | None = None
+        atif: tuple[dict[str, JSONValue], bool] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
@@ -721,11 +758,15 @@ def prepare_jsonl_blob(
             and (prepare_records is None or classify_grok_export is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
-            store.conn.execute("CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL)")
+            store.conn.execute(
+                "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
+            )
             grok_probe_conn = store.conn
 
-            def record_grok_member(index: int, valid: bool) -> None:
-                grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
+            def record_grok_member(index: int, valid: bool, future_type: str | None) -> None:
+                grok_probe_conn.execute(
+                    "INSERT INTO grok_member_valid VALUES (?, ?, ?)", (index, int(valid), future_type)
+                )
 
             def record_grok_marker(found: bool) -> None:
                 nonlocal grok_positive_marker
@@ -769,6 +810,36 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 design_envelope = claude_design_object_envelope(handle)
+        if (
+            not is_stream
+            and provider is Provider.CLAUDE_AI
+            and (prepare_sessions is None or classify_claude_ai_object is not None)
+            and (prepare_records is None or classify_claude_ai_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and stream_prefix is None
+        ):
+            with source.open("rb") as handle:
+                claude_ai_envelope = claude_ai_object_envelope(handle)
+        if (
+            not is_stream
+            and provider in {Provider.DRIVE, Provider.GEMINI}
+            and (prepare_sessions is None or classify_drive_chunked_object is not None)
+            and (prepare_records is None or classify_drive_chunked_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and generic_envelope is None
+        ):
+            with source.open("rb") as handle:
+                drive_chunked = drive_chunked_prompt_envelope(handle)
+        if (
+            not is_stream
+            and provider is Provider.HERMES
+            and (prepare_sessions is None or classify_hermes_atif_object is not None)
+            and (prepare_records is None or classify_hermes_atif_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and hermes_envelope is None
+        ):
+            with source.open("rb") as handle:
+                atif = _hermes_atif_envelope(handle)
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1096,6 +1167,201 @@ def prepare_jsonl_blob(
             store.conn.commit()
             shard_path = shard_builder.seal().path
             shard_builder = None
+        elif claude_ai_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            claude_ai_admitted = True
+            if classify_claude_ai_object is not None:
+                with source.open("rb") as handle:
+                    sample = tuple(
+                        islice(
+                            (
+                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+                                for item in ijson.items(handle, "chat_messages.item")
+                            ),
+                            64,
+                        )
+                    )
+                claude_ai_admitted = classify_claude_ai_object(claude_ai_envelope, sample)
+            session = None
+            if claude_ai_admitted:
+                evidence_store = ClaudeChatEvidence(store.conn)
+                attachment_rows = ClaudeAttachmentScratch(store.conn)
+                with source.open("rb") as handle:
+                    # The collecting route parses this document as a one-item
+                    # bundle, so its fallback identity carries that suffix.
+                    session = parse_ai_stream(
+                        claude_ai_envelope,
+                        (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "chat_messages.item")),
+                        f"{fallback_id}-0",
+                        evidence_store=evidence_store,
+                        messages=store.new_sink(),
+                        session_events=store.new_event_sink(),
+                        attachment_rows=attachment_rows,
+                        attachments=store.new_attachment_sink(),
+                    )
+                evidence_store.close()
+                attachment_rows.close()
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("Claude AI object finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif drive_chunked is not None:
+            drive_envelope, chunk_prefix = drive_chunked
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+
+            def drive_chunks() -> Iterator[object]:
+                with source.open("rb") as handle:
+                    for item in ijson.items(handle, f"{chunk_prefix}.item"):
+                        yield normalize_ijson_stdlib_numbers(item)
+
+            drive_admitted = True
+            if classify_drive_chunked_object is not None:
+                chunk_sample: list[JSONValue] = [cast(JSONValue, item) for item in islice(drive_chunks(), 64)]
+                witness = {key: value for key, value in drive_envelope.items() if not key.startswith("__")}
+                if chunk_prefix == "chunks":
+                    witness["chunks"] = chunk_sample
+                else:
+                    prompt = witness.get("chunkedPrompt")
+                    witness["chunkedPrompt"] = {**(prompt if isinstance(prompt, dict) else {}), "chunks": chunk_sample}
+                drive_admitted = classify_drive_chunked_object(witness)
+            session = None
+            if drive_admitted:
+                session = drive.parse_chunked_prompt_stream(
+                    provider,
+                    drive_envelope,
+                    drive_chunks,
+                    fallback_id,
+                    messages=store.new_sink(),
+                    session_events=store.new_event_sink(),
+                    attachments=store.new_attachment_sink(),
+                )
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("chunked prompt finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif atif is not None:
+            atif_envelope, atif_has_subagents = atif
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+
+            def atif_items(prefix: str) -> Iterator[JSONValue]:
+                with source.open("rb") as handle:
+                    for item in ijson.items(handle, f"{prefix}.item"):
+                        yield cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+
+            atif_admitted = True
+            if classify_hermes_atif_object is not None:
+                atif_witness: dict[str, JSONValue] = {**atif_envelope, "steps": list(islice(atif_items("steps"), 64))}
+                if atif_has_subagents:
+                    atif_witness["subagent_trajectories"] = list(islice(atif_items("subagent_trajectories"), 64))
+                atif_admitted = classify_hermes_atif_object(atif_witness)
+            atif_sessions: list[ParsedSession] = []
+            if atif_admitted:
+                atif_sessions = hermes_spans.parse_atif_stream(
+                    atif_envelope,
+                    atif_items("steps"),
+                    atif_items("subagent_trajectories") if atif_has_subagents else (),
+                    fallback_id,
+                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    new_events=store.new_event_sink,
+                )
+            atif_sessions = require_positive_conversational_evidence(
+                atif_sessions, provider=provider, source_path=source_path
+            )
+            if prepare_sessions is not None:
+                atif_sessions = prepare_sessions(atif_sessions)
+            elif prepare_session is not None:
+                atif_sessions = [prepare_session(session) for session in atif_sessions]
+            session_count = 0
+            for session in atif_sessions:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1139,13 +1405,22 @@ def prepare_jsonl_blob(
                             fallback_id if grok_count == 1 else f"{fallback_id}-{member_index}",
                             member_messages,
                         )
-                        # The event probe leaves future wire types on the
-                        # ordinary parser path. Admit this known outer record
-                        # through the same wrapper without reloading responses.
-                        admitted = grok.parse_conversation(
-                            {"conversation": {}, "responses": []}, session.provider_session_id
+                        # Admit this outer record through the parser's own
+                        # wrapper, over a stub carrying the member's first
+                        # future wire type, without reloading its responses.
+                        future_row = grok_member_conn.execute(
+                            "SELECT future_type FROM grok_member_valid WHERE ordinal = ?", (member_index,)
+                        ).fetchone()
+                        admission_stub: dict[str, object] = {"conversation": {}, "responses": []}
+                        if future_row is not None and future_row[0] is not None:
+                            admission_stub["type"] = future_row[0]
+                        admitted = grok.parse_conversation(admission_stub, session.provider_session_id)
+                        session = session.model_copy(
+                            update={
+                                "session_events": [*session.session_events, *admitted.session_events],
+                                "unit_accounting": admitted.unit_accounting,
+                            }
                         )
-                        session = session.model_copy(update={"unit_accounting": admitted.unit_accounting})
                         if prepare_sessions is not None:
                             selected = prepare_sessions([session])
                             if len(selected) > 1:
@@ -1292,6 +1567,9 @@ def prepare_jsonl_blob(
             or generic_envelope is not None
             or hermes_envelope is not None
             or design_envelope is not None
+            or claude_ai_envelope is not None
+            or drive_chunked is not None
+            or atif is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,

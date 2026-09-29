@@ -348,9 +348,9 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
         nonlocal composed
         composed = True
 
-        # The operation passes its per-request limits to the owner call; the
-        # owner itself is composed once per process.
+        # Limits, progress and stop signals are per pass, never per owner.
         async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+
             emit = limits["progress_callback"]
             limited = bool(limits["scope_limited"])
             assert callable(emit)
@@ -513,7 +513,8 @@ def test_fresh_runtime_prepares_tier_journals_before_first_snapshot_and_mutation
             "mutation.session.delete.preview", {"session_ids": list(ids)}, archive_root=str(stack.archive_root)
         )
         assert preview is not None and preview["outcome"] == "completed"
-        assert preview["result"]["session_ids"] == list(ids)
+        assert preview["result"]["session_count"] == len(ids)
+        assert preview["result"]["session_ids_sample"] == list(ids[:20])
 
 
 def test_authentication_refusal_is_not_an_indeterminate_mutation(tmp_path: Path) -> None:

@@ -152,7 +152,7 @@ def _handle_get_session_cost(self: Any, conv_id: str) -> None:
 
 
 def _handle_get_session_evidence_summary(self: Any, conv_id: str) -> None:
-    """Return bounded structural counts for the reader evidence strip."""
+    """Return structural counts and every lineage reference for the reader evidence strip."""
     from polylogue.archive.query.transaction import archive_read_context
     from polylogue.daemon.http import _cost_panel_payload, _empty_cost_payload, _web_reader_archive_root
     from polylogue.logging import WARNING, emit
@@ -205,7 +205,6 @@ def _handle_get_session_evidence_summary(self: Any, conv_id: str) -> None:
                 for session_id, kind, status in evidence.lineage_refs
             ],
             "lineage_refs_authoritative": not gaps,
-            "lineage_limit": 20,
             "outcome": decide_outcome(
                 matched=evidence.tool_calls + len(evidence.lineage_refs), degraded=gaps
             ).to_dict(),

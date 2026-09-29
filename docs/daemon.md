@@ -654,11 +654,53 @@ Status reads the services' observations and does not schedule replacement work.
 | Raw and general convergence → status | Both named the `convergence` lifecycle component | Raw convergence publishes `raw_materialization`; general convergence retains `convergence` |
 | Empty intake pass → cold-build promotion | Any pass without a new admission could fire the one-shot settle callback | Settle requires a fully handled short page and no pending durable retry; a failed settle remains retryable |
 
-The earlier service registry and supervisor already existed before this pass;
-historical orphan counts, shutdown latency, and idle polling before that
-registry are not measured. The focused lifecycle probe records current
-shutdown duration and orphan count from the production supervisor, while the
-periodic-runner probe records passes after controlled idle wakeups.
+#### Before and after the registry
+
+Before the registry landed (the composition at `b2ad5ef1b2^`),
+`run_daemon_services` built its tasks by hand:
+
+```text
+before                                        after
+run_daemon_services                           run_daemon_services
+├─ create_task × 2   heartbeat, health         └─ DaemonSupervisor (profile, capabilities, halts)
+├─ create_task       schema recheck (blocked)     ├─ resident: lifecycle_heartbeat, health_check,
+├─ _start_server_task browser/api/uds             │            schema_preflight_recheck
+├─ create_task × 16  periodic_loops:              ├─ sockets:  browser_capture_server, api_server,
+│    raw materialization, convergence, WAL,       │            uds_server, browser_host
+│    FTS merge, metrics heartbeat, embedding      ├─ intake:   fair_intake (file, remote, raw and
+│    backlog, embedding orphans, db optimize,     │            Drive catch-up adapters), watcher,
+│    status snapshot, judgment, blob GC, blob     │            watcher_registered_bridge
+│    publications, secret scan, Drive catch-up    └─ derived:  convergence_check, raw_observation_convergence,
+├─ create_task       catch-up bridge                           wal_checkpoint, fts_merge, heartbeat,
+└─ create_task       watcher.run                               embedding_backlog, embedding_orphan_reconcile,
+                                                               db_optimize, status_snapshot_refresh,
+                                                               judgment_automation, blob_gc,
+                                                               blob_publication_reconciliation,
+                                                               secret_scan_sweep
+```
+
+Every prior loop has a registry entry except two: Drive catch-up became an
+adapter inside fair intake, and the catch-up bridge became
+`watcher_registered_bridge`.
+
+| Property | Before | After |
+| --- | --- | --- |
+| Task owners | `tasks` and `maintenance_tasks` lists plus per-server task variables | One supervisor; the composition inventory test fails on any unowned task or live thread |
+| Selection | Every loop started whenever watch was enabled; no profiles | Profile plus capability selection; skipped and unavailable services name their reason |
+| Failure | Any loop exception ended the shared `gather` and so the daemon | Declared `isolate`, `degrade`, or `fail_daemon` per service |
+| Shutdown latency | One 5 s `wait_for` over each group; a timeout logged a count, not a name | A per-service deadline in reverse start order; the report names each orphan |
+| Orphan count | Not reported | `ShutdownReport.orphaned`; any orphan retains the archive lease |
+| Idle polling | Every derived loop polled on its cadence, even with nothing to do | Unselected work never starts; a drained backlog reports one terminal transition per cycle |
+| Rootless watcher | Returned and read as a finished watch | Resolved `unavailable` before a task exists |
+| Compute workers | Closed with `wait=False`; a worker could outlive the run | The composition root joins them within 5 s and names any survivor |
+
+The "before" column is read from source; nothing measured it at the time. The
+current measurements come from two probes. The focused lifecycle probe
+(`test_a_focused_profile_starts_no_materialization_and_finishes_promptly`)
+records shutdown duration and orphan count from the production supervisor.
+The periodic-runner probe records passes after controlled idle wakeups. Set
+`POLYLOGUE_LIFECYCLE_RECEIPT_DIR` to a directory under `/realm/tmp/work` to
+keep their JSON.
 
 #### Halted work
 

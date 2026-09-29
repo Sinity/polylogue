@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.core.enums import Provider
+from polylogue.core.json import decode_provider_utf8
 from polylogue.sources.origin_specs import artifact_rule_for_path
 
 _DOCUMENT_FIELDS = frozenset(
@@ -88,6 +89,22 @@ _DOCUMENT_FIELDS = frozenset(
     }
 )
 _JOURNAL_FIELDS = _DOCUMENT_FIELDS | frozenset({"type", "event", "key", "ordinal", "retryOf", "retry_of"})
+
+#: Every root field :func:`_document_fact` reads from a document artifact.
+DOCUMENT_READ_FIELDS = _DOCUMENT_FIELDS | frozenset(
+    {
+        "id",
+        "agentId",
+        "agent_id",
+        "sessionId",
+        "session_id",
+        "contentKey",
+        "content_key",
+        "callKey",
+        "call_key",
+        "key",
+    }
+)
 
 
 def _string(value: object) -> str | None:
@@ -187,12 +204,33 @@ def parse_claude_orchestration_artifact(
         facts = (_document_fact(rule.kind, source_path, loaded),)
     else:
         facts = ()
+    for fact in facts:
+        for field_name, value in (
+            ("run_id", fact.run_id),
+            ("agent_id", fact.agent_id),
+            ("content_key", fact.content_key),
+            ("attempt_id", fact.attempt_id),
+            ("tool_use_id", fact.tool_use_id),
+        ):
+            if value is not None and _holds_surrogate(value):
+                # Identity fields become graph and reference ids bound to
+                # SQLite; a lone surrogate cannot be stored, so the artifact
+                # is refused by name and degrades to path-identity evidence.
+                raise ValueError(f"orchestration identity field {field_name!r} holds a UTF-16 surrogate code unit")
     return ClaudeOrchestrationArtifact(rule.kind, source_path, rule.parse_policy, facts)
+
+
+def _holds_surrogate(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
 
 
 def _decode(payload: bytes | str | object, *, jsonl: bool) -> object:
     if isinstance(payload, bytes):
-        payload = payload.decode("utf-8")
+        payload = decode_provider_utf8(payload)
     if not isinstance(payload, str):
         return payload
     if jsonl:
@@ -246,7 +284,27 @@ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) ->
     )
 
 
+#: The dispatching tool_use id: the exact join key from a subagent sidecar to
+#: its parent block, so it must never be read as a prefix.
+DISPATCH_IDENTITY_FIELDS = frozenset({"toolUseId", "tool_use_id"})
+
+#: Identity fields the parser reads through aliases, each in the order its
+#: ``_first_string`` picks them. A reader of a document's envelope keeps the
+#: selected alias of each exact, so it accepts and refuses what this parser
+#: accepts and refuses (a surrogate in any of them is refused by name).
+IDENTITY_FIELD_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("runId", "run_id", "workflowRunId", "workflow_run_id", "id"),
+    ("agentId", "agent_id", "sessionId", "session_id"),
+    ("contentKey", "content_key", "callKey", "call_key", "key"),
+    ("attemptId", "attempt_id", "attempt"),
+    ("toolUseId", "tool_use_id"),
+)
+
+
 __all__ = [
+    "DISPATCH_IDENTITY_FIELDS",
+    "IDENTITY_FIELD_GROUPS",
+    "DOCUMENT_READ_FIELDS",
     "ClaudeOrchestrationArtifact",
     "ClaudeOrchestrationFact",
     "parse_claude_orchestration_artifact",

@@ -414,8 +414,10 @@ def test_maybe_optimize_archive_tiers_covers_existing_split_tiers(
 
     opened: list[FakeConnection] = []
 
-    def fake_open(path: Path, *, timeout: float) -> FakeConnection:
+    def fake_open(path: Path, *, timeout: float, archive_root: Path) -> FakeConnection:
+        # An armed daemon write lease refuses a tier open that omits its archive.
         assert timeout == 11.0
+        assert archive_root == path.parent
         conn = FakeConnection(path)
         opened.append(conn)
         return conn

@@ -1439,6 +1439,52 @@ class CaptureAssertionCandidateArgs:
     idempotency_key: str | None
     assertion_id: str
     ttl_seconds: int | None
+    #: Source evidence that is neither a target nor a scope, such as the
+    #: capture artifact a browser selection was taken from.
+    evidence_refs: tuple[str, ...] = ()
+
+
+def resolve_assertion_candidate_refs(archive: ArchiveStore, refs: Sequence[str], *, cwd: Path | None) -> list[str]:
+    """Resolve candidate target refs to archive identities.
+
+    The facade and the daemon actuator share this so a ref shape one accepts is
+    never refused by the other: ``last``, ``session:<id>``, a canonical
+    ``message:<id>`` ref, or a ``<session>::<message>`` evidence ref.
+    """
+    resolved_refs: list[str] = []
+    for ref in refs:
+        if ref == "last":
+            resolved_cwd = (cwd or Path.cwd()).resolve()
+            repo_root = next(
+                (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
+                resolved_cwd,
+            )
+            summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
+            if not summaries:
+                raise ValueError("--ref last found no archived session for the current repository/cwd")
+            resolved_refs.append(f"session:{summaries[0].session_id}")
+            continue
+        parsed = parse_public_ref(ref)
+        if isinstance(parsed, ObjectRef):
+            if parsed.kind == "message":
+                resolved_refs.append(parsed.format())
+                continue
+            if parsed.kind != "session":
+                raise ValueError("--ref must be a session or message ref, or 'last'")
+            try:
+                session_id = archive.resolve_session_id(parsed.object_id)
+            except KeyError:
+                raise ValueError(f"session ref not found: {parsed.object_id}") from None
+            resolved_refs.append(f"session:{session_id}")
+            continue
+        if parsed.message_id is None or parsed.block_index is not None:
+            raise ValueError("--ref must identify a session or message")
+        try:
+            session_id = archive.resolve_session_id(parsed.session_id)
+        except KeyError:
+            raise ValueError(f"session ref not found: {parsed.session_id}") from None
+        resolved_refs.append(f"{session_id}::{parsed.message_id}")
+    return resolved_refs
 
 
 def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, object]:
@@ -1460,29 +1506,11 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
     if normalized_idempotency_key is not None and len(normalized_idempotency_key) > 240:
         raise ValueError("idempotency_key exceeds 240 characters")
 
-    resolved_refs: list[str] = []
-    for ref in args.refs:
-        if ref == "last":
-            resolved_cwd = (args.cwd or Path.cwd()).resolve()
-            repo_root = next(
-                (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
-                resolved_cwd,
-            )
-            summaries = args.archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
-            if not summaries:
-                raise ValueError("--ref last found no archived session for the current repository/cwd")
-            resolved_refs.append(f"session:{summaries[0].session_id}")
-            continue
-        parsed = ObjectRef.parse(ref)
-        if parsed.kind != "session":
-            raise ValueError("--ref must be a session:<id> ref or 'last'")
-        try:
-            session_id = args.archive.resolve_session_id(parsed.object_id)
-        except KeyError:
-            raise ValueError(f"session ref not found: {parsed.object_id}") from None
-        resolved_refs.append(f"session:{session_id}")
+    resolved_refs = resolve_assertion_candidate_refs(args.archive, args.refs, cwd=args.cwd)
 
     normalized_scope_refs = [parse_public_ref(ref).format() for ref in args.scope_refs]
+    supplied_evidence_refs = [parse_public_ref(ref).format() for ref in args.evidence_refs]
+    evidence_refs = list(dict.fromkeys((*resolved_refs, *normalized_scope_refs, *supplied_evidence_refs)))
     if normalized_idempotency_key is None:
         assertion_id = args.assertion_id
     else:
@@ -1498,7 +1526,7 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
         "author_kind": normalized_author_kind,
         "author_ref": normalized_author_ref,
         "body_text": normalized_body,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "evidence_refs": evidence_refs,
         "kind": args.kind.value,
         "scope_refs": normalized_scope_refs,
         "target_ref": target_ref,
@@ -1517,10 +1545,11 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
         "author_ref": normalized_author_ref,
         "body_text": normalized_body,
         "capture_fingerprint": capture_fingerprint,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "evidence_refs": evidence_refs,
         "kind": args.kind.value,
         "resolved_refs": resolved_refs,
         "scope_refs": normalized_scope_refs,
+        "supplied_evidence_refs": supplied_evidence_refs,
         "target_ref": target_ref,
         "ttl_seconds": args.ttl_seconds,
     }
@@ -1642,6 +1671,7 @@ class CaptureAssertionCandidateActuator(ConvergentReplay):
             idempotency_key=None,
             assertion_id=str(context["assertion_id"]),
             ttl_seconds=cast("int | None", context["ttl_seconds"]),
+            evidence_refs=tuple(cast("list[str]", context["supplied_evidence_refs"])),
         )
 
 
