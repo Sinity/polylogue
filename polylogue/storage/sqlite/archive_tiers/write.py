@@ -8787,7 +8787,9 @@ def is_work_event_raw_id(raw_id: str | None) -> bool:
     return raw_id is not None and raw_id.startswith(WORK_EVENT_RAW_ID_PREFIX)
 
 
-def _stored_session_header(conn: sqlite3.Connection, session_id: str) -> dict[str, object] | None:
+def _stored_session_header(
+    conn: sqlite3.Connection, session_id: str
+) -> dict[str, bytes | str | int | float | None] | None:
     """The stored session-owned header, or ``None`` when the session is absent."""
     row = conn.execute(
         f"SELECT {', '.join(_EVENT_ONLY_PRESERVED_COLUMNS)} FROM sessions WHERE session_id = ?",

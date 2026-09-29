@@ -128,7 +128,9 @@ _HEADER_COLUMNS = (
 )
 
 
-def _session_state(archive: ArchiveStore, session_id: str) -> tuple[object, ...]:
+def _session_state(
+    archive: ArchiveStore, session_id: str
+) -> tuple[tuple[object, ...], tuple[tuple[object, ...], ...], tuple[tuple[object, ...], ...]]:
     conn = archive._conn
     header = conn.execute(f"SELECT {', '.join(_HEADER_COLUMNS)} FROM sessions WHERE session_id = ?", (session_id,))
     messages = conn.execute(
