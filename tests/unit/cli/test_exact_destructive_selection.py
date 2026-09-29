@@ -98,9 +98,11 @@ def _invoke(args: list[str]) -> Result:
 
 
 def _json_document(result: Result) -> dict[str, object]:
-    lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
-    assert lines, f"no JSON document in output:\n{result.output}"
-    payload = json.loads(lines[-1])
+    """The last JSON document the command printed (a document starts at column 0)."""
+    lines = result.stdout.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith("{")]
+    assert starts, f"no JSON document in output:\n{result.output}"
+    payload, _end = json.JSONDecoder().raw_decode("\n".join(lines[starts[-1] :]))
     assert isinstance(payload, dict)
     return payload
 
