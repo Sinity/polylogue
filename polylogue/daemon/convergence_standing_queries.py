@@ -26,6 +26,7 @@ from polylogue.archive.query.evaluator import (
 from polylogue.archive.query.metadata import DATE_QUERY_FIELD_REGISTRY
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.hashing import hash_payload
+from polylogue.core.json import JSONValue
 from polylogue.core.query_identity import query_ref, result_set_ref
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
@@ -47,6 +48,7 @@ from polylogue.storage.sqlite.query_objects import (
     put_evaluation_receipt,
     put_result_set,
     put_watched_query_baseline,
+    watched_query_activated_at_ms,
     watched_query_baseline_updated_at_ms,
 )
 
@@ -65,6 +67,10 @@ CLOCK_BOUNDARY_MS = 24 * 60 * 60 * 1000
 #: expressible in this grammar, so probing every string value in the AST would
 #: add only false positives from search terms and titles.
 _CLOCK_BOUND_FIELDS = frozenset(DATE_QUERY_FIELD_REGISTRY) | {"since", "until", "time"}
+#: Keyed by (user database, query hash, digest of the accepted findings and
+#: their expectations for that query): a finding accepted after the day's
+#: evaluation is a new input, so it must not inherit the earlier receipt.
+_PROMOTED_CLOCK_BOUNDARIES: dict[tuple[str, str, str], int] = {}
 
 
 def clock_boundary_start_ms(now_ms: int, *, boundary_ms: int = CLOCK_BOUNDARY_MS) -> int:
@@ -155,6 +161,49 @@ def _clock_due_watches(conn: sqlite3.Connection, *, now_ms: int) -> tuple[QueryO
     return tuple(due)
 
 
+def _clock_due_promoted_findings(
+    conn: sqlite3.Connection, *, now_ms: int, db_path: Path
+) -> dict[str, tuple[str, str, str]]:
+    """Return relative query hashes whose accepted expectation is due by clock.
+
+    Promoted findings have no watch baseline. Keep a process-local boundary
+    receipt so a clock-only convergence pass evaluates them once per day.
+    Restarting may repeat the read, which is safe; it cannot skip a boundary.
+    Each hash maps to its receipt key, which covers the accepted findings'
+    identities and expectations as well as the query.
+    """
+    boundary = clock_boundary_start_ms(now_ms)
+    expectations: dict[str, list[tuple[str, JSONValue]]] = {}
+    for finding in list_assertion_claims(
+        conn,
+        kinds=(AssertionKind.FINDING,),
+        statuses=(AssertionStatus.ACCEPTED,),
+    ):
+        value = finding.value if isinstance(finding.value, dict) else {}
+        expected = value.get("expected")
+        if not isinstance(expected, dict):
+            continue
+        reference = value.get("query_ref")
+        if not isinstance(reference, str):
+            continue
+        query_hash = reference.removeprefix("query:")
+        if query_hash not in expectations:
+            query = get_query(conn, query_hash)
+            if query is None or not query_is_clock_relative(query):
+                continue
+            expectations[query_hash] = []
+        expectations[query_hash].append((finding.assertion_id, expected))
+    due: dict[str, tuple[str, str, str]] = {}
+    for query_hash, findings in expectations.items():
+        revision = hash_payload(
+            [[assertion_id, expected] for assertion_id, expected in sorted(findings, key=lambda item: item[0])]
+        )
+        key = (str(db_path), query_hash, revision)
+        if _PROMOTED_CLOCK_BOUNDARIES.get(key, -1) < boundary:
+            due[query_hash] = key
+    return due
+
+
 def make_standing_query_stage(
     db_path: Path,
     *,
@@ -176,7 +225,11 @@ def make_standing_query_stage(
         if not user_db.exists():
             return False
         with closing(open_readonly_connection(user_db)) as conn:
-            return bool(_clock_due_watches(conn, now_ms=int(time.time() * 1000)))
+            now_ms = int(time.time() * 1000)
+            return bool(
+                _clock_due_watches(conn, now_ms=now_ms)
+                or _clock_due_promoted_findings(conn, now_ms=now_ms, db_path=db_path)
+            )
 
     def execute(_path: Path) -> StageExecuteReturn:
         """Re-evaluate exactly the watches whose clock boundary has passed."""
@@ -189,7 +242,8 @@ def make_standing_query_stage(
         conn = open_daemon_connection(user_db, timeout=30.0, archive_root=user_db.parent)
         try:
             due = _clock_due_watches(conn, now_ms=now_ms)
-            if not due:
+            promoted_due = _clock_due_promoted_findings(conn, now_ms=now_ms, db_path=db_path)
+            if not due and not promoted_due:
                 return True
             for query in due:
                 evaluation = evaluator.evaluate(
@@ -204,7 +258,20 @@ def make_standing_query_stage(
                 if evaluation.cache_only:
                     continue
                 _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
+            staged_boundaries: dict[tuple[str, str, str], int] = {}
+            if promoted_due:
+                unevaluated = _materialize_promoted_finding_drifts(
+                    conn, evaluator, now_ms=now_ms, query_hashes=frozenset(promoted_due)
+                )
+                boundary = clock_boundary_start_ms(now_ms)
+                for query_hash, receipt_key in promoted_due.items():
+                    # A cache-only evaluation produced no answer; leave it due so
+                    # the next check retries instead of waiting a clock boundary.
+                    if query_hash not in unevaluated:
+                        staged_boundaries[receipt_key] = boundary
             conn.commit()
+            # Publish the receipts only once the drifts they vouch for are durable.
+            _PROMOTED_CLOCK_BOUNDARIES.update(staged_boundaries)
         finally:
             conn.close()
         emit(
@@ -356,10 +423,9 @@ def _narrowed_origin_scope(
 
     * The planner publishes no bounds, or cannot bound one watched definition.
       An unbounded predicate can match any origin.
-    * A watched definition has no durable baseline yet. The first evaluation
-      establishes a baseline silently, so skipping the tick that would have
-      established it would move that silent first observation later and hide
-      the delta a subsequent tick should have reported.
+    * A watched definition has no durable baseline established since its
+      current activation. Re-enabling a watch after a historical baseline
+      cannot treat that older observation as proof this watch was rebaselined.
     * An accepted expected-count finding exists. Those drift against a stored
       expectation rather than against the previous membership, so a definition
       that is already drifting must be allowed to report it on the next tick
@@ -374,7 +440,9 @@ def _narrowed_origin_scope(
         bound = evaluator.session_origin_scope(query)
         if bound is None:
             return None
-        if get_watched_query_baseline(conn, query.query_hash) is None:
+        baseline_at = watched_query_baseline_updated_at_ms(conn, query.query_hash)
+        activated_at = watched_query_activated_at_ms(conn, query.query_hash)
+        if baseline_at is None or activated_at is None or baseline_at <= activated_at:
             return None
         union |= set(bound)
     return frozenset(union)
@@ -591,8 +659,14 @@ def _materialize_promoted_finding_drifts(
     evaluator: CanonicalPlanEvaluator,
     *,
     now_ms: int,
-) -> None:
-    """Emit a new candidate when an accepted expected-count finding diverges."""
+    query_hashes: frozenset[str] | None = None,
+) -> frozenset[str]:
+    """Emit a new candidate when an accepted expected-count finding diverges.
+
+    Returns the query hashes whose evaluation was cache-only (no usable
+    answer), so a caller does not record them as evaluated.
+    """
+    cache_only: set[str] = set()
     for finding in list_assertion_claims(
         conn,
         kinds=(AssertionKind.FINDING,),
@@ -603,7 +677,13 @@ def _materialize_promoted_finding_drifts(
         query_reference = value.get("query_ref")
         if not isinstance(expected, dict) or not isinstance(query_reference, str):
             continue
+        # This stage only owns member-count expectations. Unsupported future
+        # measures must be ignored even when the evaluation is non-exact.
+        if expected.get("measure") != "member_count":
+            continue
         query_hash = query_reference.removeprefix("query:")
+        if query_hashes is not None and query_hash not in query_hashes:
+            continue
         query = get_query(conn, query_hash)
         if query is None:
             continue
@@ -616,6 +696,7 @@ def _materialize_promoted_finding_drifts(
             )
         )
         if evaluation.cache_only:
+            cache_only.add(query_hash)
             continue
         if evaluation.exactness != "exact":
             _materialize_unmeasured_finding_drift(
@@ -673,6 +754,7 @@ def _materialize_promoted_finding_drifts(
             ],
             now_ms=now_ms,
         )
+    return frozenset(cache_only)
 
 
 def _materialize_unmeasured_finding_drift(

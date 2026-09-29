@@ -24,7 +24,7 @@ from collections.abc import (
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import BinaryIO, overload
+from typing import BinaryIO, TypeVar, overload
 from urllib.parse import quote
 
 import ijson
@@ -38,6 +38,7 @@ from polylogue.sources.live.tool_result_sidecars import (
     SidecarMatch,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSessionEvent
+from polylogue.sources.parsers.base_models import SINK_JSON_CONTEXT
 from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 from polylogue.sources.value_bounds import require_storable_string
@@ -46,6 +47,43 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
     "SELECT parent_id FROM prepared_message INDEXED BY prepared_message_provider "
     "WHERE session_ordinal = ? AND provider_id = ? ORDER BY message_ordinal DESC LIMIT 1"
 )
+
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+# A \\u escape of a surrogate, preceded by an even run of backslashes (a real
+# escape, not the literal text of one).
+_ESCAPED_SURROGATE = re.compile(r"(?<!\\)(?:\\\\)*\\u[dD][89a-fA-F][0-9a-fA-F]{2}")
+
+
+def _text_json(value: object) -> str:
+    """JSON text SQLite can store: a lone surrogate stays a ``\\uXXXX`` escape.
+
+    Provider JSON admits lone surrogate escapes and decoding keeps them as
+    code points, which are not valid UTF-8. Escaping them keeps the value
+    exact through a round trip instead of failing the insert.
+    """
+    encoded = json.dumps(value, ensure_ascii=False)
+    if encoded.isascii() or _LONE_SURROGATE.search(encoded) is None:
+        # No substitution, so no second full-size copy of a large row.
+        return encoded
+    return _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", encoded)
+
+
+_ModelT = TypeVar("_ModelT", ParsedMessage, ParsedSessionEvent)
+
+
+def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
+    """Decode sink JSON; an escaped lone surrogate needs the stdlib decoder.
+
+    pydantic's JSON parser rejects a surrogate escape, and the stdlib parser
+    reads it exactly, so such a row is parsed once by the stdlib and validated
+    in Python mode: no marked copy, dump or restore pass. The fields rendered
+    differently in JSON mode (a paste digest's hex) read the
+    :data:`SINK_JSON_CONTEXT` flag and parse as JSON mode would.
+    """
+    if _ESCAPED_SURROGATE.search(encoded) is None:
+        return model.model_validate_json(encoded)
+    return model.model_validate(json.loads(encoded), context=SINK_JSON_CONTEXT)
 
 
 def _read_uri(path: Path) -> str:
@@ -155,13 +193,13 @@ def _message_json(value: ParsedMessage) -> str:
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     # Each serialized record is one SQLite cell: individually storable
     # values can still combine into an unstorable row.
-    return require_storable_string(json.dumps(payload, ensure_ascii=False), kind="serialized message")
+    return require_storable_string(_text_json(payload), kind="serialized message")
 
 
 def _event_json(value: ParsedSessionEvent) -> str:
     payload = value.model_dump(mode="json")
     payload["boundary_message_position"] = value.boundary_message_position
-    return require_storable_string(json.dumps(payload, ensure_ascii=False), kind="serialized event")
+    return require_storable_string(_text_json(payload), kind="serialized event")
 
 
 def _attachment_json(value: ParsedAttachment) -> str:
@@ -173,7 +211,7 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
     )
-    return require_storable_string(json.dumps(payload, ensure_ascii=False), kind="serialized attachment")
+    return require_storable_string(_text_json(payload), kind="serialized attachment")
 
 
 def _attachment_from_json(encoded: str) -> ParsedAttachment:
@@ -465,7 +503,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 ).fetchone()
         if row is None:
             raise ValueError("prepared message row disappeared")
-        return ParsedMessage.model_validate_json(row[0])
+        return _from_text_json(ParsedMessage, row[0])
 
     @overload
     def __setitem__(self, index: int, value: ParsedMessage) -> None: ...
@@ -535,7 +573,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                yield _from_text_json(ParsedMessage, row[0])
             return
         key = self._decoded_key()
         decoded = _DECODED_SESSIONS.get(key) if key is not None else None
@@ -553,7 +591,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                message = ParsedMessage.model_validate_json(row[0])
+                message = _from_text_json(ParsedMessage, row[0])
                 if retained is not None:
                     retained_bytes += int(row[1])
                     if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
@@ -882,7 +920,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             ).fetchone()
         if row is None:
             raise ValueError("prepared event row disappeared")
-        return ParsedSessionEvent.model_validate_json(row[0])
+        return _from_text_json(ParsedSessionEvent, row[0])
 
     @overload
     def __setitem__(self, index: int, value: ParsedSessionEvent) -> None: ...
@@ -932,6 +970,67 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         )
         self._count += 1
 
+    def insert_sorted(self, insertions: Iterable[tuple[int, ParsedSessionEvent]]) -> None:
+        """Insert many events at original indices with one renumbering pass.
+
+        ``insertions`` are ordered by index; each index refers to the sequence
+        before any of them is inserted, and events sharing an index keep their
+        order. Equivalent to calling :meth:`insert` for each at
+        ``index + <events already inserted>``, without shifting the tail once
+        per event.
+        """
+        if self._writer is None:
+            raise TypeError("sealed prepared events are immutable")
+        writer = self._writer
+        writer.execute("DROP TABLE IF EXISTS temp.prepared_event_insert")
+        writer.execute(
+            "CREATE TEMP TABLE prepared_event_insert (seq INTEGER PRIMARY KEY, idx INTEGER NOT NULL, "
+            "timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL)"
+        )
+        added = 0
+        previous = -1
+        for index, value in insertions:
+            index = min(max(index, 0), self._count)
+            if index < previous:
+                raise ValueError("insertions must be ordered by index")
+            previous = index
+            writer.execute(
+                "INSERT INTO temp.prepared_event_insert VALUES (?, ?, ?, ?, ?)",
+                (added, index, value.timestamp, value.event_type, _event_json(value)),
+            )
+            added += 1
+        if added:
+            # Cumulative insertions per distinct index: an existing event at
+            # ordinal ``o`` moves by the count at the largest index <= ``o``,
+            # found by one primary-key seek rather than a scan of every
+            # insertion before it.
+            writer.execute("DROP TABLE IF EXISTS temp.prepared_event_shift")
+            writer.execute("CREATE TEMP TABLE prepared_event_shift (idx INTEGER PRIMARY KEY, cum INTEGER NOT NULL)")
+            writer.execute(
+                "INSERT INTO temp.prepared_event_shift "
+                "SELECT idx, SUM(COUNT(*)) OVER (ORDER BY idx) FROM temp.prepared_event_insert GROUP BY idx"
+            )
+            writer.execute(
+                "UPDATE prepared_event SET event_ordinal = -1 - (event_ordinal + "
+                "(SELECT s.cum FROM temp.prepared_event_shift AS s WHERE s.idx <= prepared_event.event_ordinal "
+                "ORDER BY s.idx DESC LIMIT 1)) "
+                "WHERE session_ordinal = ? AND event_ordinal >= (SELECT MIN(idx) FROM temp.prepared_event_shift)",
+                (self.session_ordinal,),
+            )
+            writer.execute("DROP TABLE temp.prepared_event_shift")
+            writer.execute(
+                "UPDATE prepared_event SET event_ordinal = -1 - event_ordinal "
+                "WHERE session_ordinal = ? AND event_ordinal < 0",
+                (self.session_ordinal,),
+            )
+            writer.execute(
+                "INSERT INTO prepared_event (session_ordinal, event_ordinal, timestamp, event_type, event_json) "
+                "SELECT ?, idx + seq, timestamp, event_type, event_json FROM temp.prepared_event_insert ORDER BY seq",
+                (self.session_ordinal,),
+            )
+            self._count += added
+        writer.execute("DROP TABLE temp.prepared_event_insert")
+
     def __iter__(self) -> Iterator[ParsedSessionEvent]:
         yield from self._iter_query("ORDER BY event_ordinal")
 
@@ -940,11 +1039,11 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         if self._writer is not None:
             cursor = self._writer.execute(sql, (self.session_ordinal, *parameters))
             for row in cursor:
-                yield ParsedSessionEvent.model_validate_json(row[0])
+                yield _from_text_json(ParsedSessionEvent, row[0])
             return
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
             for row in conn.execute(sql, (self.session_ordinal, *parameters)):
-                yield ParsedSessionEvent.model_validate_json(row[0])
+                yield _from_text_json(ParsedSessionEvent, row[0])
 
     def iter_ordered(self, type_order_tier: Mapping[str, int]) -> Iterator[ParsedSessionEvent]:
         clauses = " ".join("WHEN ? THEN ?" for _ in type_order_tier)
@@ -1144,7 +1243,7 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         self._siblings_current = False
 
     def put(self, key: str, node: object, ordinal: int) -> None:
-        encoded = require_storable_string(json.dumps(node, ensure_ascii=False), kind="serialized mapping node")
+        encoded = require_storable_string(_text_json(node), kind="serialized mapping node")
         # ``_sibling_ordinals``' grouping: only mapping nodes count, and a
         # missing or empty parent groups under the root key "".
         parent = node.get("parent") if isinstance(node, dict) else None
@@ -1166,7 +1265,7 @@ class ChatGPTNodeMapping(Mapping[str, object]):
             (
                 node_ordinal,
                 item_ordinal,
-                json.dumps(child, ensure_ascii=False),
+                _text_json(child),
                 child if isinstance(child, str) else None,
             ),
         )
@@ -1333,7 +1432,9 @@ class _ScratchChatGPTEntries:
         cursor = self.conn.execute(f"SELECT message_json FROM chatgpt_entry ORDER BY {self._ORDER}")
         try:
             for (encoded,) in cursor:
-                yield ParsedMessage.model_validate_json(encoded)
+                # Written by ``_message_json``: a lone surrogate is an escape
+                # pydantic's parser refuses, so decode through the sink's own.
+                yield _from_text_json(ParsedMessage, encoded)
         finally:
             cursor.close()
 

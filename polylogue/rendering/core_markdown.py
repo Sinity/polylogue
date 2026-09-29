@@ -177,7 +177,7 @@ def format_session_markdown(conv: Session) -> str:
             attachments_by_message[message_id] = [
                 _normalize_markdown_attachment(
                     attachment_id=str(att.id),
-                    path=att.path,
+                    path=att.path or att.source_url,
                     display_name=att.name,
                 )
                 for att in msg.attachments
@@ -187,7 +187,7 @@ def format_session_markdown(conv: Session) -> str:
         attachments_by_message[None] = [
             _normalize_markdown_attachment(
                 attachment_id=str(att.id),
-                path=att.path,
+                path=att.path or att.source_url,
                 display_name=att.name,
             )
             for att in conv.attachments

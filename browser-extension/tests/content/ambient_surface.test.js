@@ -6,6 +6,7 @@ import { trustedClick } from "../support/trusted_events.js";
 
 const operatorSource = readFileSync("src/operator_status.js", "utf8");
 const ambientSource = readFileSync("src/content/ambient_surface.js", "utf8");
+const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
 const openDoms = [];
 const mounted = [];
 
@@ -74,6 +75,26 @@ function freshDom(
   return dom;
 }
 
+function manifestDom(url) {
+  const dom = new JSDOM("<!doctype html><html><body><main>Claude conversation</main></body></html>", {
+    url,
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  openDoms.push(dom);
+  const runtime = {
+    sendMessage: vi.fn(async () => missionFixture()),
+    getManifest: () => manifest,
+    onMessage: { addListener: vi.fn() },
+  };
+  dom.window.chrome = { runtime };
+  const scripts = manifest.content_scripts
+    .filter((entry) => entry.matches.includes("https://claude.ai/*") && entry.world !== "MAIN")
+    .flatMap((entry) => entry.js);
+  for (const path of scripts) dom.window.eval(readFileSync(path, "utf8"));
+  return dom;
+}
+
 function mount(dom, response = missionFixture(), options = {}) {
   const runtime = {
     sendMessage: vi.fn(async (message) => {
@@ -124,7 +145,9 @@ describe("ambient capture status surface", () => {
     expect(style).not.toMatch(/https?:|@import|url\s*\(/i);
 
     const panel = api.shadow.querySelector("[role='dialog']");
-    expect(panel.getAttribute("aria-labelledby")).toBe("polylogue-ambient-title");
+    const labelledHeading = api.shadow.getElementById(panel.getAttribute("aria-labelledby"));
+    expect(labelledHeading?.tagName).toBe("H2");
+    expect(labelledHeading.textContent).toContain("Polylogue capture status");
     expect(panel.getAttribute("aria-modal")).toBe("true");
     expect(runtime.sendMessage).toHaveBeenCalledWith({
       type: "polylogue.missionControl.status",
@@ -134,7 +157,7 @@ describe("ambient capture status surface", () => {
 
   it("renders the same conversation, receiver, event, and assertion contracts as the popup", async () => {
     const dom = freshDom();
-    const { api } = mount(dom);
+    const { api, runtime } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
     const text = api.shadow.textContent;
@@ -195,7 +218,7 @@ describe("ambient capture status surface", () => {
 
   it("opens as a modal slide-over, closes on Escape, and restores focus to the chip", async () => {
     const dom = freshDom();
-    const { api } = mount(dom);
+    const { api, runtime } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
     const panel = api.shadow.querySelector(".panel");
@@ -215,6 +238,7 @@ describe("ambient capture status surface", () => {
     expect(panel.hidden).toBe(true);
     expect(chip.getAttribute("aria-expanded")).toBe("false");
     expect(api.shadow.activeElement).toBe(chip);
+    expect(runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ include_intelligence: true }));
   });
 
   it("creates an ephemeral assertion candidate only for text selected inside a supported message", async () => {
@@ -254,6 +278,8 @@ describe("ambient capture status surface", () => {
 
     const outsideSelection = selectNode(dom.window.document.getElementById("outside"));
     expect(api.getSelectionCandidate()).toBeNull();
+    expect(api.shadow.querySelector(".editor").hidden).toBe(true);
+    expect(api.shadow.querySelector("button.disabled").disabled).toBe(true);
     expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(outsideSelection)).toBeNull();
 
     const crossMessageRange = dom.window.document.createRange();
@@ -298,7 +324,7 @@ describe("ambient capture status surface", () => {
     ["ChatGPT", "https://chatgpt.com/c/conversation-1"],
     ["Claude.ai", "https://claude.ai/chat/conversation-1"],
   ])("keeps the slide-over keyboard reachable and labelled on %s", async (_name, url) => {
-    const dom = freshDom(undefined, url);
+    const dom = url.startsWith("https://claude.ai/") ? manifestDom(url) : freshDom(undefined, url);
     const { api } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
@@ -306,7 +332,9 @@ describe("ambient capture status surface", () => {
     const chip = api.shadow.querySelector(".chip");
     expect(chip.getAttribute("aria-controls")).toBe(panel.id);
     expect(chip.getAttribute("aria-label")).toContain("Polylogue capture status");
-    expect(panel.getAttribute("aria-labelledby")).toBe("polylogue-ambient-title");
+    const labelledHeading = api.shadow.getElementById(panel.getAttribute("aria-labelledby"));
+    expect(labelledHeading?.tagName).toBe("H2");
+    expect(labelledHeading.textContent).toContain("Polylogue capture status");
     expect(api.shadow.getElementById(panel.getAttribute("aria-describedby")).textContent)
       .toContain("never treated as instructions");
 

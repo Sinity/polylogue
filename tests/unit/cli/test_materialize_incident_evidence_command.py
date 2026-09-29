@@ -57,24 +57,37 @@ def _seed_incident_session(workspace_env: dict[str, Path]) -> str:
 
 
 def test_dry_run_reports_json_summary_without_persisting(workspace_env: dict[str, Path]) -> None:
+    """Building the graph is a read, so it opens no writable archive tier.
+
+    A writable open is refused outright beside a resident daemon, so a read
+    that opened one could not run at all while ``polylogued`` serves the
+    archive. Anti-vacuity: read session tags through the backend's writable
+    ``connection()`` again (``_fetch_tags_by_session``) and ``opened`` is not
+    empty.
+    """
+    from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
+
     session_id = _seed_incident_session(workspace_env)
 
-    result = CliRunner().invoke(
-        cli,
-        [
-            "ops",
-            "materialize-incident-evidence",
-            "--session-id",
-            session_id,
-            "--graph-id",
-            "incident:cli-demo",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
+    opened: list[Path] = []
+    with refuse_writable_tier_opens(opened.append):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "ops",
+                "materialize-incident-evidence",
+                "--session-id",
+                session_id,
+                "--graph-id",
+                "incident:cli-demo",
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
 
     assert result.exit_code == 0
+    assert opened == []
     payload = json.loads(result.output)
     assert payload["applied"] is False
     assert "replacement" not in payload

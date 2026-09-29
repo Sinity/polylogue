@@ -25,10 +25,10 @@
 
   function collectTurns() {
     const elements = collectTurnElements();
-    return elements.map((element, ordinal) => {
+    return elements.map((element) => {
       const text = textForElement(element);
       return {
-        provider_turn_id: element.getAttribute("data-message-id") || `gemini-dom-${ordinal}`,
+        provider_turn_id: element.getAttribute("data-message-id") || null,
         role: roleForElement(element),
         text,
         timestamp: null,
@@ -47,7 +47,18 @@
     if (!providerSessionId) return { ok: false, error: "cannot_capture_gemini_without_conversation_id" };
     const visibleTurnCount = collectTurnElements().length;
     const turns = collectTurns();
-    if (!turns.length) return { ok: false, error: "no_turns" };
+    if (!turns.length) {
+      await chrome.runtime.sendMessage({
+        type: "polylogue.captureHealth",
+        event: "capture_error",
+        provider: "gemini",
+        provider_session_id: providerSessionId,
+        visible_count: visibleTurnCount,
+        captured_count: 0,
+        reason: "no_turns",
+      });
+      return { ok: false, error: "no_turns" };
+    }
     if (visibleTurnCount > turns.length) {
       await chrome.runtime.sendMessage({
         type: "polylogue.captureHealth",
@@ -63,7 +74,6 @@
       provider: "gemini",
       adapterName: "gemini-dom-v1",
       providerSessionId,
-      title: document.title || providerSessionId,
       turns,
       providerMeta: { visible_turn_count: visibleTurnCount },
     });
@@ -83,6 +93,34 @@
   }
 
   window.polylogueCapture.capturePage = capture;
+  let lastTurnSignature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n");
+  let recaptureTimer = null;
+  // Debounce the raw mutation stream first, then build the transcript
+  // signature once for the settled batch: streaming emits a mutation per
+  // token, and walking every turn on each one is quadratic work.
+  const freshnessObserver = new MutationObserver(() => {
+    if (recaptureTimer !== null) clearTimeout(recaptureTimer);
+    recaptureTimer = setTimeout(() => {
+      recaptureTimer = null;
+      let signature;
+      try { signature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n"); }
+      catch { return; }
+      if (!signature || signature === lastTurnSignature) { lastTurnSignature = signature; return; }
+      lastTurnSignature = signature;
+      // Hint only: the background freshness scheduler owns the capture
+      // decision and honours the automatic-capture opt-out.
+      const providerSessionId = conversationIdFromUrl();
+      if (!providerSessionId) return;
+      chrome.runtime.sendMessage({
+        type: "polylogue.captureFreshnessHint",
+        provider: "gemini",
+        provider_session_id: providerSessionId,
+        reason: "gemini_dom_changed",
+        delay_ms: 0,
+      }).catch(() => undefined);
+    }, 500);
+  });
+  freshnessObserver.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
     capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));

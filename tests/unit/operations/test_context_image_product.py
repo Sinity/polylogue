@@ -54,6 +54,28 @@ def test_pinned_context_image_preserves_message_and_budget_evidence(tmp_path: Pa
     assert hashlib.sha256((root / "ops.db").read_bytes()).hexdigest() == ops_before
 
 
+def test_explicit_context_image_seeds_obey_max_sessions(tmp_path: Path) -> None:
+    """Explicit seeds cannot make the product read past its session budget.
+
+    Anti-vacuity: remove the slice of ``seed_session_ids`` in
+    ``context_image_from_pinned_reader`` and the compiled image has two
+    explicit sessions despite ``max_sessions=1``.
+    """
+    root = tmp_path / "archive"
+    root.mkdir()
+    for name in ("context-budget-a", "context-budget-b"):
+        SessionBuilder(root / "index.db", name).provider("codex").add_message(
+            "one", role="user", text=f"Evidence from {name}"
+        ).save()
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        session_ids = [summary.session_id for summary in archive.list_summaries(limit=2)]
+        image = context_image_from_pinned_reader(
+            {"seed_session_ids": session_ids, "max_sessions": 1, "include_assertions": False},
+            archive=archive,
+        )
+    assert len(image.spec.seed_refs) == 1
+
+
 def test_pinned_image_matches_facade_compilation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()

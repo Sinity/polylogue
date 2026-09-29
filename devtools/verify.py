@@ -602,15 +602,6 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
                 path.unlink()
 
 
-def _clear_full_run_shards() -> None:
-    """Prevent stale full-corpus shards from being attributed to this run."""
-    for report in (ROOT / Path(".cache/verify")).glob("last-pytest-*.json"):
-        if report.name == "last-pytest.json":
-            continue
-        with contextlib.suppress(FileNotFoundError):
-            report.unlink()
-
-
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -1341,8 +1332,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
-    if args.all_tests:
-        _clear_full_run_shards()
     changed_paths: frozenset[str] | None = None
     if not args.quick and not args.all_tests:
         changed_paths = _git_changed_paths(ROOT)
@@ -1376,66 +1365,120 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         mirror_current=agentctl_operation is None,
         agentctl_operation=agentctl_operation,
     )
-    if not args.quick:
-        admission: AffectedAdmission | None = None
-        if selection == "affected":
-            admission = _affected_admission(
-                root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
-            )
-        run.record_selection(
-            selection_mode=selection,
-            graph_status=str(graph.status),
-            graph_reason=graph.reason,
-            full_rerun_cause=graph.full_rerun_cause if selection not in _GRAPH_FREE_SELECTIONS else None,
-            graph_recorded_tests=getattr(graph, "recorded_tests", None),
-            graph_source_dependencies=getattr(graph, "source_dependencies", None),
-            seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
-            seed_source_mtime_ns=(
-                testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
-            ),
-            selection_reason=(
-                admission.reason if admission is not None else _selection_reason(selection, changed_paths)
-            ),
-            selected_count=admission.selected_count if admission is not None else None,
-            estimated_seconds=admission.estimated_seconds if admission is not None else None,
-            admission=admission.to_payload() if admission is not None else None,
-        )
-        if selection == "none":
-            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection, changed_paths)) + "\n")
-        if admission is not None and not admission.admitted:
-            payload = _finish_and_record_verification(
-                run=run,
-                exit_code=2,
-                duration_s=time.monotonic() - started,
-                diagnosis="affected_admission_refused",
-                verification_scope=scope.value,
-                final_git_head=git_head(ROOT),
-                pytest_aggregate={
-                    "selection_mode": "affected",
-                    "selected_union_count": admission.selected_count,
-                    "terminal_union_count": 0,
-                    "outcomes": {},
-                    "terminal_green": False,
-                    "complete_corpus_covered": False,
-                    "admission": admission.to_payload(),
-                },
-            )
-            _emit_affected_admission_refusal(graph=graph, decision=admission)
-            _emit(payload, use_json=args.json, operation=agentctl_operation)
-            return 2
-    steps = build_verify_steps(
-        quick=args.quick,
-        selection=selection,
-        hypothesis_profile=args.hypothesis_profile,
-        changed_paths=changed_paths,
-    )
     results: list[dict[str, Any]] = []
+    # Everything from receipt creation to the terminal verdict runs under the
+    # interruption handlers: a signal during selection, admission or the
+    # post-step accounting still finishes this run instead of leaving it
+    # ``running``. The publication itself stays outside, so a signal cannot
+    # finish an already-finished run a second time.
     try:
+        refused: AffectedAdmission | None = None
+        if not args.quick:
+            admission: AffectedAdmission | None = None
+            if selection == "affected":
+                admission = _affected_admission(
+                    root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
+                )
+            run.record_selection(
+                selection_mode=selection,
+                graph_status=str(graph.status),
+                graph_reason=graph.reason,
+                full_rerun_cause=graph.full_rerun_cause if selection not in _GRAPH_FREE_SELECTIONS else None,
+                graph_recorded_tests=getattr(graph, "recorded_tests", None),
+                graph_source_dependencies=getattr(graph, "source_dependencies", None),
+                seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
+                seed_source_mtime_ns=(
+                    testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
+                ),
+                selection_reason=(
+                    admission.reason if admission is not None else _selection_reason(selection, changed_paths)
+                ),
+                selected_count=admission.selected_count if admission is not None else None,
+                estimated_seconds=admission.estimated_seconds if admission is not None else None,
+                admission=admission.to_payload() if admission is not None else None,
+            )
+            if selection == "none":
+                sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection, changed_paths)) + "\n")
+            if admission is not None and not admission.admitted:
+                refused = admission
+        # A refused admission withholds pytest, not the static gates.
+        steps = build_verify_steps(
+            quick=args.quick or refused is not None,
+            selection=selection,
+            hypothesis_profile=args.hypothesis_profile,
+            changed_paths=changed_paths,
+        )
         exit_code = 0
         for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
             if rc:
                 exit_code = exit_code or rc
+        executed: set[tuple[object, object, object]] = set()
+        tree_unknown = False
+        for result in results:
+            slot_receipt = result.get("pytest_slot_receipt")
+            provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
+            if isinstance(provenance, Mapping):
+                # The receipt and verdict name what pytest executed, not what was admitted.
+                run.record_execution_worktree(provenance)
+                executed.add(
+                    (
+                        provenance.get("git_branch"),
+                        provenance.get("git_head"),
+                        provenance.get("git_worktree_content_sha256"),
+                    )
+                )
+            elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+                # The kill took the slot receipt, so nothing identified the tree
+                # pytest ran against; the admitted head is not that evidence.
+                tree_unknown = True
+        if tree_unknown:
+            # Recorded after every step, so a later step's provenance cannot
+            # stand in for the tree the killed step ran against.
+            run.record_execution_worktree({"capture_source": "unavailable"})
+        # The static gates read the checkout directly, with no slot to re-check it:
+        # a run whose branch, HEAD or Git-visible content changed while it ran, or
+        # whose pytest step executed other content, verified no single tree.
+        finished_identity = checkout_identity(ROOT)
+        finished_content = git_worktree_content_sha256(ROOT)
+        checkout_moved = (
+            (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
+            or finished_content != started_content
+            or bool(executed - {(identity.branch, identity.head, started_content)})
+        )
+        if checkout_moved:
+            sys.stderr.write(
+                f"verify: the checkout moved during the run (started {identity.describe()}, "
+                f"finished {finished_identity.describe()}); the result is void\n"
+            )
+            exit_code = exit_code or 1
+        # The retained exit code is the first failure's; its diagnosis must be too.
+        diagnosis = next(
+            (str(result["diagnosis"]) for result in results if result["exit"] != 0),
+            None,
+        )
+        if checkout_moved:
+            diagnosis = "checkout_moved_during_run"
+        if refused is not None:
+            exit_code = exit_code or 2
+            diagnosis = diagnosis or "affected_admission_refused"
+            aggregate: dict[str, Any] = {
+                "selection_mode": "affected",
+                "selected_union_count": refused.selected_count,
+                "terminal_union_count": 0,
+                "outcomes": {},
+                "terminal_green": False,
+                "complete_corpus_covered": False,
+                "admission": refused.to_payload(),
+            }
+        else:
+            aggregate = _aggregate_pytest_results(
+                results,
+                expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
+                mode="quick" if args.quick else selection,
+                exit_code=exit_code,
+            )
+        final_head = git_head(ROOT)
     except VerificationInterrupted as exc:
         return _finish_interrupted_verification(
             run=run,
@@ -1460,65 +1503,13 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             termination_reason="operator_interrupt",
             results=results,
         )
-    executed: set[tuple[object, object, object]] = set()
-    tree_unknown = False
-    for result in results:
-        slot_receipt = result.get("pytest_slot_receipt")
-        provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
-        if isinstance(provenance, Mapping):
-            # The receipt and verdict name what pytest executed, not what was admitted.
-            run.record_execution_worktree(provenance)
-            executed.add(
-                (
-                    provenance.get("git_branch"),
-                    provenance.get("git_head"),
-                    provenance.get("git_worktree_content_sha256"),
-                )
-            )
-        elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
-            # The kill took the slot receipt, so nothing identified the tree
-            # pytest ran against; the admitted head is not that evidence.
-            tree_unknown = True
-    if tree_unknown:
-        # Recorded after every step, so a later step's provenance cannot
-        # stand in for the tree the killed step ran against.
-        run.record_execution_worktree({"capture_source": "unavailable"})
-    # The static gates read the checkout directly, with no slot to re-check it:
-    # a run whose branch, HEAD or Git-visible content changed while it ran, or
-    # whose pytest step executed other content, verified no single tree.
-    finished_identity = checkout_identity(ROOT)
-    finished_content = git_worktree_content_sha256(ROOT)
-    checkout_moved = (
-        (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
-        or finished_content != started_content
-        or bool(executed - {(identity.branch, identity.head, started_content)})
-    )
-    if checkout_moved:
-        sys.stderr.write(
-            f"verify: the checkout moved during the run (started {identity.describe()}, "
-            f"finished {finished_identity.describe()}); the result is void\n"
-        )
-        exit_code = exit_code or 1
-    aggregate = _aggregate_pytest_results(
-        results,
-        expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
-        mode="quick" if args.quick else selection,
-        exit_code=exit_code,
-    )
-    # The retained exit code is the first failure's; its diagnosis must be too.
-    diagnosis = next(
-        (str(result["diagnosis"]) for result in results if result["exit"] != 0),
-        None,
-    )
-    if checkout_moved:
-        diagnosis = "checkout_moved_during_run"
     payload = _finish_and_record_verification(
         run=run,
         exit_code=exit_code,
         duration_s=time.monotonic() - started,
         diagnosis=diagnosis,
         verification_scope=scope.value,
-        final_git_head=git_head(ROOT),
+        final_git_head=final_head,
         pytest_aggregate=aggregate,
         workload_receipt=_verification_workload_receipt(
             tier=tier,
@@ -1527,6 +1518,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=exit_code,
         ),
     )
+    if refused is not None:
+        _emit_affected_admission_refusal(graph=graph, decision=refused)
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
 

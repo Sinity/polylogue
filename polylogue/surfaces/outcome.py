@@ -163,6 +163,8 @@ def combine_outcomes(outcomes: Sequence[OutcomeEnvelope], *, empty_reason: str =
             collected.extend(_public_reason(gap, fallback=UNNAMED_GAP) if gap else UNNAMED_GAP for gap in nested)
     gaps = tuple(dict.fromkeys(collected))
     if gaps:
+        if all(entry.state == "error" for entry in outcomes):
+            return OutcomeEnvelope(state="error", reason=gaps[0], detail={"gaps": list(gaps)})
         return OutcomeEnvelope(state="degraded", reason=gaps[0], detail={"gaps": list(gaps)})
     if all(entry.state == "empty" for entry in outcomes):
         return OutcomeEnvelope(state="empty", reason=empty_reason)

@@ -23,7 +23,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.errors import SchemaSkewError, SchemaVersionMismatchError
+from polylogue.core.errors import ArchiveTierUnavailableError, SchemaSkewError, SchemaVersionMismatchError
 from polylogue.mcp.server import build_server
 from polylogue.mcp.server_support import _async_safe_call, _safe_call
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest
@@ -202,3 +202,16 @@ class TestRegistrySurfaceContract:
         tool_names = set(server._tool_manager._tools.keys())
         for name in ["query", "read", "get", "explain", "context", "status"]:
             assert name in tool_names, f"missing expected MCP tool: {name}"
+
+
+def test_archive_tier_unavailable_error_redacts_private_diagnostics() -> None:
+    """Anti-vacuity: forwarding str(exc) exposes absolute path and SQLite detail."""
+    from polylogue.mcp.server_support import _exception_to_error_json
+
+    error = ArchiveTierUnavailableError(
+        tier="user", path="/private/archive/user.db", reason="disk diagnostic", guidance="restart the daemon"
+    )
+    payload = json.loads(_exception_to_error_json("stats", error))
+    assert "/private/archive/user.db" not in payload["message"]
+    assert "disk diagnostic" not in payload["message"]
+    assert payload["message"] == error.public_message

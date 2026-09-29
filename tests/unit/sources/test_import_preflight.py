@@ -68,6 +68,42 @@ def test_preflight_accepts_antigravity_trajectory_sqlite(tmp_path: Path) -> None
     assert result.supported_count == 1
 
 
+@pytest.mark.parametrize(
+    "steps_sql",
+    [
+        "",
+        'INSERT INTO steps VALUES (0, \'message\', \'future-format\', \'{"role":"user","text":"hi"}\');',
+    ],
+    ids=["empty-trajectory", "only-unsupported-steps"],
+)
+def test_preflight_refuses_what_the_production_evidence_gate_refuses(tmp_path: Path, steps_sql: str) -> None:
+    """A trajectory whose steps yield no message is refused as production refuses it.
+
+    Anti-vacuity: report an event-only trajectory as supported and preflight
+    promises an import that ``require_positive_conversational_evidence``
+    removes on every production write path.
+    """
+    from polylogue.sources.dispatch import require_positive_conversational_evidence
+    from polylogue.sources.parsers import antigravity
+
+    source = tmp_path / "quiet-trajectory.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            f"""
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES ('trajectory-quiet', 'cascade-quiet');
+            {steps_sql}
+            """
+        )
+    sessions = list(antigravity.parse_trajectory_db(source, fallback_id=source.stem))
+
+    result = preflight_import_source(source)
+
+    assert require_positive_conversational_evidence(sessions, provider=Provider.ANTIGRAVITY, source_path=None) == []
+    assert result.admissible is False
+
+
 def test_preflight_rejects_unknown_json_shape(tmp_path: Path) -> None:
     source = tmp_path / "unknown.json"
     source.write_text(json.dumps({"not": "an export"}))
@@ -187,6 +223,59 @@ def test_preflight_bounds_a_large_trajectory_store_and_says_so(tmp_path: Path) -
 
     result = preflight_import_source(source)
 
-    assert result.status is ImportPreflightStatus.SUPPORTED
+    assert result.status is ImportPreflightStatus.DEGRADED
     assert result.providers == (Provider.ANTIGRAVITY,)
     assert any("the remainder was not inspected" in caveat for caveat in result.caveats)
+
+
+def test_unidentified_trajectory_rows_keep_distinct_identities(tmp_path: Path) -> None:
+    """Several trajectory rows without ids do not share the path fallback id.
+
+    Anti-vacuity: give every unidentified row the bare ``fallback_id`` again
+    and both sessions carry ``provider_session_id == "unnamed"``.
+    """
+    from polylogue.sources.parsers import antigravity
+
+    source = tmp_path / "unnamed.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES (NULL, NULL);
+            INSERT INTO trajectory_meta VALUES ('', NULL);
+            """
+        )
+
+    sessions = list(antigravity.parse_trajectory_db(source, fallback_id="unnamed"))
+
+    assert [session.provider_session_id for session in sessions] == [
+        "unnamed",
+        "unnamed:trajectory-1",
+    ]
+
+
+def test_generated_trajectory_id_avoids_a_native_id(tmp_path: Path) -> None:
+    """A generated row id never reuses a provider-native trajectory id.
+
+    Anti-vacuity: take ``<fallback>:trajectory-0`` without checking the native
+    ids and both rows share one ``provider_session_id``.
+    """
+    from polylogue.sources.parsers import antigravity
+
+    source = tmp_path / "x.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES (NULL, NULL);
+            INSERT INTO trajectory_meta VALUES ('x:trajectory-0', NULL);
+            """
+        )
+
+    sessions = list(antigravity.parse_trajectory_db(source, fallback_id="x"))
+
+    identities = [session.provider_session_id for session in sessions]
+    assert len(identities) == 2
+    assert len(set(identities)) == 2

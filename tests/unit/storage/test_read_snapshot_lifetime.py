@@ -296,3 +296,19 @@ def test_overdue_is_reported_against_the_declared_maximum(wal_db: Path, monkeypa
         status = frame.status()
         assert status.overdue
         assert "max=30s" in status.describe()
+
+
+def test_successful_checkpoint_does_not_label_current_snapshot_as_a_blocker(wal_db: Path) -> None:
+    """A reader starting after the last write permits all existing frames to drain."""
+    with read_frame(wal_db, timeout_class="background-read") as frame:
+        _write_burst(wal_db)
+        rows = frame.stream("SELECT position, body FROM rows_ ORDER BY position")
+        next(rows)
+        try:
+            assert pinning_read_frames(wal_db)
+            observation = _recurring_checkpoint(wal_db)
+            assert observation.log_pages > 0
+            assert not observation.blocked
+            assert observation.blocking_read_frames == ()
+        finally:
+            rows.close()

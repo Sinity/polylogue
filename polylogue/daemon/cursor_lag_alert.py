@@ -113,6 +113,7 @@ class CursorLagDedupState:
     """
 
     last_emit_at: dict[str, tuple[str, float]] = field(default_factory=dict)
+    unavailable_emit_at: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +189,10 @@ def evaluate_cursor_lag(
         # "cursor lag cleared", asserted from a read that never happened. The
         # dedup state is deliberately left untouched so the real resolution
         # still fires once the ledger becomes readable again.
+        previous = state.unavailable_emit_at
+        if previous is not None and now_ts - previous < thresholds.dedup_window_s:
+            return []
+        state.unavailable_emit_at = now_ts
         return [
             HealthAlert(
                 check_name="cursor_lag",
@@ -198,6 +203,8 @@ def evaluate_cursor_lag(
                 consecutive_failures=0,
             )
         ]
+
+    state.unavailable_emit_at = None
 
     family_state: dict[str, CursorLagFamilySnapshot] = {}
     for entry in summary.family_summaries:

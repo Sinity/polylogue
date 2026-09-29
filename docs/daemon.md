@@ -36,46 +36,21 @@ Accepted ingest records changed session IDs in its terminal audit receipt. Up to
 
 ## Auto-Discovery
 
-The daemon watches typed provider sources, the archive inbox, browser-capture
-spool, and hook-event carriers by default. Custom roots add ordinary export sources;
-they do not replace those defaults:
-
-Examples include:
+The daemon watches typed provider sources, the archive inbox, the
+browser-capture spool, and hook-event carriers. Examples include:
 
 ```
 ~/.claude/projects/       Claude Code sessions
 ~/.codex/sessions/         Codex sessions
 ```
 
-Custom watch roots with `--root` (repeatable):
-
-```bash
-polylogued run --root /path/to/exports --root /another/path
-```
-
-Use `--default-source NAME` repeatedly to select whole typed provider sources
-from the defaults. Other defaults, including `browser-capture`, `inbox`,
-`inbox-legacy`, and hook carriers, are omitted. Explicit `--root` values still
-add ordinary export roots. The available names are reported if a name is
-misspelled. For an archive fed by provider directories and account exports:
-
-```bash
-polylogued run \
-  --default-source claude-code --default-source claude-code-todos \
-  --default-source claude-code-history \
-  --default-source codex --default-source codex-state \
-  --default-source codex-memories --default-source gemini-cli \
-  --default-source hermes --default-source antigravity \
-  --root /path/to/account-exports \
-  --no-browser-capture
-```
-
-`--default-source` preserves each source's path and artifact rules. `--root`
-uses ordinary export detection and cannot stand in for Codex state, Codex
-memories, or Claude history. `--no-default-sources` remains available for a
-watch set made only of explicit roots and cannot be combined with
-`--default-source`. The standalone `polylogued watch` command accepts the same
-source selection flags.
+Every origin is acquired only from its canonical location: the provider
+tool's own directory, the hook spools and browser-capture spool under the
+archive root, and the archive inbox. There are no custom watch roots and no
+way to narrow the watch set. A tool whose logs live elsewhere is followed by
+a symlink at its canonical path. Account exports (ChatGPT, Claude, Gemini) are
+imported deliberately with `polylogue import <path>`, which stages them into
+the inbox.
 
 ## Configuration Flags
 
@@ -83,9 +58,6 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--root` | (auto) | Add an export watch root alongside typed defaults (repeatable) |
-| `--default-source` | all defaults | Select a named typed default source (repeatable) |
-| `--no-default-sources` | off | Watch only explicit `--root` values |
 | `--no-watch` | off | Disable the live source watcher |
 | `--no-browser-capture` | off | Disable the browser-capture receiver |
 | `--no-api` | off | Disable the HTTP API + web reader |
@@ -746,7 +718,7 @@ FairIntakeDispatcher.run_once
   -> plan the page against the class byte share          (never split below one file)
   -> FileIntakeAdapter.admit_page(page)                  (one call for the page)
        -> cursor authority gate, then cursor.initialize
-       -> LiveWatcher.select_ingest_candidates           (bulk cursor comparison)
+       -> LiveWatcher.classify_ingest_candidates         (bulk cursor comparison)
        -> LiveWatcher._ingest_files                      (one batch, one parse-stage warm)
        -> one embedding + one session-profile convergence for the page
   -> one outcome per item: admitted / duplicate / excluded / deferred /
@@ -768,8 +740,9 @@ Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
-database page or a read-only mount (`polylogue/core/storage_faults.py`) -- is
-not a verdict on the input. The batch leaves the affected files' cursors and
+database page, a read-only mount, or attachment bytes a parse worker published
+that blob GC reclaimed before the writer reserved them
+(`polylogue/core/storage_faults.py`) -- is not a verdict on the input. The batch leaves the affected files' cursors and
 raw parse state untouched, closes its `ingest_attempts` row as
 `transient_error` with evidence `archive_write:storage_fault:<kind>`, and the
 page is refused at ERROR as `daemon.intake.page_refused` with reason

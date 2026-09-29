@@ -34,10 +34,12 @@ from polylogue.daemon.intake import (
     IntakeAdapter,
     IntakeItem,
     IntakePass,
+    is_transient_admission_error,
 )
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
+from polylogue.sources.live.batch import CursorAuthorityBlockedError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
     active_cold_build_generation,
@@ -499,17 +501,21 @@ class FileIntakeAdapter(IntakeAdapter):
             self._retry_page_pending = True
         items: list[IntakeItem] = []
         for path in paths:
+            revision: str | None
             try:
                 observed = path.lstat()
                 size = observed.st_size if stat.S_ISREG(observed.st_mode) else 1
+                revision = f"{observed.st_size}:{observed.st_mtime_ns}:{observed.st_ino}"
             except OSError:
                 size = 1
+                revision = None
             items.append(
                 IntakeItem(
                     item_id=f"file:{path.absolute()}",
                     class_name=self.class_name,
                     payload=path,
                     estimated_cost=max(1, size),
+                    revision=revision,
                 )
             )
         return tuple(items)
@@ -825,10 +831,11 @@ class FileIntakeAdapter(IntakeAdapter):
             # handing those to the batch buys a planning pass per file per
             # pass for no admission.
             paths = [Path(cast(Any, item.payload)) for item in batch]
-            select = getattr(self.context.watcher, "select_ingest_candidates", None)
-            if not callable(select):
+            classify = getattr(self.context.watcher, "classify_ingest_candidates", None)
+            pending_retry: set[Path] = set()
+            if not callable(classify):
                 needed = set(paths)
-            elif callable(run_writer_sync):
+            else:
                 # The selection is a read that can decide to write: an
                 # incomplete-append deferral, an archived-cursor
                 # reconciliation and a device-drift rebase all correct cursor
@@ -836,11 +843,23 @@ class FileIntakeAdapter(IntakeAdapter):
                 # run through the writer admission like every other one --
                 # under process-wide lease enforcement an unadmitted cursor
                 # write is refused, which turned the whole page retryable.
-                needed = set(await run_writer_sync("watcher.intake.select", select, paths))
-            else:
-                needed = set(select(paths))
+                if callable(run_writer_sync):
+                    selected, pending = await run_writer_sync("watcher.intake.select", classify, paths)
+                else:
+                    selected, pending = classify(paths)
+                needed = set(selected)
+                pending_retry = set(pending)
             skipped = [item for item in batch if Path(cast(Any, item.payload)) not in needed]
             for item in skipped:
+                if Path(cast(Any, item.payload)) in pending_retry:
+                    # A scheduled retry is owed work, not an admission: the
+                    # item stays unacknowledged until the retry runs.
+                    outcomes[item.item_id] = AdmissionResult(
+                        AdmissionOutcome.DEFERRED,
+                        reason=f"source retry pending: {item.payload}",
+                        actual_cost=0,
+                    )
+                    continue
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.DUPLICATE, actual_cost=max(1, int(item.estimated_cost))
                 )
@@ -883,7 +902,8 @@ class FileIntakeAdapter(IntakeAdapter):
             # A cursor-authority refusal lands here too: it is retryable for
             # every item in the page, and nothing in the archive changed. Say
             # so once per page: a class that reports only ``retried`` counts
-            # is otherwise a silent refusal with no reason anywhere.
+            # is otherwise a silent refusal with no reason anywhere. Anything
+            # else escapes to the dispatcher, which reports it the same way.
             reason = f"{type(exc).__name__}: {exc}"
             emit(
                 "daemon.intake.page_refused",
@@ -895,8 +915,11 @@ class FileIntakeAdapter(IntakeAdapter):
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
+            # A cursor-authority refusal clears once the frontier proof does;
+            # any other error here is classified like one that escaped.
+            transient = isinstance(exc, CursorAuthorityBlockedError) or is_transient_admission_error(exc)
             for item in batch:
-                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason)
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason, transient=transient)
             return outcomes
 
         stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
@@ -920,6 +943,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # failure here.
         failed -= deferred
         excluded_by_path = dict(getattr(metrics, "excluded_paths", {}) or {})
+        no_session = set(getattr(metrics, "no_session_paths", ()) or ())
         if not succeeded:
             # This route calls ``_ingest_files`` directly, so the watcher's
             # own ``_log_ingest_metrics`` never runs for it and the
@@ -942,7 +966,16 @@ class FileIntakeAdapter(IntakeAdapter):
             key = str(Path(cast(Any, item.payload)))
             item_estimate = max(1, int(item.estimated_cost))
             actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
-            if key in succeeded:
+            if key in no_session:
+                # Acquired and parsed, but no session came of it: the raw
+                # carries the typed terminal outcome, and reporting ADMITTED
+                # counted a file that produced nothing (polylogue-xf8qp).
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.EXCLUDED,
+                    reason=f"source produced no sessions: {key}",
+                    actual_cost=actual_cost,
+                )
+            elif key in succeeded:
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
             elif excluded_by_path.get(key) in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET}:
                 self._fresh_attempted_paths.discard(Path(cast(Any, item.payload)))
@@ -1005,7 +1038,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     for offered in offered_local_retries:
                         if offered in self._fresh_retry_debt:
                             self._fresh_retry_debt[offered] = now
-        admitted_paths = [path for path in paths if str(path) in succeeded]
+        admitted_paths = [path for path in paths if str(path) in succeeded and str(path) not in no_session]
         if admitted_paths and not is_fully_degraded():
             # A later file in this batch may have degraded the daemon; derived
             # follow-up converges from durable evidence once it recovers.
@@ -1125,11 +1158,17 @@ class MultiplexIntakeAdapter(IntakeAdapter):
                 schedulable.append(adapter)
                 continue
             if self._halts is not None and self._halts.is_halted(unit):
+                from polylogue.daemon.discovery_progress import abandon_discovery
+
+                abandon_discovery(adapter)
                 continue
             halted = source_halt(unit)
             if halted is not None:
                 if self._halts is not None:
                     self._halts.halt(unit, f"{halted.code}: {halted.message}")
+                    from polylogue.daemon.discovery_progress import abandon_discovery
+
+                    abandon_discovery(adapter)
                     emit(
                         "daemon.intake.source_halted",
                         level=WARNING,
@@ -1169,7 +1208,24 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             remaining = limit - len(result)
             if remaining <= 0:
                 break
-            page = await adapter.discover(limit=remaining)
+            try:
+                page = await adapter.discover(limit=remaining)
+            except WalkRefusedError as exc:
+                # One root's absence (an uninstalled or relocated tool) is
+                # that sub-unit's own retryable gap, not this class's: a
+                # sibling root that IS present must still offer its own
+                # pending files this pass instead of the round-robin
+                # aborting on the first unavailable root it visits.
+                unit = _sub_unit_name(adapter)
+                emit(
+                    "daemon.intake.sub_unit_walk_refused",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="walk_refused",
+                    component=unit or "unknown",
+                    error_detail=str(exc),
+                )
+                continue
             result.extend(page)
             owners.extend([adapter] * len(page))
         self._next = (start + 1) % len(adapters)
@@ -1191,6 +1247,9 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             return result
         reason = result.reason or "source reported terminal failure"
         self._halts.halt(unit, reason)
+        from polylogue.daemon.discovery_progress import abandon_discovery
+
+        abandon_discovery(adapter)
         emit(
             "daemon.intake.source_halted",
             level=WARNING,
@@ -1294,7 +1353,14 @@ class CallbackIntakeAdapter(IntakeAdapter):
                 actual_cost=self.estimated_cost,
             )
         except Exception as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{self.class_name}: {exc}")
+            return AdmissionResult(
+                AdmissionOutcome.RETRYABLE,
+                # The exception type leads so `_failure_signature`, which
+                # takes the text before the first colon, keys on it rather
+                # than on the adapter's class name shared by every failure.
+                reason=f"{type(exc).__name__}: {self.class_name}: {exc}",
+                transient=is_transient_admission_error(exc),
+            )
 
     async def acknowledge(self, item: IntakeItem) -> None:
         if not self.persistent:
@@ -1337,7 +1403,15 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
                 actual_cost=item.estimated_cost,
             )
         except Exception as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"raw materialization: {exc}")
+            return AdmissionResult(
+                AdmissionOutcome.RETRYABLE,
+                # The exception type leads, as elsewhere, so
+                # `_failure_signature` (text before the first colon) keys on
+                # it rather than on the constant "raw materialization" label
+                # every failure of this class would otherwise share.
+                reason=f"{type(exc).__name__}: raw materialization: {exc}",
+                transient=is_transient_admission_error(exc),
+            )
 
     async def acknowledge(self, item: IntakeItem) -> None:
         return None

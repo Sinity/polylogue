@@ -37,6 +37,7 @@ __all__ = [
     "IntakeItem",
     "IntakePass",
     "IntakeClassReport",
+    "is_transient_admission_error",
 ]
 
 
@@ -53,6 +54,10 @@ class IntakeItem:
     class_name: str
     payload: object = None
     estimated_cost: int = 1
+    revision: str | None = None
+    """The observed content revision behind ``item_id``, when the domain can
+    see one (a file's size, mtime and inode). Isolation and failure streaks
+    bind to it, so new content under the same identity is admitted afresh."""
 
 
 class AdmissionOutcome(str, Enum):
@@ -98,6 +103,10 @@ class AdmissionResult:
     outcome: AdmissionOutcome
     reason: str | None = None
     actual_cost: int | None = None
+    transient: bool = True
+    """For ``RETRYABLE``: whether the cause can clear on its own (lock,
+    storage fault, backlog). A non-transient failure repeating with the same
+    signature on an unchanged item is isolated instead of retried forever."""
     #: A RETRYABLE item the adapter never attempted (e.g. the daemon is
     #: degraded): it counts toward no attempt budget or cooldown.
     unattempted: bool = False
@@ -171,6 +180,10 @@ class IntakeClassSpec:
 
     max_attempts: int = 3
     """Retryable attempts on one item identity before a process-local cooldown."""
+
+    max_deterministic_cooldowns: int = 3
+    """Cooldowns an unchanged item may spend on the same non-transient failure
+    before it is isolated as a terminal refusal (polylogue-wyi9p)."""
 
     retry_cooldown_s: float = 5.0
     """Delay before retrying an item that exhausted ``max_attempts``."""
@@ -280,7 +293,48 @@ class _ClassRuntime:
     deficit: int = 0
     attempts: dict[str, int] = field(default_factory=dict)
     retry_after: dict[str, float] = field(default_factory=dict)
-    isolated: set[str] = field(default_factory=set)
+    #: item_id -> the revision it was isolated at. A different revision of
+    #: the same item is new content and releases the isolation.
+    isolated: dict[str, str | None] = field(default_factory=dict)
+    #: item_id -> ((revision, failure signature), consecutive cooldowns)
+    exhaustions: dict[str, tuple[tuple[str, str], int]] = field(default_factory=dict)
+    #: item_id -> the one deterministic failure signature seen in every
+    #: result of its current attempt window, or ``None`` once any result in
+    #: the window was transient or had another signature. Only a clean
+    #: window extends the exhaustion streak.
+    windows: dict[str, tuple[str, str] | None] = field(default_factory=dict)
+
+
+def _item_revision(item: IntakeItem) -> str:
+    """The revision an item's failures bind to; its cost when none is observed."""
+
+    return item.revision if item.revision is not None else f"cost:{int(item.estimated_cost)}"
+
+
+def _failure_signature(reason: str | None) -> str:
+    """The stable part of a failure reason: its exception type when named."""
+
+    text = str(reason or "")
+    head, sep, _detail = text.partition(":")
+    return head if sep else text
+
+
+def is_transient_admission_error(exc: BaseException) -> bool:
+    """Whether an escaped admission error can clear without any change.
+
+    Lock contention, timeouts and storage faults are conditions of the host or
+    archive. A KeyError, a TypeError or an SQLite error such as ``no such
+    table`` is a defect that repeats identically forever, whatever its class.
+    """
+
+    from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+    from polylogue.core.storage_faults import ArchiveStorageFaultError, storage_fault_kind
+
+    return (
+        isinstance(exc, (OSError, TimeoutError, ArchiveStorageFaultError))
+        or is_transient_sqlite_lock(exc)
+        or storage_fault_kind(exc) is not None
+    )
 
 
 class FairIntakeDispatcher:
@@ -431,7 +485,15 @@ class FairIntakeDispatcher:
             if runtime.deficit <= 0:
                 break
             if item.item_id in runtime.isolated:
-                continue
+                if runtime.isolated[item.item_id] == _item_revision(item):
+                    continue
+                # The item changed since it was set aside: new content gets a
+                # fresh admission and a fresh failure streak.
+                del runtime.isolated[item.item_id]
+                runtime.exhaustions.pop(item.item_id, None)
+                runtime.attempts.pop(item.item_id, None)
+                runtime.windows.pop(item.item_id, None)
+                runtime.retry_after.pop(item.item_id, None)
             retry_after = runtime.retry_after.get(item.item_id)
             if retry_after is not None:
                 if self._clock() < retry_after:
@@ -479,8 +541,15 @@ class FairIntakeDispatcher:
             if result.acknowledgeable:
                 await _maybe_await(spec.adapter.acknowledge(item))
                 runtime.attempts.pop(item.item_id, None)
+                runtime.windows.pop(item.item_id, None)
                 runtime.retry_after.pop(item.item_id, None)
-                item_actual_cost = max(1, int(result.actual_cost or item_cost))
+                # Only an uninterrupted failure streak may isolate an item.
+                runtime.exhaustions.pop(item.item_id, None)
+                # `or` would treat an explicit 0 (a deferred retry
+                # placeholder reporting no work attempted) as absent and
+                # substitute the full estimate, permanently consuming
+                # deficit for work that never ran.
+                item_actual_cost = item_cost if result.actual_cost is None else max(0, int(result.actual_cost))
                 actual_cost += item_actual_cost
                 # Reconcile the estimate after preparation. A larger actual
                 # cost consumes future deficit; a smaller one is returned.
@@ -496,8 +565,10 @@ class FairIntakeDispatcher:
                 continue
             if result.outcome is AdmissionOutcome.TERMINAL:
                 runtime.attempts.pop(item.item_id, None)
+                runtime.windows.pop(item.item_id, None)
                 runtime.retry_after.pop(item.item_id, None)
-                runtime.isolated.add(item.item_id)
+                runtime.exhaustions.pop(item.item_id, None)
+                runtime.isolated[item.item_id] = _item_revision(item)
                 isolated += 1
                 emit(
                     "daemon.intake.item_isolated",
@@ -519,6 +590,15 @@ class FairIntakeDispatcher:
                 continue
             attempts = runtime.attempts.get(item.item_id, 0) + 1
             runtime.attempts[item.item_id] = attempts
+            signature = None if result.transient else (_item_revision(item), _failure_signature(result.reason))
+            if item.item_id not in runtime.windows:
+                runtime.windows[item.item_id] = signature
+            elif runtime.windows[item.item_id] != signature:
+                runtime.windows[item.item_id] = None
+            if runtime.windows[item.item_id] is None:
+                # Any interruption breaks the consecutive streak at once,
+                # not only one that lands on the cooldown boundary.
+                runtime.exhaustions.pop(item.item_id, None)
             retried += 1
             emit(
                 "daemon.intake.item_retryable",
@@ -532,6 +612,32 @@ class FairIntakeDispatcher:
             )
             if attempts >= spec.max_attempts:
                 runtime.attempts.pop(item.item_id, None)
+                window = runtime.windows.pop(item.item_id, None)
+                if window is not None:
+                    previous = runtime.exhaustions.get(item.item_id)
+                    rounds = previous[1] + 1 if previous is not None and previous[0] == window else 1
+                    runtime.exhaustions[item.item_id] = (window, rounds)
+                    if rounds >= spec.max_deterministic_cooldowns:
+                        # The same defect on the same unchanged item, again
+                        # and again: a typed terminal refusal, visible as an
+                        # isolated item, instead of a retry every cooldown.
+                        runtime.exhaustions.pop(item.item_id, None)
+                        runtime.retry_after.pop(item.item_id, None)
+                        runtime.isolated[item.item_id] = _item_revision(item)
+                        isolated += 1
+                        emit(
+                            "daemon.intake.item_isolated",
+                            level=WARNING,
+                            outcome="refused",
+                            reason="deterministic_failure",
+                            component=spec.name,
+                            source_id=item.item_id,
+                            attempts=attempts * rounds,
+                            error_detail=str(result.reason),
+                        )
+                        continue
+                else:
+                    runtime.exhaustions.pop(item.item_id, None)
                 runtime.retry_after[item.item_id] = self._clock() + max(0.0, spec.retry_cooldown_s)
                 emit(
                     "daemon.intake.item_cooling_down",
@@ -567,7 +673,11 @@ class FairIntakeDispatcher:
         try:
             return await _maybe_await(spec.adapter.admit(item))
         except Exception as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{type(exc).__name__}: {exc}")
+            return AdmissionResult(
+                AdmissionOutcome.RETRYABLE,
+                reason=f"{type(exc).__name__}: {exc}",
+                transient=is_transient_admission_error(exc),
+            )
 
     async def _admit_page(self, spec: IntakeClassSpec, items: Sequence[IntakeItem]) -> list[AdmissionResult]:
         """Admit a planned page, preferring the adapter's page-shaped entry.
@@ -590,8 +700,21 @@ class FairIntakeDispatcher:
                 await _maybe_await(admit_page(tuple(items))),
             )
         except Exception as exc:
+            # The adapter handled none of it, so say so once per page: an
+            # escaped error otherwise appears only in per-item reasons.
+            emit(
+                "daemon.intake.page_refused",
+                level=WARNING,
+                outcome="degraded",
+                reason="page_admission_escaped",
+                component=spec.name,
+                files=len(items),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             reason = f"{type(exc).__name__}: {exc}"
-            return [AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason) for _ in items]
+            transient = is_transient_admission_error(exc)
+            return [AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason, transient=transient) for _ in items]
         return [
             results.get(item.item_id)
             or AdmissionResult(AdmissionOutcome.RETRYABLE, reason="adapter reported no outcome for this item")

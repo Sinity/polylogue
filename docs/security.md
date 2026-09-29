@@ -266,20 +266,32 @@ marker is consulted at *both* acquire-time raw-session write functions in
 `polylogue/storage/sqlite/archive_tiers/source_write.py` — they must gate
 identically, or one route silently resurrects excised content:
 
-- `write_source_raw_session` (payload held in memory) — used by the CLI
-  import path via `parse_sources_archive`.
+- `write_source_raw_session` (payload held in memory).
 - `write_source_raw_session_blob_ref` (payload already published as a blob,
-  not held in memory) — used by the daemon's memory-bounded streaming path
-  for multi-GiB files, via `sources.live.batch.LiveBatchProcessor.
-  _ingest_full_records_archive`.
+  not held in memory) — the memory-bounded path for multi-GiB files.
+
+Every archive write route reaches them:
+
+- `polylogue import` stages the file and submits the declared `ingest` daemon
+  operation; the daemon executes it (`operations/daemon_ingest.py`,
+  `execute_ingest_operation`) and admits each item through
+  `storage/sqlite/archive_tiers/raw_admission.py`
+  (`execute_source_item_admission`), which calls both. The CLI process
+  writes nothing.
+- The daemon's live watcher writes through
+  `sources.live.batch.LiveBatchProcessor._ingest_full_records_archive`, which
+  picks the in-memory or the blob-ref write per record.
+- `operations.canonical_archive_ingest.ingest_one_shot_archive` drives that
+  same live batch in-process against a fresh archive. It is tooling, not an
+  import route: demo seeding of an isolated synthetic root, devtools probes,
+  and tests use it.
 
 A re-acquire attempt whose payload hashes to a recorded `removed_hash` raises
-`ContentExcisedError` from either function; the batch orchestration layer
-(`pipeline/services/archive_ingest.py:write_pair` for the CLI path,
-`sources/live/batch.py:_ingest_full_records_archive` for the daemon path)
-catches this specifically and skips just that one file (counted in
-`ParseResult.excised_skips` / `_ArchiveFullWriteResult.excised_skips`
-respectively) rather than aborting the whole ingest run.
+`ContentExcisedError` from either function; the live batch orchestration layer
+(`sources/live/batch.py:_ingest_full_records_archive`, shared by the daemon's
+watcher and the one-shot tooling route) catches this specifically
+and skips just that one file (counted in `_ArchiveFullWriteResult.excised_skips`
+and summed into `ParseResult.excised_skips`) rather than aborting the whole ingest run.
 
 **Lineage safety.** Excising a session that is a prefix-sharing lineage
 *parent* (see `session_links`/`branch_point_message_id` in the top-level
@@ -356,7 +368,7 @@ and the existing reference-counted blob GC (`polylogue/storage/blob_gc.py`)
 reclaims the physical bytes on its next run using its own lease discipline.
 
 Coverage: `tests/unit/security/test_excision.py`, including a real
-`parse_sources_archive` round trip (synthetic-corpus fixture, not a hand-
+`ingest_one_shot_archive` round trip (synthetic-corpus fixture, not a hand-
 rolled JSONL literal) proving the batch-skip behavior end to end.
 
 ### Mirror/primary lifecycle (Sinex-backed modes — mechanism only)

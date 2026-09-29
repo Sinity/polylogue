@@ -23,11 +23,13 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from devtools.isolated_environment import isolated_home_environment
 from devtools.query_memory_budget import _read_process_tree_rss_kb
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -409,7 +411,7 @@ def _observe(
             work_identity = {
                 "source_sha256": input_digest,
                 "source_bytes": expected_bytes,
-                "profile": "polylogued-run:cold-build-index:standalone-off:no-default-sources",
+                "profile": "polylogued-run:cold-build-index:standalone-off:isolated-home",
             }
             output_equivalence_key = hashlib.sha256(
                 json.dumps(
@@ -450,13 +452,47 @@ def _observe(
     )
 
 
+#: Provider directories the daemon watches under a home. The qualification
+#: presents its input where the provider's own tool writes it.
+_CANONICAL_INPUT_DIRECTORIES = (Path(".codex") / "sessions", Path(".claude") / "projects")
+
+
+def undeclared_source_entries(source_root: Path, source: Path) -> list[str]:
+    """Entries under the qualification home other than the declared input.
+
+    The source root becomes the daemon's ``HOME`` and every canonical source
+    under it is acquired, so any other entry (a Codex state database, a hook
+    carrier, a symlink) would enter the build without being named by the
+    receipt.
+    """
+    return sorted(
+        str(path.relative_to(source_root))
+        for path in source_root.rglob("*")
+        if path != source and (path.is_symlink() or not path.is_dir())
+    )
+
+
 def _verify_args(args: argparse.Namespace) -> tuple[Path, Path, str]:
     if args.receipt.exists():
         raise FileExistsError(f"refusing to overwrite existing qualification receipt: {args.receipt}")
     candidate = args.candidate.resolve(strict=True)
     source_root = args.source_root.resolve(strict=True)
     source = args.input.resolve(strict=True)
-    source.relative_to(source_root)
+    relative = source.relative_to(source_root)
+    if not any(relative.is_relative_to(directory) for directory in _CANONICAL_INPUT_DIRECTORIES):
+        raise ValueError(
+            "input must sit under a canonical provider directory of the source root: "
+            + ", ".join(str(directory) for directory in _CANONICAL_INPUT_DIRECTORIES)
+        )
+    from polylogue.sources.dispatch import is_jsonl_source_path
+
+    if not is_jsonl_source_path(source.name):
+        # The canonical watcher only admits .jsonl (or a declared
+        # path-scoped artifact) from these directories; an unrecognized
+        # suffix sits in a directory the containment check accepts but
+        # produces no cursor/raw evidence, so qualification would otherwise
+        # run its full timeout before failing.
+        raise ValueError(f"input must be a .jsonl file the canonical watcher admits, not {source.name!r}")
     if not source.is_file() or source.stat().st_size != args.expected_bytes:
         raise ValueError("input size does not match --expected-bytes")
     digest = _sha256(source)
@@ -482,34 +518,41 @@ def _verify_args(args: argparse.Namespace) -> tuple[Path, Path, str]:
     archive = args.archive_root.absolute()
     if archive.exists() and any(archive.iterdir()):
         raise ValueError("archive root must be absent or empty")
-    siblings = sorted(
-        path for path in source_root.rglob("*") if path.is_file() and path.suffix.lower() in {".jsonl", ".json"}
-    )
-    if siblings != [source]:
-        raise ValueError(f"source root must contain exactly the declared input; found {siblings!r}")
+    if others := undeclared_source_entries(source_root, source):
+        raise ValueError(f"source root must contain exactly the declared input; also found {others!r}")
     return candidate, source, digest
+
+
+def qualification_environment(
+    inherited: Mapping[str, str], *, home: Path, archive: Path, candidate: Path
+) -> dict[str, str]:
+    """The daemon's environment for one isolated qualification run.
+
+    Sources are acquired only from canonical locations, so ``home`` is the
+    isolated home whose provider directory holds the input. Every discovery
+    root is pointed into it, not only ``HOME``: an inherited XDG config or data
+    directory, or a Polylogue path override, would otherwise add the
+    operator's real config and sources to the run.
+    """
+    env = isolated_home_environment(inherited, home=home)
+    env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive)
+    # The qualification's required domains are local archive convergence. Keep
+    # externally backed Sinex publication explicitly off for this scratch run.
+    env["POLYLOGUE_SINEX_MODE"] = "off"
+    env["PYTHONPATH"] = str(candidate)
+    return env
 
 
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
     candidate, source, digest = _verify_args(args)
     archive = args.archive_root.absolute()
     archive.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive)
-    # The qualification's required domains are local archive convergence. Keep
-    # externally backed Sinex publication explicitly off for this scratch run.
-    env["POLYLOGUE_SINEX_MODE"] = "off"
-    env.pop("POLYLOGUE_CONFIG", None)
-    env.pop("PYTHONPATH", None)
-    env["PYTHONPATH"] = str(candidate)
+    env = qualification_environment(os.environ, home=args.source_root.resolve(), archive=archive, candidate=candidate)
     command = [
         sys.executable,
         "-c",
         "from polylogue.daemon.cli import main; main()",
         "run",
-        "--root",
-        str(args.source_root.resolve()),
-        "--no-default-sources",
         "--no-browser-capture",
         "--no-api",
         "--cold-build-index",
@@ -659,7 +702,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate", type=Path, required=True, help="frozen Polylogue worktree")
     parser.add_argument("--candidate-sha", required=True, help="expected immutable HEAD commit")
     parser.add_argument("--archive-root", type=Path, required=True, help="new private scratch archive root")
-    parser.add_argument("--source-root", type=Path, required=True, help="directory containing only --input")
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        required=True,
+        help="isolated home whose canonical provider directory (e.g. .codex/sessions) contains only --input",
+    )
     parser.add_argument("--input", type=Path, required=True, help="one ordinary provider export under source root")
     parser.add_argument("--expected-bytes", type=int, required=True)
     parser.add_argument("--expected-sha256", required=True)

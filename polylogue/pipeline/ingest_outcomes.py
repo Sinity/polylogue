@@ -238,14 +238,18 @@ def storage_fault_disposition(kind: StorageFaultKind, *, diagnostic: str | None)
     outcome is the retryable infrastructure bucket; ``evidence_ref`` names
     the fault kind so it stays countable apart from lock contention.
     """
+    remediation = (
+        "blob GC reclaimed bytes published before the writer reserved them -- "
+        "the inputs were not quarantined and the retry republishes them"
+        if kind is StorageFaultKind.EVICTED
+        else "archive storage refused the write; free space or repair the archive storage -- "
+        "the inputs were not quarantined and are retried when writes succeed"
+    )
     return IngestAttemptDisposition(
         outcome=IngestOutcome.TRANSIENT_ERROR,
         evidence_ref=f"archive_write:storage_fault:{kind.value}",
         diagnostic=bounded_diagnostic(diagnostic),
-        remediation=(
-            "archive storage refused the write; free space or repair the archive storage -- "
-            "the inputs were not quarantined and are retried when writes succeed"
-        ),
+        remediation=remediation,
     )
 
 

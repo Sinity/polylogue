@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.scenarios import (
     DEMO_CLAUDE_CODE_SESSION_ID,
     build_demo_corpus_specs,
@@ -23,9 +23,8 @@ EXPECTED_DEMO_SESSIONS = (
         "aistudio-drive:demo-00",
         "aistudio-drive",
         "demo-00",
-        # No provider title is present in this generated Drive export; the
-        # parser keeps the source ID as its fallback title (title_source=NULL).
-        "demo-00",
+        # Gemini assembly derives the display title from its first user prompt.
+        "Please inspect the attached fixture note.",
         1706934696990,
         1706934696990,
         4,
@@ -56,9 +55,8 @@ EXPECTED_DEMO_SESSIONS = (
         "codex-session:demo-00",
         "codex-session",
         "demo-00",
-        # The generated export carries no session title, so assembly uses its
-        # source ID; message timestamps define this session's interval.
-        "demo-00",
+        # Codex assembly derives its title from the first user prompt.
+        "Could you review this code for potential issues?",
         # Session timestamps use the available message timestamp evidence.
         1705985222161,
         1705985522161,
@@ -147,7 +145,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     sources = [Source(name=path.parent.name, path=path.relative_to(source_root)) for path in source_paths]
 
     monkeypatch.chdir(source_root)
-    result = await parse_sources_archive(archive_root, sources)
+    result = await ingest_one_shot_archive(archive_root, sources)
 
     assert sorted(result.processed_ids) == [row[0] for row in EXPECTED_DEMO_SESSIONS]
     assert result.counts["sessions"] == 4
@@ -216,7 +214,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
         "assertions": _row_count(archive_root / "user.db", "assertions"),
     }
 
-    repeat = await parse_sources_archive(archive_root, sources)
+    repeat = await ingest_one_shot_archive(archive_root, sources)
 
     assert repeat.processed_ids == set()
     assert repeat.changed_session_ids == ()

@@ -209,12 +209,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "verify_archive_command",
         "Prove the archive is coherent after a rebuild, restore, or promotion. Read-only.",
     ),
-    _command(
-        "wanted-sources",
-        "_wanted_sources",
-        "wanted_sources_command",
-        "Freeze or authorize the private wanted-source denominator for the final rebuild.",
-    ),
 )
 
 MAINTENANCE_COMMAND_BY_NAME: Final[dict[str, MaintenanceCommandDeclaration]] = {

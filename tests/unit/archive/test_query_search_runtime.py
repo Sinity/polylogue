@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -145,9 +144,7 @@ async def test_search_hits_for_plan_refuses_semantic_and_degrades_hybrid_without
         config,
     )
     assert len(hybrid_hits) == 1
-    from polylogue.archive.query.search_hits import SearchHitResults
-
-    assert cast(SearchHitResults, hybrid_hits).execution.unavailable_lanes == ("vector",)
+    assert hybrid_hits.execution.unavailable_lanes == ("vector",)
 
 
 @pytest.mark.asyncio

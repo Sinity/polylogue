@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -508,6 +509,19 @@ def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> No
         assert page["timelines"] == {"conversation:1": [first["event"]]}
 
 
+def test_http_rejects_event_cursor_outside_sqlite_integer_range(tmp_path: Path) -> None:
+    """Anti-vacuity: passing this cursor to sqlite binding raises OverflowError."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        path = (
+            f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&account_scope={SCOPE}"
+            "&client_protocol=1&before_revision=999999999999999999999999999999"
+        )
+        status, response = request(host, port, "GET", path, {})
+    assert status == 400
+    assert response["error"] == "invalid_capture_job_events_query"
+
+
 def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_path: Path) -> None:
     """Anti-vacuity: timestamp order or retention/terminal/lease bypass makes this fail.
 
@@ -712,10 +726,52 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         refreshed = next(entry for entry in second if entry["orphan_kind"] == "malformed_legacy_checkpoint")
         assert refreshed["diagnostic"] == "account scope unavailable; explicit migration or abandonment required"
         unreadable_entry = next(entry for entry in second if entry["orphan_kind"] == "unreadable_legacy_checkpoint")
-        assert unreadable_entry["path"] == str(unreadable)
+        assert str(unreadable_entry["source_digest"]).startswith("path-sha256:")
+        assert str(unreadable) not in json.dumps(unreadable_entry)
         assert unreadable_entry["errno_class"] == "PermissionError"
     finally:
         connection.close()
+
+
+def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path) -> None:
+    """Anti-vacuity: racing ALTER TABLE callers must not see duplicate-column errors."""
+    registries = [CaptureJobRegistry(tmp_path, f"receiver-{index}") for index in range(8)]
+
+    def open_and_close(registry: CaptureJobRegistry) -> None:
+        connection = registry._connect()
+        connection.close()
+
+    with ThreadPoolExecutor(max_workers=len(registries)) as pool:
+        list(pool.map(open_and_close, registries))
+
+
+def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) -> None:
+    """Anti-vacuity: SQL IS NOT NULL counted refs the projection cannot timeline."""
+    registry = CaptureJobRegistry(tmp_path, "receiver")
+    _, created = registry.create(
+        {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "client_protocol": 1,
+            "intent": {
+                "schema_version": 1,
+                "version": 1,
+                "intent_key": INTENT_KEY,
+                "payload": {},
+                "digest": canonical_digest({}),
+            },
+        }
+    )
+    job_id = cast(dict[str, Any], created["job"])["job_id"]
+    with registry._connection() as connection:
+        for index, ref in enumerate(("", None, 17)):
+            connection.execute(
+                "INSERT INTO capture_job_events "
+                "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
+                "VALUES (?, ?, ?, 0, 'first-seen', ?, '{}', ?, '2026-01-01T00:00:00Z')",
+                (f"bad-ref-{index}", job_id, index + 1, canonical_json({"conversation_ref": ref}), f"bad-{index}"),
+            )
+        assert CaptureJobRegistry._holds_conversation_timeline(connection, job_id) is False
 
 
 def test_registry_uses_full_synchronous_mode(tmp_path: Path) -> None:
@@ -1119,16 +1175,16 @@ def test_a_job_cannot_accumulate_unbounded_events(tmp_path: Path) -> None:
         assert stored == 2
 
 
-def test_capture_job_routes_do_not_inherit_the_capture_envelope_body_cap(tmp_path: Path) -> None:
-    """Anti-vacuity: the 128 MiB cap is sized for capture envelopes carrying
-    conversation content; control messages must not inherit it, or the
-    receiver reads and json.loads-es up to 128 MiB per request before any
-    registry validation runs. Restoring the shared cap in ``_capture_job_body``
-    makes this red: the oversized control message is parsed instead of refused
-    on size."""
-    from polylogue.browser_capture.server import MAX_BROWSER_CAPTURE_BODY_BYTES, MAX_CAPTURE_JOB_BODY_BYTES
+def test_capture_job_routes_do_not_inherit_the_general_control_body_bound(tmp_path: Path) -> None:
+    """Anti-vacuity: capture-job requests carry job control, never content, so
+    they must not inherit the general control-message bound, or the receiver
+    reads and json.loads-es up to that bound per request before any registry
+    validation runs. Restoring the shared bound in ``_capture_job_body`` makes
+    this red: the oversized control message is parsed instead of refused on
+    size."""
+    from polylogue.browser_capture.server import MAX_CAPTURE_JOB_BODY_BYTES, MAX_CONTROL_BODY_BYTES
 
-    assert MAX_CAPTURE_JOB_BODY_BYTES < MAX_BROWSER_CAPTURE_BODY_BYTES
+    assert MAX_CAPTURE_JOB_BODY_BYTES < MAX_CONTROL_BODY_BYTES
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)
@@ -1277,6 +1333,35 @@ def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> No
         status, terminal = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
         assert status == 200
         assert terminal["job"]["retention"]["state"] == "active"
+
+
+def _declared_after_upgrade(tmp_path: Path, job_id: str, retention: Mapping[str, object]) -> int:
+    """Rewind the registry to its pre-``retention_declared`` shape and reopen it."""
+    path = capture_job_database_path(tmp_path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE capture_jobs SET retention_json=? WHERE job_id=?", (canonical_json(retention), job_id)
+        )
+        connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
+    # An upgrade runs in a fresh process; forget this one's once-per-file schema check.
+    capture_jobs_module._SCHEMA_READY.clear()
+    registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="upgrade-test")
+    with registry._connection() as connection:
+        row = connection.execute("SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+    return int(row[0])
+
+
+def test_upgrade_marks_only_non_default_retention_as_declared(tmp_path: Path) -> None:
+    """Anti-vacuity: comparing retention_json by spelling marks the sorted-key
+    default declared, so the first assertion fails and terminal jobs never
+    become eligible for collection.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+    default = {"state": "active", "hold_reason": None, "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], default) == 0
+    held = {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], held) == 1
 
 
 def _retired_job(host: str, port: int) -> str:
