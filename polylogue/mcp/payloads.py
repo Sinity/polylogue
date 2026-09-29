@@ -86,6 +86,9 @@ class MCPErrorPayload(SurfacePayloadModel):
     code: int | str | None = None
     detail: str | None = None
     retryable: bool | None = None
+    # The submitted mutation identity survives an indeterminate transport result.
+    # Callers recover this request instead of issuing a second mutation.
+    request_id: str | None = None
     field: str | None = None
     tool: str | None = None
     session_id: str | None = None

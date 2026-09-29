@@ -484,7 +484,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     from polylogue.api.facade_client import FacadeDaemonRequiredError
     from polylogue.archive.query.expression import ExpressionCompileError
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
-    from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+    from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError, DaemonOperationRejectedError
 
     if isinstance(exc, QuerySpecError | ExpressionCompileError):
         field = exc.field
@@ -565,6 +565,19 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             error=exc.code,
             detail=type(exc).__name__,
             tool=fn_name,
+        )
+    elif isinstance(exc, DaemonMutationIndeterminateError):
+        # A lost receipt is not a missing daemon and must never invite a replay.
+        payload = MCPErrorPayload(
+            message=(
+                f"{fn_name}: the daemon may have applied this mutation; recover the existing request before retrying"
+            ),
+            code="indeterminate",
+            error="indeterminate",
+            detail=type(exc).__name__,
+            tool=fn_name,
+            request_id=exc.request_id or None,
+            retryable=False,
         )
     elif isinstance(exc, DaemonOperationRejectedError):
         # The resident daemon refused the request before durable acceptance

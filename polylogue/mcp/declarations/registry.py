@@ -182,7 +182,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "Apply a declared mutation operation after shared authorization. Destructive "
         "operations (delete_session, remove_tag, remove_mark, delete_metadata, "
         "delete_annotation, delete_saved_view, delete_recall_pack, delete_workspace, clear_corrections) "
-        "require confirm=true and fail closed without it.",
+        "require confirm=true and fail closed without it. For a session delete, first call "
+        "prepare_delete_session, then present its preview_ref in fields when applying delete_session; "
+        "confirmation alone does not authorize a delete.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
         "write",

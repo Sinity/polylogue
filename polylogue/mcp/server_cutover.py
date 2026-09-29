@@ -82,6 +82,7 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError
 
     config = hooks.get_config()
     # ``no_daemon``/``daemon_client_mode`` live on PolylogueConfig (the settings
@@ -134,14 +135,14 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
         with suppress(Exception):
             await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
         raise
-    except Exception:
-        return hooks.error_json("daemon operation unavailable", code="daemon_required")
     if response is None:
         # Name the operation: the MCP error payload has no separate field for
         # it, so a client told only "start polylogued run" cannot tell WHICH
         # privileged route refused (the gap #5474 closed for the CLI envelope).
         return hooks.error_json(f"start polylogued run to serve this operation: {operation}", code="daemon_required")
-    if response.get("outcome") in {"rejected", "failed", "indeterminate"}:
+    if response.get("outcome") in {"indeterminate", "disconnected-after-acceptance", "restarted"}:
+        raise DaemonMutationIndeterminateError(method="POST", path="/api/operation", request_id=request_id)
+    if response.get("outcome") in {"rejected", "failed"}:
         error = response.get("error")
         detail = (error.get("detail") or error.get("message")) if isinstance(error, dict) else None
         code = error.get("code") if isinstance(error, dict) else None
@@ -1023,9 +1024,40 @@ async def _query_insight_projection(
             spec = replace(request.build_spec(hooks.clamp_limit), limit=None)
             if projection == "postmortem":
                 bundle = await poly.postmortem_bundle(spec, limit=limit)
-                return hooks.json_payload(bundle, exclude_none=True)
+                gaps: list[str] = []
+                scope = bundle.scope
+                if scope.truncated or scope.dropped_session_count:
+                    gaps.append("match_cap_exceeded")
+                if scope.analyzed_session_count < scope.matched_session_count - scope.dropped_session_count:
+                    gaps.append("session_profile_unavailable")
+                if bundle.wasted_loop.missing_digest_count or bundle.failure_mode.missing_digest_count:
+                    gaps.append("session_digest_unavailable")
+                if scope.matched_session_count and bundle.longest_tool_gap.status == "unavailable":
+                    gaps.append("longest_tool_gap_unavailable")
+                return hooks.json_payload(
+                    MCPRootPayload(
+                        root={
+                            **bundle.model_dump(mode="json", exclude_none=True),
+                            "outcome": decide_outcome(matched=scope.matched_session_count, degraded=gaps).to_dict(),
+                        }
+                    ),
+                    exclude_none=True,
+                )
             report = await poly.pathology_report(spec, limit=limit)
-            return hooks.json_payload(report, exclude_none=True)
+            gaps = []
+            if report.truncated or report.dropped_session_count:
+                gaps.append("match_cap_exceeded")
+            if report.failed_session_count:
+                gaps.append("session_digest_unavailable")
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        **report.model_dump(mode="json", exclude_none=True),
+                        "outcome": decide_outcome(matched=len(report.findings), degraded=gaps).to_dict(),
+                    }
+                ),
+                exclude_none=True,
+            )
 
         if projection == "abandoned_sessions":
             abandoned = await poly.find_abandoned_sessions(
@@ -2303,15 +2335,18 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 exclude_none=True,
             )
 
-        if operation == "delete_session":
+        if operation in ("prepare_delete_session", "delete_session"):
             if session_id is None:
-                return hooks.error_json(
-                    "write(operation='delete_session') requires session_id", code="invalid_argument"
-                )
+                return hooks.error_json(f"write(operation={operation!r}) requires session_id", code="invalid_argument")
+            if operation == "prepare_delete_session":
+                return hooks.json_payload(await poly.prepare_delete_session(session_id), exclude_none=True)
             confirm_error = _require_confirm(hooks, confirm, verb="delete", session_id=session_id)
             if confirm_error is not None:
                 return confirm_error
-            delete_session_result = await poly.delete_session_safe(session_id)
+            preview_ref = _require_field(hooks, fields, "preview_ref", operation=operation)
+            if not preview_ref:
+                return hooks.error_json("preview_ref must not be empty", code="invalid_argument")
+            delete_session_result = await poly.delete_session_safe(session_id, preview_ref=preview_ref)
             return hooks.json_payload(
                 MutationResultPayload(
                     status="deleted" if delete_session_result.outcome == "deleted" else "not_found",
@@ -2948,6 +2983,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                 "bulk_tag_sessions",
                 "set_metadata",
                 "delete_metadata",
+                "prepare_delete_session",
                 "delete_session",
                 "add_mark",
                 "remove_mark",
@@ -2998,6 +3034,11 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             the compiled session). Replaying an identical request is
             idempotent; drift in the delivered identity is rejected. Fetch
             the receipt back through ``context(result_ref=..., recipient_ref=...)``.
+
+            ``prepare_delete_session`` returns a preview without deleting.
+            To apply it, pass ``operation="delete_session"``, the same
+            ``session_id``, ``confirm=True``, and
+            ``fields={"preview_ref": "<returned preview_ref>"}``.
 
             Destructive operations require ``confirm=True`` and fail closed
             without it: ``delete_session``, ``remove_tag``, ``remove_mark``,
