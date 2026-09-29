@@ -1658,6 +1658,8 @@ def _lower_payload_specs(
     source_path: str | None = None,
 ) -> list[LoweredPayloadSpec]:
     runtime_provider = Provider.from_string(provider)
+    if runtime_provider is Provider.BEADS:
+        return []
     if depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
@@ -1675,6 +1677,8 @@ def _lower_payload_specs(
         ]
     if record is not None and browser_capture.looks_like(record):
         provider = _declared_capture_provider(record) or runtime_provider
+        if provider is Provider.BEADS:
+            return []
         return [
             LoweredPayloadSpec(
                 provider=provider,

@@ -332,6 +332,27 @@ def project_search_hits(
     terms = search_terms(query_terms)
     hits: list[SessionSearchHit] = []
     for rank, (native_hit, summary) in enumerate(result.hits, start=1):
+        fused_score: float | None
+        primary_contribution: float | None
+        if result.retrieval_lane == "hybrid":
+            components, fused_score = _hybrid_score_components(native_hit.lane_ranks or {})
+            primary_rank, primary_contribution = primary_lane_evidence(components)
+        else:
+            components = {
+                f"{lane}_rank": float(rank_value)
+                for lane, rank_value in (native_hit.lane_ranks or {}).items()
+                if rank_value is not None
+            }
+            fused_score = None
+            primary_contribution = None
+            # A single-lane hit has no RRF contribution and no lane_ranks
+            # mapping: its native rank is the lane rank.
+            native_rank = getattr(native_hit, "rank", None)
+            primary_rank = (
+                int(native_rank)
+                if isinstance(native_rank, (int, float)) and not isinstance(native_rank, bool)
+                else min((int(value) for value in components.values()), default=None)
+            )
         hits.append(
             session_search_hit_from_summary(
                 _archive_summary_to_domain(summary),
@@ -341,16 +362,11 @@ def project_search_hits(
                 message_id=native_hit.message_id,
                 snippet=native_hit.snippet,
                 matched_terms=terms,
-                score_components={
-                    f"{lane}_rank": float(rank_value)
-                    for lane, rank_value in (native_hit.lane_ranks or {}).items()
-                    if rank_value is not None
-                },
-                lane_rank=min(
-                    rank_value for rank_value in (native_hit.lane_ranks or {}).values() if rank_value is not None
-                )
-                if native_hit.lane_ranks and any(value is not None for value in native_hit.lane_ranks.values())
-                else None,
+                score=fused_score,
+                score_components=components,
+                raw_score=fused_score,
+                lane_rank=primary_rank,
+                lane_contribution=primary_contribution,
             )
         )
     return SearchHitResults(hits, result.execution)

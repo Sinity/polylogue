@@ -23,6 +23,7 @@ from urllib.parse import quote, urlencode
 
 from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
 from devtools.isolated_environment import isolated_home_environment
+from devtools.shared_chrome_lock import shared_chrome_extension_lock
 from polylogue.browser_capture.server import make_server
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -30,7 +31,7 @@ _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
 _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
 _API_TOKEN = "polylogue-agentctl-proof-api-token"
-_SHARED_CHROME_TIMEOUT_S = 30
+_SHARED_CHROME_TIMEOUT_S = 150
 _CHILD_ERROR_TAIL_CHARS = 384
 _DETERMINISTIC_PROVIDERS = ("chatgpt", "claude-ai")
 
@@ -237,6 +238,11 @@ def _start_daemon(
 
 
 def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CHROME_TIMEOUT_S) -> None:
+    with shared_chrome_extension_lock(timeout_s=timeout_s):
+        _run_shared_chrome_control_locked(repo_root=repo_root, timeout_s=timeout_s)
+
+
+def _run_shared_chrome_control_locked(*, repo_root: Path, timeout_s: float) -> None:
     """Exercise the existing Chrome only through Sinnix's owned control boundary."""
     extension_root = repo_root / "browser-extension"
     environment = os.environ.copy()

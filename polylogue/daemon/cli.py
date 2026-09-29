@@ -642,7 +642,7 @@ async def _periodic_status_snapshot_refresh() -> None:
 
 
 async def _run_drive_source_catchup_once(
-    session_profile_callback: SessionProfileCallback,
+    session_profile_callback: SessionProfileCallback | None,
 ) -> int:
     """Acquire and parse configured Drive sources once.
 
@@ -685,7 +685,7 @@ async def _run_drive_source_catchup_once(
                 max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
             )
             session_ids = tuple(sorted(result.parse_result.processed_ids))
-            if session_ids:
+            if session_ids and session_profile_callback is not None:
                 try:
                     await session_profile_callback(session_ids)
                 except Exception as exc:
@@ -720,7 +720,7 @@ async def _run_drive_source_catchup_once(
 
 
 async def _run_drive_source_catchup_safely(
-    session_profile_callback: SessionProfileCallback,
+    session_profile_callback: SessionProfileCallback | None,
 ) -> int:
     """Run Drive catch-up without letting remote-source failures kill daemon."""
     try:
@@ -2409,6 +2409,7 @@ async def _run_daemon_services_under_active_writer_lease(
         capabilities.add(ServiceCapability.API)
     if browser_port is not None:
         capabilities.add(ServiceCapability.BROWSER_HOST)
+    embedding_config = None
     if schema_blocked:
         capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
     else:
@@ -2416,7 +2417,8 @@ async def _run_daemon_services_under_active_writer_lease(
         from polylogue.config import load_polylogue_config
         from polylogue.daemon.embedding_backlog import embedding_convergence_unavailable_reason
 
-        if embedding_convergence_unavailable_reason(load_polylogue_config()) is None:
+        embedding_config = load_polylogue_config()
+        if embedding_convergence_unavailable_reason(embedding_config) is None:
             capabilities.add(ServiceCapability.EMBEDDINGS)
 
     halts = HaltRegistry(archive_root_path)
@@ -2640,6 +2642,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     archive_root_path / "index.db",
                     compute_adapter=daemon_compute,
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                    config=embedding_config,
                 )
             )
             if api_server is not None:
@@ -2749,7 +2752,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
                 ("fts_merge", _periodic_fts_merge),
-                ("heartbeat", _periodic_heartbeat),
+                ("heartbeat", lambda: _periodic_heartbeat(sources=sources)),
                 (
                     "embedding_backlog",
                     lambda: periodic_embedding_backlog_check(
@@ -2851,7 +2854,10 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await write_coordinator.run_sync(actor, function, *args, **kwargs)
 
                     async def run_remote_intake() -> int:
-                        assert session_profile_callback is not None
+                        if session_profile_callback is None:
+                            # Derived schema skew blocks profile publication,
+                            # but source acquisition remains durable and safe.
+                            return await _run_drive_source_catchup_safely(None)
                         return await _run_drive_source_catchup_safely(session_profile_callback)
 
                     async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
@@ -2944,7 +2950,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         DaemonIntakeContext(
                             archive_root=archive_root_path,
                             watcher=watcher,
-                            sources=sources,
+                            sources=sources if enable_watch else (),
                             write_runner=run_intake_write,
                         ),
                         source_halts=SubUnitHaltPolicy(
@@ -3229,6 +3235,17 @@ async def _run_daemon_services_under_active_writer_lease(
                 # Preflight-blocked, or no intake service is schedulable under
                 # this profile: keep HTTP/health and other components serving
                 # so operators see the degraded state.
+                async def unresolved_intake_service() -> None:
+                    raise AssertionError("an intake service was selected after its construction guard")
+
+                for service_name in ("fair_intake", "watcher"):
+                    if supervisor.state(service_name) is ServiceState.PENDING:
+                        if watcher_creation_blocked:
+                            supervisor.mark_unavailable(
+                                service_name, reason="durable schema mismatch blocks intake construction"
+                            )
+                        else:
+                            supervisor.start(service_name, unresolved_intake_service)
                 if lifecycle_events_enabled:
                     await _emit_daemon_lifecycle_event(
                         "component_skipped",

@@ -36,6 +36,8 @@ from polylogue.operations.topology_envelope import (
 READINESS_OK: Final[str] = "ok"
 READINESS_PARTIAL: Final[str] = "partial"
 READINESS_EMPTY: Final[str] = "empty"
+_SQLITE_INTEGER_MAX: Final[int] = (1 << 63) - 1
+_TOPOLOGY_PAGE_LIMIT: Final[int] = MAX_NODE_LIMIT
 
 
 def coerce_node_limit(raw: str | None) -> int | None:
@@ -67,7 +69,9 @@ def coerce_node_offset(raw: str | None) -> int | None:
         value = int(token)
     except (TypeError, ValueError):
         return None
-    return value if value >= 0 else None
+    # The reader binds offset + page width as SQLite LIMIT/OFFSET integers.
+    # Reject tokens whose derived LIMIT could overflow SQLite's signed range.
+    return value if 0 <= value <= _SQLITE_INTEGER_MAX - _TOPOLOGY_PAGE_LIMIT else None
 
 
 def _readiness(

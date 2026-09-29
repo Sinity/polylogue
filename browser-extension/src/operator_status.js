@@ -460,11 +460,12 @@
       preparing: "Browser action preparing",
       submit_intent: "Browser action ready to submit",
       awaiting_approval: "Browser action awaiting approval",
+      drafted: "Browser action drafted",
+      blocked: "Browser action blocked",
+      cancelled: "Browser action cancelled",
       submitted: "Browser action submitted",
-      completed: "Browser action completed",
       failed: "Browser action failed",
       outcome_unknown: "Browser action outcome unknown",
-      declined: "Browser action declined",
     };
     return {
       label: labels[action.status] || "Browser action observed",

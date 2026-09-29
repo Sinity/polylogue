@@ -1125,11 +1125,17 @@ class MultiplexIntakeAdapter(IntakeAdapter):
                 schedulable.append(adapter)
                 continue
             if self._halts is not None and self._halts.is_halted(unit):
+                from polylogue.daemon.discovery_progress import abandon_discovery
+
+                abandon_discovery(adapter)
                 continue
             halted = source_halt(unit)
             if halted is not None:
                 if self._halts is not None:
                     self._halts.halt(unit, f"{halted.code}: {halted.message}")
+                    from polylogue.daemon.discovery_progress import abandon_discovery
+
+                    abandon_discovery(adapter)
                     emit(
                         "daemon.intake.source_halted",
                         level=WARNING,
@@ -1208,6 +1214,9 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             return result
         reason = result.reason or "source reported terminal failure"
         self._halts.halt(unit, reason)
+        from polylogue.daemon.discovery_progress import abandon_discovery
+
+        abandon_discovery(adapter)
         emit(
             "daemon.intake.source_halted",
             level=WARNING,

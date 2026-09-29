@@ -36,7 +36,7 @@ class CatchupStageEvent(BaseModel):
     failed_file_count: int = 0
     deferred_file_count: int = 0
     input_bytes: int = 0
-    ingested_bytes: int = 0
+    ingested_bytes: int | None = 0
     failed_bytes: int = 0
     refused_bytes: int = 0
     refused_bytes_by_reason: dict[str, int] = Field(default_factory=dict)
@@ -92,7 +92,7 @@ class CatchupStatus(BaseModel):
     #: became of it. Throughput is ``ingested_mb_per_second`` -- a rate over
     #: offered bytes counts every declined file as work done.
     input_bytes: int = 0
-    ingested_bytes: int = 0
+    ingested_bytes: int | None = 0
     failed_bytes: int = 0
     refused_bytes: int = 0
     refused_bytes_by_reason: dict[str, int] = Field(default_factory=dict)
@@ -102,7 +102,7 @@ class CatchupStatus(BaseModel):
     read_amplification: float = 0.0
     files_per_second: float = 0.0
     source_mb_per_second: float = 0.0
-    ingested_mb_per_second: float = 0.0
+    ingested_mb_per_second: float | None = 0.0
     parse_time_s: float = 0.0
     convergence_time_s: float = 0.0
     total_time_s: float = 0.0
@@ -154,8 +154,10 @@ def catchup_status_info(
     events = _recent_stage_events(dbf, ops_db=ops_db)
     latest = events[0] if events else None
     now = datetime.now(UTC)
-    mode = _catchup_mode(latest, latest_attempt, convergence)
     halted = _halted_sources(ops_db if ops_db is not None else dbf.with_name("ops.db"))
+    mode = _catchup_mode(latest, latest_attempt, convergence)
+    if halted and mode not in {"catching_up", "converging"}:
+        mode = "degraded"
     try:
         cumulative: dict[str, object] = dict(
             _cumulative_attempts(ops_db if ops_db is not None else dbf.with_name("ops.db"), now=now)
@@ -191,7 +193,11 @@ def catchup_status_info(
             read_amplification=round(_ratio(latest.source_payload_read_bytes, latest.input_bytes), 4),
             files_per_second=round(_ratio(latest.succeeded_file_count, total_time_s), 3),
             source_mb_per_second=round(_ratio(latest.source_payload_read_bytes / 1_000_000, total_time_s), 3),
-            ingested_mb_per_second=round(_ratio(latest.ingested_bytes / 1_000_000, total_time_s), 3),
+            ingested_mb_per_second=(
+                round(_ratio(latest.ingested_bytes / 1_000_000, total_time_s), 3)
+                if latest.ingested_bytes is not None
+                else None
+            ),
             parse_time_s=latest.parse_time_s,
             convergence_time_s=latest.convergence_time_s,
             total_time_s=total_time_s,
@@ -239,7 +245,8 @@ def format_catchup_status_lines(payload: object) -> list[str]:
     available = payload.get("cumulative_available", True) is True
 
     def cumulative_value(name: str) -> object:
-        return payload.get(name, 0) if available else "unavailable"
+        value = payload.get(name, 0) if available else None
+        return value if value is not None else "unavailable"
 
     lines = [
         "Catch-up: "
@@ -322,8 +329,6 @@ def format_catchup_status_lines(payload: object) -> list[str]:
     return lines
 
 
-HALT_EVENT_KIND = "source_ingest_halted"
-
 _attempt_aggregate_lock = threading.Lock()
 _attempt_aggregate_cache: tuple[tuple[object, ...], tuple[object, ...]] | None = None
 _cold_build_progress_provider: Callable[[], tuple[int | None, int, float | None, float | None]] | None = None
@@ -391,60 +396,25 @@ def _unavailable_cumulative(reason: str) -> dict[str, object]:
 
 
 def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
-    """Sources halted by the daemon run that is currently recorded.
+    """Project durable source halts from their scheduling authority."""
+    from polylogue.daemon.service_halt import HaltRegistry, UnitKind
 
-    Bounded to the latest ``daemon_lifecycle`` start: a halt is process-local
-    and does not survive a restart, so replaying an older run's halt would
-    report a source as stopped when it is ingesting.
-    """
-    if not ops_db.exists():
-        return []
-    try:
-        conn = open_readonly_connection(ops_db, validate_schema=False)
-        try:
-            if not table_exists(conn, "daemon_events"):
-                return []
-            floor_ms = 0
-            if table_exists(conn, "daemon_lifecycle"):
-                row = conn.execute("SELECT MAX(started_at_ms) FROM daemon_lifecycle").fetchone()
-                floor_ms = _row_int(row[0]) if row is not None and row[0] is not None else 0
-            rows = conn.execute(
-                """
-                SELECT ts_ms, payload_json
-                FROM daemon_events
-                WHERE kind = ? AND ts_ms >= ?
-                ORDER BY id DESC
-                LIMIT 50
-                """,
-                (HALT_EVENT_KIND, floor_ms),
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        emit(
-            "daemon.catchup.halted_source_query_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="halted_sources_unreadable",
-            path=ops_db,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return []
-    latest_by_source: dict[str, HaltedSourceStatus] = {}
-    for row in rows:
-        payload = _payload(row[1])
-        source_name = _payload_optional_str(payload, "source_name")
-        if source_name is None or source_name in latest_by_source:
+    registry = HaltRegistry(ops_db.parent)
+    statuses = []
+    for record in registry.halted_units():
+        prefix = f"{UnitKind.SOURCE.value}:"
+        if not record.unit.startswith(prefix):
             continue
-        latest_by_source[source_name] = HaltedSourceStatus(
-            source_name=source_name,
-            code=_payload_str(payload, "code", default="unknown"),
-            message=_payload_str(payload, "message", default=""),
-            derived_only=payload.get("derived_only") is True,
-            observed_at=cast(str, iso_from_epoch_ms(max(_row_int(row[0]), 0))),
+        statuses.append(
+            HaltedSourceStatus(
+                source_name=record.unit.removeprefix(prefix),
+                code=record.reason.value,
+                message=record.message,
+                derived_only=False,
+                observed_at=record.halted_at,
+            )
         )
-    return [latest_by_source[name] for name in sorted(latest_by_source)]
+    return statuses
 
 
 def _cumulative_attempts(ops_db: Path, *, now: datetime) -> dict[str, int | float | None]:
@@ -537,7 +507,8 @@ def _cumulative_attempts(ops_db: Path, *, now: datetime) -> dict[str, int | floa
                                 THEN 1 ELSE 0 END),
                        SUM(CASE WHEN attempt_status IN ('failed', 'interrupted', 'completed_with_failures')
                                       AND (event_stage IS NULL OR event_stage <> 'completed')
-                                THEN 1 ELSE 0 END)
+                                THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN json_type(payload_json, '$.ingested_bytes') IS NOT NULL THEN 1 ELSE 0 END)
                 FROM latest WHERE rn = 1
                 """,
                     (floor,),
@@ -567,7 +538,9 @@ def _cumulative_attempts(ops_db: Path, *, now: datetime) -> dict[str, int | floa
         "cumulative_ingested_bytes": ingested_bytes,
         "cumulative_failed_bytes": _row_int(values[9]),
         "cumulative_refused_bytes": _row_int(values[10]),
-        "running_mb_per_second": round(_ratio(ingested_bytes / 1_000_000, elapsed_s), 3),
+        "running_mb_per_second": (
+            round(_ratio(ingested_bytes / 1_000_000, elapsed_s), 3) if _row_int(values[13]) > 0 else None
+        ),
         "planned_file_count": None,
         "planned_raw_revision_count": None,
         "eta_s": None,
@@ -675,7 +648,7 @@ def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...])
         failed_file_count=_payload_int(payload, "failed_file_count"),
         deferred_file_count=_payload_int(payload, "deferred_file_count"),
         input_bytes=_payload_int(payload, "input_bytes"),
-        ingested_bytes=_payload_int(payload, "ingested_bytes"),
+        ingested_bytes=_payload_optional_int(payload, "ingested_bytes"),
         failed_bytes=_payload_int(payload, "failed_bytes"),
         refused_bytes=_payload_int(payload, "refused_bytes"),
         refused_bytes_by_reason=_payload_int_map(payload, "refused_bytes_by_reason"),
@@ -731,6 +704,12 @@ def _payload_int(payload: dict[str, object], key: str, default: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         return default
     return _row_int(value)
+
+
+def _payload_optional_int(payload: dict[str, object], key: str) -> int | None:
+    if key not in payload:
+        return None
+    return _payload_int(payload, key)
 
 
 def _payload_int_map(payload: dict[str, object], key: str) -> dict[str, int]:

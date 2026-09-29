@@ -1970,6 +1970,14 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             continue
         cfg[entry.key] = tuple(value) if isinstance(value, list) else value
 
+    # The bind address has one authority, [daemon.api]. The retired flat
+    # [daemon] host/port keys are refused rather than silently ignored.
+    daemon = toml_data.get("daemon")
+    if isinstance(daemon, Mapping):
+        flat = sorted(key for key in ("host", "port") if key in daemon)
+        if flat:
+            raise ConfigError(f"[daemon] {', '.join(flat)} is not a supported key; set it under [daemon.api] instead")
+
 
 def _coerce_env_value(cfg_key: str, env_var: str, value: str) -> object:
     """Coerce environment values according to the config inventory key type.

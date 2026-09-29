@@ -3448,7 +3448,7 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
 }
 
 
-_ALL_BROWSER_CAPTURE_PROVIDERS = tuple(Provider)
+_ALL_BROWSER_CAPTURE_PROVIDERS = tuple(provider for provider in Provider if provider is not Provider.BEADS)
 
 _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
     Origin.CLAUDE_CODE_SESSION: (

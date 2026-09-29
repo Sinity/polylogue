@@ -2134,7 +2134,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 lambda **_kwargs: fake_loop("raw-observation"),
             )
         )
-        stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda **_kwargs: fake_loop("heartbeat")))
 
         def fake_periodic_convergence(_sources: tuple[WatchSource, ...], **kwargs: object) -> object:
             periodic_profile_callbacks.append(kwargs["session_profile_callback"])
@@ -3798,7 +3798,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
-                    enable_watch=False,
+                    enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
@@ -3946,7 +3946,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
-                    enable_watch=False,
+                    enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
@@ -4095,7 +4095,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                         WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),
                         WatchSource("missing", missing_root, suffixes=(".jsonl",), required=True),
                     ),
-                    enable_watch=False,
+                    enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,

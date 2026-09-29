@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 from datetime import timedelta
@@ -18,6 +19,7 @@ from polylogue.daemon.cli import status_command as daemon_status_command
 from polylogue.daemon.fts_status import FTSReadiness
 from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, HealthTier
 from polylogue.daemon.status import (
+    _daemon_status_fingerprint,
     _insight_freshness_info,
     browser_capture_status_payload,
     build_daemon_status,
@@ -46,6 +48,24 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+
+def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: source-only durable writes invalidate cached readiness."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    index = root / "index.db"
+    source = root / "source.db"
+    index.touch()
+    source.write_bytes(b"initial")
+    monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: root)
+    before = _daemon_status_fingerprint(index)
+    old = source.stat().st_mtime_ns
+    source.write_bytes(b"changed source tier")
+    os.utime(source, ns=(old + 1_000_000, old + 1_000_000))
+    assert _daemon_status_fingerprint(index) != before
+
+
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -1390,7 +1410,9 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     # with every file it declined. The current page's 0/1 is shown above;
     # cumulative progress has no claimed whole-run file denominator.
     assert catchup["planned_file_count"] is None
-    assert "Catch-up: catching_up 0 files accepted, read amp 0.0x, 0.0 MB/s ingested" in lines
+    # The heartbeat event carries no ingested-byte measurement, so the running
+    # rate is unmeasured rather than a fabricated zero.
+    assert "Catch-up: catching_up 0 files accepted, read amp 0.0x, unavailable MB/s ingested" in lines
 
 
 def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:

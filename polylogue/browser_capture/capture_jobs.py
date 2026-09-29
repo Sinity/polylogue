@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -100,6 +101,19 @@ def _stamp(value: datetime | None = None) -> str:
     return (value or _now()).isoformat().replace("+00:00", "Z")
 
 
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY: set[tuple[str, int, int]] = set()
+
+
+def _database_identity(path: Path) -> tuple[str, int, int] | None:
+    """The file a completed schema upgrade applies to: its path and inode."""
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return (str(path), status.st_dev, status.st_ino)
+
+
 @dataclass(slots=True)
 class CaptureJobRegistry:
     spool_path: Path | None
@@ -124,6 +138,27 @@ class CaptureJobRegistry:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA foreign_keys=ON")
+        identity = _database_identity(path)
+        if identity is not None and identity in _SCHEMA_READY:
+            return connection
+        with _SCHEMA_LOCK:
+            # Serialize schema inspection and upgrades once per database file.
+            # Ordinary reads never take a write transaction.
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_schema(connection)
+            except BaseException:
+                connection.rollback()
+                connection.close()
+                raise
+            connection.commit()
+            identity = _database_identity(path)
+            if identity is not None:
+                _SCHEMA_READY.add(identity)
+        return connection
+
+    @staticmethod
+    def _ensure_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_jobs (
                 job_id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_scope TEXT NOT NULL,
@@ -186,7 +221,6 @@ class CaptureJobRegistry:
                 "AND (SELECT count(*) FROM json_each(retention_json)) = 3"
                 ") ELSE 1 END"
             )
-        return connection
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -328,7 +362,10 @@ class CaptureJobRegistry:
                     unreadable.append(
                         {
                             "orphan_kind": "unreadable_legacy_checkpoint",
-                            "path": str(path),
+                            "source_digest": "path-sha256:"
+                            + hashlib.sha256(str(path).encode("utf-8", errors="surrogatepass")).hexdigest(),
+                            "diagnostic": "checkpoint bytes could not be read",
+                            "created_at": _stamp(),
                             "errno_class": type(exc).__name__,
                         }
                     )
@@ -556,7 +593,9 @@ class CaptureJobRegistry:
         event_id = str(uuid4())
         stored_payload = {"digest": digest, "value": payload}
         connection.execute(
-            "INSERT INTO capture_job_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO capture_job_events "
+            "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event_id,
                 job_id,
@@ -743,12 +782,12 @@ class CaptureJobRegistry:
     @staticmethod
     def _holds_conversation_timeline(connection: sqlite3.Connection, job_id: str) -> bool:
         """Whether this job still holds conversation-bearing timeline evidence."""
-        return bool(
-            connection.execute(
-                "SELECT COUNT(*) FROM capture_job_events "
-                "WHERE job_id=? AND json_extract(refs_json, '$.conversation_ref') IS NOT NULL",
-                (job_id,),
-            ).fetchone()[0]
+        return any(
+            isinstance(ref, str) and bool(ref)
+            for (refs_json,) in connection.execute("SELECT refs_json FROM capture_job_events WHERE job_id=?", (job_id,))
+            for refs in (json.loads(refs_json),)
+            for ref in (refs.get("conversation_ref"),)
+            if isinstance(refs, dict)
         )
 
     @staticmethod

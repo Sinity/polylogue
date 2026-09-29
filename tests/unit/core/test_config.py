@@ -683,6 +683,19 @@ class TestPolylogueConfigTOML:
         cfg = load_polylogue_config(config_path=toml_path)
         assert cfg.api_port == 9998
 
+    def test_flat_daemon_bind_keys_are_refused(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        """The bind address has one authority, [daemon.api].
+
+        Anti-vacuity: silently ignoring [daemon].host/port leaves a config that
+        looks like it binds 0.0.0.0:8123 serving on the default loopback port.
+        """
+        from polylogue.config import ConfigError, load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text('[daemon]\nhost = "0.0.0.0"\nport = 8123\n', encoding="utf-8")
+        with pytest.raises(ConfigError, match=r"\[daemon\.api\]"):
+            load_polylogue_config(config_path=toml_path)
+
     def test_toml_sets_browser_capture(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
 

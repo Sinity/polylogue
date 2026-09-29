@@ -756,6 +756,12 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
     assert result.verification["recoverable_source_blob_count"] == 1
 
 
+def test_resolved_direct_path_keeps_colon_as_filename_data(tmp_path: Path) -> None:
+    """Anti-vacuity: treating every colon as a ZIP separator mangles this path."""
+    source = str(tmp_path / "session:export.json")
+    assert backup_mod._resolved_source_path(source, tmp_path) == source
+
+
 def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     workspace_env: dict[str, Path],
     tmp_path: Path,
