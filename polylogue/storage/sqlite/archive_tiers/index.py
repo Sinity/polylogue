@@ -344,8 +344,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # v61 (polylogue-resk): drops session_model_usage.priced_with/priced_at_ms
 # and narrows the CHECK that referenced priced_with -- both were write-only
 # outside tests (zero production SELECTs), and the FK target price_catalogs
-# is dropped in the same change via the index-tier benign-DDL registry (see
-# index_convergence.py). CONSTRAINT_ONLY/dead-column-removal, same shape as
+# is dropped in the same change. CONSTRAINT_ONLY/dead-column-removal, same shape as
 # v33/v36/v38/v41/v44: no raw reparse, existing session_model_usage rows
 # copy-forward on every other column via the fast-forward executor's
 # REPLACE_TABLE path. Does NOT touch session_profiles.priced_with/
@@ -1414,10 +1413,8 @@ CREATE INDEX IF NOT EXISTS idx_paste_spans_session
 ON paste_spans(session_id);
 
 -- model_prices and session_reported_costs were dropped (polylogue-v2mg):
--- zero-consumer tables converged away by the index-tier same-version
--- benign-DDL registry (archive_tiers/index_convergence.py) rather than kept
--- in canonical DDL. price_catalogs was dropped the same way (polylogue-resk,
--- v61): v2mg's stated justification for keeping it ("session_model_usage.
+-- zero-consumer tables removed from canonical DDL. price_catalogs was
+-- dropped the same way (polylogue-resk, v61): v2mg's stated justification for keeping it ("session_model_usage.
 -- priced_with FK, active_price_catalog_id" are genuine reads) measured false
 -- in all three particulars -- priced_with/priced_at_ms had zero production
 -- SELECTs (write-only outside tests), and active_price_catalog_id's only

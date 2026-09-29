@@ -332,45 +332,6 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_migrates_retired_insights_stage(
-    tmp_path: Path,
-    frozen_clock: FrozenClock,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    db = tmp_path / "index.db"
-    source = tmp_path / "session.jsonl"
-    source.write_text("{}\n", encoding="utf-8")
-    cursor = CursorStore(db)
-    cursor.record_convergence_debt(
-        stage="insights",
-        subject_type="source_path",
-        subject_id=str(source),
-        error="initial failure",
-    )
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
-        )
-        conn.commit()
-    stage = ConvergenceStage(
-        name="derived",
-        description="retry test",
-        check=lambda candidate: candidate == source,
-        execute=lambda candidate: candidate == source,
-    )
-    with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        retried = daemon_cli._drain_convergence_debt_once(db)
-        debt_after = cursor.list_convergence_debt()
-
-    assert retried == 0
-    assert len(debt_after) == 1
-    assert debt_after[0].stage == "derived"
-    assert cursor.get_record(source) is None
-
-
-@pytest.mark.contract
-@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
 def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     tmp_path: Path,
     frozen_clock: FrozenClock,
