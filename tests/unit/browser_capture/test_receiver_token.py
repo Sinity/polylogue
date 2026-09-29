@@ -267,3 +267,44 @@ def test_explicit_receiver_token_is_normalized_before_persisting(tmp_path: Path)
     returned = persist_receiver_token("  configured-token\n", token_path)
     assert returned == "configured-token"
     assert load_or_mint_receiver_token(token_path) == returned
+
+
+@pytest.mark.uses_real_clock("joins a concurrent minting thread with a bounded wait")
+def test_concurrent_identity_minting_returns_the_published_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second first-run caller minting mid-publish gets the identity the file keeps.
+
+    The second caller starts while the first is inside its mint. Anti-vacuity:
+    without the lock it sees no file, mints its own identity and publishes it,
+    and the first caller's replace then leaves the second holding a value the
+    file no longer contains.
+    """
+    import secrets
+    import threading
+
+    from polylogue.browser_capture import receiver
+
+    target = tmp_path / "receiver-identity"
+    results: dict[str, str] = {}
+    real_token_hex = secrets.token_hex
+    nested: list[threading.Thread] = []
+
+    def token_hex(nbytes: int) -> str:
+        if not nested:
+            second = threading.Thread(
+                target=lambda: results.__setitem__("second", receiver.load_or_mint_receiver_identity(target))
+            )
+            nested.append(second)
+            second.start()
+            second.join(timeout=0.5)
+        return real_token_hex(nbytes)
+
+    monkeypatch.setattr(receiver.secrets, "token_hex", token_hex)
+
+    results["first"] = receiver.load_or_mint_receiver_identity(target)
+    nested[0].join(timeout=10)
+
+    published = target.read_text(encoding="utf-8").strip()
+    assert results["first"] == published
+    assert results["second"] == published
