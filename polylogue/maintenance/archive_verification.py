@@ -71,6 +71,7 @@ from polylogue.maintenance.source_conservation import (
     TYPED_ABSENCE_TERMS,
     audit_source_conservation,
     logical_head_cohort_expr,
+    raw_materialized_expr,
     term_rule,
     typed_raw_cte,
     valid_byte_duplicate_supersession_expr,
@@ -408,6 +409,7 @@ def _check_source_index_coverage_at_index_path(
             )
             valid_supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
             logical_cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
+            materialized_expr = raw_materialized_expr(raw_alias="r")
 
             # A read-only connection (``query_only=ON``, connection-wide, not
             # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
@@ -431,7 +433,7 @@ def _check_source_index_coverage_at_index_path(
                         r.logical_source_key,
                         {census_expr} AS census_status,
                         {valid_supersession_expr} AS valid_supersession,
-                        MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
+                        MAX({materialized_expr})
                             OVER (
                                 PARTITION BY r.origin,
                                              {logical_cohort_expr}
@@ -3059,6 +3061,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
     census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
     valid_supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
     logical_cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
+    materialized_expr = raw_materialized_expr(raw_alias="r")
     typed_cte = typed_raw_cte(conn, name="typed_raws")
     typed_terms = ", ".join(f"'{term}'" for term in sorted(TYPED_ABSENCE_TERMS))
     row = conn.execute(
@@ -3070,7 +3073,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
                 r.logical_source_key,
                 {census_expr} AS census_status,
                 {valid_supersession_expr} AS valid_supersession,
-                MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
+                MAX({materialized_expr})
                     OVER (
                         PARTITION BY r.origin,
                                      {logical_cohort_expr}

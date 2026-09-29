@@ -91,8 +91,24 @@ def decided_unresolved_membership_sql(table_alias: str = "r") -> str:
     """
 
 
+#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.append_work_event``).
+#: A work event is its own logical source: its raw id is its logical key, so it
+#: never joins the byte-revision cohort of the transcript it annotates.
+WORK_EVENT_RAW_ID_PREFIX = "agent-work-event:"
+
+
+def is_work_event_raw_id(raw_id: str | None) -> bool:
+    return raw_id is not None and raw_id.startswith(WORK_EVENT_RAW_ID_PREFIX)
+
+
 def canonical_authority_logical_key(logical_key: str) -> str:
-    """Normalize a provider or public-origin authority key to public origin form."""
+    """Normalize a provider or public-origin authority key to public origin form.
+
+    A work-event key names one retained event rather than a session, so it has
+    no origin form and is already canonical.
+    """
+    if is_work_event_raw_id(logical_key) and len(logical_key) > len(WORK_EVENT_RAW_ID_PREFIX):
+        return logical_key
     prefix, separator, native_id = logical_key.partition(":")
     if not separator or not native_id:
         raise ValueError(f"invalid logical source key: {logical_key!r}")

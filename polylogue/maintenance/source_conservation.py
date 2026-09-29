@@ -32,7 +32,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from polylogue.archive.revision_authority import logical_head_cohort_sql
+from polylogue.archive.revision_authority import (
+    WORK_EVENT_RAW_ID_PREFIX,
+    is_work_event_raw_id,
+    logical_head_cohort_sql,
+)
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
@@ -94,7 +98,7 @@ _RULES: dict[str, str] = {
     _TERM_SOURCE_LOST: (
         "acquired source file no longer exists on disk and no raw payload blob is retained; the bytes are gone"
     ),
-    _TERM_MATERIALIZED: "index session carries this raw_id",
+    _TERM_MATERIALIZED: "index session carries this raw_id, or the agent work event's session is indexed",
     _TERM_REVISION_SUPERSEDED: "another revision of the same logical source is materialized",
     _TERM_BYTE_DUPLICATE: "content-bound byte-duplicate supersession receipt names a materialized twin",
     _TERM_PARSE_FAILURE: "raw_sessions.parse_error records the typed parser refusal",
@@ -286,6 +290,21 @@ def valid_byte_duplicate_supersession_expr(conn: sqlite3.Connection, *, raw_alia
     """
 
 
+def raw_materialized_expr(*, raw_alias: str) -> str:
+    """SQL truth of the index materializing this raw.
+
+    A session names the raw it was written from. A retained agent work event
+    is its own logical source and is materialized as an event row on the
+    session it annotates, so its evidence is that session.
+    """
+    return (
+        f"(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = {raw_alias}.raw_id)"
+        f" OR ({raw_alias}.raw_id GLOB '{WORK_EVENT_RAW_ID_PREFIX}*' AND EXISTS("
+        f"SELECT 1 FROM idx_tier.sessions s WHERE s.origin = {raw_alias}.origin"
+        f" AND s.native_id = {raw_alias}.native_id)))"
+    )
+
+
 def logical_head_cohort_expr(conn: sqlite3.Connection, *, raw_alias: str) -> str:
     """Return the durable identity used to group raw revisions into one head.
 
@@ -434,6 +453,7 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
     )
     supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
     cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
+    materialized_expr = raw_materialized_expr(raw_alias="r")
     # The authority frontier records, per unresolved blocker, which raw it
     # accepted as the head and which raw the index actually materialized. The
     # blocker's own reason is the rule, so cite it rather than restate it.
@@ -511,9 +531,9 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
                 {retained_expr} AS bytes_retained,
                 {blocker_reason_expr} AS blocker_reason,
                 {quarantined_cohort_expr} AS memberships_all_quarantined,
-                EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id) AS self_indexed,
+                {materialized_expr} AS self_indexed,
                 ({shares_indexed_key_expr}) AS shares_indexed_key,
-                MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
+                MAX({materialized_expr})
                     OVER (PARTITION BY r.origin, {cohort_expr}) AS any_indexed,
                 ROW_NUMBER() OVER (
                     PARTITION BY r.origin, {cohort_expr}
@@ -578,7 +598,9 @@ def audit_source_conservation(
     breakdowns: dict[str, dict[str, int]] = {}
     missing_paths: dict[str, bool] = {}
     for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, term in typed_rows:
-        if probe_filesystem:
+        # A work event is authored by the archive itself; its retained raw is
+        # the source, so there is no acquired file to probe.
+        if probe_filesystem and not is_work_event_raw_id(str(raw_id)):
             present = missing_paths.get(source_path)
             if present is None:
                 present = _source_exists(archive_root, str(source_path))
@@ -1042,6 +1064,7 @@ __all__ = [
     "audit_source_conservation",
     "fragment_identity_shape",
     "logical_head_cohort_expr",
+    "raw_materialized_expr",
     "raw_term_case",
     "term_rule",
     "typed_raw_cte",

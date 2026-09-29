@@ -94,6 +94,7 @@ from polylogue.archive.query.predicate import (
     QuerySequencePredicate,
 )
 from polylogue.archive.revision_authority import (
+    WORK_EVENT_RAW_ID_PREFIX,
     RawRevisionEnvelope,
     RawRevisionKind,
 )
@@ -258,6 +259,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     write_raw_and_parsed_result,
     write_raw_blob_ref,
     write_raw_payload,
+    write_work_event_raw_and_parsed_result,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -314,7 +316,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
-    WORK_EVENT_RAW_ID_PREFIX,
     ArchiveSessionEnvelope,
     PreparedRows,
     PreparedSessionShardRows,
@@ -1643,13 +1644,13 @@ class ArchiveStore:
             separators=(",", ":"),
         ).encode("utf-8")
         raw_id = WORK_EVENT_RAW_ID_PREFIX + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
-        result = self.write_raw_and_parsed_result(
+        self._require_writable("write source.db and index.db evidence")
+        result = write_work_event_raw_and_parsed_result(
+            self,
             session,
             payload=raw_payload,
-            source_path=f"{WORK_EVENT_RAW_ID_PREFIX}{resolved}",
-            acquired_at_ms=int(time.time() * 1000),
-            source_index=-1,
             raw_id=raw_id,
+            acquired_at_ms=int(time.time() * 1000),
         )
         return {
             "event_id": event_id,
