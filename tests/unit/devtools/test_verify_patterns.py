@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import subprocess
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -344,3 +346,54 @@ def test_a_merge_parent_without_the_baseline_file_contributes_nothing(
     payload = verify_patterns._payload(tmp_path)
 
     assert payload["required_gate"]["error_count"] == 0, payload["required_gate"]["details"]
+
+
+def test_pattern_entrypoint_marks_sha1_as_non_security_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A FIPS-style SHA-1 that refuses security use must still scan: the anchors are not security digests."""
+    directory = tmp_path / "devtools/patterns"
+    directory.mkdir(parents=True)
+    (directory / "registry.yaml").write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "id": "fixture",
+                        "rule": "rule.yml",
+                        "baseline": "baseline.txt",
+                        "owner": "bead-test",
+                        "status": "enforcing",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "polylogue/example.py"
+    source.parent.mkdir()
+    source.write_text("def example():\n    return None\n", encoding="utf-8")
+    match = {"file": "polylogue/example.py", "range": {"start": {"line": 1}}}
+    anchor = verify_patterns._match_anchor(tmp_path, match, {})
+    (directory / "baseline.txt").write_text(verify_patterns._anchor_text(anchor) + "\n", encoding="utf-8")
+    real_sha1 = hashlib.sha1
+    observations: list[bool] = []
+
+    def restricted_sha1(data: bytes = b"", *, usedforsecurity: bool = True) -> Any:
+        observations.append(usedforsecurity)
+        if usedforsecurity:
+            raise ValueError("SHA-1 is disabled for security use")
+        return real_sha1(data, usedforsecurity=False)
+
+    def process(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if argv[0] == "git":
+            raise subprocess.CalledProcessError(128, argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps([match]), "")
+
+    monkeypatch.setattr(verify_patterns, "hashlib", SimpleNamespace(sha1=restricted_sha1))
+    monkeypatch.setattr(verify_patterns, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(verify_patterns.shutil, "which", lambda _name: "/fixture/ast-grep")
+    monkeypatch.setattr(verify_patterns.subprocess, "run", process)
+    assert verify_patterns.main(["--json"]) == 0
+    assert observations and not any(observations)
+    assert json.loads(capsys.readouterr().out)["blocking"] is False

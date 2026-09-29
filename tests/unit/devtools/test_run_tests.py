@@ -215,6 +215,27 @@ def test_outliers_aggregate_phases_and_report_test_and_file_shares(
             json.dumps({"tests": [{"nodeid": nodeid, "call": {"duration": duration}}]}), encoding="utf-8"
         )
 
+    run_dir = tmp_path / run_tests.VERIFY_RUNS_DIR / "completed"
+    steps = []
+    for index, path in enumerate(sorted(report_dir.glob("last-pytest-*.json"))):
+        step_id = f"{index:02d}-pytest-lane"
+        destination = run_dir / "steps" / step_id / "pytest-report.json"
+        destination.parent.mkdir(parents=True)
+        path.rename(destination)
+        steps.append({"name": f"pytest lane {index}", "step_id": step_id})
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "tier": "all",
+                "status": "success",
+                "finished_at": "2026-01-01T00:00:00Z",
+                "pytest_aggregate": {"complete_corpus_covered": True},
+                "steps": steps,
+            }
+        ),
+        encoding="utf-8",
+    )
+
     assert run_tests.print_outliers(5, root=tmp_path) == 0
     output = capsys.readouterr().out
     assert "Full-run receipts: 3; tests: 5; serial time: 26.20s" in output
