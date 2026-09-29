@@ -1476,7 +1476,8 @@ async def redrive_accepted_ingests(
                     # this live process, which a recreated server could
                     # never reclaim.
                     for claimed_id, _record in claimed:
-                        await release_redrive_claim(runtime, audit, claimed_id, released)
+                        with contextlib.suppress(Exception):
+                            await release_redrive_claim(runtime, audit, claimed_id, released)
                     return
                 if await claim_interrupted_ingest(runtime, audit, operation_id):
                     claimed.append((operation_id, record))
@@ -1557,9 +1558,13 @@ async def redrive_accepted_ingests(
                 # Every claimed run goes back as interrupted: the attempts
                 # name this live process, so a server recreated in it could
                 # otherwise never reclaim them.
-                await execution.release(released)
-                for remaining_id, _record in claimed[position + 1 :]:
-                    await release_redrive_claim(runtime, audit, remaining_id, released)
+                try:
+                    await execution.release(released)
+                finally:
+                    # One failed release must not strand the later claims.
+                    for remaining_id, _record in claimed[position + 1 :]:
+                        with contextlib.suppress(Exception):
+                            await release_redrive_claim(runtime, audit, remaining_id, released)
                 return
             # As a fresh request's stop: fenced first, then indeterminate,
             # because sessions published before the stop remain.
