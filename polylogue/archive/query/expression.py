@@ -1373,28 +1373,6 @@ def _unknown_query_field_error(field_name: str, *, include_structural: bool = Fa
     return UnknownQueryFieldError(message, field=field_name, candidates=suggestions)
 
 
-def _quoted_spans(expression: str) -> list[tuple[int, int]]:
-    """Half-open spans of double-quoted literals, honouring backslash escapes."""
-    spans: list[tuple[int, int]] = []
-    start: int | None = None
-    index = 0
-    while index < len(expression):
-        character = expression[index]
-        if start is not None and character == "\\":
-            index += 2
-            continue
-        if character == '"':
-            if start is None:
-                start = index
-            else:
-                spans.append((start, index + 1))
-                start = None
-        index += 1
-    if start is not None:
-        spans.append((start, len(expression)))
-    return spans
-
-
 def propose_field_correction(expression: str, error: UnknownQueryFieldError) -> str | None:
     """Return ``expression`` with only the unknown field renamed, or ``None``.
 
@@ -1412,18 +1390,27 @@ def propose_field_correction(expression: str, error: UnknownQueryFieldError) -> 
         # ``sesion.tag`` is nearest ``session`` by spelling, but renaming a
         # scoped field to a bare one would change what the clause selects.
         return None
-    quoted = _quoted_spans(expression)
-    pattern = re.compile(rf"(?<![A-Za-z0-9_.]){re.escape(error.field)}(?=:)")
     pieces: list[str] = []
     cursor = 0
     renamed = 0
-    for match in pattern.finditer(expression):
-        if any(start <= match.start() < end for start, end in quoted):
-            continue
-        pieces.append(expression[cursor : match.start()])
-        pieces.append(replacement)
-        cursor = match.end()
-        renamed += 1
+    try:
+        tokens = _QUERY_PARSER.lex(expression)
+        for token in tokens:
+            if token.type != "FIELD_CLAUSE":
+                continue
+            clause = _FIELD_CLAUSE_RE.fullmatch(str(token))
+            if clause is None or clause.group(2).lower() != error.field.lower():
+                continue
+            if token.start_pos is None:
+                return None
+            start = token.start_pos + len(clause.group(1))
+            end = start + len(clause.group(2))
+            pieces.append(expression[cursor:start])
+            pieces.append(replacement)
+            cursor = end
+            renamed += 1
+    except UnexpectedInput:
+        return None
     if renamed == 0:
         return None
     pieces.append(expression[cursor:])

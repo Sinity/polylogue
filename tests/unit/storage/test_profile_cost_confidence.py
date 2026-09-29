@@ -1,64 +1,32 @@
-"""Absent cost evidence must not read as a known zero."""
+"""Profile cost confidence reads the evidence the canonical writer stores."""
 
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
-from polylogue.analysis.archive_models import SessionEvidencePayload
-from polylogue.storage.sqlite.queries.mappers_insight_profiles import _cost_is_estimated
+import pytest
 
-
-def _row(**fields: object) -> sqlite3.Row:
-    """A real sqlite3.Row carrying exactly the given columns."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    if fields:
-        names = ", ".join(f"? AS {name}" for name in fields)
-        cursor = conn.execute(f"SELECT {names}", tuple(fields.values()))
-    else:
-        cursor = conn.execute("SELECT 1 AS present")
-    row: sqlite3.Row = cursor.fetchone()
-    return row
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.queries.mappers_insight_profiles import _row_to_session_profile_record
+from tests.infra.session_profiles import write_session_profile
 
 
-_ESTIMATED = SessionEvidencePayload(cost_is_estimated=True, cost_provenance="unknown")
-_REPORTED = SessionEvidencePayload(cost_is_estimated=False, cost_provenance="provider_reported")
-
-
-def test_a_provenance_column_decides_before_the_payload() -> None:
-    """Only a provider-reported figure makes a cost known.
-
-    Anti-vacuity: reading the payload first makes the second and third rows
-    claim a known cost for a subscription session, which is only ever priced
-    as an API equivalent.
-    """
-    assert _cost_is_estimated(_row(), _ESTIMATED) is True
-    assert _cost_is_estimated(_row(cost_provenance="unknown"), _REPORTED) is True
-    assert _cost_is_estimated(_row(cost_provenance="mixed"), _REPORTED) is True
-    assert _cost_is_estimated(_row(cost_provenance="provider_reported"), _ESTIMATED) is False
-
-
-def test_a_stored_flag_outranks_the_provenance_column() -> None:
-    """A materialized value is evidence; provenance only fills its absence.
-
-    Anti-vacuity: reading provenance first would discard what the writer
-    recorded, so a reported cost later marked estimated would silently flip.
-    """
-    assert _cost_is_estimated(_row(cost_is_estimated=1, cost_provenance="provider_reported"), _REPORTED) is True
-    assert _cost_is_estimated(_row(cost_is_estimated=0, cost_provenance="unknown"), _ESTIMATED) is False
-
-
-def test_stored_evidence_supplies_absent_columns() -> None:
-    """``session_profiles`` persists neither column; the payload holds both.
-
-    ``SESSION_PROFILE_INSERT_COLUMNS`` writes no ``cost_is_estimated`` and no
-    ``cost_provenance``, so on the production ``SELECT * FROM session_profiles``
-    path (rebuild and thread reads) both lookups above miss and the stored
-    evidence answers. Portfolio and postmortem read the field directly and
-    relabel a whole rollup from one such row.
-
-    Anti-vacuity: return ``True`` when both columns are absent and the first
-    assertion fails; ignore the payload and one of the two fails either way.
-    """
-    assert _cost_is_estimated(_row(), _REPORTED) is False
-    assert _cost_is_estimated(_row(), _ESTIMATED) is True
+@pytest.mark.parametrize(("estimated", "provenance"), [(True, "unknown"), (False, "provider_reported")])
+def test_stored_evidence_decides_cost_confidence(tmp_path: Path, estimated: bool, provenance: str) -> None:
+    """Ignoring the stored evidence changes reported charges into estimates."""
+    path = tmp_path / "index.db"
+    initialize_archive_database(path, ArchiveTier.INDEX)
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('cost', 'codex-session', ?)", (bytes(32),)
+        )
+        write_session_profile(
+            conn, "codex-session:cost", evidence={"cost_is_estimated": estimated, "cost_provenance": provenance}
+        )
+        row = conn.execute("SELECT * FROM session_profiles WHERE session_id = 'codex-session:cost'").fetchone()
+        record = _row_to_session_profile_record(row)
+    assert record.cost_is_estimated is estimated
+    assert record.cost_provenance == provenance

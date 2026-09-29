@@ -2013,6 +2013,9 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
             if scope == "coordination":
                 from polylogue.coordination import build_coordination_envelope
+                from polylogue.operations.route_observation import record_unobserved_client_route
+
+                record_unobserved_client_route(surface="mcp", route="mcp.status.coordination")
 
                 if "detail" in include:
                     envelope = build_coordination_envelope(view="status", detail=True)

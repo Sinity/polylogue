@@ -112,6 +112,9 @@ WINDOW_EXCEEDS_RETENTION = "window_exceeds_retention"
 class RouteObservationDropReason(str, Enum):
     """Why an observation never reached the sample a percentile is computed over."""
 
+    CLIENT_NOT_OWNER = "client_not_owner"
+    """A CLI or MCP process does not own the ops-tier route sample."""
+
     NO_ARCHIVE_ROOT = "no_archive_root"
     """The observed caller had no archive configured at all."""
 
@@ -363,6 +366,21 @@ def flush_route_observation_drops() -> int:
             count=remaining,
         )
     return remaining
+
+
+def record_unobserved_client_route(*, surface: str, route: str) -> RouteObservationDropReason:
+    """Declare a client route unobserved without opening an archive tier.
+
+    Client-side counters are explicitly incomplete and carry no ops path, so
+    their exit flush cannot create a second writer. The typed event explains
+    why the route has no latency receipt in this process.
+    """
+    from polylogue.logging import INFO, emit
+
+    reason = RouteObservationDropReason.CLIENT_NOT_OWNER
+    _DROP_LEDGER.record(reason, surface=surface, route=route, ops_db=None, observed_at_ms=int(time.time() * 1000))
+    emit("route_observation.unobserved", level=INFO, outcome="skipped", reason=reason.value)
+    return reason
 
 
 def route_observation_drops() -> RouteObservationDrops:

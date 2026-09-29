@@ -264,7 +264,10 @@ def status_command(
             raise click.exceptions.Exit(2)
         return
     from polylogue.cli.operation_kernel import OperationKernelError, OperationUnavailableError
+    from polylogue.operations.route_observation import record_unobserved_client_route
     from polylogue.paths import archive_root as _resolve_archive_root
+
+    record_unobserved_client_route(surface="cli", route="cli.status")
 
     try:
         observed_archive_root: Path | None = _resolve_archive_root()

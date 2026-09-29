@@ -239,10 +239,10 @@ def prune_daemon_events(
     history = sorted(HISTORY_EVENT_KINDS)
     granular_placeholders = ",".join("?" for _ in granular)
     history_placeholders = ",".join("?" for _ in history)
-    removed = [
-        int(row[0])
-        for row in conn.execute(
-            f"""
+    removed = 0
+    watermark = 0
+    for row in conn.execute(
+        f"""
             DELETE FROM daemon_events
             WHERE id <= ?
               AND (
@@ -254,9 +254,10 @@ def prune_daemon_events(
               )
             RETURNING id
             """,
-            (through, *granular, *history),
-        ).fetchall()
-    ]
+        (through, *granular, *history),
+    ):
+        removed += 1
+        watermark = max(watermark, int(row[0]))
     if removed:
         conn.execute(
             """
@@ -264,9 +265,9 @@ def prune_daemon_events(
             ON CONFLICT(ledger) DO UPDATE SET
                 pruned_through_id = MAX(pruned_through_id, excluded.pruned_through_id)
             """,
-            (_LEDGER_NAME, max(removed)),
+            (_LEDGER_NAME, watermark),
         )
-    return len(removed)
+    return removed
 
 
 @dataclass(frozen=True, slots=True)

@@ -60,6 +60,9 @@ def _emit(
     output_format: str,
     detail: bool,
 ) -> None:
+    from polylogue.operations.route_observation import record_unobserved_client_route
+
+    record_unobserved_client_route(surface="cli", route=f"cli.agents.{view}")
     payload = _build_coordination_envelope(view=view, cwd=cwd, limit=limit, detail=detail)
     if json_output or output_format == "json":
         click.echo(payload.to_json(exclude_none=True))
