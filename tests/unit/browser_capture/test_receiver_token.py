@@ -300,7 +300,7 @@ def test_concurrent_identity_minting_returns_the_published_identity(
             second.join(timeout=0.5)
         return real_token_hex(nbytes)
 
-    monkeypatch.setattr(receiver.secrets, "token_hex", token_hex)
+    monkeypatch.setattr(secrets, "token_hex", token_hex)
 
     results["first"] = receiver.load_or_mint_receiver_identity(target)
     nested[0].join(timeout=10)
