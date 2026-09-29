@@ -575,18 +575,18 @@ def _needs_session_fts_repair(conn: sqlite3.Connection, session_id: str) -> bool
     return not session_partition_is_valid_sync(conn, session_id)
 
 
-def _composed_native_ids(conn: sqlite3.Connection, message_ids: Sequence[str]) -> dict[str, str]:
-    """Native ids of the composed transcript's messages, own and inherited alike."""
-    found: dict[str, str] = {}
+def _composed_message_owners(conn: sqlite3.Connection, message_ids: Sequence[str]) -> dict[str, tuple[str, str | None]]:
+    """Owning session and native id of each composed message, own and inherited alike."""
+    found: dict[str, tuple[str, str | None]] = {}
     pending = list(dict.fromkeys(message_ids))
     for start in range(0, len(pending), 500):
         batch = pending[start : start + 500]
         placeholders = ",".join("?" for _ in batch)
-        for message_id, native_id in conn.execute(
-            f"SELECT message_id, native_id FROM messages WHERE message_id IN ({placeholders}) AND native_id IS NOT NULL",
+        for message_id, session_id, native_id in conn.execute(
+            f"SELECT message_id, session_id, native_id FROM messages WHERE message_id IN ({placeholders})",
             batch,
         ):
-            found[str(message_id)] = str(native_id).strip()
+            found[str(message_id)] = (str(session_id), None if native_id is None else str(native_id).strip() or None)
     return found
 
 
@@ -596,27 +596,32 @@ def _append_delta_payload(
 ) -> tuple[ParsedSession | None, int]:
     """Select the messages an append payload adds to the composed transcript.
 
-    Identity decides where it exists: a message whose native id matches the
-    composed message at the replay cursor, or any composed message, is
-    already held. Content signatures decide only when either side lacks a
-    native id -- the case a replayed inherited prefix without provider ids
-    needs. A tail-only append that repeats earlier content under a new
-    native id is therefore new, not a replay.
+    The composed transcript is the inherited lineage prefix plus the
+    session's own rows. At the replay cursor an inherited message is matched
+    by content signature: a child replays its parent's prefix under its own
+    provider ids, and the writer stored none of those copies, so no id can
+    match it. A message the session owns is matched by native identity when
+    both sides carry one, and by content signature only when either lacks
+    it. A tail-only append that repeats earlier content under a new native
+    id is therefore new, not a replay.
     """
     existing_logical = _composed_db_signatures(conn, payload.session_id)
-    native_by_message = _composed_native_ids(conn, [message_id for message_id, _signature in existing_logical])
-    composed = [(native_by_message.get(message_id), signature) for message_id, signature in existing_logical]
-    composed_native_ids = {native_id for native_id, _signature in composed if native_id is not None}
+    owners = _composed_message_owners(conn, [message_id for message_id, _signature in existing_logical])
+    composed: list[tuple[str | None, str, bool]] = []
+    for message_id, signature in existing_logical:
+        owner_session_id, composed_native_id = owners.get(message_id, (payload.session_id, None))
+        composed.append((composed_native_id, signature, owner_session_id != payload.session_id))
+    composed_native_ids = {native_id for native_id, _signature, _inherited in composed if native_id is not None}
     delta_messages: list[ParsedMessage] = []
     logical_prefix = 0
     for message in payload.parsed_session.messages:
         native_id = _normalized_message_native_id(message)
         signature = _parsed_message_signature(message)
         if logical_prefix < len(composed):
-            composed_native_id, composed_signature = composed[logical_prefix]
+            composed_native_id, composed_signature, inherited = composed[logical_prefix]
             is_replayed_prefix = (
                 native_id == composed_native_id
-                if native_id is not None and composed_native_id is not None
+                if not inherited and native_id is not None and composed_native_id is not None
                 else signature == composed_signature
             )
             if is_replayed_prefix:

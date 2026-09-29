@@ -127,14 +127,16 @@ def test_vanished_branch_point_keeps_the_childs_replayed_prefix(tmp_path: Path) 
 
 
 def test_append_delta_compares_composed_parent_prefix(tmp_path: Path) -> None:
-    """Anti-vacuity: comparing only physical child rows re-appends replayed prefix content."""
+    """The inherited prefix is matched by content, under whatever id the child
+    replays it; the child's own row by its native id. Anti-vacuity: comparing
+    only physical child rows re-appends replayed prefix content."""
     index = _index(tmp_path / "index.db")
     write_parsed_session_to_archive(index, _session("parent", [_message("p0", "shared", 0)]))
     child = _session("child", [_message("c0", "shared", 0), _message("c1", "old tail", 1)], parent="parent")
     child_id = write_parsed_session_to_archive(index, child)
     incoming = _session(
         "child",
-        [_message("new0", "shared", 0), _message("new1", "old tail", 1), _message("new2", "new tail", 2)],
+        [_message("replayed-p0", "shared", 0), _message("c1", "old tail", 1), _message("c2", "new tail", 2)],
         parent="parent",
     )
     payload = SessionWritePayload(session_id=child_id, content_hash="", parsed_session=incoming)
