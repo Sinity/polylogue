@@ -114,6 +114,10 @@
     function activate(event) {
       event.preventDefault();
       event.stopPropagation();
+      // Page scripts share this realm and can dispatch synthetic clicks or
+      // keydowns on the badge. Only a real operator gesture may trigger a
+      // capture (polylogue-l6v61).
+      if (!event.isTrusted) return;
       onActivate();
     }
     button.addEventListener("click", activate);

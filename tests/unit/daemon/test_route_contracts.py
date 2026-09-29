@@ -333,13 +333,13 @@ def test_read_view_execution_route_is_published_as_stable_api() -> None:
 @pytest.mark.parametrize(
     ("method", "path", "expected_pattern", "expected_kind", "expected_auth"),
     [
-        ("GET", "/", "/", "browser_shell", "unauthenticated_loopback"),
+        ("GET", "/", "/", "browser_shell", "credential_if_configured"),
         (
             "GET",
             "/assets/archive-overview-deadbeef.js",
             "/assets/:asset",
             "browser_shell",
-            "unauthenticated_loopback",
+            "credential_if_configured",
         ),
         ("GET", "/healthz/live", "/healthz/live", "operational", "unauthenticated_loopback"),
         ("GET", "/metrics", "/metrics", "operational", "unauthenticated_loopback"),
@@ -443,10 +443,18 @@ def test_unknown_route_has_no_contract() -> None:
 
 
 @pytest.mark.parametrize("path", ["/", "/s/codex-session:abc", "/p", "/a"])
-def test_browser_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
-    """Local browser bootstrap remains frictionless on loopback."""
+def test_browser_shell_on_loopback_requires_the_owner_credential(path: str) -> None:
+    """Loopback is not identity (polylogue-n3xdn): shell HTML needs the bearer or a web credential.
 
-    handler = _make_handler("GET", path)
+    Anti-vacuity: restore the loopback exemption and the bare request is served.
+    """
+
+    bare = _make_handler("GET", path)
+    bare_error, _ = capture_responses(bare)
+    bare.do_GET()
+    assert bare_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+    handler = _make_handler("GET", path, auth_header="Bearer secret")
     send_error, _ = capture_responses(handler)
     handler._serve_webui_archive_overview = lambda: None  # type: ignore[method-assign]
     handler._serve_webui_session_read = lambda session_id: None  # type: ignore[method-assign]

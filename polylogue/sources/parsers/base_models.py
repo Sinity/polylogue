@@ -158,7 +158,7 @@ class ParseAccounting(BaseModel):
             ordered = sorted((int(start), int(end)) for start, end in raw_ranges)
             previous_end = 0
             for start, end in ordered:
-                if end <= start or start < 0:
+                if end <= start or start < 0 or end > expected.get(unit, 0):
                     raise ValueError(f"invalid materialized admission range for {unit.value}: [{start}, {end})")
                 if start < previous_end:
                     raise ValueError(f"duplicate admission outcome for {unit.value}[{start}]")
@@ -168,6 +168,8 @@ class ParseAccounting(BaseModel):
                 ranges[unit] = ordered
         seen: set[tuple[AdmissionUnit, int]] = set()
         for outcome in self.outcomes:
+            if not 0 <= outcome.ordinal < expected.get(outcome.unit, 0):
+                raise ValueError(f"admission ordinal outside denominator: {outcome.unit.value}[{outcome.ordinal}]")
             identity = (outcome.unit, outcome.ordinal)
             if identity in seen or _ordinal_in_ranges(ranges.get(outcome.unit, ()), outcome.ordinal):
                 raise ValueError(f"duplicate admission outcome for {outcome.unit.value}[{outcome.ordinal}]")
@@ -473,20 +475,16 @@ class ParsedMessage(BaseModel):
             parsed = parse_timestamp(self.timestamp)
             if parsed is not None:
                 self.occurred_at_ms = _require_plausible_occurred_at_ms(int(parsed.timestamp() * 1000))
+        # Authoredness and message type must classify the same TEXT projection,
+        # never a context-looking marker contributed only by a THINKING block.
+        classification_text = self.text
+        if self.blocks:
+            classification_text = (
+                "\n".join(block.text for block in self.blocks if block.type is BlockType.TEXT and block.text) or None
+            )
         if self.message_type is MessageType.MESSAGE:
             from polylogue.archive.message.artifacts import classify_message_type
 
-            # ``ParsedMessage.text`` may intentionally contain the provider's
-            # combined multi-segment representation. Runtime artifact
-            # classification must use the same TEXT-only projection that
-            # materialization and message-type backfill see, or a marker in a
-            # THINKING block can overwrite the parser's correct verdict.
-            classification_text = self.text
-            if self.blocks:
-                classification_text = (
-                    "\n".join(block.text for block in self.blocks if block.type is BlockType.TEXT and block.text)
-                    or None
-                )
             self.message_type = classify_message_type(
                 role=self.role,
                 message_type=self.message_type,
@@ -499,7 +497,7 @@ class ParsedMessage(BaseModel):
             self.material_origin = classify_material_origin(
                 role=self.role,
                 message_type=self.message_type,
-                text=self.text,
+                text=classification_text,
                 block_types=tuple(block.type for block in self.blocks),
             )
         return self

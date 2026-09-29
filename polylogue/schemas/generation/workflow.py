@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -239,8 +240,14 @@ def generate_all_schemas(
     include_archive_workload_profile: bool = False,
     full_corpus: bool = False,
     archive_location: ArchiveLocation | None = None,
+    persist: Callable[[Path, str, _ProviderBundle], None] = persist_generated_provider_bundle,
 ) -> list[GenerationResult]:
-    """Generate versioned schemas for all providers."""
+    """Generate versioned schemas for all providers.
+
+    Each provider's bundle is built first and then handed to *persist*; a
+    caller that must gate or lock publication supplies its own *persist* so
+    the potentially long inference runs outside that critical section.
+    """
     if db_path is None:
         db_path = index_db_path()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -258,7 +265,7 @@ def generate_all_schemas(
             archive_location=archive_location,
         )
         results.append(bundle.result)
-        persist_generated_provider_bundle(output_dir, provider, bundle)
+        persist(output_dir, provider, bundle)
         if bundle.catalog is not None:
             package_bundle_scope_counts[provider] = {
                 package.version: package.bundle_scope_count for package in bundle.catalog.packages

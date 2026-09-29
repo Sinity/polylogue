@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { trustedClick } from "../support/trusted_events.js";
 
 const operatorSource = readFileSync("src/operator_status.js", "utf8");
 const ambientSource = readFileSync("src/content/ambient_surface.js", "utf8");
@@ -224,7 +225,7 @@ describe("ambient capture status surface", () => {
     const chip = api.shadow.querySelector(".chip");
     expect(panel.hidden).toBe(true);
 
-    chip.click();
+    trustedClick(chip);
     expect(panel.hidden).toBe(false);
     expect(chip.getAttribute("aria-expanded")).toBe("true");
     expect(api.shadow.activeElement?.getAttribute("aria-label")).toBe("Close Polylogue capture status");
@@ -393,7 +394,7 @@ describe("ambient capture status surface", () => {
     await vi.waitFor(() => expect(hidden.api.getSnapshot()?.ok).toBe(true));
     const hideButton = [...hidden.api.shadow.querySelectorAll("button")]
       .find((button) => button.textContent === "Hide on this site");
-    hideButton.click();
+    trustedClick(hideButton);
     await vi.waitFor(() => expect(hiddenDom.window.document.getElementById("polylogue-ambient-surface")).toBeNull());
     expect(hidden.runtime.sendMessage).toHaveBeenCalledWith({
       type: "polylogue.ambient.configure",

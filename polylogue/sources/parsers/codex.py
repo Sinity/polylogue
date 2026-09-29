@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import hashlib
 import json
+import math
 import pickle
 import re
 import shlex
@@ -700,7 +701,20 @@ def _int_value(value: object) -> int:
 def _optional_int_field(record: dict[str, object], *keys: str) -> int | None:
     for key in keys:
         if key in record:
-            return _int_value(record.get(key))
+            value = record[key]
+            if value is None or isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value if value >= 0 else None
+            if isinstance(value, float):
+                return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
+            if isinstance(value, str):
+                try:
+                    parsed = int(value.strip())
+                except ValueError:
+                    return None
+                return parsed if parsed >= 0 else None
+            return None
     return None
 
 
@@ -880,7 +894,7 @@ def _codex_source_references(value: object, *, field: str) -> list[dict[str, obj
         if isinstance(item, str) and item:
             references.append(
                 {
-                    "reference": item,
+                    "reference": _sanitize_codex_data_url(item),
                     "source": f"codex.user_message.{field}",
                     "acquired_bytes": False,
                     "path_disclosure": "provider_reference",
@@ -898,7 +912,7 @@ def _codex_source_references(value: object, *, field: str) -> list[dict[str, obj
         for key in ("path", "url", "uri", "name", "id", "mime_type", "media_type", "type", "text"):
             candidate = item.get(key)
             if isinstance(candidate, str) and candidate:
-                reference[key] = candidate
+                reference[key] = _sanitize_codex_data_url(candidate)
         if reference.keys() > {"source", "acquired_bytes", "path_disclosure"}:
             references.append(reference)
     return references

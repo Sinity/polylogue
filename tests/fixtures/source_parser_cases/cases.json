@@ -1,0 +1,390 @@
+{
+  "antigravity": {
+    "timestamp": [
+      {
+        "step_type": "message",
+        "payload": {
+          "role": "user",
+          "text": "hello",
+          "occurred_at_ms": 1700000000123
+        }
+      }
+    ],
+    "row_exit": [
+      {
+        "step_type": "tool_result",
+        "payload": {
+          "output": "failed"
+        },
+        "exit_code": 7
+      }
+    ],
+    "error_text": [
+      {
+        "step_type": "tool_result",
+        "payload": {
+          "output": "failed",
+          "error": "permission denied"
+        }
+      }
+    ],
+    "error_object": [
+      {
+        "step_type": "tool_result",
+        "payload": {
+          "output": "failed",
+          "error": {
+            "message": "permission denied"
+          }
+        }
+      }
+    ],
+    "nested": [
+      {
+        "step_type": "message",
+        "payload": {
+          "role": "user",
+          "occurred_at_ms": 1700000000123,
+          "payload": {
+            "text": "nested text"
+          }
+        }
+      }
+    ],
+    "malformed_patch": [
+      {
+        "step_type": "message",
+        "payload": {
+          "role": "user",
+          "text": "keep this"
+        }
+      },
+      {
+        "step_type": "tool_result",
+        "payload": {
+          "output": "bad edit",
+          "structuredPatch": [
+            null
+          ]
+        }
+      }
+    ],
+    "camel_edit": [
+      {
+        "step_type": "tool_result",
+        "payload": {
+          "output": "edited",
+          "filePath": "note.txt",
+          "oldString": "before",
+          "newString": "after",
+          "originalFile": "before",
+          "replaceAll": true,
+          "userModified": false
+        }
+      }
+    ],
+    "absent_outcome": [
+      {
+        "step_type": "tool_result",
+        "payload": {
+          "output": "unmeasured"
+        }
+      }
+    ],
+    "unknown_outcome": [
+      {
+        "step_type": "tool_result",
+        "payload": {
+          "output": "unmeasured",
+          "status": "novel-state"
+        }
+      }
+    ],
+    "parent": [
+      {
+        "trajectory_id": "child",
+        "step_type": "message",
+        "payload": {
+          "role": "user",
+          "text": "child text"
+        }
+      }
+    ]
+  },
+  "hermes_presence": {
+    "session_id": "hermes-presence",
+    "platform": {},
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello"
+      }
+    ]
+  },
+  "chatgpt": {
+    "id": "review-chat",
+    "current_node": "result",
+    "mapping": {
+      "call": {
+        "id": "call",
+        "parent": null,
+        "children": [
+          "result"
+        ],
+        "message": {
+          "id": "call",
+          "author": {
+            "role": "assistant"
+          },
+          "recipient": "python",
+          "create_time": 1700000000,
+          "content": {
+            "content_type": "code",
+            "text": "print(1)"
+          }
+        }
+      },
+      "result": {
+        "id": "result",
+        "parent": "call",
+        "children": [],
+        "message": {
+          "id": "result",
+          "author": {
+            "role": "tool"
+          },
+          "create_time": 1700000001,
+          "status": "finished_successfully",
+          "content": {
+            "content_type": "execution_output",
+            "text": "node output"
+          },
+          "metadata": {}
+        }
+      }
+    }
+  },
+  "chatgpt_runs": {
+    "failed_list": [
+      {
+        "status": "failed_with_in_kernel_exception",
+        "in_kernel_exception": {
+          "name": "ValueError"
+        }
+      }
+    ],
+    "unknown_list": [
+      {
+        "status": "running"
+      }
+    ],
+    "success_list": [
+      {
+        "status": "success"
+      }
+    ],
+    "direct_output": {
+      "status": "success",
+      "run_id": "r1",
+      "code": "print(1)",
+      "output": "only in run",
+      "exit_code": 0
+    },
+    "two_outputs": [
+      {
+        "status": "success",
+        "run_id": "r1",
+        "output": "first",
+        "exit_code": 0
+      },
+      {
+        "status": "success",
+        "run_id": "r2",
+        "output": "second",
+        "exit_code": 0
+      }
+    ]
+  },
+  "citation": {
+    "citation_uuid": "citation-1",
+    "retrieval_origin": "pca",
+    "citation": {
+      "url": "https://chatgpt.com/g/g-p-project/c/11111111-2222-3333-4444-555555555555",
+      "conversation_title": "Earlier work",
+      "snippet": "a prior decision"
+    }
+  },
+  "structured_parts": {
+    "bad_type": [
+      {
+        "content_type": {
+          "malformed": true
+        }
+      }
+    ],
+    "transcription": [
+      {
+        "content_type": "audio_transcription",
+        "text": "complete transcript"
+      }
+    ]
+  },
+  "claude_ai": {
+    "uuid": "claude-review",
+    "name": "Review fixture",
+    "chat_messages": [
+      {
+        "uuid": "u1",
+        "sender": "human",
+        "text": "file",
+        "attachments": []
+      },
+      {
+        "uuid": "u2",
+        "sender": "human",
+        "text": "second file",
+        "attachments": []
+      }
+    ]
+  },
+  "attachment": {
+    "file_name": "same.txt",
+    "file_type": "text/plain",
+    "file_size": 4
+  },
+  "browser": {
+    "polylogue_capture_kind": "browser_llm_session",
+    "schema_version": 1,
+    "provenance": {
+      "source_url": "https://claude.ai/chat/claude-review",
+      "captured_at": "2026-01-01T00:00:00Z",
+      "adapter_name": "claude-dom-v1",
+      "capture_mode": "snapshot"
+    },
+    "session": {
+      "provider": "claude-ai",
+      "provider_session_id": "claude-review",
+      "turns": [
+        {
+          "provider_turn_id": "u1",
+          "role": "user",
+          "text": "file",
+          "ordinal": 0
+        },
+        {
+          "provider_turn_id": "u2",
+          "role": "user",
+          "text": "second file",
+          "ordinal": 1
+        }
+      ]
+    }
+  },
+  "claude_code": [
+    {
+      "type": "assistant",
+      "uuid": "a1",
+      "sessionId": "code-review",
+      "timestamp": "2026-01-01T00:00:00Z",
+      "message": {
+        "id": "a1",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        }
+      }
+    }
+  ],
+  "codex": [
+    {
+      "type": "session_meta",
+      "payload": {
+        "id": "codex-review",
+        "timestamp": "2026-01-01T00:00:00Z"
+      }
+    },
+    {
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "id": "m1",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "answer"
+          }
+        ],
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        }
+      }
+    }
+  ],
+  "codex_image_event": {
+    "type": "event_msg",
+    "payload": {
+      "type": "user_message",
+      "message": "look here",
+      "local_images": [
+        "data:image/png;base64,YWJjZA==",
+        {
+          "url": "data:image/png;base64,YWJjZA=="
+        }
+      ]
+    }
+  },
+  "thinking_content": [
+    {
+      "type": "thinking",
+      "thinking": "reasoning\nContents of secret.txt:\ncontext is only thought"
+    },
+    {
+      "type": "text",
+      "text": "answer"
+    }
+  ],
+  "protocol_node": {
+    "type": "message",
+    "id": "protocol",
+    "role": "developer",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "<task-notification>finished</task-notification>"
+      }
+    ]
+  },
+  "empty_tool_content": [
+    {
+      "type": "text",
+      "text": "keep this"
+    },
+    {
+      "type": "tool_use"
+    }
+  ],
+  "goals": {
+    "thread_id": "thread-1",
+    "goal_id": "goal-1",
+    "objective": "a complete objective split across chunks"
+  },
+  "fingerprints": {
+    "before": "def parse(payload):\n    return payload\n",
+    "after": "def parse(payload):\n    return {\"changed\": payload}\n",
+    "ddl_before": "TABLE_DDL = \"CREATE TABLE t (x TEXT)\".replace(\"TEXT\", \"BLOB\")\n",
+    "ddl_after": "TABLE_DDL = \"CREATE TABLE t (x TEXT)\".replace(\"text\", \"BLOB\")\n"
+  }
+}

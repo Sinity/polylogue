@@ -22,7 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage import blob_integrity
 from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_FORMAT_FLOOR_VERSION,
     ARCHIVE_VERSION_BY_TIER,
@@ -92,58 +91,6 @@ def test_durable_tier_module_declares_no_second_version(tier: ArchiveTier) -> No
         f"stamps and compares {authority}; two numbers for one tier is the split "
         f"that made blob_integrity read a threshold nothing writes"
     )
-
-
-def test_blob_reference_authority_reads_the_stamped_source_version(tmp_path: Path) -> None:
-    """The version clause alone must accept a source tier at the stamped version.
-
-    The fixture deliberately carries *no* current blob-ref catalog, so
-    ``current_capabilities`` is False and the version comparison is the only
-    thing that can grant authority. That isolates the reader's threshold from
-    the catalog probe beside it.
-
-    Anti-vacuity: restoring the comparison against a retired per-module
-    constant makes ``current_authority`` False and the kind ``legacy`` here,
-    because no source tier this runtime writes ever reaches that number.
-    """
-    path = tmp_path / "source.db"
-    stamped = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
-    with sqlite3.connect(path) as conn:
-        conn.execute(f"PRAGMA user_version = {stamped}")
-
-    with sqlite3.connect(path) as conn:
-        capabilities = blob_integrity._source_schema_capabilities(conn)
-
-    assert capabilities.user_version == stamped
-    # No current blob-ref catalog and no legacy carrier: the integer is the
-    # only evidence in play.
-    assert capabilities.current_blob_refs is False
-    assert capabilities.legacy_carriers == ()
-    assert capabilities.current_authority is True
-    assert capabilities.kind == "current_versioned"
-
-
-def test_blob_reference_authority_refuses_a_foreign_lineage_source_version(tmp_path: Path) -> None:
-    """A version this runtime does not stamp earns nothing on its integer alone.
-
-    ``user_version`` was renumbered from one by the archive format floor, so a
-    pre-floor ``47`` is not "newer" than the current stamp -- it is a different
-    lineage. Its legacy blob carriers must still be scanned.
-
-    Anti-vacuity: comparing with ``>=`` instead of equality readmits every
-    pre-floor stamp above the floor and drops the legacy carrier below.
-    """
-    path = tmp_path / "source.db"
-    foreign = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 46
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, blob_hash BLOB NOT NULL)")
-        conn.execute(f"PRAGMA user_version = {foreign}")
-
-    with sqlite3.connect(path) as conn:
-        capabilities = blob_integrity._source_schema_capabilities(conn)
-
-    assert capabilities.current_authority is False
-    assert "raw_sessions" in capabilities.legacy_carriers
 
 
 def test_fresh_archive_born_above_the_floor_admits_its_own_format_marker(

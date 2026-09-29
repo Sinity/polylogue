@@ -24,6 +24,7 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.live_ingest import ingest_session
+from tests.infra.storage_records import admit_raw_record
 
 pytestmark = [
     pytest.mark.uses_real_clock(
@@ -93,14 +94,15 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
             raw_bytes = file_path.read_bytes()
             raw_id = hashlib.sha256(raw_bytes).hexdigest()
 
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=raw_id,
                     source_name=provider,
                     source_path=str(file_path),
                     blob_size=len(raw_bytes),
                     acquired_at="2024-01-15T10:00:00+00:00",
-                )
+                ),
             )
 
             source = Source(name=provider, path=file_path)

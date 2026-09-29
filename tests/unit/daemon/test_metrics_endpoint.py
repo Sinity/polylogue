@@ -380,7 +380,7 @@ class TestFormatMetricsReadsArchiveState:
                     needs_reindex INTEGER NOT NULL,
                     error_message TEXT
                 );
-                CREATE TABLE message_embeddings_rowids (message_id TEXT PRIMARY KEY);
+                CREATE TABLE message_embedding_refs (message_id TEXT PRIMARY KEY, vector_derivation_hash BLOB);
                 CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks
                     BEGIN SELECT 1; END;
                 CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks
@@ -439,7 +439,7 @@ class TestFormatMetricsReadsArchiveState:
                 ],
             )
             conn.executemany(
-                "INSERT INTO message_embeddings_rowids (message_id) VALUES (?)",
+                "INSERT INTO message_embedding_refs (message_id, vector_derivation_hash) VALUES (?, zeroblob(32))",
                 [("msg-1",), ("msg-2",)],
             )
             conn.commit()
@@ -750,7 +750,7 @@ class TestFormatMetricsReadsArchiveState:
                     needs_reindex INTEGER NOT NULL,
                     error_message TEXT
                 );
-                CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY);
+                CREATE TABLE message_embedding_refs (message_id TEXT PRIMARY KEY, vector_derivation_hash BLOB);
                 INSERT INTO sessions VALUES
                     ('s-embedded', 'codex-session', 2),
                     ('s-pending', 'codex-session', 3),
@@ -768,7 +768,7 @@ class TestFormatMetricsReadsArchiveState:
                 INSERT INTO embedding_status VALUES
                     ('s-embedded', 2, 0, NULL),
                     ('s-pending', 1, 1, 'provider timeout');
-                INSERT INTO message_embeddings VALUES ('m-1'), ('m-2');
+                INSERT INTO message_embedding_refs VALUES ('m-1', zeroblob(32)), ('m-2', zeroblob(32));
                 """
             )
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -857,9 +857,13 @@ class TestFormatMetricsReadsArchiveState:
                     dimension INTEGER,
                     embedded_at_ms INTEGER
                 );
+                CREATE TABLE message_embedding_refs (message_id TEXT PRIMARY KEY, vector_derivation_hash BLOB);
                 INSERT INTO embedding_status VALUES
                     ('s-embedded', 2, 0, NULL),
                     ('s-pending', 0, 1, NULL);
+                INSERT INTO message_embedding_refs VALUES
+                    ('s-embedded:m1', zeroblob(32)),
+                    ('s-embedded:m2', zeroblob(32));
                 INSERT INTO message_embeddings_meta VALUES
                     ('s-embedded:m1', 'h1', 'voyage-4', 1024, 1),
                     ('s-embedded:m2', 'h2', 'voyage-4', 1024, 2);

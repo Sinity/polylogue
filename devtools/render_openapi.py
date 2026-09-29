@@ -49,6 +49,7 @@ from polylogue.daemon.web_auth import (
     WebCredentialFailurePayload,
     WebCredentialFailureState,
     WebCredentialRevocationPayload,
+    WebSignInTicketPayload,
 )
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
@@ -82,6 +83,7 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     WebCredentialBootstrapPayload,
     WebCredentialRevocationPayload,
     WebCredentialFailurePayload,
+    WebSignInTicketPayload,
     QueryErrorPayload,
     QueryFailurePayload,
     QueryExpressionExplanationAst,
@@ -397,12 +399,14 @@ def _build_openapi_document() -> dict[str, Any]:
                 "post": {
                     "summary": "Bootstrap or rotate a first-party web credential",
                     "description": (
-                        "Loopback, exact-origin browser bootstrap. The opaque credential is returned only in an "
-                        "HttpOnly SameSite=Strict cookie; the JSON body contains lifecycle metadata, scopes, and "
-                        "expiry but never credential bytes."
+                        "Loopback, exact-origin browser bootstrap. Loopback is not identity: the request must "
+                        "present the daemon bearer, a one-time sign-in ticket from POST /api/web-auth/ticket as "
+                        "a bearer, or a valid credential cookie being rotated. The opaque credential is returned "
+                        "only in an HttpOnly SameSite=Strict cookie; the JSON body contains lifecycle metadata, "
+                        "scopes, and expiry but never credential bytes."
                     ),
                     "operationId": "bootstrapWebCredential",
-                    "security": [],
+                    "security": [{"machineBearer": []}, {"webCredentialCookie": []}],
                     "responses": {
                         "201": {
                             "description": "Credential issued and protected cookie set.",
@@ -420,6 +424,9 @@ def _build_openapi_document() -> dict[str, Any]:
                             },
                         },
                         "400": _query_error_response("Credential-shaped query parameters are forbidden."),
+                        "401": _web_credential_error_response(
+                            "No daemon bearer, sign-in ticket, or valid credential was presented."
+                        ),
                         "403": _web_credential_error_response("Bootstrap origin was not the daemon's authority."),
                     },
                     "x-polylogue-recoverable-states": _WEB_CREDENTIAL_FAILURE_STATES,
@@ -451,6 +458,31 @@ def _build_openapi_document() -> dict[str, Any]:
                         "403": _web_credential_error_response("Credential origin or scope is not admitted."),
                     },
                     "x-polylogue-recoverable-states": _WEB_CREDENTIAL_FAILURE_STATES,
+                },
+            },
+            "/api/web-auth/ticket": {
+                "post": {
+                    "summary": "Mint a one-time browser sign-in ticket",
+                    "description": (
+                        "Bearer-authenticated, same-origin. Returns a short-lived single-use ticket that a "
+                        "browser presents as a bearer to POST /api/web-auth/session to obtain the first-party "
+                        "cookie. A web credential cookie is not accepted here."
+                    ),
+                    "operationId": "mintWebSignInTicket",
+                    "security": [{"machineBearer": []}],
+                    "responses": {
+                        "201": {
+                            "description": "Ticket minted.",
+                            "headers": {
+                                "Cache-Control": {"schema": {"type": "string", "const": "no-store"}},
+                            },
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/WebSignInTicketPayload"}}
+                            },
+                        },
+                        "401": _query_error_response("The daemon bearer is missing or invalid."),
+                        "403": _query_error_response("The request is not same-origin with the daemon."),
+                    },
                 },
             },
             "/api/status": {
@@ -899,9 +931,14 @@ def _build_openapi_document() -> dict[str, Any]:
             path_item[declaration.method.lower()] = operation
         words = re.findall(r"[A-Za-z0-9]+", declaration.kernel.public_name)
         operation.setdefault("operationId", "route" + "".join(word.title() for word in words))
-        # An explicitly documented operation keeps its own security; only
-        # declaration-generated operations derive it from the auth policy.
-        operation.setdefault("security", _route_security(declaration.auth_policy))
+        # A hand-authored operation states its own security (the credential
+        # lifecycle routes validate proofs the generic policy cannot name).
+        operation.setdefault(
+            "security",
+            [{"webCredentialCookie": []}]
+            if declaration.method == "DELETE" and declaration.path == "/api/web-auth/session"
+            else _route_security(declaration.auth_policy),
+        )
         operation["x-polylogue-declaration"] = {
             "declaration_id": declaration.kernel.declaration_id,
             "method": declaration.method,

@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from polylogue.core.loopback import is_loopback_host
+from polylogue.daemon.peer_identity import peer_socket_owned_by_current_uid
 from polylogue.daemon.web_auth import exact_origin_allowed
 
 _HOP_HEADERS = frozenset(
@@ -63,11 +64,31 @@ def _public_host_allowed(host_header: str, bind_host: str, port: int) -> bool:
     return hostname.lower() in aliases
 
 
+def _peer_is_owner(request: Request) -> bool:
+    """Whether this proxy's own TCP peer is a socket of this process's uid.
+
+    The daemon's peer check sees this proxy, not the browser, so the proxy
+    must decide for its own connection before it forwards a credential.
+    """
+    client, server = request.scope.get("client"), request.scope.get("server")
+    if not client or not server:
+        return False
+    return peer_socket_owned_by_current_uid(
+        local_ip=str(server[0]), local_port=int(server[1]), remote_ip=str(client[0]), remote_port=int(client[1])
+    )
+
+
 def _backend_headers(request: Request, origin: str) -> list[tuple[str, str]]:
+    # The web credential is forwarded only for a peer the kernel attributes to
+    # this uid; another local uid replaying a leaked cookie reaches the daemon
+    # without it.
+    dropped = _HOP_HEADERS | {"host", "origin", "referer"}
+    if request.headers.get("cookie") is not None and not _peer_is_owner(request):
+        dropped = dropped | {"cookie"}
     headers = [
         (name.decode("latin-1"), value.decode("latin-1"))
         for name, value in request.scope["headers"]
-        if name.decode("latin-1").lower() not in _HOP_HEADERS | {"host", "origin", "referer"}
+        if name.decode("latin-1").lower() not in dropped
     ]
     headers.append(("Host", urlsplit(origin).netloc))
     external_origin = request.headers.get("origin")

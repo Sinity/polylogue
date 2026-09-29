@@ -22,6 +22,7 @@ from polylogue.cli.shared.helper_source_state import load_last_source, save_last
 from polylogue.cli.shared.helper_support import (
     DaemonRequiredError,
     fail,
+    indeterminate_refusal,
     load_effective_config,
     mutation_refusal,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "complete_run_source_names",
     "DaemonRequiredError",
     "fail",
+    "indeterminate_refusal",
     "mutation_refusal",
     "format_sources_summary",
     "get_origin_counts",

@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
         "paths",
         nargs="*",
         type=Path,
-        help="Files to classify. With no paths, list every closure member.",
+        help="Existing files, relative to the current directory. Missing paths are refused. With no paths, list every closure member.",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -55,10 +55,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     resolved_closure = {member.resolve() for member in closure}
-    results = [
-        {"path": str(path), "in_closure": (path if path.is_absolute() else root / path).resolve() in resolved_closure}
-        for path in args.paths
-    ]
+    try:
+        results = [
+            {"path": str(path), "in_closure": path.resolve(strict=True) in resolved_closure} for path in args.paths
+        ]
+    except OSError as exc:
+        parser.error(str(exc))
     if args.json:
         print(
             json.dumps(

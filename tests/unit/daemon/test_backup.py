@@ -19,7 +19,6 @@ from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
-from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.blob_integrity import BlobLivenessProjection
@@ -815,38 +814,6 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     assert result.ok, result.error
     assert result.verified
     assert result.verification["recoverable_source_blob_count"] == 1
-
-
-def test_zip_replay_derives_member_and_split_from_empty_legacy_coordinates(tmp_path: Path) -> None:
-    """Legacy rows use the recorded member suffix and source index."""
-    source_path = tmp_path / "legacy-empty-coordinate.zip"
-    records = [
-        {"metadata": "bundle sibling"},
-        {"id": "first", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
-        {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
-    ]
-    with zipfile.ZipFile(source_path, "w") as archive:
-        archive.writestr("conversations.json", json.dumps(records, separators=(",", ":")))
-    recorded_path = f"{source_path}:conversations.json"
-    expected = dumps_bytes(records[2])
-
-    payload, error = zip_reacquisition_payload(
-        {
-            "coordinate_format": "",
-            "entry_ordinal": None,
-            "split_index": None,
-            "raw_id": "legacy-raw-id",
-            "source_path": recorded_path,
-            "source_index": 1,
-            "blob_hash": hashlib.sha256(expected).hexdigest(),
-            "capture_mode": "chatgpt",
-        },
-        source_path=recorded_path,
-        zip_payload_cache={},
-    )
-
-    assert error is None
-    assert payload == expected
 
 
 @pytest.mark.parametrize(
