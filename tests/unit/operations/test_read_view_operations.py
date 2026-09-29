@@ -101,6 +101,11 @@ def test_lineage_and_topology_use_the_pinned_graph_engines(tmp_path: Path) -> No
     assert facade_topology is not None
     from polylogue.operations.topology_envelope import topology_public_envelope
 
+    # The operation route adds its terminal outcome to the graph (#5728); the
+    # facade graph carries none. Everything else is the same graph.
+    lineage_outcome = lineage_payload.pop("outcome")
+    assert isinstance(lineage_outcome, dict)
+    assert lineage_outcome["state"] == "ok"
     assert lineage_payload == facade_lineage.model_dump(mode="json")
     assert topology_payload == topology_public_envelope(facade_topology, session_id=first)
 

@@ -21,7 +21,6 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -49,8 +48,10 @@ class RepoObservation:
     branch_name: str
 
 
-def _utc_now_ms() -> int:
-    return int(datetime.now(UTC).timestamp() * 1000)
+#: The session's own time, as the writer's ``_write_repo_edges`` stamps it.
+#: A rebuild must reproduce these rows from the archive alone, so the stamp is
+#: never the wall clock of the pass that derived them.
+_SESSION_OBSERVED_AT_SQL = "SELECT COALESCE(updated_at_ms, created_at_ms, 0) FROM sessions WHERE session_id = ?"
 
 
 def _repo_id(observation: RepoObservation) -> str:
@@ -150,8 +151,6 @@ async def refresh_session_repos(
     conn: aiosqlite.Connection,
     session_id: str,
     observations: Sequence[RepoObservation],
-    *,
-    now_iso: str | None = None,
 ) -> int:
     """Replace the repo observations for ``session_id``.
 
@@ -159,7 +158,9 @@ async def refresh_session_repos(
     this session are deleted before insertion so the projection
     cannot drift on rebuild.
     """
-    timestamp = _utc_now_ms()
+    cursor = await conn.execute(_SESSION_OBSERVED_AT_SQL, (session_id,))
+    row = await cursor.fetchone()
+    timestamp = int(row[0]) if row is not None else 0
     await conn.execute(
         "DELETE FROM session_repos WHERE session_id = ?",
         (session_id,),
@@ -223,11 +224,10 @@ def refresh_session_repos_sync(
     conn: sqlite3.Connection,
     session_id: str,
     observations: Sequence[RepoObservation],
-    *,
-    now_iso: str | None = None,
 ) -> int:
     """Sync sibling of :func:`refresh_session_repos`."""
-    timestamp = _utc_now_ms()
+    row = conn.execute(_SESSION_OBSERVED_AT_SQL, (session_id,)).fetchone()
+    timestamp = int(row[0]) if row is not None else 0
     conn.execute(
         "DELETE FROM session_repos WHERE session_id = ?",
         (session_id,),

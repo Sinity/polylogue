@@ -1188,7 +1188,12 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
             count = _archive_count_sessions_for_spec(archive, spec)
         else:
             count = (
-                archive.count_search_sessions(query, session_id=scope_id, **cast("Any", filter_kwargs))
+                archive.count_search_sessions(
+                    query,
+                    actions_only=spec.retrieval_lane == "actions",
+                    session_id=scope_id,
+                    **cast("Any", filter_kwargs),
+                )
                 if query
                 else archive.count_sessions(session_id=scope_id, **cast("Any", filter_kwargs))
             )

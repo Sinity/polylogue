@@ -77,6 +77,14 @@ def report_nodeid_to_selector(nodeid: str) -> str:
     if not sep or "::" not in head:
         return nodeid
     if "[" in tail or "]" in tail or "/" in tail or "::" in tail:
+        # The suite shortens a long id after xdist named its group, so the
+        # group can also sit between the test name and its ``[param-...]``
+        # label: ``path::test@group[param-<digest>]``.
+        prefix, _, last = nodeid.rpartition("::")
+        name, bracket, label = last.partition("[")
+        test_name, group_sep, group = name.rpartition("@")
+        if prefix and bracket and group_sep and test_name and group and "/" not in group:
+            return f"{prefix}::{test_name}[{label}"
         return nodeid
     if head.endswith("]") or "[" not in head.rsplit("::", 1)[-1]:
         return head

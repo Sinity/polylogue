@@ -452,13 +452,17 @@ def test_facets_command_can_scope_query_and_origin(
     """Top-level facets supports the documented scoped forms."""
     import json as _json
 
-    payload = _json.loads(
-        _invoke_json(
-            runner,
-            ["facets", "--query", "synthetic", "--origin", "chatgpt-export", "--no-idf", "--format", "json"],
-        )
+    # A scope that holds nothing is the terminal ``empty`` outcome, which the
+    # one CLI exit convention reports as exit 2 (surfaces/outcome.py).
+    empty = runner.invoke(
+        cli,
+        ["--plain", "facets", "--query", "synthetic", "--origin", "chatgpt-export", "--no-idf", "--format", "json"],
+        catch_exceptions=False,
     )
+    assert empty.exit_code == 2, empty.output
+    payload = _json.loads(empty.output)
 
+    assert payload["outcome"]["state"] == "empty"
     assert payload["scoped_to_query"] is True
     assert payload["scoped"]["total_sessions"] == 0
     assert payload["scoped"]["origins"] == {}
@@ -587,13 +591,14 @@ def test_analyze_facets_reports_degraded_when_it_misses_its_declared_budget(
             ["--plain", "analyze", "--facets", "--format", "json"],
             catch_exceptions=False,
         )
-    assert result.exit_code == 0, result.output
+    # ``degraded`` is exit 1 under the one CLI exit convention (surfaces/outcome.py).
+    assert result.exit_code == 1, result.output
     payload = _json.loads(result.output)
 
     assert payload["budget_exceeded"] is True
     assert payload["availability"]["state"] == "degraded"
     assert payload["availability"]["reason"] == "budget_exceeded"
-    assert "interactive budget" in payload["availability"]["detail"]
+    assert payload["outcome"]["state"] == "degraded"
 
 
 def test_json_status_without_a_daemon_refuses_with_a_typed_error(

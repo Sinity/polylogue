@@ -140,7 +140,9 @@ def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> Non
     from polylogue.daemon.http import _archive_filter_kwargs_from_spec
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    non_filter_params = {"self", "limit", "offset", "session_id", "sample", "sort", "reverse", "query"}
+    # ``actions_only`` selects the FTS retrieval lane (#5795), not a session
+    # filter: ``SessionQuerySpec`` carries it as ``retrieval_lane``.
+    non_filter_params = {"self", "limit", "offset", "session_id", "sample", "sort", "reverse", "query", "actions_only"}
     # ``list_summaries``/``search_summaries`` forward ``**filters`` to the
     # ``iter_*`` generators, which declare the surface.
     storage_methods = ("iter_summaries", "iter_search_summaries", "count_sessions", "count_search_sessions")

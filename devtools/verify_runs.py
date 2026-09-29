@@ -1104,7 +1104,7 @@ def verification_evidence_path(env: Mapping[str, str] | None = None) -> Path:
     source = os.environ if env is None else env
     configured = source.get(VERIFY_EVIDENCE_PATH_ENV)
     if configured:
-        return Path(configured)
+        return Path(configured).expanduser()
     state_home = source.get("XDG_STATE_HOME")
     base = Path(state_home) if state_home else Path(source.get("HOME", "~")).expanduser() / ".local" / "state"
     return base / "polylogue" / "verification" / "evidence.jsonl"
@@ -1575,6 +1575,11 @@ def reconcile_abandoned_verify_runs(
     return reconciled
 
 
+def _checkout_root() -> Path:
+    """The checkout this ``devtools`` package runs from."""
+    return Path(__file__).resolve().parents[1]
+
+
 def reconcile_and_record_abandoned_verify_runs(
     *,
     runs_root: Path,
@@ -1589,22 +1594,27 @@ def reconcile_and_record_abandoned_verify_runs(
     what ``prune_successful_verify_runs`` may bound. Appending here is what
     turns the reconciliation into evidence rather than a local file edit.
 
-    A relocated cache uses its own history unless the operator configured a
-    shared history path. The normal checkout uses the shared XDG history. Its
-    evidence path follows an explicit override or the relocated cache.
+    A relocated cache uses its own history and evidence unless the operator
+    configured a shared path. The normal checkout uses the shared XDG history
+    and the durable evidence lane ``finish`` publishes to, so a reconciled
+    run lands where every finished run does.
     """
     reconciled = reconcile_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
     cache = runs_root.parent
+    # ``runs_root`` is ``<checkout>/.cache/verify/runs``.
+    owner = runs_root.resolve().parents[2]
+    checkout_cache = owner == _checkout_root()
     if history_path is None:
-        if os.environ.get(VERIFY_HISTORY_PATH_ENV) or cache.parent.resolve() == Path(__file__).resolve().parents[1]:
-            history_path = verify_history_path(root=cache.parent)
+        if os.environ.get(VERIFY_HISTORY_PATH_ENV) or checkout_cache:
+            history_path = verify_history_path(root=owner)
         else:
             history_path = cache / VERIFY_HISTORY_PATH.name
-    evidence_target = evidence_path or (
-        Path(os.environ[VERIFY_EVIDENCE_PATH_ENV]).expanduser()
-        if os.environ.get(VERIFY_EVIDENCE_PATH_ENV)
-        else cache / VERIFY_EVIDENCE_PATH.name
-    )
+    if evidence_path is None:
+        if os.environ.get(VERIFY_EVIDENCE_PATH_ENV) or checkout_cache:
+            evidence_path = verification_evidence_path()
+        else:
+            evidence_path = cache / VERIFY_EVIDENCE_PATH.name
+    evidence_target = evidence_path
     if not reconciled:
         return reconciled
     history_ids = {str(row.get("run_id")) for row in _iter_history_pinned(history_path)}

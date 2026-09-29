@@ -200,14 +200,21 @@ def test_a_data_changing_migration_applies_only_behind_a_verified_backup(
     assert (manifest.parent / "verification-receipt.json").is_file()
 
 
-def test_one_open_applies_every_numbered_step_to_the_declared_version(
+def test_an_archive_two_steps_behind_is_refused_before_any_step_applies(
     cli_workspace: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An archive two steps behind reaches the target in one open, one backup per data step.
+    """Catch-up across more than one numbered slot is a typed refusal (#5806).
 
-    Anti-vacuity: apply only the first pending step and ``user.db`` stops at
-    v2 with ``second_items`` missing.
+    Bootstrap DDL describes only the shipped version, so an intermediate slot
+    has no fresh-DDL image to prove the step against. The refusal leaves the
+    tier untouched rather than applying the steps it cannot prove.
+
+    Anti-vacuity: drop the intermediate-slot refusal from
+    ``admit_durable_change_train`` and ``user.db`` advances to v2 with
+    ``first_items`` present.
     """
+    from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
+
     root = cli_workspace["archive_root"]
     _declare_future_migrations(
         tmp_path,
@@ -219,8 +226,8 @@ def test_one_open_applies_every_numbered_step_to_the_declared_version(
         ),
     )
 
-    applied = _apply(root)
+    with pytest.raises(DurableChangeTrainError):
+        _apply(root)
 
-    assert [(item.current_version, item.target_version) for item in applied] == [(1, 2), (2, 3)]  # type: ignore[attr-defined]
-    assert _version_and_table(root / "user.db", "second_items") == (3, True)
-    assert len(list((root / ".maintenance-state" / "pre-migration-backups").rglob("manifest.json"))) == 2
+    assert _version_and_table(root / "user.db", "first_items") == (1, False)
+    assert _version_and_table(root / "user.db", "second_items") == (1, False)

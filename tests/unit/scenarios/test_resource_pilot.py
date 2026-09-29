@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +39,16 @@ def _provider_native_ids(package: ProviderSourcePackage) -> tuple[str, ...]:
     )
 
 
+def _is_scratch_database(database: object) -> bool:
+    """Whether a connection target is private scratch, not a file on disk.
+
+    Parsers keep bounded working state in in-memory or temporary SQLite
+    databases (chatgpt timing, codex record spill); neither is an archive tier.
+    """
+    value = str(database)
+    return value in {"", ":memory:"} or (value.startswith("file:") and "mode=memory" in value)
+
+
 def test_parser_resource_needs_only_provider_bytes(
     pilot_provider_packages: tuple[ProviderSourcePackage, ...],
     pilot_parsed_sessions: tuple[ParsedSession, ...],
@@ -45,10 +56,14 @@ def test_parser_resource_needs_only_provider_bytes(
 ) -> None:
     """Parser bytes are sufficient; no SQLite tier or daemon is needed."""
 
-    def unexpected_database_open(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("parser-only pilot must not open a database tier")
+    real_connect = sqlite3.connect
 
-    monkeypatch.setattr(sqlite3, "connect", unexpected_database_open)
+    def scratch_only_connect(database: object, *args: object, **kwargs: object) -> object:
+        if not _is_scratch_database(database):
+            raise AssertionError(f"parser-only pilot must not open a database file: {database}")
+        return real_connect(database, *args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(sqlite3, "connect", scratch_only_connect)
     observed = tuple(str(session.provider_session_id) for session in pilot_parsed_sessions)
     expected = tuple(native_id for package in pilot_provider_packages for native_id in _provider_native_ids(package))
     assert observed == expected
@@ -168,21 +183,32 @@ def test_parser_resource_acquisition_opens_no_archive_tier(tmp_path: Path) -> No
     from tests.infra.pilot_resources import build_pilot_provider_packages
     from tests.infra.sqlite_work_counter import sqlite_work_counter
 
-    with sqlite_work_counter() as counter:
-        packages = build_pilot_provider_packages(tmp_path)
-        from polylogue.sources import iter_source_sessions
+    opened_files: list[str] = []
 
-        sessions = tuple(
-            session
-            for package in packages
-            for source in package.admitted_sources()
-            for session in iter_source_sessions(source)
-        )
+    with sqlite_work_counter() as counter:
+        counted_connect = sqlite3.connect
+
+        def record_file_connect(database: object, *args: object, **kwargs: object) -> object:
+            if not _is_scratch_database(database):
+                opened_files.append(str(database))
+            return counted_connect(database, *args, **kwargs)  # type: ignore[call-overload]
+
+        with patch.object(sqlite3, "connect", record_file_connect):
+            packages = build_pilot_provider_packages(tmp_path)
+            from polylogue.sources import iter_source_sessions
+
+            sessions = tuple(
+                session
+                for package in packages
+                for source in package.admitted_sources()
+                for session in iter_source_sessions(source)
+            )
 
     assert sessions
-    assert sum(counter.connections_by_database.values()) == 0, (
-        f"parser-only pilot acquisition opened database connections: {dict(counter.connections_by_database)}"
-    )
+    # Parser scratch databases are allowed; any database file, tier or not, is not.
+    assert opened_files == [], f"parser-only pilot acquisition opened database files: {opened_files}"
+    tiers = {name: count for name, count in counter.connections_by_database.items() if name != "other"}
+    assert tiers == {}, f"parser-only pilot acquisition opened archive tiers: {tiers}"
     written_bytes = sum(path.stat().st_size for path in tmp_path.rglob("*") if path.is_file())
     assert written_bytes > 0
     print(

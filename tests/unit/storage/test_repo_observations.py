@@ -136,6 +136,35 @@ def test_refresh_sync_upserts_identity_and_observation() -> None:
     assert branch_after["branch_name"] == "feature/foo"
 
 
+def test_refresh_stamps_the_session_time_not_the_wall_clock() -> None:
+    """A rebuild reproduces repo rows from the archive alone.
+
+    Anti-vacuity: stamp the rows with the current time instead, as the
+    materializer once did, and every rebuild moves ``last_seen_at_ms`` and
+    ``observed_at_ms`` (the convergence idempotence properties went red on it).
+    """
+    conn = _make_db()
+    session_id = _seed_session(conn, "conv-time")
+    conn.execute("UPDATE sessions SET created_at_ms = 1000, updated_at_ms = 5000 WHERE session_id = ?", (session_id,))
+    obs = (
+        RepoObservation(
+            origin_url="https://example.invalid/repo.git",
+            root_path="/work/repo",
+            repo_name="repo",
+            branch_name="main",
+        ),
+    )
+
+    refresh_session_repos_sync(conn, session_id, obs)
+
+    assert conn.execute("SELECT observed_at_ms FROM session_repos").fetchall()[0][0] == 5000
+    assert tuple(conn.execute("SELECT first_seen_at_ms, last_seen_at_ms FROM repos").fetchone()) == (5000, 5000)
+    assert tuple(conn.execute("SELECT first_seen_at_ms, last_seen_at_ms FROM repo_checkouts").fetchone()) == (
+        5000,
+        5000,
+    )
+
+
 def test_refresh_sync_replaces_existing_observations() -> None:
     conn = _make_db()
     session_id = _seed_session(conn, "conv-b")

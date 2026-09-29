@@ -432,8 +432,8 @@ def test_workflow_run_snapshot_never_classifies_as_session() -> None:
 def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_routes(
     tmp_path: Path, workspace_env: dict[str, Path]
 ) -> None:
-    """polylogue-3m3de: a realistic brain sidecar is rejected before both
-    live session parsing and schema inference.
+    """polylogue-3m3de: a realistic brain sidecar is never parsed as a session,
+    and schema inference observes it only as sidecar metadata.
 
     If the path-specific Antigravity sidecar rule is removed, the production
     classifier admits this payload as a session document. The test therefore
@@ -514,15 +514,11 @@ def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_rou
         )
     )
 
-    assert units == []
-    assert terminals == [
-        (
-            raw_id,
-            "intentionally_excluded",
-            "artifact_taxonomy:OriginSpec antigravity artifact rule: brain_metadata_sidecar",
-            ArtifactKind.AGENT_SIDECAR_META.value,
-        )
-    ]
+    # Not a session, but its declared structured-document strategy makes its
+    # shape schema evidence (#5781): the schema route observes it as sidecar
+    # metadata, never as a session document.
+    assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(raw_id, ArtifactKind.AGENT_SIDECAR_META.value)]
+    assert terminals == [(raw_id, "included", "observed_schema_units", ArtifactKind.AGENT_SIDECAR_META.value)]
 
 
 def test_schema_sampling_uses_detected_provider_for_unknown_acquisition(workspace_env: dict[str, Path]) -> None:

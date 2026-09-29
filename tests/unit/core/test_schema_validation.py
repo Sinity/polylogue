@@ -251,7 +251,14 @@ def test_schema_validator_preserves_empty_arrays_when_schema_expects_array() -> 
 
 
 def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:
-    """Explicit dynamic-key containers should suppress key-level drift noise."""
+    """Explicit dynamic-key containers should suppress key-level drift noise.
+
+    The member schema names ``id``: a field a permissive object never named is
+    still reported as drift (#4856), and that is not what this case measures.
+    The keys are plain names, which only the marker declares dynamic; a UUID
+    key is recognized as dynamic without it. Anti-vacuity: drop
+    ``x-polylogue-dynamic-keys`` and both keys drift.
+    """
     validator = SchemaValidator(
         {
             "type": "object",
@@ -259,7 +266,7 @@ def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:
                 "mapping": {
                     "type": "object",
                     "properties": {},
-                    "additionalProperties": {"type": "object"},
+                    "additionalProperties": {"type": "object", "properties": {"id": {"type": "string"}}},
                     "x-polylogue-dynamic-keys": True,
                 }
             },
@@ -271,8 +278,8 @@ def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:
     result = validator.validate(
         {
             "mapping": {
-                "550e8400-e29b-41d4-a716-446655440000": {"id": "node-1"},
-                "660f9511-f3ac-52e5-b827-557766551111": {"id": "node-2"},
+                "alpha": {"id": "node-1"},
+                "beta": {"id": "node-2"},
             }
         }
     )

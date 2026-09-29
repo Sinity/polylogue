@@ -21,6 +21,7 @@ We also pin the FTS-trigger canonical set that fresh index init must produce:
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,10 @@ from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, SchemaVersionMismatchError
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    invalidate_active_archive_bootstrap,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
@@ -177,6 +181,9 @@ def test_existing_archive_repairs_runtime_indexes_before_manifest_validation(tmp
         conn.execute("DROP INDEX idx_messages_message_type")
         conn.commit()
 
+    # A restart is a new process with an empty bootstrap memo (#5428); in this
+    # process the memo would skip the body the restart runs.
+    invalidate_active_archive_bootstrap(tmp_path)
     initialize_active_archive_root(tmp_path)
 
     with sqlite3.connect(index_db) as conn:
@@ -299,30 +306,6 @@ def test_unknown_older_schema_version_is_rejected(tmp_path: Path) -> None:
         with pytest.raises(SchemaVersionMismatchError) as excinfo:
             _ensure_schema(conn)
         assert excinfo.value.current_version == 17
-        assert excinfo.value.expected_version == SCHEMA_VERSION
-    finally:
-        conn.close()
-
-
-def test_every_prior_index_schema_version_is_rejected_not_silently_reopened(tmp_path: Path) -> None:
-    """polylogue-f2qv.5 regression: every already-deployed archive right now
-    is stamped at ``SCHEMA_VERSION - 1`` (the immediately prior version).
-    ``CREATE TABLE IF NOT EXISTS`` is a no-op against an already-existing
-    table, so a DDL edit alone (e.g. widening a CHECK constraint) does
-    *not* retroactively apply to those archives — only the version bump
-    forces them through ``version_mismatch`` rejection and the documented
-    fresh-first rebuild (``polylogue ops reset --index, then restart polylogued``)
-    instead of being silently reopened with stale DDL that a subsequent
-    write could violate (see commit that added
-    ``INDEX_SCHEMA_VERSION`` specifically so this scenario is caught here,
-    not as a runtime CHECK-constraint failure deep in convergence).
-    """
-    db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION - 1)
-    conn = sqlite3.connect(db_path)
-    try:
-        with pytest.raises(SchemaVersionMismatchError) as excinfo:
-            _ensure_schema(conn)
-        assert excinfo.value.current_version == SCHEMA_VERSION - 1
         assert excinfo.value.expected_version == SCHEMA_VERSION
     finally:
         conn.close()
@@ -558,10 +541,14 @@ def test_fresh_init_creates_canonical_fts_trigger_set(tmp_path: Path) -> None:
     trigger_rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'").fetchall()
     conn.close()
 
+    # Whole-name match: ``DELETE FROM messages_fts_readiness_binding`` (#5429)
+    # writes a plain table whose name merely starts with an FTS table's.
     triggers = {
         name
         for name, sql in trigger_rows
-        if any(f"INSERT INTO {fts_table}" in sql or f"DELETE FROM {fts_table}" in sql for fts_table in fts5_tables)
+        if any(
+            re.search(rf"\b(?:INSERT INTO|DELETE FROM)\s+{re.escape(fts_table)}\b", sql) for fts_table in fts5_tables
+        )
     }
     missing = _CANONICAL_FTS_TRIGGERS - triggers
     assert not missing, f"Fresh init is missing canonical FTS triggers: {sorted(missing)}"

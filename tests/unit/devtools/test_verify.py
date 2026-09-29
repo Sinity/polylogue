@@ -1187,26 +1187,19 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
 
 
 def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("POLYLOGUE_PYTEST_SLOT", "held")
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
-    # `devtools.verify.subprocess` IS the stdlib module, so patching `.run`
-    # replaces it for every caller in the process, including
-    # `platform.processor()`'s `uname -p` fallback. A real captured run never
-    # returns `stdout=None`; a stub that does made
-    # `environment_fingerprint` -> `platform.platform()` raise
-    # `AttributeError: 'NoneType' object has no attribute 'strip'` whenever
-    # the random test order reached this test before anything had cached
-    # `platform.processor`. Reproduced on clean origin/master (217e9e982) with
-    # --randomly-seed=2442806215.
+    monkeypatch.setattr(verify, "executable_gate_result", lambda *_args, **_kwargs: SimpleNamespace(ok=True))
+    # The executor boundary: the managed runner reports exit 0 and writes no
+    # report. The held runner launches pytest with ``Popen``, so the former
+    # ``subprocess.run`` stub never reached it: a real ``pytest`` ran in the
+    # empty directory and exited 5, which read as ``pytest_failed``.
     monkeypatch.setattr(
-        "devtools.verify.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0, stdout="", stderr=""),
+        verify,
+        "run_pytest",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, slot="held", receipt=None, termination=None),
     )
-    # The stubbed ``subprocess.run`` cannot answer the slot's git provenance
-    # queries; this case is about the missing report, not the checkout.
-    monkeypatch.setattr("devtools.pytest_slot._focused_worktree_provenance", lambda *_args, **_kwargs: None)
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
     exit_code, _elapsed, metadata = verify._run("pytest serial (all)", ["pytest"], run=run)
@@ -1909,6 +1902,12 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     assert report_nodeid_to_selector("tests/a.py::T::test_x[p]@grp") == "tests/a.py::T::test_x[p]"
     assert report_nodeid_to_selector("tests/a.py::test_x[a@b]") == "tests/a.py::test_x[a@b]"
     assert report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
+    # A long id is shortened after xdist names its group, which leaves the
+    # group between the name and the shortened label (baseline job 3431).
+    assert (
+        report_nodeid_to_selector("tests/a.py::test_x@web-reader[param-7494436ed9e73275]")
+        == "tests/a.py::test_x[param-7494436ed9e73275]"
+    )
 
 
 def test_unavailable_pytest_counts_remain_absent_and_flakes_are_aggregated() -> None:

@@ -218,6 +218,7 @@ def ingest_composed_sources(
             composed_session,
             corpus_index=index,
             created_corpus_index=created_corpus_index,
+            replayed=_replayed_parent_prefix(composed, composed_session),
         )
         content_hash = str(session_content_hash(session))
         payload = _raw_payload(session)
@@ -581,11 +582,62 @@ def _validate_session_indexes(composed: ComposedSources, indexes: Sequence[int])
     return selected
 
 
+def _replayed_parent_prefix(
+    composed: ComposedSources,
+    session: object,
+    *,
+    _lineage: frozenset[str] = frozenset(),
+) -> tuple[ParsedMessage, ...]:
+    """The parent's parsed messages a fork replays, exactly as the parent wrote them.
+
+    A fork replays its parent's prefix byte for byte: the same timestamps,
+    usage and blocks, including the parent's own dispatch evidence. The
+    session's own evidence belongs on the first message it authored. Lineage
+    shares only an identical prefix (#5826): a replayed message carrying the
+    child's own values is the child's, and nothing would be inherited.
+    """
+    from polylogue.archive.models import Session
+
+    if not isinstance(session, Session) or session.parent_id is None:
+        return ()
+    # A declared cycle (``compose_fork_prefix_tail_lineage(cycle_candidate=True)``)
+    # has no first writer to replay from.
+    lineage = _lineage | {str(session.id)}
+    if str(session.parent_id) in lineage:
+        return ()
+    # The parent revision the archive keeps: the highest declared revision,
+    # the later entry on a tie, as ``convergence_laws.authoritative_sessions``
+    # selects it.
+    candidates = [
+        (revision if isinstance(revision := candidate.metadata.get("revision_index", 0), int) else 0, index)
+        for index, candidate in enumerate(composed.sessions)
+        if candidate.id == session.parent_id
+    ]
+    if not candidates:
+        return ()
+    _revision, parent_index = max(candidates)
+    parent = composed.sessions[parent_index]
+    shared = 0
+    for own, replayed in zip(session.messages, parent.messages, strict=False):
+        if (own.id, own.role, own.text) != (replayed.id, replayed.role, replayed.text):
+            break
+        shared += 1
+    if shared == 0 or shared >= len(session.messages):
+        return ()
+    parent_parsed = _parsed_session(
+        parent,
+        corpus_index=parent_index,
+        replayed=_replayed_parent_prefix(composed, parent, _lineage=lineage),
+    )
+    return tuple(parent_parsed.messages[:shared])
+
+
 def _parsed_session(
     session: object,
     *,
     corpus_index: int,
     created_corpus_index: int | None = None,
+    replayed: Sequence[ParsedMessage] = (),
 ) -> ParsedSession:
     from polylogue.archive.models import Session
 
@@ -593,11 +645,14 @@ def _parsed_session(
         raise TypeError(f"expected composed Session, got {type(session)!r}")
     timestamp = _corpus_timestamp(corpus_index)
     created_timestamp = _corpus_timestamp(corpus_index if created_corpus_index is None else created_corpus_index)
-    messages: list[ParsedMessage] = []
+    messages: list[ParsedMessage] = [message.model_copy(deep=True) for message in replayed]
+    own_evidence_position = len(messages)
     dispatch_tool_id = f"dispatch-{session.id}"
     for position, message in enumerate(session.messages):
+        if position < own_evidence_position:
+            continue
         blocks = [ParsedContentBlock(type=BlockType.TEXT, text=message.text)]
-        if position == 0:
+        if position == own_evidence_position:
             blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_USE,
@@ -629,7 +684,7 @@ def _parsed_session(
                 blocks=blocks,
             )
         )
-    attachment_message_id = messages[0].provider_message_id
+    attachment_message_id = messages[own_evidence_position].provider_message_id
     usage_total = 15 + corpus_index + len(messages)
     return ParsedSession(
         source_name=Provider.CODEX,

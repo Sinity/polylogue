@@ -11,7 +11,7 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.api.search_envelope_builder import build_search_envelope_for_spec
-from polylogue.archive.query.archive_execution import archive_search_hits
+from polylogue.archive.query.archive_execution import archive_search_hits, count_archive
 from polylogue.archive.query.execution_control import (
     QueryCancelledError,
     QueryTimeoutError,
@@ -103,6 +103,36 @@ def test_actions_without_embeddings_return_only_action_evidence(lane_archive: La
     assert result.retrieval_lane == "actions"
     assert result.execution.requested_lanes == result.execution.executed_lanes == ("action",)
     assert not result.execution.degraded
+
+
+@pytest.mark.asyncio
+async def test_actions_lane_count_counts_only_sessions_its_search_returns(lane_archive: LaneArchive) -> None:
+    """The actions-lane count and the actions-lane search read one relation.
+
+    Anti-vacuity: drop ``actions_only`` from the count route and the dialogue
+    session, which the actions search never returns, is counted too (3).
+    """
+    root, _config, _ids = lane_archive
+    plan = SessionQueryPlan(query_terms=("needle",), retrieval_lane="actions")
+    assert await count_archive(plan, archive_root=root, config=None) == 2
+    dialogue = replace(plan, retrieval_lane="dialogue")
+    assert await count_archive(dialogue, archive_root=root, config=None) == 3
+
+
+def test_spec_count_counts_only_sessions_its_actions_search_returns(lane_archive: LaneArchive) -> None:
+    """The facade and daemon count seam applies the same actions lane.
+
+    Anti-vacuity: drop ``actions_only`` from ``_archive_count_sessions_for_spec``
+    and the dialogue session is counted for the actions lane too (3).
+    """
+    from polylogue.api.archive import _archive_count_sessions_for_spec
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root, _config, _ids = lane_archive
+    actions = SessionQuerySpec(query_terms=("needle",), retrieval_lane="actions")
+    with ArchiveStore.open_existing(root) as archive:
+        assert _archive_count_sessions_for_spec(archive, actions) == 2
+        assert _archive_count_sessions_for_spec(archive, replace(actions, retrieval_lane="dialogue")) == 3
 
 
 def test_vector_execution_failure_degrades_hybrid_and_refuses_semantic(lane_archive: LaneArchive) -> None:
