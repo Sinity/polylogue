@@ -793,7 +793,7 @@ def test_slo_receipt_does_not_attribute_a_worktree_that_moved_during_execution(
     monkeypatch.setattr(verify_slos, "git_dirty", lambda _root: values["dirty"])
     monkeypatch.setattr(verify_slos, "git_worktree_content_sha256", lambda _root: values["content"])
 
-    def move_during_benchmark(_selection):
+    def move_during_benchmark(_selection: list[str]) -> dict[str, dict[str, float]]:
         values[move] = {"head": "b" * 40, "dirty": True, "content": "after"}[move]
         return {}
 

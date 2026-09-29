@@ -129,13 +129,13 @@ def test_ambient_cgroup_does_not_authorize_unrelated_processes(
     (proc / "self" / "cgroup").write_text(cgroup_record, encoding="utf-8")
     read_text = Path.read_text
 
-    def read_fixture_members(path: Path, *args: object, **kwargs: object) -> str:
+    def read_fixture_members(path: Path, encoding: str | None = None, errors: str | None = None) -> str:
         if path in {
             Path("/sys/fs/cgroup/shared/pytest/cgroup.procs"),
             Path("/sys/fs/cgroup/memory/shared/pytest/cgroup.procs"),
         }:
             return "100\n101\n555\n"
-        return read_text(path, *args, **kwargs)
+        return read_text(path, encoding=encoding, errors=errors)
 
     monkeypatch.setattr(Path, "read_text", read_fixture_members)
     sampler = _sampler(tmp_path, proc)
@@ -322,10 +322,10 @@ def test_pid_reused_between_discovery_and_memory_read_is_not_charged(
     directory = _process(proc, 100, pgid=100, start_time=10, pss_kib=100 * KIB)
     read_text = Path.read_text
 
-    def replace_on_rollup_read(path: Path, *args: object, **kwargs: object) -> str:
+    def replace_on_rollup_read(path: Path, encoding: str | None = None, errors: str | None = None) -> str:
         if path == directory / "smaps_rollup":
             _process(proc, 100, pgid=900, start_time=20, pss_kib=4000 * KIB)
-        return read_text(path, *args, **kwargs)
+        return read_text(path, encoding=encoding, errors=errors)
 
     monkeypatch.setattr(Path, "read_text", replace_on_rollup_read)
     sampler = _sampler(tmp_path, proc)
