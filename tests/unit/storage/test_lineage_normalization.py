@@ -104,7 +104,13 @@ def test_session_link_writer_rejects_unknown_inheritance_before_storage() -> Non
 def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, message_count: int) -> None:
     """Materialize the derived partition a converger would have written for
     ``session_id`` as it stands, stamping the value-complete input binding so
-    inspection reports it current."""
+    inspection reports it current.
+
+    Publication also consumes the session's captured profile demand (#5525);
+    a session with pending demand is stale however fresh its profile row is,
+    so the seed deletes the demand row as
+    ``publish_prepared_session_insight_partition``
+    does."""
     binding = session_input_bindings(conn, (session_id,))[session_id]
     conn.execute(
         """
@@ -125,6 +131,7 @@ def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, m
         " VALUES (?, ?, '', '')",
         (session_id, SESSION_INSIGHT_MATERIALIZER_VERSION),
     )
+    conn.execute("DELETE FROM session_profile_demand WHERE session_id = ?", (session_id,))
 
 
 def _nonvalid_partitions(conn: sqlite3.Connection) -> list[str]:
@@ -234,7 +241,12 @@ def test_prefix_sharing_child_provider_usage_keeps_its_own_reported_totals(tmp_p
     """A prefix-sharing child drops usage bound to the replayed prefix (the
     parent already owns that observation) and keeps its OWN cumulative totals
     verbatim. polylogue-uoq3x: the child's counter is session-scoped, so the
-    parent's branch-point cumulative is not a baseline to subtract."""
+    parent's branch-point cumulative is not a baseline to subtract.
+
+    A lane the provider did not report stays NULL (#5530 distinguishes absent
+    usage from explicit zero): the ``total_tokens``-only event stores NULL
+    input/cached/output totals, and it must not displace the latest lane
+    totals in the rollup."""
     db = tmp_path / "index.db"
     conn = _connect(db)
 
@@ -359,9 +371,9 @@ def test_prefix_sharing_child_provider_usage_keeps_its_own_reported_totals(tmp_p
         },
         {
             "source_message_id": archive_message_id(child_id, "cy"),
-            "total_input_tokens": 0,
-            "total_cached_input_tokens": 0,
-            "total_output_tokens": 0,
+            "total_input_tokens": None,
+            "total_cached_input_tokens": None,
+            "total_output_tokens": None,
             "total_tokens": 272_000,
         },
     ]
@@ -849,8 +861,10 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
     materialized over the whole child would report fresh forever. Anti-vacuity:
     the seeded profile is fresh by construction (asserted before the parent
     arrives), so dropping the invalidating deletes from
-    ``_reextract_prefix_tail_db`` leaves the stale rows in place and the child
-    out of the repair-candidate set.
+    ``_reextract_prefix_tail_db`` leaves the stale rows in place and fails the
+    retained-row assertion. The child's re-captured profile demand (#5525)
+    also marks it stale, so the partition-status assertion alone does not
+    prove the deletes.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -1640,6 +1654,15 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
 
 
 def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> None:
+    """A child written before its parent keeps its own divergent-tail usage.
+
+    When the parent arrives, re-extraction drops the usage bound to the shared
+    prefix (``c1``) and keeps the tail's rows and rollup unchanged. Since #5530
+    an explicit zero cumulative is a measurement that supersedes an earlier
+    positive one (``test_explicit_zero_cumulative_supersedes_prior_positive``),
+    so the measured-zero tick comes before the latest cumulative here; the
+    rollup is the child's own latest reported cumulative, 160/30/25.
+    """
     db = tmp_path / "index.db"
     conn = _connect(db)
 
@@ -1670,6 +1693,35 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
                     },
                 },
             ),
+            # A measured-zero tick: every lane explicitly 0 (polylogue-1pzmq).
+            # It precedes the child's latest cumulative because an explicit
+            # zero cumulative is a measurement that supersedes an earlier
+            # positive one (#5530).
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="cy",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "request_id": "req-zero",
+                    "last_token_usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "total_token_usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                },
+            ),
             ParsedSessionEvent(
                 event_type="token_count",
                 source_message_provider_id="cy",
@@ -1694,33 +1746,6 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
                     "cost_status": "actual",
                     "cost_source": "hermes_state_db",
                     "billing_provider": "openrouter",
-                },
-            ),
-            # A measured-zero tick: every lane explicitly 0, admitted on its
-            # provider correlation id alone (polylogue-1pzmq).
-            ParsedSessionEvent(
-                event_type="token_count",
-                source_message_provider_id="cy",
-                payload={
-                    "type": "token_count",
-                    "model": "gpt-5-codex",
-                    "request_id": "req-zero",
-                    "last_token_usage": {
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cached_input_tokens": 0,
-                        "cache_write_tokens": 0,
-                        "reasoning_output_tokens": 0,
-                        "total_tokens": 0,
-                    },
-                    "total_token_usage": {
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cached_input_tokens": 0,
-                        "cache_write_tokens": 0,
-                        "reasoning_output_tokens": 0,
-                        "total_tokens": 0,
-                    },
                 },
             ),
         ],
@@ -1776,13 +1801,12 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
     }
     # polylogue-664l: session_provider_usage_events dropped its 8 Hermes
     # billing-provenance columns (index v61, zero production readers). The
-    # third session_event above carries only billing evidence (no token
-    # counts), so `_provider_usage_event_row_has_evidence` -- now gated
-    # purely on the token counters -- correctly writes no row for it. Of the
-    # two remaining events, the "c1" one is deleted by the prefix-tail
-    # reextraction (its source message is in the shared parent prefix); only
-    # the divergent-tail "cy" event survives, and polylogue-uoq3x keeps its
-    # reported cumulative verbatim rather than rebasing it on the parent.
+    # billing-only event above has no column to hold its facts, so
+    # `_provider_usage_event_has_evidence` writes no row for it. The "c1" row
+    # is deleted by the prefix-tail reextraction (its source message is in the
+    # shared parent prefix); only the divergent-tail "cy" rows survive, and
+    # polylogue-uoq3x keeps their reported cumulatives verbatim rather than
+    # rebasing them on the parent.
     remaining = conn.execute(
         """
         SELECT total_input_tokens, total_tokens, request_id
@@ -1792,14 +1816,14 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
         """,
         (child_id,),
     ).fetchall()
-    # The fourth event reports a measured zero on every lane and is admitted on
-    # its provider correlation id alone (polylogue-1pzmq). polylogue-uoq3x
+    # The tick reports a measured zero on every lane and keeps its provider
+    # correlation id (polylogue-1pzmq). polylogue-uoq3x
     # removed the companion "delete every all-zero row" sweep that ran here: it
     # existed only to clear rows the baseline subtraction had clamped to zero,
     # and it destroyed this row -- and its request id -- along with them.
     assert [dict(row) for row in remaining] == [
-        {"total_input_tokens": 160, "total_tokens": 185, "request_id": None},
         {"total_input_tokens": 0, "total_tokens": 0, "request_id": "req-zero"},
+        {"total_input_tokens": 160, "total_tokens": 185, "request_id": None},
     ]
 
 
