@@ -106,6 +106,7 @@ def test_an_excision_committed_before_the_flush_marks_the_attachment_unavailable
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "raced-raw", "kept-raw")
     raced_payload = b"bytes excised while the pass was downloading"
     raced_hash = hashlib.sha256(raced_payload).digest()
     payloads = {"drive-raced": raced_payload, "drive-kept": b"an unrelated attachment"}
@@ -154,6 +155,7 @@ def test_an_excision_committed_after_the_flush_marks_the_attachment_unavailable(
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "raced-raw", "kept-raw")
     raced_payload = b"bytes excised while the pass was downloading"
     raced_hash = hashlib.sha256(raced_payload).digest()
     payloads = {"drive-raced": raced_payload, "drive-kept": b"an unrelated attachment"}
