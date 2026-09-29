@@ -689,12 +689,12 @@ sites:
     classification: whole_relation_derivation
     reason: "bulk-generation repopulate: the relation is emptied and re-derived in full from canonical index rows in the same call -- action_pairs from the archive-wide action-pair statement, delegation_facts from delegation_facts_source, messages_fts from blocks WHERE search_text != ''. A producer defect reappears on the next pass instead of being corrected away, and no row survives the delete to be patched"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
-    function: "rederive_codex_spawn_parent_links"
+    function: "_propagate_root_to_descendants"
     subject: "sessions"
-    kind: "state_selected_subject"
-    scope: "no_where"
+    kind: "unbound_rewrite"
+    scope: "state_predicate"
     classification: producer_scoped_transaction
-    reason: "runs inside the Codex thread-state projection write, over the children whose projected parent that write moved. The sessions read is the descendant closure seeded from exactly those rewritten children (json_each over their ids), followed through parent_session_id, so the subject set is the lineage the write changed and never archive state at large"
+    reason: "Called only when one session root changes inside the shared writer transaction. A recursive CTE seeded by the bound session_id follows indexed parent_session_id edges and updates only that affected subtree, with UNION terminating cycles; it is neither a whole-archive sweep nor a repair route. Replaces the Codex-only duplicate propagation."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "write_parsed_session_to_archive"
     subject: "derived_refresh_guard"

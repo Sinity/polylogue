@@ -13,7 +13,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.chunk_positions import ChunkPositions
 from polylogue.sources.dispatch import merge_parsed_session_chunks
-from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
 from polylogue.sources.prepared_message_sink import SqliteMessageStore, SqliteSessionEventSink
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
@@ -114,7 +114,7 @@ def _merge_into_store(
             "event_type TEXT NOT NULL, payload_key TEXT NOT NULL, name BLOB NOT NULL, total TEXT NOT NULL, "
             "PRIMARY KEY (event_type, payload_key, name)) WITHOUT ROWID"
         )
-    attachments = []
+    attachments: list[ParsedAttachment] = []
     for _, artifact in ordered:
         session = _single_prepared_session(artifact)
         positions = ChunkPositions(session.messages, len(messages), conn=store.conn)

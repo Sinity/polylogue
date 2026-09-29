@@ -560,13 +560,13 @@ class ParsedAttachment(BaseModel):
     prepared_carrier_key: tuple[str, int, int] | None = Field(default=None, exclude=True, repr=False)
     # Shallow value copies (including chunk-coordinate rebasing) retain the
     # acquisition identity, without publishing process-local object identity.
-    _acquisition_identity: int | None = PrivateAttr(default=None)
+    _acquisition_origin: object | None = PrivateAttr(default=None)
 
     @property
     def acquisition_key(self) -> object:
         if self.prepared_carrier_key is not None:
             return self.prepared_carrier_key
-        return self._acquisition_identity if self._acquisition_identity is not None else id(self)
+        return id(self._acquisition_origin if self._acquisition_origin is not None else self)
 
     @field_validator("path")
     @classmethod

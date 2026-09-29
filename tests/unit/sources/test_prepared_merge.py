@@ -339,3 +339,29 @@ def test_chunk_position_uses_the_full_variant_coordinate(tmp_path: Path, disk: b
         ambiguous = ChunkPositions([messages[0], messages[0]], 3, conn=conn if disk else None)
         with pytest.raises(MessageOwnerAmbiguityError):
             ambiguous.position(9)
+
+
+def test_rebased_attachment_keeps_acquisition_identity_alive() -> None:
+    import gc
+    import weakref
+
+    from polylogue.sources.chunk_positions import ChunkPositions
+    from polylogue.sources.parsers.base import ParsedAttachment
+
+    original = ParsedAttachment(provider_attachment_id="alive", message_position=0)
+    original_ref = weakref.ref(original)
+    key = original.acquisition_key
+    messages = [ParsedMessage(provider_message_id="a", role=Role.USER, text="a", position=0)]
+    moved = ChunkPositions(messages, 3).attachment(original)
+    del original
+    gc.collect()
+    assert original_ref() is not None
+    assert moved.acquisition_key == key
+    again = ChunkPositions([messages[0].model_copy(update={"position": 3})], 7).attachment(moved)
+    del moved
+    gc.collect()
+    assert original_ref() is not None
+    assert again.acquisition_key == key
+    del again
+    gc.collect()
+    assert original_ref() is None

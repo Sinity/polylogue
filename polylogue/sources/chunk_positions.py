@@ -92,8 +92,8 @@ class ChunkPositions:
         if attachment.prepared_carrier_key is None:
             # Acquisition can precede composition. Keep that exact lookup key
             # through a value copy without changing the source object.
-            moved._acquisition_identity = (
-                attachment._acquisition_identity if attachment._acquisition_identity is not None else id(attachment)
+            moved._acquisition_origin = (
+                attachment._acquisition_origin if attachment._acquisition_origin is not None else attachment
             )
         return moved
 

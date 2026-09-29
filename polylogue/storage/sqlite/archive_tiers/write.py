@@ -522,11 +522,16 @@ class LineageSignatureCache:
         self.evictions = 0
 
     @staticmethod
-    def _weight(session_id: str, signatures: list[tuple[str, str]]) -> int:
+    def _weight(
+        session_id: str, signatures: list[tuple[str, str]], *, dependencies: frozenset[str] = frozenset()
+    ) -> int:
         return (
             LineageSignatureCache._ENTRY_OVERHEAD_BYTES
             + len(session_id)
             + sum(len(message_id) + len(signature) + 16 for message_id, signature in signatures)
+            # Ancestor closures are retained evidence too. Charge their set
+            # slots and strings against the same budget.
+            + (216 + sum(96 + 4 * len(dependency) for dependency in dependencies) if dependencies else 0)
         )
 
     def _get(self, kind: str, session_id: str) -> list[tuple[str, str]] | None:
@@ -553,7 +558,7 @@ class LineageSignatureCache:
         if not self.enabled or self.max_bytes == 0:
             return
         key = (kind, session_id)
-        weight = self._weight(session_id, signatures)
+        weight = self._weight(session_id, signatures, dependencies=dependencies)
         if weight > self.max_bytes:
             # A whale must not evict the whole useful cache just to remain a
             # one-entry cache. It is a normal miss on the next descendant.
@@ -1458,8 +1463,8 @@ def _prepared_message_context(
         origin=origin.value,
         child_session_id=session_id,
         child_native_id=native_id,
-        child_provider_values=(),
-        parent_candidate=None,
+        child_provider_values=_child_provider_values(session),
+        parent_candidate=session.parent_session_provider_id,
     )
     hook_parent_provider_id = hook_parent_claim.parent_native_id if hook_parent_claim is not None else None
     effective_session_kind = session.session_kind
@@ -1576,8 +1581,8 @@ def prepared_lineage_bindings(
         origin=origin.value,
         child_session_id=session_id,
         child_native_id=native_id,
-        child_provider_values=(),
-        parent_candidate=None,
+        child_provider_values=_child_provider_values(session),
+        parent_candidate=session.parent_session_provider_id,
     )
     hook_parent_native_id = claim.parent_native_id if claim is not None else None
     lineage_session = (
@@ -7295,22 +7300,22 @@ def _authoritative_parent_claim(
         return None
     if origin == Origin.CODEX_SESSION.value:
         return _codex_spawn_edge_parent_claim(conn, source_conn, child_native_id=child_native_id)
-    if source_conn is None:
+    if origin != Origin.CLAUDE_CODE_SESSION.value:
         return None
-    if origin == Origin.CLAUDE_CODE_SESSION.value and parent_candidate:
-        provider_values = tuple(child_provider_values)
-        preserved = [
-            str(row[0])
-            for row in conn.execute(
-                """
-                SELECT DISTINCT dst_native_id FROM session_links
-                WHERE src_session_id = ? AND dst_origin = ? AND method = ? AND dst_native_id IS NOT ?
-                ORDER BY dst_native_id
-                """,
-                (child_session_id, origin, HOOK_AUTHORITATIVE_LINK_METHOD, parent_candidate),
-            ).fetchall()
-        ]
-        for candidate in (parent_candidate, *preserved):
+    provider_values = tuple(child_provider_values)
+    preserved = conn.execute(
+        """
+        SELECT dst_native_id, evidence_json FROM session_links
+        WHERE src_session_id = ? AND dst_origin = ? AND method = ? AND status IS NULL
+        ORDER BY dst_native_id
+        """,
+        (child_session_id, origin, HOOK_AUTHORITATIVE_LINK_METHOD),
+    ).fetchall()
+    candidates = dict.fromkeys(
+        candidate for candidate in (parent_candidate, *(str(row[0]) for row in preserved)) if candidate
+    )
+    if source_conn is not None:
+        for candidate in candidates:
             claim = _claude_agent_dispatch_parent_claim(
                 conn,
                 source_conn,
@@ -7320,6 +7325,14 @@ def _authoritative_parent_claim(
             )
             if claim is not None:
                 return claim
+    # A verified, still-active claim does not turn into hook silence merely
+    # because this write omitted the source handle or no longer repeats the
+    # child's old tool call. A fresh claim above may supersede it; silence may
+    # not. Preserve the existing evidence, not a second authority/cache.
+    if len(preserved) > 1:
+        raise ValueError(f"ambiguous preserved hook parents for {child_session_id}")
+    if preserved:
+        return _HookParentClaim(str(preserved[0][0]), json.loads(preserved[0][1] or "{}"))
     return None
 
 

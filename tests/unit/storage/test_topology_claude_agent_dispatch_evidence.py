@@ -23,6 +23,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import (
@@ -426,3 +428,62 @@ def test_parser_parent_with_its_own_hook_claim_supersedes_the_preserved_one(tmp_
         "SELECT parent_session_id FROM sessions WHERE session_id = ?", (child_id,)
     ).fetchone()[0]
     assert composed_parent == f"{Origin.CLAUDE_CODE_SESSION.value}:{_OTHER_PARENT}"
+
+
+@pytest.mark.parametrize("source_available", [False, True])
+@pytest.mark.parametrize("route", ["inline", "prepared"])
+def test_preserved_hook_parent_controls_prefix_slicing(tmp_path: Path, source_available: bool, route: str) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, prepared_lineage_bindings
+
+    with closing(_index_conn(tmp_path / "index.db")) as index, closing(_source_conn(tmp_path / "source.db")) as source:
+        _write_tool_hook_event(source, payload=_snake_payload())
+        child = _child_session()
+        prefix = ParsedMessage(
+            provider_message_id="child-prefix",
+            role=Role.USER,
+            text="only child and B share this",
+            position=0,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="only child and B share this")],
+        )
+        child = child.model_copy(update={"messages": [prefix, child.messages[0].model_copy(update={"position": 1})]})
+        parent_b = _parent_session(_OTHER_PARENT).model_copy(update={"messages": [prefix]})
+        write_parsed_session_to_archive(index, _parent_session(), source_conn=source)
+        write_parsed_session_to_archive(index, parent_b, source_conn=source)
+        child_id = write_parsed_session_to_archive(index, child, source_conn=source)
+        assert (
+            index.execute("SELECT method FROM session_links WHERE src_session_id = ?", (child_id,)).fetchone()[0]
+            == HOOK_AUTHORITATIVE_LINK_METHOD
+        )
+        replay = child.model_copy(update={"parent_session_provider_id": _OTHER_PARENT})
+        replay_source = source if source_available else None
+        assert prepared_lineage_bindings(index, replay, source_conn=replay_source) == (
+            _PARENT,
+            f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}",
+        )
+        if route == "prepared":
+            prepared = prepare_session_write(index, replay, merge_append=False, source_conn=replay_source)
+            try:
+                write_parsed_session_to_archive(
+                    index,
+                    replay,
+                    source_conn=replay_source,
+                    prepared_write=prepared,
+                    content_hash=prepared.input_content_hash.hex(),
+                )
+            finally:
+                prepared.close()
+        else:
+            write_parsed_session_to_archive(index, replay, source_conn=replay_source)
+        rows = index.execute(
+            "SELECT dst_native_id, inheritance, branch_point_message_id FROM session_links "
+            "WHERE src_session_id = ? AND status IS NULL",
+            (child_id,),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [(_PARENT, "spawned-fresh", None)]
+        assert index.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 2
+        assert (
+            index.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (child_id,)).fetchone()[0]
+            == f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}"
+        )

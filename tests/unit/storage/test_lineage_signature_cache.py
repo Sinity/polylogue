@@ -215,7 +215,9 @@ def test_evicting_a_cached_ancestor_keeps_the_descendant_invalidatable(tmp_path:
     # Memory pressure: size the cache so the next entry evicts everything
     # older than C's composed entry, B's included.
     filler = [("filler:message", "f" * 64)]
-    cache.max_bytes = LineageSignatureCache._weight(c_id, composed_c) + LineageSignatureCache._weight("filler", filler)
+    cache.max_bytes = LineageSignatureCache._weight(
+        c_id, composed_c, dependencies=cache.composed_dependencies(c_id) or frozenset()
+    ) + LineageSignatureCache._weight("filler", filler)
     cache["filler"] = filler
     cache.max_bytes = 64 * 1024 * 1024
     assert cache.get_composed(b_id) is None
@@ -264,7 +266,9 @@ def test_an_oversized_own_entry_keeps_the_composed_entry_dependencies() -> None:
     leaves it serving pre-rewrite signatures.
     """
     signatures = [("message", "s" * 64)]
-    cache = LineageSignatureCache(max_bytes=LineageSignatureCache._weight("c", signatures) * 2)
+    cache = LineageSignatureCache(
+        max_bytes=LineageSignatureCache._weight("c", signatures, dependencies=frozenset({"a", "b", "c"})) * 2
+    )
     cache.set_composed("c", signatures, dependencies=frozenset({"c", "b", "a"}))
     cache["c"] = [(f"message-{index}", "w" * 64) for index in range(64)]
     assert cache.get("c") is None
@@ -273,3 +277,16 @@ def test_an_oversized_own_entry_keeps_the_composed_entry_dependencies() -> None:
     cache.pop("a")
 
     assert cache.get_composed("c") is None
+
+
+def test_ancestor_dependency_closures_share_the_cache_byte_budget() -> None:
+    signatures = [("message", "s" * 64)]
+    dependencies = frozenset(f"ancestor-{number}" for number in range(1000))
+    cache = LineageSignatureCache(max_bytes=4096)
+    cache["unrelated"] = signatures
+    resident = cache.resident_bytes
+    cache.set_composed("deep-child", signatures, dependencies=dependencies)
+    assert cache.get_composed("deep-child") is None
+    assert cache.composed_dependencies("deep-child") is None
+    assert cache.get("unrelated") == signatures
+    assert cache.resident_bytes == resident <= cache.max_bytes
