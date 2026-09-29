@@ -89,7 +89,7 @@ def _session_seed_hits(
 ) -> list[ArchiveSessionSearchHit]:
     """Resolve a session-seeded plan to filtered session-level hits."""
     limit = plan.limit if plan.limit is not None else 50
-    pool = max(limit + plan.offset, limit) * 3
+    pool = _ranked_candidate_pool(plan, limit)
     scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
     return archive.semantic_summaries(scored, limit=pool, offset=0, **plan_filter_kwargs(plan))
 
@@ -143,13 +143,25 @@ def _semantic_hits(
             readiness_status="disabled",
         )
     limit = plan.limit if plan.limit is not None else 50
-    scored = vector_provider.query(text, limit=max(limit + plan.offset, limit) * 3)
-    return archive.semantic_summaries(
-        scored,
-        limit=max(limit + plan.offset, limit) * 3,
-        offset=0,
-        **plan_filter_kwargs(plan),
-    )
+    pool = _ranked_candidate_pool(plan, limit)
+    scored = vector_provider.query(text, limit=pool)
+    return archive.semantic_summaries(scored, limit=pool, offset=0, **plan_filter_kwargs(plan))
+
+
+def _ranked_candidate_pool(plan: SessionQueryPlan, limit: int) -> int:
+    """How many vector-ranked candidates a ranked plan reads before filtering and paging.
+
+    In rank order the candidates for a deeper page extend the shallower
+    page's prefix, so the pool grows with the offset. Under an explicit sort
+    the candidates are re-ordered, and a pool that grew with the offset would
+    admit rows that sort ahead of rows an earlier page already served, so
+    pages would repeat or skip. A sorted ranked query therefore pages over
+    one declared relation, the top ``3 * limit`` ranked candidates -- the
+    same set its first page sorts -- for every offset.
+    """
+    if _sort_owned_here(plan):
+        return max(limit, 1) * 3
+    return max(limit + plan.offset, limit) * 3
 
 
 #: Sorts over per-session counters, which the index stores for a lineage

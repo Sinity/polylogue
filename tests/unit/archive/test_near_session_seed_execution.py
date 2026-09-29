@@ -308,3 +308,54 @@ def test_session_seed_counts_as_search_hit_evidence() -> None:
 def test_compiled_near_id_threads_session_seed() -> None:
     plan = compile_expression("near:id:abc123").to_plan()
     assert plan.similar_session_id == "abc123"
+
+
+@pytest.mark.parametrize("full_session", (False, True))
+async def test_sorted_semantic_pages_concatenate_the_sorted_candidate_relation(
+    tmp_path: Path, full_session: bool
+) -> None:
+    """Date-sorted semantic pages tile one relation: no repeats, no skips.
+
+    Rank order and date order disagree here (rank 1 is the oldest session).
+    Anti-vacuity: sizing the candidate pool from ``limit + offset`` admits
+    newer, lower-ranked candidates on deeper pages; they sort ahead of rows
+    page one already served, so pages repeat those rows and skip others.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    db_path = archive_root / "index.db"
+    for rank in range(1, 7):
+        (
+            SessionBuilder(db_path, f"conv-rank-{rank}")
+            .provider(Provider.CODEX.value)
+            .title(f"rank {rank}")
+            .updated_at(f"2026-04-{10 + rank:02d}T12:00:00+00:00")
+            .add_message(
+                "m1", role="user", text=f"ranked session {rank} prose", material_origin=MaterialOrigin.HUMAN_AUTHORED
+            )
+            .save()
+        )
+    with sqlite3.connect(db_path) as conn:
+        message_by_session = {
+            str(session_id): str(message_id)
+            for message_id, session_id in conn.execute("SELECT message_id, session_id FROM messages")
+        }
+    ranked_sessions = sorted(message_by_session, key=lambda session_id: int(session_id.rsplit("-", 1)[-1]))
+    scored = [(message_by_session[session_id], float(index)) for index, session_id in enumerate(ranked_sessions)]
+
+    class RankedVectors:
+        def query(self, _text: str, *, limit: int) -> list[tuple[str, float]]:
+            return scored[:limit]
+
+    config = Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[], db_path=db_path)
+    vectors = cast(VectorProvider, RankedVectors())
+
+    async def page(offset: int) -> list[str]:
+        plan = SessionQueryPlan(similar_text="ranked", vector_provider=vectors, sort="date", limit=1, offset=offset)
+        reader = list_archive if full_session else list_summaries_archive
+        return [str(item.id) for item in await reader(plan, archive_root=archive_root, config=config)]
+
+    served = [session_id for offset in range(6) for session_id in await page(offset)]
+
+    # The relation is the top 3 x limit ranked candidates, newest first.
+    assert served == list(reversed(ranked_sessions[:3]))
