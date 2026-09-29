@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import itertools
 import json
 import math
 import pickle
 import re
 import shlex
 import sqlite3
+import sys
 import tempfile
 import unicodedata
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, MutableSequence, Sequence
@@ -101,6 +103,50 @@ _CODE_MODE_ITEM_CHILD_TYPES: dict[str, frozenset[str]] = {
 _CODE_MODE_ITEM_TEXT_KEYS = ("aggregated_output", "stdout", "formatted_output", "stderr")
 _STRUCTURAL_PATH_KEYS = frozenset({"path", "file_path", "paths", "file_paths", "image_path"})
 _STRUCTURAL_BYTE_KEYS = frozenset({"bytes", "byte_count", "bytes_written", "size_bytes", "written_bytes"})
+# The parser walks a rollout twice (lookahead, then materialization). A stream
+# whose decoded records fit this many retained bytes is replayed from a list;
+# a larger one is spooled to the parse's scratch index. The budget chooses a
+# storage tier only: both tiers replay the same records in the same order.
+_CODEX_REPLAY_MEMORY_BUDGET_BYTES = 8 * 1024 * 1024
+_LIST_REFERENCE_BYTES = 8
+
+
+def _retained_record_bytes(value: object) -> int:
+    """Estimate the object graph an in-memory replay keeps alive for ``value``.
+
+    Codex stream records are JSON-shaped mappings and sequences, so the size
+    is the sum of every reachable object's ``sys.getsizeof``. One giant nested
+    payload therefore cannot evade the replay budget. The walk is iterative so
+    nesting depth cannot raise ``RecursionError``; a container reached twice
+    is charged once, which also stops at a reference cycle. A scalar shared
+    between places is charged at each, which only spools sooner.
+    """
+    getsizeof = sys.getsizeof
+    size = 0
+    seen: set[int] = set()
+    pending: list[object] = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Mapping):
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            pending.extend(item)
+        size += getsizeof(item)
+    return size
+
+
+def _drain(items: list[object]) -> Iterator[object]:
+    """Yield ``items`` in order, releasing each from the list as it is yielded."""
+    items.reverse()
+    while items:
+        yield items.pop()
 
 
 class _CodexLookaheadIndex:
@@ -183,6 +229,24 @@ class _CodexLookaheadIndex:
             );
             """
         )
+
+    def retain_records(self, records: Iterable[object], budget_bytes: int) -> list[object] | None:
+        """Keep ``records`` in memory while they fit ``budget_bytes``, else spool them all.
+
+        Returns the list when the whole stream fits. Otherwise every record,
+        the ones already retained first, goes to ``codex_records`` in stream
+        order and the result is ``None``: replay then reads this index.
+        """
+        retained: list[object] = []
+        retained_bytes = sys.getsizeof(retained)
+        iterator = iter(records)
+        for record in iterator:
+            retained.append(record)
+            retained_bytes += _LIST_REFERENCE_BYTES + _retained_record_bytes(record)
+            if retained_bytes > budget_bytes:
+                self.spool_records(itertools.chain(_drain(retained), iterator))
+                return None
+        return retained
 
     def spool_records(self, records: Iterable[object]) -> None:
         for record_index, record in enumerate(records, start=1):
@@ -4175,9 +4239,9 @@ def _parse_records(
                     event_sink=event_sink,
                     _index=index_store,
                 )
-            index_store.spool_records(records)
+            retained = index_store.retain_records(records, _CODEX_REPLAY_MEMORY_BUDGET_BYTES)
             return _parse_records(
-                index_store,
+                retained if retained is not None else index_store,
                 fallback_id,
                 message_sink=message_sink,
                 event_sink=event_sink,

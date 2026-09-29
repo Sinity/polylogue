@@ -3704,3 +3704,122 @@ def test_markdown_rendering_escapes_a_lone_surrogate() -> None:
     )
     rendered.encode("utf-8")
     assert "\\ud800" in rendered
+
+
+# Records whose parse depends on the lookahead pass (repeated code-mode call
+# ids pair calls with outputs; a compaction's replacement history is resolved
+# against later live text), so a replay tier that dropped, reordered, or
+# re-decoded a record would change the parsed session.
+_REPLAY_TIER_PAYLOAD: list[dict[str, Any]] = [
+    {"type": "session_meta", "payload": {"id": "replay-tier", "timestamp": "2024-01-01T00:00:00Z"}},
+    {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "functions.exec",
+            "call_id": "reused",
+            "arguments": 'await tools.exec_command({cmd: "first"})',
+        },
+    },
+    {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "reused", "output": "first"}},
+    {
+        "type": "compacted",
+        "payload": {
+            "message": "summary",
+            "replacement_history": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "history only"}]}
+            ],
+        },
+    },
+    {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "functions.exec",
+            "call_id": "reused",
+            "arguments": 'await tools.exec_command({cmd: "second"})',
+        },
+    },
+    {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "reused", "output": "second"}},
+    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "retained reply"}]},
+    {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "retained reply"}},
+    {"type": "future_record_kind"},
+]
+
+
+def _spy_spool(monkeypatch: pytest.MonkeyPatch) -> list[list[object]]:
+    """Record every stream the parser spools to its scratch index."""
+    from polylogue.sources.parsers import codex as codex_module
+
+    spooled: list[list[object]] = []
+    spool = codex_module._CodexLookaheadIndex.spool_records
+
+    def recording(self: object, records: Any) -> None:
+        captured = list(records)
+        spooled.append(captured)
+        spool(cast(Any, self), captured)
+
+    monkeypatch.setattr(codex_module._CodexLookaheadIndex, "spool_records", recording)
+    return spooled
+
+
+@pytest.mark.parametrize("tier", ["memory", "spill-midstream", "spill-first"])
+def test_stream_replay_tiers_parse_every_prefix_like_the_list_parse(monkeypatch: pytest.MonkeyPatch, tier: str) -> None:
+    """Both replay tiers, and a spill after records were already retained, parse identically.
+
+    Every prefix is an incrementally appended rollout. Anti-vacuity: drop the
+    retained records on spill, or spool them after the rest of the stream,
+    and the ``spill-midstream`` parse differs from the list parse; spool
+    every stream regardless of size and the ``memory`` tier records a spool.
+    """
+    import sys
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    retained_head = 2
+    budget = {
+        "memory": codex_module._CODEX_REPLAY_MEMORY_BUDGET_BYTES,
+        "spill-midstream": sys.getsizeof([])
+        + sum(
+            codex_module._LIST_REFERENCE_BYTES + codex_module._retained_record_bytes(record)
+            for record in _REPLAY_TIER_PAYLOAD[:retained_head]
+        ),
+        "spill-first": 0,
+    }[tier]
+    monkeypatch.setattr(codex_module, "_CODEX_REPLAY_MEMORY_BUDGET_BYTES", budget)
+    spooled = _spy_spool(monkeypatch)
+
+    for end in range(1, len(_REPLAY_TIER_PAYLOAD) + 1):
+        prefix = _REPLAY_TIER_PAYLOAD[:end]
+        spooled.clear()
+        assert parse_stream(iter(prefix), "fallback") == parse(prefix, "fallback"), end
+        if tier == "memory" or (tier == "spill-midstream" and end <= retained_head):
+            assert spooled == []
+        else:
+            assert spooled == [prefix]
+
+
+def test_stream_replay_budget_charges_nested_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One record whose bulk sits deep in its payload still spills past the budget.
+
+    Anti-vacuity: charge only the outer mapping (``sys.getsizeof(record)``)
+    and the nested 64 KiB text fits a 16 KiB budget, so nothing is spooled.
+    """
+    from polylogue.sources.parsers import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "_CODEX_REPLAY_MEMORY_BUDGET_BYTES", 16 * 1024)
+    spooled = _spy_spool(monkeypatch)
+    payload = [
+        {"type": "session_meta", "payload": {"id": "nested"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "n" * (64 * 1024)}],
+            },
+        },
+    ]
+
+    assert parse_stream(iter(payload), "fallback") == parse(payload, "fallback")
+    assert spooled == [payload]
