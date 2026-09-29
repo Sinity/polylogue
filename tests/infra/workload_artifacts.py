@@ -33,7 +33,7 @@ from unittest.mock import patch
 from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.scenarios.workload import (
     WorkloadEnvelopeSpec,
@@ -111,7 +111,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # separately because their gzipped catalogs are runtime inputs, not Python.
 _SOURCE_DEPENDENCY_ROOTS = (
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "synthetic",
-    _REPOSITORY_ROOT / "polylogue" / "pipeline" / "services" / "archive_ingest.py",
+    _REPOSITORY_ROOT / "polylogue" / "operations" / "canonical_archive_ingest.py",
     _REPOSITORY_ROOT / "polylogue" / "pipeline" / "services" / "ingest_worker.py",
     _REPOSITORY_ROOT / "polylogue" / "sources" / "source_parsing.py",
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "runtime_registry.py",
@@ -3090,7 +3090,7 @@ def _build_seeded_archive_inner(
                         # semantics have dedicated importer tests; this helper's
                         # contract is the real admission/write route, which the
                         # exact sequential escape hatch preserves.
-                        asyncio.run(parse_sources_archive(staging, sources, parse_workers=1))
+                        asyncio.run(ingest_one_shot_archive(staging, sources, parse_workers=1))
                 blob_report = scan_blob_integrity(
                     staging / "source.db",
                     store=BlobStore(staging / "blob"),

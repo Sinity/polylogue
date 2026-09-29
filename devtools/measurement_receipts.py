@@ -101,7 +101,7 @@ def _leaves(value: object, prefix: str = "") -> dict[str, object]:
             raw_key = str(key)
             part = (
                 json.dumps(raw_key, ensure_ascii=False, separators=(",", ":"))
-                if any(c in raw_key for c in ".[]\\")
+                if not raw_key or any(c in raw_key for c in (".", "[", "]", "\\", '"'))
                 else raw_key
             )
             leaves.update(_leaves(value[key], f"{prefix}.{part}" if prefix else part))

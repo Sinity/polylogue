@@ -258,7 +258,7 @@ def apply_query_excision(
                    evidence_refs_json = '[]',
                    supersedes_json = '[]',
                    context_policy_json = '{{"inject":false}}',
-                   author_ref = 'system:excision',
+                   author_ref = 'actor:query-excision',
                    author_kind = 'system',
                    visibility = 'private',
                    updated_at_ms = ?

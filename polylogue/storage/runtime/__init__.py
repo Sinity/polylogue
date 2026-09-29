@@ -26,7 +26,6 @@ from polylogue.storage.derived.timeline.records import (
 from polylogue.storage.runtime.archive.records import (
     LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
-    LINEAGE_TRUNCATION_DEPTH_LIMIT,
     AttachmentRecord,
     BlockRecord,
     FileEditRecord,
@@ -85,7 +84,6 @@ __all__ = [
     "WebContentConstructRecord",
     "DaySessionSummaryRecord",
     "LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT",
-    "LINEAGE_TRUNCATION_DEPTH_LIMIT",
     "LineageCompleteness",
     "LineageTruncationReason",
     "MessageRecord",

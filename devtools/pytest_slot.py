@@ -1053,6 +1053,7 @@ def _write_interrupted_result(
     environment: Mapping[str, str],
     started: float,
     signal_number: int,
+    worktree_provenance: Mapping[str, Any] | None,
     sizing: Mapping[str, Any] | None = None,
     memory: Mapping[str, Any] | None = None,
     profile: ChargeProfile | None = None,
@@ -1067,6 +1068,7 @@ def _write_interrupted_result(
         extra={
             "diagnosis": "pytest_interrupted",
             "signal": signal.Signals(signal_number).name,
+            **({"worktree_provenance": dict(worktree_provenance)} if worktree_provenance is not None else {}),
             "progress": _progress_counts(environment),
         },
     )
@@ -1149,6 +1151,7 @@ def _run_held(
                 environment=env,
                 started=started,
                 signal_number=signal_number,
+                worktree_provenance=worktree_provenance,
                 sizing=sizing,
                 profile=profile,
                 memory=sampler.persist(),
@@ -1599,6 +1602,7 @@ def _run_launch(launch_path: Path) -> int:
                 environment=environment,
                 started=started,
                 signal_number=signal_number,
+                worktree_provenance=worktree_provenance,
                 sizing=sizing,
                 profile=profile,
                 memory=sampler.persist() if sampler is not None else None,

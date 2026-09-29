@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.browser_capture.capture_stream import (
+    AttachmentFact,
     CaptureEnvelopeError,
     CaptureSummary,
     StagedCapture,
@@ -40,6 +41,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
 )
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import dumps_bytes
@@ -138,6 +140,18 @@ def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = Fals
     absent and a fresh token is minted in its place.
     """
     target = path if path is not None else browser_capture_receiver_token_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(target.name + ".lock")
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        return _load_or_mint_receiver_token_locked(target, rotate=rotate)
+    finally:
+        os.close(lock_fd)
+
+
+def _load_or_mint_receiver_token_locked(target: Path, *, rotate: bool) -> str:
     if not rotate and target.exists():
         if _is_trusted_token_file(target):
             existing = target.read_text(encoding="utf-8").strip()
@@ -163,6 +177,28 @@ def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = Fals
         with suppress(FileNotFoundError):
             tmp_path.unlink()
         raise
+    return token
+
+
+def persist_receiver_token(token: str, path: Path | None = None) -> str:
+    """Publish an explicitly configured receiver token for native pairing.
+
+    The token is normalized once, exactly as ``load_or_mint_receiver_token``
+    reads the file back, so the receiver and the paired extension hold the
+    same bearer credential.
+    """
+    token = token.strip()
+    if not token:
+        raise ValueError("receiver token must not be empty")
+    target = path if path is not None else browser_capture_receiver_token_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(target.with_name(target.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        atomic_replace(target, token.encode("utf-8"), mode=0o600)
+    finally:
+        os.close(lock_fd)
     return token
 
 
@@ -216,7 +252,7 @@ def resolve_receiver_auth_token(
     pre-gnie fully-open posture.
     """
     if explicit_token:
-        return explicit_token
+        return persist_receiver_token(explicit_token, token_path)
     if allow_no_auth:
         logger.warning(
             "browser_capture.auth_disabled",
@@ -325,24 +361,34 @@ def _capture_has_invalid_content_carrier(summary: CaptureSummary) -> bool:
 
 
 def _capture_carrier_conflicts(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
-    """Reject carrier bytes that contradict an existing attachment identity."""
-    incoming_attachments = incoming.attachments
-    existing_attachments = existing.attachments
-    if len(incoming_attachments) < len(existing_attachments):
-        return True
-    if any(
-        current.identity != previous.identity
-        for current, previous in zip(
-            incoming_attachments[: len(existing_attachments)], existing_attachments, strict=True
-        )
-    ):
-        return True
-    for current, previous in zip(incoming_attachments, existing_attachments, strict=False):
-        if current.carrier is None or previous.carrier is None:
-            continue
-        if not current.carrier_valid or not previous.carrier_valid or current.carrier != previous.carrier:
+    """Reject carrier bytes that contradict an existing attachment identity.
+
+    Attachments pair by their scope and provider attachment ID, in observed
+    order within that group, so an attachment inserted into another turn or
+    ahead of an existing one is not compared against an unrelated object.
+    """
+    incoming_groups = _scoped_attachment_facts(incoming)
+    for key, previous_group in _scoped_attachment_facts(existing).items():
+        current_group = incoming_groups.get(key, [])
+        if len(current_group) < len(previous_group):
             return True
+        for current, previous in zip(current_group, previous_group, strict=False):
+            if current.identity != previous.identity:
+                return True
+            current_carrier, current_valid = current.effective_carrier
+            previous_carrier, previous_valid = previous.effective_carrier
+            if current_carrier is None or previous_carrier is None:
+                continue
+            if not current_valid or not previous_valid or current_carrier != previous_carrier:
+                return True
     return False
+
+
+def _scoped_attachment_facts(summary: CaptureSummary) -> dict[tuple[str, str], list[AttachmentFact]]:
+    groups: dict[tuple[str, str], list[AttachmentFact]] = {}
+    for fact in summary.attachments:
+        groups.setdefault((fact.scope, fact.attachment_id), []).append(fact)
+    return groups
 
 
 def _attachment_content_enrichment(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
@@ -369,10 +415,11 @@ def _attachment_content_enrichment(incoming: CaptureSummary, existing: CaptureSu
             continue
         if not incoming_attachment.carrier_valid:
             return False
-        if existing_attachment.carrier is None:
+        existing_carrier, existing_valid = existing_attachment.effective_carrier
+        if existing_carrier is None:
             added_carrier = True
             continue
-        if not existing_attachment.carrier_valid or incoming_attachment.carrier != existing_attachment.carrier:
+        if not existing_valid or incoming_attachment.carrier != existing_carrier:
             return False
     return added_carrier
 

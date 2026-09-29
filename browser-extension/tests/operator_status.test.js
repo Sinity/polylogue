@@ -342,4 +342,12 @@ describe("shared operator status vocabulary", () => {
       { status: "drafted" },
     ])).toBe(4);
   });
+
+  it("anti-vacuity: presents every receiver terminal action status", () => {
+    for (const status of ["drafted", "blocked", "cancelled"]) {
+      expect(api.actionPresentation({ status }).label.toLowerCase()).toContain(status);
+    }
+    expect(api.actionPresentation({ status: "completed" }).label).toBe("Browser action observed");
+    expect(api.actionPresentation({ status: "declined" }).label).toBe("Browser action observed");
+  });
 });

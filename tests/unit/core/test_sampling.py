@@ -1050,3 +1050,45 @@ class TestReplayableRecordSamplesBoundedSlice:
         samples = ReplayableRecordSamples(raw_content)
 
         assert [item["n"] for item in samples[-3:]] == [22, 23, 24]
+
+
+@pytest.mark.parametrize(
+    ("source_path", "artifact_kind"),
+    [
+        ("/tmp/subagents/run/agent-1.meta.json", "agent_sidecar_meta"),
+        ("/tmp/projects/repo/sessions-index.json", "session_index"),
+    ],
+)
+def test_archive_schema_sampling_observes_declared_structured_sidecars(
+    tmp_path: Path, source_path: str, artifact_kind: str
+) -> None:
+    """F439: the production archive sampler previously excluded both rows before observing their shape."""
+    db_path = _archive_index_db(tmp_path)
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "schemas" / "structured-sidecar-observation.json"
+    raw_id = _insert_raw_session(
+        db_path=db_path,
+        origin="claude-code-session",
+        source_path=source_path,
+        raw_content=fixture.read_bytes(),
+    )
+    outcomes: list[dict[str, object]] = []
+    units = list(
+        iter_schema_units(
+            "claude-code",
+            db_path=db_path,
+            full_corpus=True,
+            terminal_recorder=lambda **outcome: outcomes.append(outcome),
+        )
+    )
+    assert len(units) == 1
+    assert units[0].artifact_kind == artifact_kind
+    assert units[0].schema_samples[0]["new_field"] == {"enabled": True}
+    assert outcomes == [
+        {
+            "raw_id": raw_id,
+            "status": "included",
+            "artifact_kind": artifact_kind,
+            "source_path": source_path,
+            "reason": "observed_schema_units",
+        }
+    ]

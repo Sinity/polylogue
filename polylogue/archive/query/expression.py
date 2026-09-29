@@ -3904,9 +3904,9 @@ class _SpecAccumulator:
             if tok.negated:
                 raise ExpressionCompileError("negation is not supported for 'action_sequence'", field=fname)
             steps = [step.strip().lower() for step in tok.raw_value.split(">") if step.strip()]
-            if len(steps) < 2:
+            if not steps:
                 raise ExpressionCompileError(
-                    "action_sequence needs at least two arrow-separated steps, e.g. action_sequence:file_edit>shell",
+                    "action_sequence needs at least one action step, e.g. action_sequence:shell",
                     field=fname,
                 )
             for step in steps:
@@ -3920,6 +3920,8 @@ class _SpecAccumulator:
         elif fname == "action_text":
             if tok.negated:
                 raise ExpressionCompileError("negation is not supported for 'action_text'", field=fname)
+            if len(values) > 1:
+                raise ExpressionCompileError("alternation is not supported for 'action_text'", field=fname)
             self.action_text_terms.extend(values)
 
         elif fname == "since_session":
@@ -4264,7 +4266,7 @@ def compile_expression_into(expression: str, base: SessionQuerySpec) -> SessionQ
         sample=expr_spec.sample if expr_spec.sample is not None else base.sample,
         latest=base.latest or expr_spec.latest,
         typed_only=base.typed_only or expr_spec.typed_only,
-        action_sequence=base.action_sequence or expr_spec.action_sequence,
+        action_sequence=expr_spec.action_sequence or base.action_sequence,
         action_text_terms=base.action_text_terms + expr_spec.action_text_terms,
         message_type=expr_spec.message_type if expr_spec.message_type is not None else base.message_type,
         since_session_id=expr_spec.since_session_id

@@ -45,8 +45,10 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     canonical_authority_logical_key,
     durable_authority_logical_keys,
+    is_work_event_raw_id,
     parser_census_is_complete,
 )
+from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
     MembershipDecision,
     MembershipRevision,
@@ -58,6 +60,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import (
@@ -119,7 +122,6 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
-    WORK_EVENT_RAW_ID_PREFIX,
     PreparedRows,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
@@ -168,7 +170,9 @@ _DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
         "create_time",
         "current_node",
         "cwd",
+        "docs",
         "id",
+        "is_starter_project",
         "kind",
         "lastUpdated",
         "last_updated",
@@ -184,6 +188,7 @@ _DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
         "project",
         "projectHash",
         "project_memories",
+        "prompt_template",
         "record_type",
         "session",
         "sessionId",
@@ -1312,6 +1317,9 @@ def prepare_retained_jsonl_artifact(
             def classify_hermes_atif_object(witness: dict[str, JSONValue]) -> bool:
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_otel_object(witness: dict[str, JSONValue]) -> bool:
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
                 mapping = envelope["mapping"]
                 assert isinstance(mapping, Mapping)
@@ -1347,6 +1355,7 @@ def prepare_retained_jsonl_artifact(
                 classify_hermes_atif_object=classify_hermes_atif_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
+                classify_otel_object=classify_otel_object,
                 # The publisher recomputes this digest from the retained
                 # evidence for every artifact, so a pass that enriched nothing
                 # (no assembly spec, or no admitted session) must bind the
@@ -3146,7 +3155,7 @@ def validate_frozen_source_authority(
             ingest_workers=ingest_workers,
             prefetch_cache=prefetch_cache,
         )
-        _unclassified, logical_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        logical_keys = archive.raw_revision_rebuild_logical_keys(selected_raw_ids)
         transient_non_session_keys = _logical_keys_for_raw_ids(
             archive,
             census.transient_non_session_raw_ids,
@@ -4049,7 +4058,7 @@ def backfill_historical_revision_evidence(
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids
 
-        _unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        selected_keys = archive.raw_revision_rebuild_logical_keys(selected_raw_ids)
         logical_keys.update(selected_keys)
         _selected_membership_raws, selected_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         membership_keys = set(selected_membership_keys)
@@ -4095,7 +4104,12 @@ def backfill_historical_revision_evidence(
         # writer's own replay loop consume this SAME order so the
         # prefetcher's lookahead actually matches what the writer visits
         # next.
-        replay_schedule = _lineage_aware_replay_schedule(logical_keys, archive, spill, archive_root)
+        # Work events replay after every session cohort (see the event phase
+        # below), so they never enter the session lineage schedule.
+        work_event_keys = sorted(key for key in logical_keys if is_work_event_raw_id(key))
+        replay_schedule = _lineage_aware_replay_schedule(
+            logical_keys.difference(work_event_keys), archive, spill, archive_root
+        )
         # A multi-session raw's pending envelope is not a one-session chain;
         # its sessions replay through membership governance below.
         source_conn = archive._ensure_source_conn()
@@ -4104,6 +4118,31 @@ def backfill_historical_revision_evidence(
             for logical_key in replay_schedule.order
             if not pending_raw_envelope_has_membership_authority(source_conn, logical_key)
         ]
+
+        def classify_byte_cohort(logical_key: str) -> RevisionReplayPlan:
+            classify_started = time.perf_counter()
+            plan = (
+                archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
+                if owned_inactive_generation is not None
+                else (
+                    archive.raw_revision_replay_plan(logical_key)
+                    if prepared_replay_plans is not None
+                    else (
+                        archive.classify_raw_revision_cohort_for_rebuild_repair_in_transaction(logical_key)
+                        if replay_batched
+                        else archive.classify_raw_revision_cohort_for_rebuild_repair(logical_key)
+                    )
+                )
+            )
+            if prepared_replay_plans is not None and plan.accepted_raw_ids != prepared_replay_plans.get(
+                logical_key, ()
+            ):
+                raise RetainedPreparationRetryableError(f"prepared byte authority plan changed for {logical_key}")
+            stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
+                time.perf_counter() - classify_started
+            )
+            return plan
+
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
             decode_prefetcher = _ReplaySpillPrefetcher(
@@ -4130,27 +4169,7 @@ def backfill_historical_revision_evidence(
                 # watched path can be legitimately, atomically replaced with a
                 # different session's content, which must not be quarantined
                 # as "divergent evidence".
-                classify_started = time.perf_counter()
-                plan = (
-                    archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
-                    if owned_inactive_generation is not None
-                    else (
-                        archive.raw_revision_replay_plan(logical_key)
-                        if prepared_replay_plans is not None
-                        else (
-                            archive.classify_raw_revision_cohort_for_rebuild_repair_in_transaction(logical_key)
-                            if replay_batched
-                            else archive.classify_raw_revision_cohort_for_rebuild_repair(logical_key)
-                        )
-                    )
-                )
-                if prepared_replay_plans is not None and plan.accepted_raw_ids != prepared_replay_plans.get(
-                    logical_key, ()
-                ):
-                    raise RetainedPreparationRetryableError(f"prepared byte authority plan changed for {logical_key}")
-                stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
-                    time.perf_counter() - classify_started
-                )
+                plan = classify_byte_cohort(logical_key)
                 if not plan.accepted_raw_ids:
                     # Complete snapshots that are not a unique byte-prefix chain
                     # still carry semantic evidence. Move only that full-only
@@ -4572,6 +4591,45 @@ def backfill_historical_revision_evidence(
                     ) from exc
                 if classification.accepted_raw_ids:
                     replayed += 1
+                if replay_batched:
+                    commit_replay_unit()
+            # A work event annotates a session that the byte and membership
+            # phases above create. Replayed any earlier, the event would
+            # create that session first and the transcript's fresh write would
+            # then meet a session it requires to be absent.
+            for logical_key in work_event_keys:
+                if deadline_check is not None:
+                    deadline_check()
+                plan = classify_byte_cohort(logical_key)
+                if plan.accepted_raw_ids != (logical_key,):
+                    message = f"retained work event {logical_key} lost its singleton byte authority"
+                    if owned_inactive_generation is not None:
+                        raise FrozenSourceRemediationRequiredError(message)
+                    raise RuntimeError(message)
+                (event_session,) = parse_retained_raw_sessions(archive, logical_key)
+                event_session_id = str(make_session_id(event_session.source_name, event_session.provider_session_id))
+                if (
+                    archive._conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (event_session_id,)).fetchone()
+                    is None
+                ):
+                    # The annotated session did not land in this build (its
+                    # cohort was deferred or suppressed); the event waits for
+                    # it rather than creating a headerless session.
+                    _LOGGER.warning("work_event_session_absent: raw_id=%s session_id=%s", logical_key, event_session_id)
+                    adoption_deferred += 1
+                    continue
+                archive._index_parsed_for_retained_raw(
+                    event_session,
+                    raw_id=logical_key,
+                    source_index=-1,
+                    stage_timings_s=stage_timings,
+                    stage_timing_prefix="replay.work_event",
+                    manage_transaction=not replay_batched,
+                    preacquired_attachment_blobs={},
+                    finalize_raw_parse=True,
+                )
+                replayed += 1
+                byte_replayed_keys.add(logical_key)
                 if replay_batched:
                     commit_replay_unit()
         finally:
@@ -5788,7 +5846,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     # Replay returns the event alone; ``write_parsed_session_to_archive``
     # recognizes the work-event raw and writes it event-only, keeping the
     # stored session header.
-    if source_path.startswith(WORK_EVENT_RAW_ID_PREFIX):
+    if is_work_event_raw_id(raw_id):
         _provider, payload, _path, _kind = archive.raw_revision_material(raw_id)
         try:
             envelope = json.loads(payload)

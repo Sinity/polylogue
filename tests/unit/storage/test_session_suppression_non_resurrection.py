@@ -199,3 +199,62 @@ def test_an_archive_without_a_user_tier_is_not_blocked(tmp_path: Path) -> None:
         conn.close()
     assert outcomes[0].wrote is True
     assert outcomes[0].suppression_skipped is False
+
+
+def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: Path) -> None:
+    """Receipts published before a suppression skip are still consumed with the batch.
+
+    Anti-vacuity: returning from the skip path before extending
+    ``pending_attachment_receipts`` leaves the reservation neither consumed nor
+    released, pinning the blob against GC on every suppressed replay.
+    """
+    import hashlib
+
+    from polylogue.pipeline.services.ingest_batch._core import _write_session
+    from polylogue.pipeline.services.ingest_worker import SessionWritePayload
+    from polylogue.sources.parsers.base_models import ParsedAttachment
+
+    class _Publisher:
+        def write_from_bytes(self, data: bytes) -> tuple[str, int]:
+            return hashlib.sha256(data).hexdigest(), len(data)
+
+        def receipt_id(self, blob_hash: str) -> str:
+            return f"receipt-{blob_hash[:8]}"
+
+        def flush(self) -> tuple[object, ...]:
+            return ()
+
+    parsed = _parsed("suppressed-attachment")
+    parsed = parsed.model_copy(
+        update={
+            "attachments": [
+                ParsedAttachment(
+                    provider_attachment_id="att-1",
+                    message_provider_id=parsed.messages[0].provider_message_id,
+                    name="a.bin",
+                    mime_type="application/octet-stream",
+                    size_bytes=3,
+                    inline_bytes=b"abc",
+                )
+            ]
+        }
+    )
+    session_id = _session_id("suppressed-attachment")
+    _tombstone(archive_root, session_id)
+    receipts: list[tuple[str, bytes]] = []
+    conn = sqlite3.connect(_index_path(archive_root))
+    conn.row_factory = sqlite3.Row
+    try:
+        changed, counts = _write_session(
+            conn,
+            SessionWritePayload(session_id=session_id, content_hash="00" * 32, parsed_session=parsed, message_count=1),
+            blob_publisher=_Publisher(),  # type: ignore[arg-type]
+            pending_attachment_receipts=receipts,
+        )
+    finally:
+        conn.close()
+
+    assert changed is False
+    assert counts["skipped_sessions"] == 1
+    assert _session_rows(archive_root, session_id) == 0
+    assert receipts == [(f"receipt-{hashlib.sha256(b'abc').hexdigest()[:8]}", hashlib.sha256(b"abc").digest())]

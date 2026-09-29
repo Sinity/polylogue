@@ -91,3 +91,21 @@ def test_session_masks_cover_the_domain_fields_used_by_each_surface() -> None:
         elif domain_name == "title_source":
             expected = expected.value if expected else None
         assert getattr(row, surface_name) == expected
+
+
+def test_domain_surface_envelopes_do_not_publish_untyped_cost_placeholders() -> None:
+    """Domain conversions omit cost until typed usage evidence is available.
+
+    Anti-vacuity: copying ``Session.total_cost_usd`` (whose default is a
+    placeholder zero) into either public envelope makes these assertions fail.
+    """
+    session = _build_session()
+
+    summary = session_summary_envelope_from_domain(session)
+    row = session_list_envelope_from_domain(session)
+
+    assert session.total_cost_usd == 0.0
+    assert summary.total_cost_usd is None
+    assert summary.cost_provenance is None
+    assert row.total_cost_usd is None
+    assert row.cost_provenance is None

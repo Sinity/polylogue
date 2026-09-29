@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools.pytest_invocation import (
+    ASSERT_PLAIN_ARGS,
     CLEAR_CONFIGURED_ADDOPTS,
     DEVTOOLS_PLUGIN_NAMES,
     MANAGED_PLUGIN_ARGS,
@@ -255,6 +256,7 @@ def build_rerun(
         "-p",
         "no:randomly",
         CLEAR_CONFIGURED_ADDOPTS,
+        ASSERT_PLAIN_ARGS,
         *(options or []),
         *failed,
     ]

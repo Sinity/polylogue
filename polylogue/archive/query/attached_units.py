@@ -300,8 +300,14 @@ def fetch_attached_units(
     units: Sequence[str],
     unit_fields: dict[str, tuple[str, ...]] | None = None,
     unit_windows: Mapping[str, WithUnitWindow] | None = None,
+    page_width: int | None = None,
 ) -> AttachedUnitRows:
     """Return attached-unit rows per unit, bucketed by session id.
+
+    ``page_width`` is the result page these sessions belong to when they are
+    projected in several calls (a candidate chunk, then the served page). The
+    allowance is computed for that width, never for fewer sessions, so each
+    call gives a session the same rows.
 
     ``rows`` has shape ``{unit_name: {session_id: (row_payload, ...)}}`` where
     each ``row_payload`` is a JSON-ready dict produced by the descriptor-owned
@@ -354,7 +360,7 @@ def fetch_attached_units(
     if predicate is None:
         return AttachedUnitRows(result)
     selected = list(dict.fromkeys(session_ids))
-    per_session_limit = _per_session_allowance(len(selected))
+    per_session_limit = _per_session_allowance(max(page_width or 0, len(selected)))
     # One row beyond each session's allowance makes "the bound cut THIS
     # session" observable. Without the probe row a session returning exactly
     # its allowance is indistinguishable from one holding exactly that many.

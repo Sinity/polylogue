@@ -71,18 +71,47 @@ def query_session_rows(
     config: Config,
     request: RootModeRequest,
     *,
-    limit: int,
+    limit: int | None,
     offset: int = 0,
     daemon_disabled: bool = False,
 ) -> list[SelectSessionRow]:
-    """Return selector rows for ``request`` from one declared read.
+    """Return up to ``limit`` distinct selector rows for ``request``.
 
-    A ranked selection reports ``hits`` rather than ``items``; both are session
-    pages, so both are read here and the row is taken from the hit's session.
+    A list page reports ``items`` at session grain. A ranked selection
+    (``--contains``, ``text:``) reports ``hits`` at block grain: several
+    matching blocks of one session are several hits, so one page of ``limit``
+    hits can name fewer than ``limit`` sessions and repeat one. The caller asks
+    how many sessions a selection names, so rows are deduplicated by session id
+    and the walk follows ``next_offset`` until ``limit`` distinct sessions are
+    found or the selection is exhausted. ``limit=None`` walks it all.
+    ``offset`` is the operation's own page offset.
+
+    The first page asks for ``limit`` rows, which a session-grain page always
+    satisfies. Only a page of repeated sessions needs another, and repeats can
+    run to thousands of hits, so later pages use the full walk window rather
+    than ``limit``-sized round trips.
     """
 
-    payload = _query_page(config, request, limit=limit, offset=offset, daemon_disabled=daemon_disabled)
-    return [select_row_from_operation_row(row) for row in _session_rows(payload)]
+    rows: list[SelectSessionRow] = []
+    seen: set[str] = set()
+    page_size = COMPLETE_SELECTION_PAGE if limit is None else min(limit, COMPLETE_SELECTION_PAGE)
+    while limit is None or len(rows) < limit:
+        payload = _query_page(config, request, limit=page_size, offset=offset, daemon_disabled=daemon_disabled)
+        page = _session_rows(payload)
+        for item in page:
+            row = select_row_from_operation_row(item)
+            if row.session_id in seen:
+                continue
+            seen.add(row.session_id)
+            rows.append(row)
+            if limit is not None and len(rows) >= limit:
+                return rows
+        next_offset = payload.get("next_offset")
+        if not page or isinstance(next_offset, bool) or not isinstance(next_offset, int) or next_offset <= offset:
+            return rows
+        offset = next_offset
+        page_size = COMPLETE_SELECTION_PAGE
+    return rows
 
 
 #: Page size used when walking a complete selection. The operation clamps an
@@ -117,6 +146,9 @@ def query_complete_session_ids(
             config, request, limit=COMPLETE_SELECTION_PAGE, offset=offset, daemon_disabled=daemon_disabled
         )
         rows = _session_rows(payload)
+        # Ranked hits are block-grain, so a session may recur across hits; a
+        # session-grain list page repeating an id is a broken continuation.
+        block_grain = isinstance(payload.get("hits"), list)
         raw_total = payload.get("total")
         if raw_total is not None:
             if isinstance(raw_total, bool) or not isinstance(raw_total, int) or raw_total < 0:
@@ -133,6 +165,8 @@ def query_complete_session_ids(
             if not session_id:
                 _incomplete_selection("cli.query returned a row without a session id")
             if session_id in seen:
+                if block_grain:
+                    continue
                 _incomplete_selection("cli.query repeated a session id while resolving the selection")
             seen.add(session_id)
             ids.append(session_id)
@@ -152,7 +186,8 @@ def query_complete_session_ids(
             _incomplete_selection("cli.query continuation did not advance")
         if next_offset != offset + len(rows):
             _incomplete_selection("cli.query continuation skipped or overlapped rows")
-        if total_is_known:
+        if total_is_known and not block_grain:
+            # A hit offset is not comparable with a session-grain total.
             assert expected_total is not None
             if next_offset > expected_total:
                 _incomplete_selection("cli.query continuation exceeded its reported total")

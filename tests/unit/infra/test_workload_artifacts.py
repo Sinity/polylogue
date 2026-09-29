@@ -383,17 +383,17 @@ def test_current_seeded_archive_reachability_is_generated_and_rejects_partial_se
 def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.pipeline.services.archive_ingest import (
-        parse_sources_archive as real_parse_sources_archive,
+    from polylogue.operations.canonical_archive_ingest import (
+        ingest_one_shot_archive as real_ingest_one_shot_archive,
     )
 
     observed_parse_workers: list[int | None] = []
 
     async def record_parse_workers(*args: Any, **kwargs: Any) -> Any:
         observed_parse_workers.append(kwargs.get("parse_workers"))
-        return await real_parse_sources_archive(*args, **kwargs)
+        return await real_ingest_one_shot_archive(*args, **kwargs)
 
-    monkeypatch.setattr("tests.infra.workload_artifacts.parse_sources_archive", record_parse_workers)
+    monkeypatch.setattr("tests.infra.workload_artifacts.ingest_one_shot_archive", record_parse_workers)
     cache_root = tmp_path / "cache"
 
     first = build_seeded_archive(cache_root=cache_root)
@@ -1185,7 +1185,7 @@ def test_seeded_archive_failure_never_publishes_partial_staging(
     async def fail_parse(*args: object, **kwargs: object) -> None:
         raise RuntimeError("injected ingest failure")
 
-    monkeypatch.setattr(artifacts, "parse_sources_archive", fail_parse)
+    monkeypatch.setattr(artifacts, "ingest_one_shot_archive", fail_parse)
 
     with pytest.raises(RuntimeError, match="injected ingest failure"):
         build_seeded_archive(cache_root=tmp_path / "cache")
@@ -2045,7 +2045,7 @@ def test_build_retries_a_transient_same_process_lock(tmp_path: Path, monkeypatch
     import tests.infra.workload_artifacts as artifacts
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    from polylogue.pipeline.services.archive_ingest import parse_sources_archive as real_parse
+    from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive as real_parse
 
     attempts = 0
 
@@ -2056,7 +2056,7 @@ def test_build_retries_a_transient_same_process_lock(tmp_path: Path, monkeypatch
             raise sqlite3.OperationalError("database is locked")
         return await real_parse(*args, **kwargs)
 
-    monkeypatch.setattr(artifacts, "parse_sources_archive", lock_once)
+    monkeypatch.setattr(artifacts, "ingest_one_shot_archive", lock_once)
     artifacts._VALIDATED_ARTIFACTS.clear()
 
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
@@ -2078,7 +2078,7 @@ def test_build_does_not_retry_a_non_lock_database_error(tmp_path: Path, monkeypa
         attempts += 1
         raise sqlite3.OperationalError("disk I/O error")
 
-    monkeypatch.setattr(artifacts, "parse_sources_archive", always_broken)
+    monkeypatch.setattr(artifacts, "ingest_one_shot_archive", always_broken)
     artifacts._VALIDATED_ARTIFACTS.clear()
 
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
@@ -2390,7 +2390,7 @@ def test_build_gives_up_on_a_persistent_lock(tmp_path: Path, monkeypatch: pytest
         attempts += 1
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(artifacts, "parse_sources_archive", always_locked)
+    monkeypatch.setattr(artifacts, "ingest_one_shot_archive", always_locked)
     artifacts._VALIDATED_ARTIFACTS.clear()
 
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):

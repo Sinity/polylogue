@@ -133,6 +133,7 @@ def _fields() -> dict[str, FieldKind]:
         "derivation_key",
         "candidate_ref",
         "assertion_id",
+        "attachment_id",
     )
 
     # -- classification tokens -------------------------------------------

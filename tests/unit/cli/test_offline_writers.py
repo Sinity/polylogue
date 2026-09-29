@@ -1,11 +1,16 @@
 """The CLI commands that still write archive tiers in this process.
 
 ``polylogue-re6s3`` / ``polylogue-5vps8`` require that no CLI route opens a
-writable tier beside a running daemon. Three command families are not lowered
-onto a declared daemon operation and are not going to be: they are declared
-*offline* authorities (backup, demo seeding, the secret sweep's coverage
-ledger). For those the requirement is not "route it
-through the daemon" but "own the archive exclusively, or refuse" -- design D8.
+writable tier beside a running daemon. Every mutating verb now lowers onto a
+declared daemon operation (``tests/unit/cli/test_cli_operation_authority.py``
+proves each opens no writable tier when the daemon is absent); ``ops backup``
+and ``ops scan-secrets`` left this module when they became
+``maintenance.backup`` and ``maintenance.secret_scan``. One family remains a
+declared *offline* authority: demo seeding (``demo seed``, and ``demo
+receipts``/``demo tour`` through the same guarded ``seed_demo_archive``),
+which builds a synthetic archive in an empty or demo-owned root that no daemon
+serves. For it the requirement is not "route it through the daemon" but "own
+the archive exclusively, or refuse" -- design D8.
 
 ``tests/unit/cli/test_cli_write_authority.py`` proves the boundary mechanism
 on one command. This module is the *coverage* question the acceptance asks:
@@ -55,43 +60,15 @@ class _WritableTierOpened(BaseException):
         super().__init__(str(path))
 
 
-def _argv_backup(root: Path, scratch: Path) -> tuple[str, ...]:
-    del root
-    return ("ops", "backup", "--output-dir", str(scratch / "backup-out"))
-
-
 def _argv_demo_seed(root: Path, scratch: Path) -> tuple[str, ...]:
     del scratch
     return ("demo", "seed", "--root", str(root))
 
 
-def _argv_scan_secrets(root: Path, scratch: Path) -> tuple[str, ...]:
-    del root, scratch
-    return ("ops", "scan-secrets", "--all")
-
-
 #: ``(id, argv builder, archive state the row needs, machine-format argv tail)``.
-#:
-#: The last element is ``None`` for a command that has no ``--format json``
-#: route at all, so there is no machine envelope for the refusal to travel in.
-#: That is recorded rather than worked around: inventing a format for the sake
-#: of a test row would assert a surface no operator has.
-_OFFLINE_WRITERS: tuple[tuple[str, Callable[[Path, Path], tuple[str, ...]], str, tuple[str, ...] | None], ...] = (
-    ("backup", _argv_backup, _NEEDS_TIERS, None),
-    ("demo-seed", _argv_demo_seed, _NEEDS_NOTHING, None),
-    ("scan-secrets", _argv_scan_secrets, _NEEDS_TIERS, ("--format", "json")),
+_OFFLINE_WRITERS: tuple[tuple[str, Callable[[Path, Path], tuple[str, ...]], str, tuple[str, ...]], ...] = (
+    ("demo-seed", _argv_demo_seed, _NEEDS_NOTHING, ("--format", "json")),
 )
-
-#: Rows carrying a machine-format leg, and the flag spelling each one accepts.
-_MACHINE_FORMAT_ROWS = tuple(row for row in _OFFLINE_WRITERS if row[3] is not None)
-
-#: Why a row carries no machine-format leg. Read by
-#: :func:`test_every_machine_format_exemption_is_still_true`, so an exemption
-#: cannot outlive the gap it describes.
-_NO_MACHINE_FORMAT: dict[str, str] = {
-    "backup": "has no machine output mode at all",
-    "demo-seed": "has no machine output mode at all",
-}
 
 
 @pytest.fixture
@@ -182,7 +159,7 @@ def test_refused_beside_resident_daemon(
     row_id: str,
     build_argv: Callable[[Path, Path], tuple[str, ...]],
     needs: str,
-    machine_tail: tuple[str, ...] | None,
+    machine_tail: tuple[str, ...],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -190,18 +167,11 @@ def test_refused_beside_resident_daemon(
 ) -> None:
     """No offline writer may touch tiers a live daemon owns.
 
-    Anti-vacuity, per row: ``backup`` goes red by deleting the
-    ``_require_exclusive_archive_ownership(root)`` call in ``backup_archive``
-    (``polylogue/daemon/backup.py``) -- it exits 0 and writes a complete
-    backup, because ``backup_archive`` mints its own
-    ``write_lease("maintenance.backup")`` and so satisfies the armed guard.
-    That refusal lives at the function that mints the lease rather than in
-    this command, so an embedded importer of the public ``backup_archive`` is
-    refused on the same terms; see
-    ``tests/unit/daemon/test_backup.py::test_embedded_backup_refused_beside_resident_daemon``.
-    The other three go red by dropping
-    ``ctx.with_resource(cli_archive_writer_ownership())`` from the root
-    callback in ``polylogue/cli/click_app.py``.
+    Anti-vacuity: drop the ``scoped_offline_archive_writer`` claim from
+    ``scoped_one_shot_archive_owner`` (``operations/canonical_archive_ingest.py``)
+    together with ``ctx.with_resource(cli_archive_writer_ownership())`` in
+    ``polylogue/cli/click_app.py`` and demo seeding writes tiers beside the
+    resident daemon.
     """
     del machine_tail
     root = _prepare_root(monkeypatch, tmp_path, needs)
@@ -233,7 +203,7 @@ def test_row_still_opens_a_writable_tier(
     row_id: str,
     build_argv: Callable[[Path, Path], tuple[str, ...]],
     needs: str,
-    machine_tail: tuple[str, ...] | None,
+    machine_tail: tuple[str, ...],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -269,35 +239,16 @@ def test_row_still_opens_a_writable_tier(
     assert opened, f"{row_id} opened no writable archive tier offline"
 
 
-def test_every_machine_format_exemption_is_still_true() -> None:
-    """An exemption may not outlive the gap it records.
-
-    Anti-vacuity: give ``backup`` a ``--format json`` option without removing
-    its row here and this goes red, which is the point -- an exemption list
-    that nothing re-checks becomes a permanent excuse.
-    """
-    from polylogue.cli.commands.backup import backup_command
-
-    declared = {row_id for row_id, _, _, machine_tail in _OFFLINE_WRITERS if machine_tail is None}
-    assert declared == set(_NO_MACHINE_FORMAT), declared ^ set(_NO_MACHINE_FORMAT)
-
-    option_names = {name for param in backup_command.params for name in param.opts}
-    assert "--format" not in option_names, (
-        "`ops backup` gained a machine format: give it a machine-format row in "
-        "_OFFLINE_WRITERS and drop its _NO_MACHINE_FORMAT entry"
-    )
-
-
 @pytest.mark.parametrize(
     ("row_id", "build_argv", "needs", "machine_tail"),
-    _MACHINE_FORMAT_ROWS,
-    ids=[row[0] for row in _MACHINE_FORMAT_ROWS],
+    _OFFLINE_WRITERS,
+    ids=[row[0] for row in _OFFLINE_WRITERS],
 )
 def test_machine_format_refusal_is_typed(
     row_id: str,
     build_argv: Callable[[Path, Path], tuple[str, ...]],
     needs: str,
-    machine_tail: tuple[str, ...] | None,
+    machine_tail: tuple[str, ...],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -315,7 +266,6 @@ def test_machine_format_refusal_is_typed(
     branch is a separate mapping -- the asymmetry that let the gap survive a
     green suite.
     """
-    assert machine_tail is not None
     root = _prepare_root(monkeypatch, tmp_path, needs)
     resident_pid = resident_daemon(root / "daemon.pid")
     capsys.readouterr()

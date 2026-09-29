@@ -86,7 +86,16 @@ def _is_newline_delimited_json_name(name: str) -> bool:
 
 
 def _is_supported_drive_payload(name: str, mime_type: str) -> bool:
-    return name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
+    """Whether a Drive file in the AI Studio folder is an AI Studio prompt.
+
+    Only the AI Studio prompt MIME type is a session. Everything else in the
+    folder -- including a ``.json``/``.jsonl`` transcript the operator once
+    uploaded to a chat -- is an attachment, fetched through the attachment
+    route and never parsed as a session. ``name`` stays in the signature
+    because callers pass the listing row whole.
+    """
+    del name
+    return mime_type == GEMINI_PROMPT_MIME_TYPE
 
 
 def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> DriveJSONPayload:

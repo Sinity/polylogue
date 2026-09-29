@@ -358,6 +358,7 @@
           <div class="section-head"><strong id="work-heading">Automatic capture</strong><span id="work-count" class="value mono">0</span></div>
           <p class="section-note">Capture and freshness transitions continue automatically. This view only explains held evidence.</p>
           <div id="work-queue" class="work-list" aria-live="polite"></div>
+          <div id="backfill-controls" class="work-list" aria-label="Persisted backfill jobs"></div>
           <details>
             <summary>Capture retry detail · <span id="queue-count" class="mono">0</span></summary>
             <div id="queue-log" class="log"></div>
@@ -378,7 +379,6 @@
           <div id="debug-panel" hidden>
             <div class="row"><span class="label">Receiver</span><span id="receiver" class="value mono">127.0.0.1:8765</span></div>
             <div class="row"><span class="label">Receiver contract</span><span id="receiver-contract" class="value mono">--</span></div>
-            <div class="row"><span class="label">Write exclusion</span><span id="write-exclusion" class="value">Not reported</span></div>
             <div class="row"><span class="label">Cooldown</span><span id="cooldown" class="value mono">Not reported</span></div>
             <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
             <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>

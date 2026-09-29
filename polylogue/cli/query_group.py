@@ -157,6 +157,19 @@ def has_signalled_query_intent(query_terms: tuple[str, ...], *, explicit_query: 
     return not query_terms or explicit_query or _looks_like_query_expression(query_terms)
 
 
+#: Leading words a first-time caller reaches for when they mean ``find``. They
+#: are verbs of other tools, never query terms the caller wants matched, so the
+#: suggested ``find`` command drops them instead of searching for them too.
+_SEARCH_VERB_SPELLINGS = frozenset({"search", "grep", "query", "lookup"})
+
+
+def _suggested_find_terms(query_terms: tuple[str, ...]) -> str:
+    """Return the query the ``find`` suggestion should carry for ``query_terms``."""
+    if len(query_terms) > 1 and query_terms[0].lower() in _SEARCH_VERB_SPELLINGS:
+        return " ".join(query_terms[1:])
+    return " ".join(query_terms)
+
+
 def _bare_root_error_message(group: click.Group, query_terms: tuple[str, ...]) -> str:
     """Build the strict-floor hint for an unsignalled bare root (#1842).
 
@@ -183,7 +196,7 @@ def _bare_root_error_message(group: click.Group, query_terms: tuple[str, ...]) -
     lines += [
         "",
         "To search the archive, use the `find` keyword or quote the expression:",
-        f"    polylogue find {query}",
+        f"    polylogue find {_suggested_find_terms(query_terms)}",
         "    polylogue 'QUERY' then read",
         "",
         "Run `polylogue --help` to list commands, or `polylogue manual` for the full offline reference.",

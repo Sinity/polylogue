@@ -3135,6 +3135,89 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     assert actual.updated_at == "2026-01-01T00:00:59+00:00"
 
 
+def test_event_sink_batch_insert_matches_sequential_inserts(tmp_path: Path) -> None:
+    """Anti-vacuity: number batch insertions from the post-insert sequence and
+    the order differs from sequential ``insert`` calls at shifted indices."""
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+    store = SqliteMessageStore(tmp_path / "events.db")
+    try:
+        sink = store.new_event_sink()
+        expected = [ParsedSessionEvent(event_type=f"e{index}", payload={}) for index in range(6)]
+        for event in expected:
+            sink.append(event)
+        insertions = [(0, "a"), (2, "b"), (2, "c"), (6, "d")]
+        sink.insert_sorted((index, ParsedSessionEvent(event_type=name, payload={})) for index, name in insertions)
+        for offset, (index, name) in enumerate(insertions):
+            expected.insert(index + offset, ParsedSessionEvent(event_type=name, payload={}))
+        assert [event.event_type for event in sink] == [event.event_type for event in expected]
+    finally:
+        store.close()
+
+
+def test_event_sink_early_batch_insert_renumbers_in_linear_time(tmp_path: Path) -> None:
+    """An early compaction's many contexts ahead of many later events stays fast.
+
+    Anti-vacuity: renumber each existing event by counting the insertions
+    before it and this case visits ~9e8 index entries, taking minutes.
+    """
+    import time
+
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+    count = 30_000
+    store = SqliteMessageStore(tmp_path / "events.db")
+    try:
+        sink = store.new_event_sink()
+        for index in range(count):
+            sink.append(ParsedSessionEvent(event_type=f"e{index}", payload={}))
+        started = time.perf_counter()
+        sink.insert_sorted(
+            (index // 2, ParsedSessionEvent(event_type=f"c{index}", payload={})) for index in range(count)
+        )
+        assert time.perf_counter() - started < 30
+        events = [event.event_type for event in sink]
+        assert len(events) == 2 * count
+        assert events[:3] == ["c0", "c1", "e0"]
+        assert events[-1] == f"e{count - 1}"
+    finally:
+        store.close()
+
+
+def test_sink_json_keeps_literal_escape_text_and_json_mode_fields(tmp_path: Path) -> None:
+    """Literal ``\\ud800`` text is not a surrogate escape, and a real one keeps
+    JSON-mode conversions such as hex digests.
+
+    Anti-vacuity: treat the literal text as an escape and validate in Python
+    mode, and the paste evidence digest comes back as its hex text.
+    """
+    from polylogue.sources.parsers.base_models import ParsedPasteEvidence
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
+
+    for text in ("literal \\ud800 text", "real \ud800 surrogate"):
+        evidence = ParsedPasteEvidence(content_hash=b"\x01" * 32, source_marker=text)
+        message = ParsedMessage(provider_message_id="m1", role=Role.USER, text=text, paste_spans=[evidence])
+        assert _from_text_json(ParsedMessage, _message_json(message)).paste_spans == [evidence]
+
+
+def test_sink_surrogate_decode_keeps_excluded_parser_coordinates() -> None:
+    """A surrogate-bearing message keeps its parser-only coordinates.
+
+    Anti-vacuity: drop the excluded-field carry-over in ``_from_text_json`` and
+    ``parent_message_position`` comes back ``None``.
+    """
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
+
+    message = ParsedMessage(provider_message_id="m2", role=Role.USER, text="real \ud800 surrogate")
+    message = message.model_copy(update={"parent_message_position": 1})
+    decoded = _from_text_json(ParsedMessage, _message_json(message))
+
+    assert decoded.text == "real \ud800 surrogate"
+    assert decoded.parent_message_position == 1
+
+
 def test_storable_value_limit_is_sqlites_own() -> None:
     """The refusal threshold is the linked SQLite's value limit, in UTF-8 bytes.
 
@@ -3674,3 +3757,22 @@ def test_removing_a_scratch_tree_releases_its_decodes(tmp_path: Path, monkeypatc
     prepared_message_sink.discard_decoded_sessions_under(tmp_path)
     list(session.messages)
     assert decodes[0] == 2
+
+
+def test_sink_surrogate_decode_parses_once_without_a_dump_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A surrogate-bearing row is parsed once and validated, with no marked
+    copy, dump or restore pass over a possibly near-limit value.
+
+    Anti-vacuity: validate a marked copy and dump it to restore surrogates,
+    and the patched ``model_dump`` fails the decode.
+    """
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
+
+    message = ParsedMessage(provider_message_id="m3", role=Role.USER, text="x" * 4096 + "\ud800")
+    encoded = _message_json(message)
+
+    def no_dump(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("dumped the validated row to restore surrogates")
+
+    monkeypatch.setattr(ParsedMessage, "model_dump", no_dump)
+    assert _from_text_json(ParsedMessage, encoded).text == message.text

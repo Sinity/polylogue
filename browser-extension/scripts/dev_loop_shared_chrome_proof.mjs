@@ -2,7 +2,6 @@
 // Shared-Chrome control proof for the deterministic dev-loop operation. It
 // never launches a browser, allocates a debugging port, or creates a profile.
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,27 +18,13 @@ function requiredEnvironment(name) {
 function requireExpectedServiceContext() {
   // The runtime exports AGENTCTL_*; older hosts export the same values as SINNIXD_*.
   const prefix = process.env.AGENTCTL_JOB_ID ? "AGENTCTL_" : "SINNIXD_";
-  const jobId = process.env[`${prefix}JOB_ID`] || "";
-  const units = [`agentctl-job-${jobId}.service`, `sinnixd-job-${jobId}.service`];
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
-    throw new Error("shared-Chrome dev-loop proof requires a runtime job UUID");
-  }
+  if (!process.env[`${prefix}JOB_ID`]) throw new Error("shared-Chrome dev-loop proof requires a runtime job id");
   if (process.env[`${prefix}PROJECT_ID`] !== "polylogue" || process.env[`${prefix}OPERATION`] !== "dev_loop_proof") {
     throw new Error("shared-Chrome dev-loop proof rejects execution outside the fixed dev-loop service context");
   }
   const cgroup = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((line) => line.includes("::"))?.split("::", 2)[1] || "";
-  const unit = units.find((candidate) => cgroup.includes(`/agent.slice/${candidate}`));
-  if (!unit) {
-    throw new Error("shared-Chrome dev-loop proof is not inside its matching runtime transient unit");
-  }
-  const unitExecStart = spawnSync(
-    "systemctl",
-    ["--user", "show", unit, "--property=ExecStart", "--value"],
-    { encoding: "utf8", timeout: 2000 },
-  );
-  const childCommand = unitExecStart.stdout.slice(unitExecStart.stdout.indexOf("/env -i") + "/env -i".length);
-  if (unitExecStart.status !== 0 || !unitExecStart.stdout.includes("/env -i") || !["JOB_ID", "PROJECT_ID", "OPERATION"].every((name) => childCommand.includes(`${prefix}${name}=${process.env[`${prefix}${name}`]}`))) {
-    throw new Error("shared-Chrome dev-loop transient unit does not match the declared operation");
+  if (!cgroup.split("/").includes("agentctl-interactive.slice") && !cgroup.split("/").includes("sinnixd-pueue-interactive.slice")) {
+    throw new Error("shared-Chrome dev-loop proof is not inside the interactive pool");
   }
 }
 

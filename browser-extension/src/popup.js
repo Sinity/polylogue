@@ -9,6 +9,7 @@ const operatorStatusApi = globalThis.PolylogueOperatorStatus;
 
 let currentCaptureQueue = { entries: [], dropped_count: 0 };
 let currentFreshnessQueue = { entries: {}, dropped_count: 0 };
+let currentBackfillJobs = [];
 let currentReceiverOnline = true;
 let currentBrowserActions = [];
 
@@ -29,6 +30,7 @@ function hostLabel(url) {
     const parsed = new URL(url);
     if (hostMatches(parsed.hostname, "chatgpt.com")) return "ChatGPT";
     if (hostMatches(parsed.hostname, "claude.ai")) return "Claude.ai";
+    if (hostMatches(parsed.hostname, "gemini.google.com")) return "Gemini";
     if (hostMatches(parsed.hostname, "grok.com")) return "Grok";
     if (hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) return "Grok / X";
     return parsed.hostname;
@@ -42,6 +44,7 @@ function providerFromUrl(url) {
     const parsed = new URL(url || "");
     if (hostMatches(parsed.hostname, "chatgpt.com")) return "chatgpt";
     if (hostMatches(parsed.hostname, "claude.ai")) return "claude-ai";
+    if (hostMatches(parsed.hostname, "gemini.google.com")) return "gemini";
     if (hostMatches(parsed.hostname, "grok.com") || hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) {
       return "grok";
     }
@@ -55,6 +58,7 @@ function providerLogo(provider) {
   const labels = {
     chatgpt: "GPT",
     "claude-ai": "C",
+    gemini: "Gm",
     grok: "G",
     unknown: "?",
   };
@@ -115,7 +119,11 @@ function tabState(tab, ledger) {
       const parts = url.pathname.split("/").filter(Boolean);
       if (provider === "chatgpt") return parts[parts.indexOf("c") + 1] || null;
       if (provider === "claude-ai") return parts[0] === "chat" ? parts[1] || null : null;
+      // Same precedence as gemini.js conversationIdFromUrl and runtime.js conversationIdForUrl.
+      if (provider === "gemini") return url.searchParams.get("conversation") || url.searchParams.get("id") || (parts[0] === "app" ? parts[1] || null : null);
       if (provider === "grok") {
+        const marker = parts.indexOf("c");
+        if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
         const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
         if (pathId) return pathId;
         const queryId = url.searchParams.get("conversation") || url.searchParams.get("conversationId");
@@ -320,6 +328,17 @@ function renderWorkQueue() {
   }).join("");
 }
 
+function renderBackfillControls(jobs) {
+  currentBackfillJobs = Array.isArray(jobs) ? jobs : [];
+  const node = document.getElementById("backfill-controls");
+  if (!node) return;
+  const active = currentBackfillJobs.filter((job) => !["complete", "completed", "cancelled", "failed"].includes(job.status));
+  node.innerHTML = active.length ? active.map((job) => {
+    const resume = job.status === "paused";
+    return `<div class="work-item"><div class="work-title">${escapeHtml(job.job_title || `${job.provider || "Provider"} history backfill`)} · ${escapeHtml(job.status || "unknown")}</div><div class="controls"><button data-backfill-action="${resume ? "resume" : "pause"}" data-backfill-id="${escapeHtml(job.id)}">${resume ? "Resume" : "Pause"}</button><button data-backfill-action="cancel" data-backfill-id="${escapeHtml(job.id)}">Cancel</button><button data-backfill-action="export" data-backfill-id="${escapeHtml(job.id)}">Export</button></div></div>`;
+  }).join("") : '<div class="empty">No persisted backfill jobs need operator controls.</div>';
+}
+
 function renderFreshnessQueue(queue) {
   currentFreshnessQueue = queue && typeof queue === "object"
     ? queue
@@ -512,7 +531,7 @@ document.getElementById("browser-action-decline")?.addEventListener("click", asy
 
 async function loadMissionSnapshot() {
   try {
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false });
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false, include_intelligence: true });
     if (!result?.ok || (!result.state && !result.work && !result.receiver)) return null;
     return result;
   } catch {
@@ -624,20 +643,21 @@ async function render() {
   const receiverContract = document.getElementById("receiver-contract");
   if (receiverContract) {
     receiverContract.textContent = [
-      mission?.receiver?.health?.api_schema,
+      mission?.receiver?.health?.receiver_status?.api_schema || mission?.receiver?.pairing?.api_schema,
       mission?.extension?.contract_epoch,
     ].filter(Boolean).join(" · ") || "Not reported";
   }
-  const writeExclusion = document.getElementById("write-exclusion");
-  if (writeExclusion) {
-    const exclusion = mission?.receiver?.health?.write_exclusion
-      || state?.write_exclusion
-      || state?.archive_state?.write_exclusion;
-    writeExclusion.textContent = exclusion ? String(exclusion) : "Not reported";
-  }
   const cooldown = document.getElementById("cooldown");
   if (cooldown) {
-    const nextAttempt = state?.capture_freshness?.next_attempt_at_ms || state?.cooldown_until_ms;
+    const missionWork = mission?.work || {};
+    const captureDeadlines = (Array.isArray(missionWork.capture_queue?.entries) ? missionWork.capture_queue.entries : [])
+      .map((entry) => Date.parse(entry?.next_attempt_at || ""));
+    const freshness = missionWork.freshness_queue || stored.polylogueCaptureFreshnessQueue;
+    const freshnessDeadlines = Object.values(freshness?.entries || {}).map((entry) => Number(entry?.next_attempt_at_ms));
+    const queueSweep = Number(freshness?.sweep_not_before_ms);
+    const candidates = [state?.capture_freshness?.next_attempt_at_ms, state?.cooldown_until_ms, ...captureDeadlines, ...freshnessDeadlines, queueSweep]
+      .map(Number).filter((value) => Number.isFinite(value) && value > 0);
+    const nextAttempt = candidates.length ? Math.min(...candidates) : null;
     cooldown.textContent = nextAttempt ? new Date(nextAttempt).toISOString() : "Not reported";
   }
   const pairing = mission?.receiver?.pairing || state?.receiver_pairing || stored.polylogueReceiverPairing || null;
@@ -697,7 +717,16 @@ async function render() {
   const activeProvider = state?.provider || providerFromUrl(tab?.url || "");
   const activeSessionId = state?.provider_session_id || tabState(tab, stored.polylogueSessionLedger || {}).sessionId;
   const conversationTimeline = mission?.timeline || stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || [];
-  const recentActionOutcomes = currentBrowserActions.map((action) => ({
+  const recentActionOutcomes = currentBrowserActions.filter((action) => {
+    if (action?.operation === "conversation.create") {
+      if (action?.provider !== activeProvider || action?.target?.conversation_id !== "new") return false;
+      // A completed create names its new conversation in the receipt; match
+      // that, keeping the no-session fallback only while it is still pending.
+      const createdId = action?.receipt?.provider_conversation_id;
+      return createdId ? createdId === activeSessionId : !activeSessionId;
+    }
+    return action?.operation === "conversation.reply" && action?.target?.conversation_id === activeSessionId;
+  }).map((action) => ({
     ...action,
     action_id: action.action_id || true,
     at: action.updated_at || action.completed_at || action.created_at || null,
@@ -712,20 +741,22 @@ async function render() {
     renderQueue(stored.polylogueCaptureQueue);
     renderFreshnessQueue(stored.polylogueCaptureFreshnessQueue);
   }
+  renderBackfillControls(mission?.work?.backfill_jobs || []);
+  const attentionWorkItems = operatorStatusApi.normalizeWorkItems({
+    captureQueue: currentCaptureQueue,
+    freshnessQueue: currentFreshnessQueue,
+    backfillJobs: currentBackfillJobs,
+    receiverOnline: currentReceiverOnline,
+  });
 
   const ambient = mission?.ambient || ambientFallback(stored.polylogueAmbientSettings, tab?.url || "");
   renderAmbient(ambient, tab?.url || "", mission?.assertions || null);
 
-  const workItems = operatorStatusApi.normalizeWorkItems({
-    captureQueue: currentCaptureQueue,
-    freshnessQueue: currentFreshnessQueue,
-    receiverOnline: currentReceiverOnline,
-  });
   renderAttention(operatorStatusApi.computeAttention({
     conversationState: state,
     pairing,
     health,
-    workItems,
+    workItems: attentionWorkItems,
     browserActions: currentBrowserActions,
   }));
 }
@@ -774,6 +805,29 @@ document.getElementById("attention-action")?.addEventListener("click", (event) =
   if (!target) return;
   if (target.tagName === "BUTTON") target.click();
   else target.focus();
+});
+
+document.getElementById("backfill-controls")?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-backfill-action]");
+  if (!button) return;
+  const jobId = button.dataset.backfillId;
+  const action = button.dataset.backfillAction;
+  if (!jobId) return;
+  if (action === "export") {
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.export", job_id: jobId });
+    if (result?.ok) {
+      const blob = new Blob([`${JSON.stringify(result.ledger, null, 2)}\n`], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `polylogue-backfill-${jobId}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+  } else {
+    await chrome.runtime.sendMessage({ type: "polylogue.backfill.control", job_id: jobId, action });
+  }
+  await refreshStatus("popup_backfill_control");
 });
 
 document.getElementById("reset-pairing")?.addEventListener("click", async () => {
@@ -904,7 +958,8 @@ function supportPacketAction(action) {
     phase: action?.phase ?? null,
     created_at: action?.created_at ?? null,
     updated_at: action?.updated_at ?? null,
-    idempotency_key: action?.idempotency_key ?? null,
+    idempotency_key_present: typeof action?.idempotency_key === "string" && action.idempotency_key.length > 0,
+    idempotency_key_length: typeof action?.idempotency_key === "string" ? action.idempotency_key.length : null,
     request_sha256: action?.request_sha256 ?? null,
     target: {
       provider_session_id: action?.target?.provider_session_id ?? null,

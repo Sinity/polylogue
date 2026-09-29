@@ -46,9 +46,11 @@ hash the same payload differently with nothing observable to say so
 
 from __future__ import annotations
 
+import codecs
 import json as _stdlib_json
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from decimal import Decimal
 from typing import TypeAlias, TypeGuard, cast
 
@@ -185,27 +187,29 @@ def _lower_json_value(value: object) -> object:
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, list):
-        changed = False
-        items: list[object] = []
-        for item in value:
+        items: list[object] | None = None
+        for index, item in enumerate(value):
             lowered = _lower_json_value(item)
             if lowered is _NOT_JSON:
                 return _NOT_JSON
-            changed = changed or lowered is not item
-            items.append(lowered)
-        return items if changed else value
+            if items is None and lowered is not item:
+                items = list(value[:index])
+            if items is not None:
+                items.append(lowered)
+        return items if items is not None else value
     if isinstance(value, dict):
-        changed = False
-        mapping: dict[str, object] = {}
+        mapping: dict[str, object] | None = None
         for key, item in value.items():
             if not isinstance(key, str):
                 return _NOT_JSON
             lowered = _lower_json_value(item)
             if lowered is _NOT_JSON:
                 return _NOT_JSON
-            changed = changed or lowered is not item
-            mapping[key] = lowered
-        return mapping if changed else value
+            if mapping is None and lowered is not item:
+                mapping = dict(list(value.items())[: list(value).index(key)])
+            if mapping is not None:
+                mapping[key] = lowered
+        return mapping if mapping is not None else value
     return _NOT_JSON
 
 
@@ -329,7 +333,7 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
     # Scan string literals as opaque spans, and only run the small number
     # matcher at positions outside strings.  The output is one linear copy
     # of the input, plus at most one byte per normalized exponent.
-    chunks: list[bytes] = []
+    chunks: list[bytes] | None = None
     cursor = 0
     index = 0
     length = len(data)
@@ -337,7 +341,7 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
     while index < length:
         byte = data[index]
         if byte == 34:  # '"'
-            if cursor < index:
+            if chunks is not None and cursor < index:
                 chunks.append(data[cursor:index])
             end = index + 1
             while end < length:
@@ -349,7 +353,8 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
                     break
                 else:
                     end += 1
-            chunks.append(data[index:end])
+            if chunks is not None:
+                chunks.append(data[index:end])
             index = end
             cursor = end
             continue
@@ -358,7 +363,10 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
             if match is not None:
                 exponent = match.group(1)
                 if not exponent.startswith(b"-"):
-                    chunks.append(data[cursor : match.start(1)])
+                    if chunks is None:
+                        chunks = [data[: match.start(1)]]
+                    else:
+                        chunks.append(data[cursor : match.start(1)])
                     chunks.append(b"+")
                     chunks.append(exponent)
                     changed = True
@@ -368,9 +376,12 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
                 index = match.end()
                 continue
         index += 1
+    if not changed:
+        return data
+    assert chunks is not None
     if cursor < length:
         chunks.append(data[cursor:])
-    return b"".join(chunks) if changed else data
+    return b"".join(chunks)
 
 
 def _raw_loads(data: str | bytes | bytearray) -> object:
@@ -472,29 +483,29 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
     try:
         return _loaded_json_value(_raw_loads(obj))
     except JSONDecodeError as exc:
+        second: str | bytes | bytearray = obj
+        if isinstance(obj, bytes | bytearray):
+            raw = bytes(obj)
+            try:
+                raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # Only bytes strict UTF-8 refuses need the provider decode
+                # (directly encoded surrogates, CESU-8 pairs). Valid UTF-8,
+                # a BOM and UTF-16/32 stay bytes for the stdlib's detection.
+                with suppress(UnicodeDecodeError):
+                    second = decode_provider_utf8(raw)
+        try:
+            return _loaded_json_value(_stdlib_json.loads(second, parse_constant=_reject_non_finite_token))
+        except (_stdlib_json.JSONDecodeError, ValueError):
+            if second is obj:
+                raise exc from None
+        # The provider decode accepted bytes that are not UTF-8 after all (a
+        # BOM-less UTF-16 document can hold an ``ED A0 80`` triple): the
+        # stdlib's own encoding detection reads the original bytes.
         try:
             return _loaded_json_value(_stdlib_json.loads(obj, parse_constant=_reject_non_finite_token))
         except (_stdlib_json.JSONDecodeError, ValueError):
             raise exc from None
-
-
-def decode_provider_utf8(raw: bytes) -> str:
-    """Decode provider bytes while preserving UTF-8-encoded surrogate code units.
-
-    Some historical exports contain a lone UTF-16 surrogate encoded directly
-    as its three-byte UTF-8 sequence. This is invalid Unicode scalar UTF-8,
-    so the active JSON backend correctly rejects it, but Python can preserve
-    the original code unit with ``surrogatepass``. Arbitrary malformed byte
-    sequences still raise. Every reader of retained provider bytes decodes
-    through this, so one artifact is readable to all of them or to none.
-    """
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        try:
-            return raw.decode("utf-8", errors="surrogatepass")
-        except UnicodeDecodeError:
-            raise error from None
 
 
 __all__ = [
@@ -516,3 +527,52 @@ __all__ = [
     "require_json_document",
     "require_json_value",
 ]
+
+
+_ENCODED_SURROGATE_PAIR = re.compile(rb"\xed([\xa0-\xaf])([\x80-\xbf])\xed([\xb0-\xbf])([\x80-\xbf])")
+_ENCODED_SURROGATE = re.compile(rb"\xed([\xa0-\xbf])([\x80-\xbf])")
+_PROVIDER_SURROGATES = "polylogue-provider-surrogates"
+
+
+def _provider_surrogates(error: UnicodeError) -> tuple[str, int]:
+    """Decode an encoded surrogate where strict UTF-8 stops, pairing CESU-8.
+
+    An error handler rather than a second pass: the decoder writes one output
+    string, never a surrogatepass copy followed by a combined one.
+    """
+    if not isinstance(error, UnicodeDecodeError):
+        raise error
+    data, start = error.object, error.start
+    pair = _ENCODED_SURROGATE_PAIR.match(data, start)
+    if pair is not None:
+        high = 0xD000 | ((pair[1][0] & 0x3F) << 6) | (pair[2][0] & 0x3F)
+        low = 0xD000 | ((pair[3][0] & 0x3F) << 6) | (pair[4][0] & 0x3F)
+        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)), pair.end()
+    lone = _ENCODED_SURROGATE.match(data, start)
+    if lone is not None:
+        return chr(0xD000 | ((lone[1][0] & 0x3F) << 6) | (lone[2][0] & 0x3F)), lone.end()
+    raise error
+
+
+codecs.register_error(_PROVIDER_SURROGATES, _provider_surrogates)
+
+
+def decode_provider_utf8(raw: bytes) -> str:
+    """Decode provider bytes, keeping directly encoded surrogates and pairing CESU-8.
+
+    Strict UTF-8 first; bytes that only decode with ``surrogatepass`` keep
+    their lone code units, and any encoded pair becomes its character, in the
+    same single decode. Arbitrary malformed bytes still raise. A leading UTF-8
+    byte-order mark is consumed, as a JSON reader of bytes consumes it, on
+    both paths, through a view rather than a copy of the bytes. Every reader
+    of retained provider bytes decodes through this, so one artifact is
+    readable to all of them or to none.
+    """
+    view = memoryview(raw)[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
+    try:
+        return str(view, "utf-8")
+    except UnicodeDecodeError as error:
+        try:
+            return str(view, "utf-8", _PROVIDER_SURROGATES)
+        except UnicodeDecodeError:
+            raise error from None

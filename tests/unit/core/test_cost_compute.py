@@ -104,6 +104,54 @@ def test_exact_provider_money_does_not_replace_canonical_model_usage_tokens() ->
     assert summary.total_input_tokens == 100
     assert summary.total_output_tokens == 20
     assert summary.total_api_cost_usd == 1.0
+    assert sum(item.api_cost_usd for item in summary.per_model) == summary.total_api_cost_usd
+
+
+def test_routed_names_with_their_own_rates_keep_separate_buckets() -> None:
+    """Anti-vacuity: merging routed names by normalized model prices all tokens at the last route's rate."""
+    routed = ("amazon.nova-pro-v1:0", "bedrock/us-gov-east-1/amazon.nova-pro-v1:0")
+    session = make_conv(id="two-routes", provider="chatgpt", messages=[])
+    rows = [ModelUsageTotals(model_name=name, input_tokens=1000, output_tokens=100) for name in routed]
+    forward = compute_session_cost(session, model_usage=rows)
+    backward = compute_session_cost(session, model_usage=list(reversed(rows)))
+    assert len(forward.per_model) == 2
+    assert forward.total_api_cost_usd == backward.total_api_cost_usd
+
+
+def test_exact_session_total_is_not_attributed_to_an_arbitrary_unpriced_model() -> None:
+    """Anti-vacuity: assigning the whole total to the first sorted model fabricates a per-model exact cost."""
+    session = make_conv(id="exact-provider-two-unpriced", provider="chatgpt", messages=[])
+    summary = compute_session_cost(
+        session,
+        session_estimate=CostEstimatePayload(origin="chatgpt", status="exact", total_usd=1.0, usage=CostUsagePayload()),
+        model_usage=[
+            ModelUsageTotals(model_name="unpriced-model-a", input_tokens=100, output_tokens=20),
+            ModelUsageTotals(model_name="unpriced-model-b", input_tokens=50, output_tokens=10),
+        ],
+    )
+
+    assert summary.total_api_cost_usd == 1.0
+    assert [item.api_cost_usd for item in summary.per_model] == [0.0, 0.0]
+    assert {item.confidence for item in summary.per_model} == {"unknown"}
+
+
+def test_exact_total_reconciliation_never_yields_a_negative_share() -> None:
+    """Anti-vacuity: rounding each share independently gives the first three models
+    $0.000001 each of a $0.000002 total and the last model -$0.000001."""
+    session = make_conv(id="exact-provider-tiny-total", provider="chatgpt", messages=[])
+    tokens = {"gpt-4o": 255, "gpt-4o-2024-05-13": 128, "gpt-4o-2024-08-06": 255, "gpt-4o-2024-11-20": 200}
+    summary = compute_session_cost(
+        session,
+        session_estimate=CostEstimatePayload(
+            origin="chatgpt", status="exact", total_usd=0.000002, usage=CostUsagePayload()
+        ),
+        model_usage=[ModelUsageTotals(model_name=name, input_tokens=n, output_tokens=0) for name, n in tokens.items()],
+    )
+
+    shares = [item.api_cost_usd for item in summary.per_model]
+    assert len(shares) == 4
+    assert min(shares) >= 0.0
+    assert round(sum(shares) * 1_000_000) == 2
 
 
 def test_compute_session_cost_falls_back_to_word_count_estimate_for_zero_token_usage() -> None:

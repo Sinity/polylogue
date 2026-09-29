@@ -94,6 +94,7 @@ from polylogue.archive.query.predicate import (
     QuerySequencePredicate,
 )
 from polylogue.archive.revision_authority import (
+    WORK_EVENT_RAW_ID_PREFIX,
     RawRevisionEnvelope,
     RawRevisionKind,
 )
@@ -244,20 +245,20 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_material,
     raw_revision_observation_order,
     raw_revision_observed_at_ms,
-    raw_revision_rebuild_selection,
+    raw_revision_rebuild_logical_keys,
     raw_revision_replay_adoptable,
     raw_revision_replay_plan,
     record_raw_failure_evidence,
     release_provisional_full_revisions,
     replace_raw_membership_census,
     require_frozen_membership_authority,
-    unclassified_raw_revision_rows,
     write_parsed_for_retained_raw,
     write_parsed_for_retained_raw_result,
     write_raw_and_parsed,
     write_raw_and_parsed_result,
     write_raw_blob_ref,
     write_raw_payload,
+    write_work_event_raw_and_parsed_result,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -314,7 +315,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
-    WORK_EVENT_RAW_ID_PREFIX,
     ArchiveSessionEnvelope,
     PreparedRows,
     PreparedSessionShardRows,
@@ -1652,13 +1652,13 @@ class ArchiveStore:
             separators=(",", ":"),
         ).encode("utf-8")
         raw_id = WORK_EVENT_RAW_ID_PREFIX + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
-        result = self.write_raw_and_parsed_result(
+        self._require_writable("write source.db and index.db evidence")
+        result = write_work_event_raw_and_parsed_result(
+            self,
             session,
             payload=raw_payload,
-            source_path=f"{WORK_EVENT_RAW_ID_PREFIX}{resolved}",
-            acquired_at_ms=int(time.time() * 1000),
-            source_index=-1,
             raw_id=raw_id,
+            acquired_at_ms=int(time.time() * 1000),
         )
         return {
             "event_id": event_id,
@@ -2275,17 +2275,11 @@ class ArchiveStore:
     def _raw_revision_matches_segments(self, full_raw_id: str, segment_raw_ids: Sequence[str]) -> bool:
         return _raw_revision_matches_segments(self, full_raw_id, segment_raw_ids)
 
-    def unclassified_raw_revision_rows(self) -> tuple[tuple[str, int], ...]:
-        return unclassified_raw_revision_rows(self)
-
     def pending_raw_revision_logical_keys(self) -> tuple[str, ...]:
         return pending_raw_revision_logical_keys(self)
 
-    def raw_revision_rebuild_selection(
-        self,
-        raw_ids: list[str] | None,
-    ) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
-        return raw_revision_rebuild_selection(self, raw_ids)
+    def raw_revision_rebuild_logical_keys(self, raw_ids: list[str] | None) -> tuple[str, ...]:
+        return raw_revision_rebuild_logical_keys(self, raw_ids)
 
     def raw_membership_census_rows(
         self, raw_ids: Sequence[str] | None = None
@@ -6453,6 +6447,7 @@ class ArchiveStore:
         *,
         limit: int | None = None,
         offset: int = 0,
+        actions_only: bool = False,
         sort: str | None = None,
         reverse: bool = False,
         session_id: str | None = None,
@@ -6549,6 +6544,8 @@ class ArchiveStore:
         if session_id is not None:
             where = f"{where} AND s.session_id = ?"
             filter_params.append(session_id)
+        if actions_only:
+            where = f"{where} AND b.block_type IN ('tool_use', 'tool_result')"
         order_by = _search_order_by(sort=sort, reverse=reverse)
         params: list[object] = [match_query, *filter_params]
         params.extend([-1 if limit is None else limit, offset])
@@ -7183,6 +7180,8 @@ class ArchiveStore:
         session_filters: Mapping[str, object] | None = None,
         sort: None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
+        after: _archive_query_reads.DelegationPageKey | None = None,
+        max_text_bytes: int | None = None,
     ) -> list[ArchiveDelegationQueryRow]:
         return _archive_query_reads.query_delegations(
             self,
@@ -7192,6 +7191,8 @@ class ArchiveStore:
             session_filters=session_filters,
             sort=sort,
             sort_direction=sort_direction,
+            after=after,
+            max_text_bytes=max_text_bytes,
         )
 
     def get_delegation_ancestry(self, session_id: str) -> list[ArchiveDelegationAncestryRow]:
@@ -7652,23 +7653,10 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
     raw_title = str(row["title"]) if row["title"] is not None else None
     raw_title_source = str(row["title_source"]) if row["title_source"] is not None else None
     # A non-blank ``sessions.title`` is only a genuine provider title when
-    # ``title_source`` says so. ``title_source='unknown'`` rows still
-    # carry a NON-NULL title -- the writer's pre-cijx.4 fallback stores the
-    # raw native id there (a bare UUID, or "<uuid>:agent-<hash>" for a
-    # subagent), which is exactly the "worse than the UUID it replaces" case
-    # decision 3 exists to fix. Measured live: 7,501 of 15,401 root sessions
-    # (48.7%) carry title_source='unknown' -- checking only "is title
-    # non-blank" (the pre-fix condition) made the structural-label fallback
-    # dead code for all of them. ``title_source='path'`` is the structural
-    # label's own prior output; treating it as "not a real title" keeps this
-    # idempotent on rebuild instead of freezing a stale message count.
-    # polylogue-5dfu: ``TitleSource.UNKNOWN``/``TitleSource.USER`` were
-    # deleted from the enum (UNKNOWN was a redundant second "no evidence"
-    # spelling of NULL; USER had zero producers) but this still checks the
-    # bare *strings* -- an un-rebuilt archive can carry either value as
-    # stale on-disk data from before this change until its next full
-    # reparse, and both must keep failing this membership test exactly as
-    # they did before.
+    # ``title_source`` records its provenance. A title without one (such as a
+    # raw native-id fallback: a bare UUID, or "<uuid>:agent-<hash>" for a
+    # subagent) is exactly the "worse than the UUID it replaces" case
+    # decision 3 exists to fix, so the structural label speaks instead.
     has_real_title = bool(raw_title and raw_title.strip()) and raw_title_source in {"origin", "heuristic"}
     provider_title = raw_title if has_real_title else None
     # A HEURISTIC title is a prompt echo the parser already recognized as one

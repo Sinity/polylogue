@@ -952,8 +952,13 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
         # An execution tree nobody captured is unknown: the checkout at
         # finalization is not evidence of what ran.
         "source_revision": None
-        if tree_unknown or entry.get("git_dirty") or entry.get("final_git_dirty")
-        else entry.get("final_git_head") or entry.get("git_head"),
+        if tree_unknown
+        or entry.get("git_dirty")
+        or entry.get("final_git_dirty")
+        # A head that moved under the run (or was never observed at the end)
+        # names a revision nobody tested.
+        or entry.get("final_git_head") != entry.get("git_head")
+        else entry.get("git_head"),
         "status": _terminal_status(entry),
         "started_at": entry.get("started_at"),
         "finished_at": entry.get("finished_at"),
@@ -1493,7 +1498,7 @@ def reconcile_abandoned_verify_runs(
         run_id = payload.get("run_id")
         if not isinstance(run_id, str) or run_dir.name != run_id:
             continue
-        if payload.get("status") == "failed" and payload.get("diagnosis") == ABANDONED_DIAGNOSIS:
+        if payload.get("status") in {"success", "failed"} and payload.get("diagnosis") == ABANDONED_DIAGNOSIS:
             current_path = runs_root.parent / CURRENT_RUN_PATH.name
             current = _read_json(current_path)
             if current and current.get("run_id") == run_id and current != payload:

@@ -37,6 +37,7 @@ from polylogue.browser_capture.capture_decode import (
 from polylogue.browser_capture.models import (
     BrowserCaptureAttachment,
     BrowserCaptureEnvelope,
+    BrowserCaptureIdentityObservation,
     BrowserCaptureProvenance,
     BrowserCaptureSession,
     BrowserCaptureTurn,
@@ -250,11 +251,27 @@ class AttachmentFact:
     ``identity`` digests the fields that identify the observed object;
     ``carrier`` digests the decoded ``content_base64`` bytes (``None`` when the
     attachment carries none); ``carrier_valid`` is false for a malformed one.
+    ``scope`` (``session`` or ``turn:<provider_turn_id>``) and ``attachment_id``
+    locate it: attachment IDs need not be unique, and a turn inserted before
+    another must not pair its attachments with the other turn's.
     """
 
     identity: bytes
     carrier: bytes | None
     carrier_valid: bool
+    scope: str
+    attachment_id: str
+    #: Digest of the ``inline_base64``/``data`` bytes an attachment already
+    #: carries (``None`` when neither is present; an empty string is present).
+    inline_carrier: bytes | None = None
+    inline_valid: bool = True
+
+    @property
+    def effective_carrier(self) -> tuple[bytes | None, bool]:
+        """The bytes this attachment carries by any carrier, and their validity."""
+        if self.carrier is not None:
+            return self.carrier, self.carrier_valid
+        return self.inline_carrier, self.inline_valid
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +326,7 @@ def carrier_digest(value: str) -> bytes | None:
     return digest.digest()
 
 
-def _attachment_fact(attachment: BrowserCaptureAttachment) -> AttachmentFact:
+def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> AttachmentFact:
     identity = dumps_bytes(
         [
             attachment.provider_attachment_id,
@@ -332,7 +349,22 @@ def _attachment_fact(attachment: BrowserCaptureAttachment) -> AttachmentFact:
         decoded_digest = carrier_digest(attachment.content_base64)
         valid = decoded_digest is not None
         carrier = decoded_digest if decoded_digest is not None else hashlib.sha256(b"").digest()
-    return AttachmentFact(identity=hashlib.sha256(identity).digest(), carrier=carrier, carrier_valid=valid)
+    inline_value = attachment.inline_base64 if attachment.inline_base64 is not None else attachment.data
+    inline_carrier: bytes | None = None
+    inline_valid = True
+    if inline_value is not None:
+        inline_digest = carrier_digest(inline_value)
+        inline_valid = inline_digest is not None
+        inline_carrier = inline_digest if inline_digest is not None else hashlib.sha256(b"").digest()
+    return AttachmentFact(
+        identity=hashlib.sha256(identity).digest(),
+        carrier=carrier,
+        carrier_valid=valid,
+        scope=scope,
+        attachment_id=attachment.provider_attachment_id,
+        inline_carrier=inline_carrier,
+        inline_valid=inline_valid,
+    )
 
 
 def _framed(digest: hashlib._Hash, payload: bytes) -> None:
@@ -355,19 +387,17 @@ class _ItemFold:
     digest: hashlib._Hash = field(default_factory=hashlib.sha256)
     carrierless: hashlib._Hash = field(default_factory=hashlib.sha256)
     attachments: list[AttachmentFact] = field(default_factory=list)
-    identities: list[tuple[str, Literal["native", "unknown"]]] = field(default_factory=list)
+    identities: list[tuple[str, BrowserCaptureIdentityObservation]] = field(default_factory=list)
 
     def add_turn(self, turn: BrowserCaptureTurn) -> None:
         dump = turn.model_dump(mode="json", exclude_none=True)
         _framed(self.digest, dumps_bytes(dump, sort_keys=True))
         _without_carriers(dump.get("attachments"))
         _framed(self.carrierless, dumps_bytes(dump, sort_keys=True))
-        self.attachments.extend(_attachment_fact(attachment) for attachment in turn.attachments)
+        scope = f"turn:{turn.provider_turn_id}"
+        self.attachments.extend(_attachment_fact(attachment, scope=scope) for attachment in turn.attachments)
         if turn.provider_turn_id and turn.identity_observation is not None:
-            fidelity: Literal["native", "unknown"] = (
-                "native" if turn.identity_observation.fidelity == "native" else "unknown"
-            )
-            self.identities.append((turn.provider_turn_id, fidelity))
+            self.identities.append((turn.provider_turn_id, turn.identity_observation))
         self.count += 1
 
     def add_raw_turn(self, item: object) -> None:
@@ -381,7 +411,7 @@ class _ItemFold:
         _framed(self.digest, dumps_bytes(dump, sort_keys=True))
         dump.pop("content_base64", None)
         _framed(self.carrierless, dumps_bytes(dump, sort_keys=True))
-        self.attachments.append(_attachment_fact(attachment))
+        self.attachments.append(_attachment_fact(attachment, scope="session"))
         self.count += 1
 
 
@@ -719,9 +749,36 @@ def _summary(
         dedup_content_hash=dedup,
         carrierless_fingerprint=carrierless,
         attachments=(*session.attachments.attachments, *session.turns.attachments),
-        turn_identities=tuple(session.turns.identities),
+        turn_identities=_turn_fidelities(head, session.turns.identities),
         has_native_provider_payload=native,
         provenance_meta_digest=provenance_meta_digest,
+    )
+
+
+def _turn_fidelities(
+    head: BrowserCaptureEnvelope,
+    observations: list[tuple[str, BrowserCaptureIdentityObservation]],
+) -> tuple[tuple[str, Literal["native", "unknown"]], ...]:
+    """A turn is native only when its observation names this capture's own identity.
+
+    A self-declared ``fidelity="native"`` whose origin, conversation, message
+    or adapter version disagrees with the envelope is not provider-native evidence.
+    """
+    from polylogue.browser_capture.identity import canonical_origin
+
+    expected_origin = canonical_origin(head.session.provider)
+    return tuple(
+        (
+            turn_id,
+            "native"
+            if observation.fidelity == "native"
+            and observation.origin == expected_origin
+            and observation.provider_conversation_id == head.session.provider_session_id
+            and observation.provider_message_id == turn_id
+            and observation.adapter_version == head.provenance.adapter_version
+            else "unknown",
+        )
+        for turn_id, observation in observations
     )
 
 

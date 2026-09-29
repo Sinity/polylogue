@@ -1049,3 +1049,16 @@ def test_claude_code_multiway_parse_coerces_prefix_records_once(monkeypatch: pyt
 
     assert len(sessions) == 1
     assert calls == len(records)
+
+
+def test_reserved_beads_provider_cannot_lower_session_payload() -> None:
+    from polylogue.sources.dispatch import _lower_payload_specs
+
+    assert _lower_payload_specs(Provider.BEADS, {"id": "synthetic", "messages": []}, "fallback") == []
+
+
+def test_reserved_beads_is_not_an_executable_browser_capture_provider() -> None:
+    """Anti-vacuity: tuple(Provider) would admit the reserved beads token."""
+    from polylogue.sources.origin_specs import _ALL_BROWSER_CAPTURE_PROVIDERS
+
+    assert Provider.BEADS not in _ALL_BROWSER_CAPTURE_PROVIDERS

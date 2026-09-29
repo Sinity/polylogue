@@ -262,6 +262,8 @@ def build_hermes_integration_health(
     now: datetime | None = None,
     source_limit: int = _DEFAULT_SOURCE_LIMIT,
     session_limit: int = _DEFAULT_SESSION_LIMIT,
+    convergence_debt_available: bool = True,
+    convergence_debt_error: str | None = None,
     convergence_debt_failed_count: int = 0,
     convergence_debt_deferred_count: int = 0,
     convergence_debt_retry_due_count: int = 0,
@@ -308,6 +310,12 @@ def build_hermes_integration_health(
 
     caveats: list[str] = []
     unmeasured_reasons: list[str] = []
+    if not convergence_debt_available:
+        # A stable structural reason: the raw error can carry absolute tier
+        # paths and SQLite detail, which this path-redacted payload must not.
+        reason = "convergence-debt measurement unavailable"
+        caveats.append(reason)
+        unmeasured_reasons.append(reason)
     sources_projected = 0
     sources_unprojected = 0
 
