@@ -1729,7 +1729,7 @@ def _session_id_touches(payload: dict[str, object], key: str) -> list[tuple[str 
     return touches
 
 
-def _emit_live_batch_event(kind: str, payload: dict[str, object], *, archive_root_path: Path | None = None) -> None:
+def _emit_live_batch_event(kind: str, payload: dict[str, object], *, archive_root_path: Path) -> None:
     """Persist a live-ingest batch event and fan out granular #1204 topics.
 
     The legacy ``ingestion_batch`` kind is preserved verbatim for existing

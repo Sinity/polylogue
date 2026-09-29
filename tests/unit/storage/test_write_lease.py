@@ -486,24 +486,40 @@ def test_an_unleased_backend_admits_an_established_archive_read_only(tmp_path: P
     """A daemon-armed reader may construct a backend over an established archive.
 
     The live batch probes ``Polylogue.backend`` outside the writer lease. The
-    backend must admit an established root through the read-only format-marker
-    proof, and still refuse a root whose marker is gone. Anti-vacuity: route
-    that construction through ``initialize_active_archive_root`` again and the
-    first construction raises ``UnleasedWriteError`` ("active archive bootstrap
-    requires the daemon write lease").
+    backend must admit an established root read-only -- no filesystem
+    mutation -- and still refuse an index whose derived identity this runtime
+    cannot serve, and a root whose format marker is gone. Anti-vacuity: route
+    that construction through ``initialize_active_archive_root`` again and it
+    raises ``UnleasedWriteError`` ("active archive bootstrap requires the
+    daemon write lease"); chmod the index on this path and the mode check
+    fails; drop the validating index open and the stale identity is served.
     """
+    import os
+    import stat
+
+    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     root = tmp_path / "archive"
+    index_db = root / "index.db"
     initialize_active_archive_root(root)
+    os.chmod(index_db, 0o644)
     with arm_write_lease_enforcement():
         assert current_write_lease() is None
-        backend = SQLiteBackend(db_path=root / "index.db")
-        assert backend.db_path == root / "index.db"
+        backend = SQLiteBackend(db_path=index_db)
+        assert backend.db_path == index_db
+        assert stat.S_IMODE(index_db.stat().st_mode) == 0o644
+
+        with closing(sqlite3.connect(index_db)) as conn:
+            conn.execute("UPDATE schema_identity SET identity = 'stale' WHERE tier = 'index'")
+            conn.commit()
+        with pytest.raises(SchemaSkew):
+            SQLiteBackend(db_path=index_db)
+
         archive_format_marker_path(root).unlink()
         with pytest.raises(RuntimeError, match="archive format marker is missing"):
-            SQLiteBackend(db_path=root / "index.db")
+            SQLiteBackend(db_path=index_db)
 
 
 def test_the_cached_write_connection_is_refused_without_a_lease(tmp_path: Path) -> None:
