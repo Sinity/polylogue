@@ -6852,7 +6852,7 @@ def _write_attachments(
     if not attachments:
         refresh_and_sweep_attachment_rows(conn, refresh_attachment_ids or ())
         if replace_owner_gaps:
-            record_attachment_owner_gaps(conn, session_id, (), replace_session=True)
+            _record_attachment_owner_gaps(conn, session_id, (), replace_session=True)
         return ()
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     if isinstance(source, SqliteMessageSink) and owner_resolution is None:
@@ -7051,7 +7051,7 @@ def _write_attachments(
     # and real fetched bytes.
     refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
     gaps = tuple(sorted(unresolved.items()))
-    record_attachment_owner_gaps(
+    _record_attachment_owner_gaps(
         conn,
         session_id,
         gaps,
@@ -7061,7 +7061,7 @@ def _write_attachments(
     return gaps
 
 
-def record_attachment_owner_gaps(
+def _record_attachment_owner_gaps(
     conn: sqlite3.Connection,
     session_id: str,
     gaps: Sequence[tuple[str, AttachmentOwnerResolutionReason]],
