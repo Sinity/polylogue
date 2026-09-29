@@ -7,18 +7,19 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, WebConstructType
 from polylogue.core.hashing import hash_payload
+from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import (
     _EXCLUDED_FIELDS,
     _HASHED_FIELDS,
+    _NFC_TEXT_FIELDS,
     _attachment_hash_payload,
     _content_block_payload,
     _message_comparison_payload,
     _message_hash_payload,
     _message_semantic_payload,
     _model_hash_payload,
-    _normalize_for_hash,
     _session_hash_payload,
     attachment_identity_hash,
     bound_session_content_hash,
@@ -255,6 +256,7 @@ def test_semantic_hash_partition_covers_parser_fields_and_separates_owner_eviden
         _model_hash_payload(
             _parsed_session("s1", "title", [message], created_at=None, updated_at=None),
             _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"},
+            _NFC_TEXT_FIELDS["ParsedSession"],
         )
     ) == _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
 
@@ -431,10 +433,10 @@ def test_session_revision_projection_golden_hashes() -> None:
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "4722164f2a73a28d22772d80452e4a753d4f1bdd1730becd5d455a20c5288ecc"
+    assert projection.session_hash.hex() == "24bbfd49c1e472a280f300afb7a89085672e7e8cec3d5d5614563728669e99ee"
     assert [h.hex() for h in projection.message_hashes] == [
-        "d35e1908842525f07b9709bf80ddbf115b58b7adb7e8da4b0bbe01759029c161",
-        "8af37515a68ab1e225bb4d2b11c48a3b7c9708561b01aaefaf1855f28e8e7742",
+        "e2e2d53889ce567ba686f7352cea07edf3abb1857c60271b9a3f282c057c8df1",
+        "355ee4bc9a5be415f35b53a9b6deb37f868e2f9f5e4d2e8e366fa9b19983fe3f",
     ]
     # Content-derived identity (message_id, name, mime_type) -- no longer a
     # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
@@ -447,7 +449,7 @@ def test_session_revision_projection_golden_hashes() -> None:
     # referenced-but-unacquired: identity is known, content is not.
     assert projection.attachment_contents == frozenset()
     assert [h.hex() for h in projection.event_hashes] == [
-        "8f6539c2bc89ff2c78e183cda534a04f4d14823a0416df54d73fbee6f1f0824f"
+        "f414d130cfe9ce5c07704082fdaa9bb761d808b833e471166c998b1d0de4fcdd"
     ]
 
 
@@ -495,12 +497,12 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
         _message_hash_payload(m, m.provider_message_id or f"msg-{i}") for i, m in enumerate(session.messages, start=1)
     ]
     independent_attachment_payloads = [_attachment_hash_payload(a) for a in session.attachments]
-    independent_event_payloads = [
+    independent_event_payloads: list[dict[str, JSONValue]] = [
         {
             "event_index": idx,
-            "event_type": _normalize_for_hash(e.event_type),
-            "timestamp": _normalize_for_hash(e.timestamp),
-            "source_message_provider_id": _normalize_for_hash(e.source_message_provider_id),
+            "event_type": e.event_type,
+            "timestamp": e.timestamp,
+            "source_message_provider_id": e.source_message_provider_id,
             "payload": hash_payload(e.payload),
         }
         for idx, e in enumerate(session.session_events)
@@ -517,9 +519,11 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
         | {
             "semantic_session_fields": {
                 **_model_hash_payload(
-                    session, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
+                    session,
+                    _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"},
+                    _NFC_TEXT_FIELDS["ParsedSession"],
                 ),
-                "source_name": _normalize_for_hash(origin_from_provider(session.source_name).value),
+                "source_name": origin_from_provider(session.source_name).value,
             }
         }
     )
@@ -744,7 +748,7 @@ def test_evidence_bearing_text_block_is_not_collapsed(rich_block: ParsedContentB
 
     Anti-vacuity: drop the ``not block.web_constructs`` / ``not
     block.metadata`` conjuncts from the predicate and both parametrizations go
-    red, because the payload becomes ``_EMPTY_SENTINEL`` in both cases.
+    red, because the block payload becomes the empty list in both cases.
     ``message.text`` is identical across the pair, so nothing but the block's
     own evidence can be producing the difference.
     """

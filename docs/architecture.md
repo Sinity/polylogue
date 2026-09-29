@@ -21,7 +21,7 @@ flowchart TD
 
     subgraph R1["Ring 1 · Archive substrate"]
         DETECT["detect_provider()<br/>shape-based dispatch"]
-        PARSE["provider parsers<br/>normalize → content hash (NFC)"]
+        PARSE["provider parsers<br/>normalize → content hash"]
         STORE[("split-tier SQLite<br/>source · index · embeddings · user · ops<br/>+ content-addressed blob store")]
         DETECT --> PARSE --> STORE
     end
@@ -130,7 +130,7 @@ Primary modules:
 source files (JSON/JSONL/ZIP)
   → detect_provider()          # dispatch.py — shape-based, not filename
   → provider parser            # parsers/{chatgpt,claude,codex,drive}.py
-  → content hash (NFC)         # pipeline/ids.py — SHA-256 over normalized payload
+  → content hash               # pipeline/ids.py — SHA-256 over the canonical payload
   → store (upsert-if-changed)  # storage/ — idempotent by content hash
   → session insights           # storage/derived/session/ — profiles, work events, phases, threads
   → FTS index                  # search_providers/fts5.py — unicode61 tokenizer
@@ -277,7 +277,7 @@ route invokes this same iterator even when `conversations/` is absent.
 | `VectorProvider` protocol | `core/protocols.py` | `SqliteVecProvider` implementation (sqlite-vec + Voyage AI embeddings). FTS/hybrid retrieval has no provider abstraction — production lexical search queries FTS5 directly and hybrid retrieval fuses results inline (`reciprocal_rank_fusion` in `storage/search_providers/hybrid.py`) against live query-plan state (`archive/query/archive_execution.py`, `cli/archive_query.py`); a prior `SearchProvider` protocol with FTS5/Hybrid provider classes was removed (polylogue-a7xr.10) after an audit found zero production consumers. |
 | `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/derived/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
-| `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
+| `ContentHash` | `pipeline/ids.py` | SHA-256 over the canonical session payload; only declared prose fields are NFC-folded, everything else hashes exactly. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
 | `Provider` enum | `core/enums.py` | Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges. |
 | `Origin` enum | `core/enums.py` | Public source-origin identity used by query/read surfaces and archive payloads. |
 | `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`) used for runtime roots and lab attribution. |

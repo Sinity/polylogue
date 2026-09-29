@@ -70,8 +70,8 @@ Archive verification is composed from domain-owned declarations. Each owner supp
 - **Constraint**: Archive SQLite file set, WAL mode. Durable-tier migration
   requires a backup manifest; derived-tier rebuild is operator-triggered on reject.
 
-### Content hash: idempotent by SHA-256 over NFC-normalized payload
-- **Chosen**: Hash over title, timestamps, messages, attachments, content blocks. Excludes user metadata (tags, summaries, notes).
+### Content hash: idempotent by SHA-256 over the canonical payload
+- **Chosen**: Hash over title, timestamps, messages, attachments, content blocks. Excludes user metadata (tags, summaries, notes). Only prose fields are NFC-folded; operational strings and keys hash exactly.
 - **Rejected**: UUID-based identity — breaks idempotency on re-ingest.
 - **Constraint**: User metadata edits must not trigger re-import.
 

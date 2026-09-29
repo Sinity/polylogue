@@ -11,7 +11,7 @@ debugging landmarks. For a task-to-owner map, start with
 | --- | --- |
 | Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/services/ingest_batch/_core.py` |
 | Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:session_content_hash()` |
-| Content hash uses NFC normalization | `core/hashing.py:hash_text()` |
+| Content hash NFC-folds only declared prose fields | `pipeline/ids.py:_NFC_TEXT_FIELDS` |
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
@@ -897,7 +897,7 @@ record of which contract applies where.
 | Boundary | Module | Contract for edge cases |
 | --- | --- | --- |
 | JSON byte decoding | `polylogue/sources/decoder_json.py:decode_json_bytes` | UTF-8 BOM and BOM-bearing UTF-16 are decoded and the BOM is stripped; raw UTF-16 without a BOM is unsupported by design. |
-| Content hash | `polylogue/core/hashing.py:hash_text`, `polylogue/pipeline/ids.py` | NFC normalization is applied to text fields (title, message text) before hashing, so NFC and NFD inputs produce identical `content_hash`. Lone surrogates raise `UnicodeEncodeError` (typed rejection — not silent corruption). |
+| Content hash | `polylogue/core/hashing.py:hash_text`, `polylogue/pipeline/ids.py` | NFC normalization is applied to declared prose fields (`_NFC_TEXT_FIELDS`: title, instructions, message and block text) before hashing, so NFC and NFD prose produce identical `content_hash`; operational strings such as tool-argument paths hash exactly. Lone surrogates raise `UnicodeEncodeError` (typed rejection — not silent corruption). |
 | FTS5 indexing | `polylogue/storage/sqlite/archive_tiers/index.py` (`messages_fts`, unicode61) | Block search text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing. |
 | FTS5 query escaping | `polylogue/storage/search/query_support.py:escape_fts5_query` | Every edge-case input produces a `MATCH`-safe query — bidi, zero-width, RTL, CJK, surrogate-pair emoji never raise `OperationalError`. |
 | Terminal output | UTF-8 `TextIOWrapper` | All matrix strings pass through unchanged; lone surrogates raise `UnicodeEncodeError`. |
@@ -967,8 +967,11 @@ busy timeout.
 
 Archive writes are idempotent by content hash:
 
-- SHA-256 over NFC-normalized (Unicode Normalization Form C) session
-  payload
+- SHA-256 over the canonical JSON session payload. Declared prose fields
+  (block and message text, user context, title, instructions) are
+  NFC-normalized; identifiers, timestamps, tool arguments, paths, metadata,
+  event payloads, and mapping keys hash exactly; absence hashes as `null`,
+  distinct from `""` and from every string
 - Hashed fields: title, timestamps, messages, attachments, content blocks
 - Excluded from hash: user metadata (tags, summaries, notes) — editing these
   does not trigger re-import
