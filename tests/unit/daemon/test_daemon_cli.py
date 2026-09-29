@@ -3867,6 +3867,7 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
     from polylogue.core.durable_fs import DurableFilesystemError
     from polylogue.daemon.intake_adapters import classify_cold_build_settlement_failure
     from polylogue.maintenance.candidate_capacity import ArchiveCapacityError
+    from polylogue.sources.live.cold_build import ColdBuildCoverageError
     from polylogue.sources.live.production_baseline import (
         ProductionBaselineError,
         ProductionBaselineReadUnavailableError,
@@ -3881,6 +3882,9 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         "source_integrity",
         True,
     )
+    assert classify_cold_build_settlement_failure(
+        ColdBuildCoverageError(missing_count=1, first_missing_session_id="codex:synthetic")
+    ) == ("active_coverage_incomplete", False)
     assert classify_cold_build_settlement_failure(RuntimeError("database is locked")) is None
     assert classify_cold_build_settlement_failure(OSError(errno.EIO, "transient pointer I/O")) == (
         "storage_io_unavailable",
@@ -3997,6 +4001,149 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
             assert not candidate.generation_root.exists()
     finally:
         reset_daemon_compute_adapter()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("imported_source_kept", [False, True])
+async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
+    tmp_path: Path, imported_source_kept: bool
+) -> None:
+    """``--cold-build-index`` never promotes a candidate that drops a served session.
+
+    The first daemon run builds the active index from two roots. The second
+    runs ``--cold-build-index`` over only the first root, so the imported
+    session's raw is retained in ``source.db`` but outside the build's source
+    baseline. When the imported file is gone the candidate never sees it and
+    promotion refuses as ``active_coverage_incomplete``, leaving the active
+    index serving both sessions. When the file is back under the watched root
+    the candidate covers it and promotes.
+
+    Anti-vacuity: deleting the ``require_active_coverage`` call from
+    ``ColdBuildGeneration.promote`` promotes the one-session candidate, and
+    the active index loses ``codex:cold-imported``.
+    """
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.catchup_status import _cold_build_settlement
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.intake_adapters import DaemonIntakeService
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    def codex_session(native_id: str) -> str:
+        return (
+            f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-06-02T00:00:00Z"}}}}\n'
+            '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+            '"role":"user","content":[{"type":"input_text","text":"Synthetic"}]}}\n'
+        )
+
+    def session_ids(index_path: Path) -> set[str]:
+        with contextlib.closing(sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)) as db:
+            return {str(row[0]) for row in db.execute("SELECT session_id FROM sessions")}
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    imports_root = tmp_path / "imports"
+    imports_root.mkdir()
+    watched_file = source_root / "watched.jsonl"
+    watched_file.write_text(codex_session("cold-watched"), encoding="utf-8")
+    os.utime(watched_file, (1.0, 1.0))
+    imported_file = imports_root / "imported.jsonl"
+    imported_file.write_text(codex_session("cold-imported"), encoding="utf-8")
+    os.utime(imported_file, (1.0, 1.0))
+    served = {"codex:cold-watched", "codex:cold-imported"}
+
+    async def run_daemon_until(
+        sources: tuple[WatchSource, ...],
+        *,
+        cold_build_index: bool,
+        settled: Callable[[dict[str, object]], bool],
+    ) -> dict[str, object]:
+        reset_daemon_compute_adapter()
+        try:
+            with contextlib.ExitStack() as stack:
+                _daemon_startup_stubs(stack, daemon_cli, archive_root)
+                stack.enter_context(
+                    patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root))
+                )
+                stack.enter_context(
+                    patch(
+                        "polylogue.daemon.intake_adapters.DaemonIntakeService",
+                        lambda dispatcher, **kwargs: DaemonIntakeService(dispatcher, idle_delay_s=0.05, **kwargs),
+                    )
+                )
+                task = asyncio.create_task(
+                    daemon_cli.run_daemon_services(
+                        sources=sources,
+                        enable_watch=True,
+                        enable_browser_capture=False,
+                        browser_capture_host="127.0.0.1",
+                        browser_capture_port=8765,
+                        browser_capture_spool_path=None,
+                        enable_api=False,
+                        enable_source_catchup=False,
+                        service_profile=ServiceProfile.INTAKE,
+                        cold_build_index=cold_build_index,
+                    )
+                )
+                try:
+                    async with asyncio.timeout(45):
+                        while not settled(_cold_build_settlement()):
+                            if task.done():
+                                await task
+                            await asyncio.sleep(0.05)
+                    status = _cold_build_settlement()
+                    candidate = active_cold_build_generation(archive_root)
+                    if candidate is not None:
+                        status["candidate_sessions"] = session_ids(Path(candidate.generation.index_path))
+                    return status
+                finally:
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await asyncio.wait_for(task, timeout=10)
+        finally:
+            reset_daemon_compute_adapter()
+
+    first = await run_daemon_until(
+        (
+            WatchSource("codex", source_root, suffixes=(".jsonl",)),
+            WatchSource("imports", imports_root, suffixes=(".jsonl",)),
+        ),
+        cold_build_index=False,
+        settled=lambda status: status.get("cold_build_settlement_state") == "complete",
+    )
+    assert session_ids(resolve_active_index_path(archive_root)) == served
+    first_candidate = first["cold_build_candidate_id"]
+
+    imported_file.unlink()
+    if imported_source_kept:
+        moved = source_root / "imported.jsonl"
+        moved.write_text(codex_session("cold-imported"), encoding="utf-8")
+        os.utime(moved, (1.0, 1.0))
+    expected_state = "complete" if imported_source_kept else "blocked"
+    second = await run_daemon_until(
+        (WatchSource("codex", source_root, suffixes=(".jsonl",)),),
+        cold_build_index=True,
+        settled=lambda status: (
+            status.get("cold_build_candidate_id") not in (None, first_candidate)
+            and status.get("cold_build_settlement_state") in ("complete", "blocked")
+        ),
+    )
+
+    assert second["cold_build_settlement_state"] == expected_state
+    active_ids = session_ids(resolve_active_index_path(archive_root))
+    assert active_ids == served
+    if imported_source_kept:
+        assert second["cold_build_settlement_reason"] is None
+        assert "candidate_sessions" not in second
+        assert Path(resolve_active_index_path(archive_root)).parent.name == second["cold_build_candidate_id"]
+    else:
+        assert second["cold_build_settlement_reason"] == "active_coverage_incomplete"
+        assert second["cold_build_settlement_retry_due_in_s"] is None
+        assert second["candidate_sessions"] == {"codex:cold-watched"}
+        assert Path(resolve_active_index_path(archive_root)).parent.name != second["cold_build_candidate_id"]
 
 
 @pytest.mark.asyncio
