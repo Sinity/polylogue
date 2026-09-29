@@ -17,7 +17,15 @@ from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, decode_provider_utf8, is_json_value, loads
+from polylogue.core.json import (
+    JSONDecodeError,
+    JSONDocument,
+    JSONValue,
+    decode_provider_utf8,
+    is_json_value,
+    loads,
+)
+from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.sources.dispatch import detect_provider
 
 _BINARY_ARTIFACT_MARKER = "unrecognized_binary_artifact"
@@ -34,11 +42,6 @@ class EmptyJsonlStreamError(ValueError):
     bound. Distinct from a stream whose lines failed to decode, which is
     decode-loss evidence; this is an unresolved sample, not a detection crash.
     """
-
-
-def _decode_provider_utf8(raw: bytes) -> str:
-    """Decode provider bytes as every provider reader does (``core.json.decode_provider_utf8``)."""
-    return decode_provider_utf8(raw)
 
 
 def _load_json_record(line: str) -> JSONValue:
@@ -60,7 +63,7 @@ def _load_raw_json(raw: bytes | str) -> JSONValue:
         if not isinstance(raw, bytes):
             raise
         try:
-            return _load_json_record(_decode_provider_utf8(raw))
+            return _load_json_record(decode_provider_utf8(raw))
         except (JSONDecodeError, ValueError, UnicodeDecodeError):
             raise error from None
 
@@ -147,10 +150,15 @@ def _decode_jsonl_payload(
     line_number = 0
 
     with raw_line_stream(raw) as stream:
-        for raw_line in stream:
+        for raw_line in bounded_lines(stream):
             line_number += 1
+            if isinstance(raw_line, OversizedRecord):
+                malformed_lines += 1
+                if malformed_detail is None:
+                    malformed_detail = f"line {line_number}: record of {raw_line.size} bytes is beyond the record bound"
+                continue
             try:
-                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
+                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
@@ -212,7 +220,7 @@ def _sample_jsonl_payload_with_detail(
                 continue
             assert raw_line is not None
             try:
-                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
+                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
@@ -275,7 +283,7 @@ def scan_jsonl_session_artifact(
                 continue
             assert raw_line is not None
             try:
-                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
+                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError:
                 continue
             if first_line:

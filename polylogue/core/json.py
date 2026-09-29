@@ -497,6 +497,7 @@ __all__ = [
     "JSONEncoder",
     "JSONScalar",
     "JSONValue",
+    "decode_provider_utf8",
     "dumps",
     "dumps_bytes",
     "is_json_document",
@@ -533,7 +534,9 @@ def decode_provider_utf8(raw: bytes) -> str:
 
     Strict UTF-8 first; bytes that only decode with ``surrogatepass`` keep
     their lone code units, and any encoded pair becomes its character.
-    Arbitrary malformed bytes still raise.
+    Arbitrary malformed bytes still raise. Every reader of retained provider
+    bytes decodes through this, so one artifact is readable to all of them or
+    to none.
     """
     try:
         return raw.decode("utf-8")

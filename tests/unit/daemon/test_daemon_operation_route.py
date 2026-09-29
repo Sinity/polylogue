@@ -348,9 +348,9 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
         nonlocal composed
         composed = True
 
-        # The operation passes its per-request limits to the owner call; the
-        # owner itself is composed once per process.
+        # Limits, progress and stop signals are per pass, never per owner.
         async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+
             emit = limits["progress_callback"]
             limited = bool(limits["scope_limited"])
             assert callable(emit)

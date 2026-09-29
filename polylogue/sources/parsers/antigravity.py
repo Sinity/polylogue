@@ -1279,6 +1279,10 @@ class AntigravityLanguageServerClient:
         return {str(key): value for key, value in loaded.items()}
 
 
+#: Root fields :func:`looks_like_markdown_export` reads.
+MARKDOWN_EXPORT_SIGNATURE_FIELDS = frozenset({"source", "cascadeId", "markdown"})
+
+
 def looks_like_markdown_export(payload: JSONDocument) -> bool:
     return (
         payload.get("source") == "antigravity_language_server"
