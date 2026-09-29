@@ -12,14 +12,24 @@ import contextlib
 import faulthandler
 import os
 import signal
+import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Any, cast
 
 from polylogue.logging import ERROR, WARNING, emit
+from polylogue.operations.daemon_termination import (
+    HostRunIdentity,
+    TerminationEvidence,
+    TerminationReceipt,
+    capture_host_run_identity,
+    reconcile_ended_runs,
+    record_termination_receipts,
+    termination_status,
+)
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
@@ -75,6 +85,7 @@ class DaemonLifecycle:
         run_id: str,
         archive_root_path: Path,
         details: dict[str, object] | None = None,
+        host: HostRunIdentity | None = None,
     ) -> DaemonLifecycle:
         """Create and activate a lifecycle row for the current process.
 
@@ -82,23 +93,51 @@ class DaemonLifecycle:
         row lands in that archive's ``ops.db`` rather than one re-resolved here.
         ``run_id`` is the daemon run's own id (``daemon.cli.daemon_run_id``),
         the one its events already carry, so the row joins to its logs.
+
+        ``host`` is the run's host identity (pid, boot id, service-manager
+        invocation, cgroup instance and its ``memory.events`` baseline), stored
+        under ``details['host']`` so the next start can join host evidence about
+        this run's end to it (polylogue-peo). It is observed here when omitted.
         """
         global _active_lifecycle
         if not run_id:
             raise ValueError("a daemon lifecycle requires the run's id")
         ops_db_path = archive_root_path / "ops.db"
         lifecycle = cls(run_id=run_id, ops_db_path=ops_db_path)
+        resolved_host = capture_host_run_identity() if host is None else host
         _write_lifecycle(
             lifecycle.ops_db_path,
             record_daemon_lifecycle_start,
             run_id=lifecycle.run_id,
             started_at_ms=_now_ms(),
-            details={"pid": os.getpid(), **(details or {})},
+            details={"pid": resolved_host.pid, **(details or {}), "host": resolved_host.to_details()},
         )
         _active_lifecycle = lifecycle
         note_process_heartbeat()
         _register_atexit_sentinel()
         return lifecycle
+
+    def reconcile_ended_runs(self, evidence: TerminationEvidence) -> tuple[TerminationReceipt, ...]:
+        """Classify every earlier run of this archive that has no receipt (read-only).
+
+        Runs off the writer: host evidence is read at its own pace and only
+        :meth:`record_termination_receipts` needs the writer.
+        """
+        conn = open_readonly_connection(self.ops_db_path)
+        try:
+            return reconcile_ended_runs(conn, current_run_id=self.run_id, evidence=evidence, now_ms=_now_ms())
+        finally:
+            conn.close()
+
+    def record_termination_receipts(self, receipts: Sequence[TerminationReceipt]) -> int:
+        """Persist reconciled receipts once each; return how many were new."""
+        written: list[int] = []
+
+        def write(conn: sqlite3.Connection) -> None:
+            written.append(record_termination_receipts(conn, receipts))
+
+        _write_lifecycle(self.ops_db_path, write)
+        return written[0]
 
     def heartbeat(self) -> None:
         """Persist one periodic heartbeat and refresh the in-process probe."""
@@ -250,8 +289,12 @@ def lifecycle_status(*, now_ms: int | None = None) -> dict[str, object]:
             error_detail=str(exc),
         )
         return {"state": "unknown", "heartbeat_age_s": None, "running": False}
+    termination: dict[str, object]
     try:
         row = latest_daemon_lifecycle(conn)
+        if row is None:
+            return {"state": "absent", "heartbeat_age_s": None, "running": False}
+        termination = termination_status(conn, current_run_id=row.run_id)
     except Exception as exc:
         emit(
             "daemon.lifecycle.status_unavailable",
@@ -265,8 +308,6 @@ def lifecycle_status(*, now_ms: int | None = None) -> dict[str, object]:
         return {"state": "unknown", "heartbeat_age_s": None, "running": False}
     finally:
         conn.close()
-    if row is None:
-        return {"state": "absent", "heartbeat_age_s": None, "running": False}
 
     current_ms = _now_ms() if now_ms is None else now_ms
     age_s = max(0.0, (current_ms - row.last_heartbeat_at_ms) / 1000)
@@ -291,6 +332,7 @@ def lifecycle_status(*, now_ms: int | None = None) -> dict[str, object]:
         "stopped_at_ms": row.stopped_at_ms,
         "signal": row.signal,
         "exit_kind": row.exit_kind,
+        **termination,
     }
 
 

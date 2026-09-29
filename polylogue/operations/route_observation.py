@@ -18,13 +18,19 @@ Dropped observations are counted, not merely logged (polylogue-jtwu.2). A
 percentile over a sample that silently lost an unknown number of members is
 not a measurement of the route, so :func:`compute_latency_percentiles` cannot
 be called without stating the drop disposition and returns a
-:class:`RouteLatencyReport` that carries it beside the p50/p95.
+:class:`RouteLatencyReport` that carries it beside the p50/p95. Every drop
+is recorded in the ops tier's ``route_observation_drops`` -- at once when the
+observation's own write can carry it, otherwise by the process's next
+successful write to that tier or its exit flush -- so a reader in any process
+counts them. A drop that no write can record before the process exits is
+reported as a typed ``route_observation.drops_unflushed`` event instead.
 """
 
 from __future__ import annotations
 
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -33,13 +39,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
-from polylogue.core.types import RouteDaemonPath, RouteObservationStatus, require_literal
+from polylogue.core.types import (
+    RouteDaemonPath,
+    RouteObservationDropReasonToken,
+    RouteObservationStatus,
+    require_literal,
+)
 from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
     from polylogue.scenarios.workload import WorkloadEnvelopeSpec, WorkloadReceipt, WorkloadRunStatus
+    from polylogue.storage.sqlite.archive_tiers.ops_write import RouteObservationDropRow
     from polylogue.surfaces.outcome import OutcomeEnvelope
 
 logger = get_logger(__name__)
@@ -87,6 +99,12 @@ RECEIPT_ATTRIBUTE_KEY = "route_receipt"
 DROP_ACCOUNTING_INCOMPLETE = "drop_accounting_incomplete"
 """Outcome gap: the sample's lost observations are not countable from the reader."""
 
+OBSERVATIONS_DROPPED = "observations_dropped"
+"""Outcome gap: counted observations were lost, so some percentile covers part of its route."""
+
+WINDOW_EXCEEDS_RETENTION = "window_exceeds_retention"
+"""Outcome gap: the lookback window reaches past the retained telemetry horizon."""
+
 
 class RouteObservationDropReason(str, Enum):
     """Why an observation never reached the sample a percentile is computed over."""
@@ -109,14 +127,20 @@ class RouteObservationDropReason(str, Enum):
     """The spec's sampling disposition excluded this invocation."""
 
 
+# One vocabulary: the storage boundary validates reasons against the Literal.
+if {reason.value for reason in RouteObservationDropReason} != set(get_args(RouteObservationDropReasonToken)):
+    raise RuntimeError("RouteObservationDropReason and RouteObservationDropReasonToken must name the same reasons")
+
+
 @dataclass(frozen=True, slots=True)
 class RouteObservationDrops:
     """Observations missing from a latency sample, and how well that loss is known.
 
-    ``accounting_complete`` is the honesty bit. A reader in a different process
-    from the emitters cannot see their in-process drop counters, so it says so
-    rather than reporting zero; zero drops and unknown drops are different
-    answers and a percentile must not present the second as the first.
+    ``accounting_complete`` is the honesty bit: zero drops and unknown drops
+    are different answers and a percentile must not present the second as the
+    first. The ops-tier reader counts ``route_observation_drops``, where every
+    process records its drops, so its answer is complete; a process-local
+    snapshot of unrecorded drops is not.
     """
 
     accounting_complete: bool
@@ -182,34 +206,101 @@ def route_key(surface: str, route: str) -> str:
 
 
 class RouteObservationDropLedger:
-    """Process-local counter for every drop path in this module.
+    """Drops this process counted and has not yet recorded in the ops tier.
 
-    Deliberately not persisted: the dominant drop causes are "cannot reach
-    ops.db" and "ops.db is locked", so a durable counter would have to survive
-    exactly the condition that produced it. What crosses the process boundary
-    instead is :attr:`RouteObservationDrops.accounting_complete`.
+    The dominant drop causes are "cannot reach ops.db" and "ops.db is locked",
+    so a drop cannot always be written when it happens. It is held here, keyed
+    by the ops tier it belongs to, and written into ``route_observation_drops``
+    by that tier's next successful observation or by the process's exit flush
+    (:func:`flush_route_observation_drops`). A drop with no archive at all
+    belongs to no archive's sample and stays process-local.
     """
 
-    __slots__ = ("_counts",)
+    __slots__ = ("_lock", "_pending")
 
     def __init__(self) -> None:
-        # Aggregated counters: bounded by the declared reasons and routes,
-        # not by lifetime request volume.
-        self._counts: dict[tuple[str, str], int] = {}
+        # Aggregated per (tier, reason, route): bounded by the declared
+        # reasons and routes, not by lifetime request volume. Routes are
+        # observed from many threads; every read-modify-write holds the lock.
+        self._lock = threading.RLock()
+        self._pending: dict[tuple[Path | None, str, str, str], list[int]] = {}
 
-    def record(self, reason: RouteObservationDropReason, *, surface: str, route: str, count: int = 1) -> None:
+    def record(
+        self,
+        reason: RouteObservationDropReason,
+        *,
+        surface: str,
+        route: str,
+        ops_db: Path | None,
+        observed_at_ms: int,
+        count: int = 1,
+    ) -> None:
         if count <= 0:
             return
-        key = (reason.value, route_key(surface, route))
-        self._counts[key] = self._counts.get(key, 0) + count
+        key = (ops_db, reason.value, surface, route)
+        with self._lock:
+            entry = self._pending.get(key)
+            if entry is None:
+                self._pending[key] = [count, observed_at_ms, observed_at_ms]
+                _register_exit_flush()
+                return
+            entry[0] += count
+            entry[1] = min(entry[1], observed_at_ms)
+            entry[2] = max(entry[2], observed_at_ms)
+
+    def drain(self, ops_db: Path) -> tuple[RouteObservationDropRow, ...]:
+        """Remove and return the pending drops that belong to ``ops_db``."""
+        from polylogue.storage.sqlite.archive_tiers.ops_write import RouteObservationDropRow
+
+        rows: list[RouteObservationDropRow] = []
+        with self._lock:
+            drained = [(key, self._pending.pop(key)) for key in [key for key in self._pending if key[0] == ops_db]]
+        for key, (count, first_ms, last_ms) in drained:
+            rows.append(
+                RouteObservationDropRow(
+                    surface=key[2],
+                    route=key[3],
+                    reason=key[1],
+                    first_observed_at_ms=first_ms,
+                    last_observed_at_ms=last_ms,
+                    drop_count=count,
+                )
+            )
+        return tuple(rows)
+
+    def restore(self, ops_db: Path, rows: Sequence[RouteObservationDropRow]) -> None:
+        """Put drained drops back after the write that would have recorded them failed."""
+        with self._lock:
+            for row in rows:
+                self.record(
+                    RouteObservationDropReason(row.reason),
+                    surface=row.surface,
+                    route=row.route,
+                    ops_db=ops_db,
+                    observed_at_ms=row.first_observed_at_ms,
+                    count=row.drop_count,
+                )
+                entry = self._pending[(ops_db, row.reason, row.surface, row.route)]
+                entry[2] = max(entry[2], row.last_observed_at_ms)
+
+    def recordable_count(self) -> int:
+        """Pending drops that belong to an ops tier (and so to some archive's sample)."""
+        with self._lock:
+            return sum(entry[0] for key, entry in self._pending.items() if key[0] is not None)
+
+    def pending_tiers(self) -> tuple[Path, ...]:
+        with self._lock:
+            return tuple(sorted({key[0] for key in self._pending if key[0] is not None}))
 
     def snapshot(self) -> RouteObservationDrops:
-        """Return the drops this process has seen. Never claims completeness."""
+        """Return the drops this process holds unrecorded. Never claims completeness."""
         reasons: dict[str, int] = {}
         routes: dict[str, int] = {}
-        for (reason, route), count in self._counts.items():
+        with self._lock:
+            pending = [(key, entry[0]) for key, entry in self._pending.items()]
+        for (_ops_db, reason, surface, route), count in pending:
             reasons[reason] = reasons.get(reason, 0) + count
-            routes[route] = routes.get(route, 0) + count
+            routes[route_key(surface, route)] = routes.get(route_key(surface, route), 0) + count
         return RouteObservationDrops(
             accounting_complete=False,
             by_reason=reasons,
@@ -217,19 +308,67 @@ class RouteObservationDropLedger:
         )
 
     def reset(self) -> None:
-        self._counts.clear()
+        with self._lock:
+            self._pending.clear()
 
 
 _DROP_LEDGER = RouteObservationDropLedger()
+_EXIT_FLUSH_REGISTERED = False
+
+
+def _register_exit_flush() -> None:
+    global _EXIT_FLUSH_REGISTERED
+    if _EXIT_FLUSH_REGISTERED:
+        return
+    import atexit
+
+    atexit.register(flush_route_observation_drops)
+    _EXIT_FLUSH_REGISTERED = True
+
+
+def flush_route_observation_drops() -> int:
+    """Record every pending drop in its ops tier; return how many drops remain unrecorded.
+
+    Runs at interpreter exit. A tier that still cannot be written keeps its
+    drops pending and the loss is reported as a typed
+    ``route_observation.drops_unflushed`` event, the one place those drops
+    remain visible once the process is gone.
+    """
+    from polylogue.logging import WARNING, emit
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation_drops
+
+    for ops_db in _DROP_LEDGER.pending_tiers():
+        rows = _DROP_LEDGER.drain(ops_db)
+        if not ops_db.exists():
+            _DROP_LEDGER.restore(ops_db, rows)
+            continue
+        try:
+            conn = open_observation_connection(ops_db)
+            try:
+                record_route_observation_drops(conn, drops=rows, now_ms=int(time.time() * 1000))
+            finally:
+                conn.close()
+        except Exception:
+            _DROP_LEDGER.restore(ops_db, rows)
+    remaining = _DROP_LEDGER.recordable_count()
+    if remaining:
+        emit(
+            "route_observation.drops_unflushed",
+            level=WARNING,
+            outcome="degraded",
+            reason="ops_tier_unwritable_at_exit",
+            count=remaining,
+        )
+    return remaining
 
 
 def route_observation_drops() -> RouteObservationDrops:
-    """Return this process's route-observation drop counts."""
+    """Return the drops this process has counted but not yet recorded in an ops tier."""
     return _DROP_LEDGER.snapshot()
 
 
 def reset_route_observation_drops() -> None:
-    """Clear the process-local drop counters."""
+    """Clear the process-local pending drops."""
     _DROP_LEDGER.reset()
 
 
@@ -354,6 +493,10 @@ class RouteObservationReceipt:
     evidence_refs: tuple[str, ...] = ()
     attributes: Mapping[str, object] = field(default_factory=dict)
     sampled: bool = True
+    daemon_run_id: str | None = None
+    """The daemon run this invocation executed in (``daemon.cli.daemon_run_id``),
+    when it ran inside one: the id the run's lifecycle row, heartbeats, status
+    and events carry (polylogue-peo), so a dead run's last workload joins to it."""
 
     def __post_init__(self) -> None:
         if not self.trace_id or not self.run_id:
@@ -383,6 +526,8 @@ class RouteObservationReceipt:
         refs = [f"route-request:{self.trace_id}", f"route-run:{self.run_id}"]
         if self.parent_run_id is not None:
             refs.append(f"route-parent-run:{self.parent_run_id}")
+        if self.daemon_run_id is not None:
+            refs.append(f"daemon-run:{self.daemon_run_id}")
         return tuple(refs)
 
     @property
@@ -409,6 +554,7 @@ class RouteObservationReceipt:
             "spec": self.spec.to_payload(),
             "run_id": self.run_id,
             "parent_run_id": self.parent_run_id,
+            "daemon_run_id": self.daemon_run_id,
             "build_id": self.build_id,
             "archive_id": self.archive_id,
             "workload_id": self.spec.workload_id,
@@ -459,6 +605,7 @@ class RouteObservationReceipt:
             frame_id=None,
             phases=observations,
             evidence_refs=self.correlation_refs + self.evidence_refs,
+            daemon_run_id=self.daemon_run_id,
         )
 
 
@@ -602,7 +749,11 @@ def observe_route(
             recordable_path = _recordable_daemon_path(ctx.daemon_path)
         except Exception:
             _DROP_LEDGER.record(
-                RouteObservationDropReason.EMIT_FAILED, surface=resolved_spec.surface, route=resolved_spec.route
+                RouteObservationDropReason.EMIT_FAILED,
+                surface=resolved_spec.surface,
+                route=resolved_spec.route,
+                ops_db=None if archive_root is None else Path(archive_root) / "ops.db",
+                observed_at_ms=started_at_ms,
             )
             invalid_daemon_path = True
             recordable_path = None
@@ -626,10 +777,27 @@ def observe_route(
             evidence_refs=ctx.evidence_refs,
             attributes=dict(ctx.attributes),
             sampled=resolved_spec.sampled,
+            daemon_run_id=_bound_daemon_run_id(),
         )
         ctx.receipt = receipt
         if not invalid_daemon_path:
             _emit_best_effort(archive_root=archive_root, receipt=receipt)
+
+
+def _bound_daemon_run_id() -> str | None:
+    """Return the daemon run id bound in this context, when running in a daemon.
+
+    ``daemon.cli.daemon_run_id`` binds ``run_id`` with ``component="daemon"``
+    into the process-wide logging context before the run's first event, so an
+    invocation inside the daemon reads it here without importing the daemon.
+    """
+    from polylogue.logging import current_context
+
+    context = current_context()
+    run_id = context.get("run_id")
+    if context.get("component") == "daemon" and isinstance(run_id, str) and run_id:
+        return run_id
+    return None
 
 
 def open_observation_connection(ops_db: Path) -> sqlite3.Connection:
@@ -644,24 +812,34 @@ def open_observation_connection(ops_db: Path) -> sqlite3.Connection:
 
 
 def _emit_best_effort(*, archive_root: Path | None, receipt: RouteObservationReceipt) -> None:
-    """Persist ``receipt``'s projection, counting every path that loses it."""
+    """Persist ``receipt``'s projection, counting every path that loses it.
+
+    A successful write also records the drops this process was holding for the
+    same tier, in the same transaction.
+    """
     spec = receipt.spec
+    ops_db = None if archive_root is None else Path(archive_root) / "ops.db"
+
+    def drop(reason: RouteObservationDropReason) -> None:
+        _DROP_LEDGER.record(
+            reason, surface=spec.surface, route=spec.route, ops_db=ops_db, observed_at_ms=receipt.started_at_ms
+        )
+
     if not receipt.sampled:
-        _DROP_LEDGER.record(RouteObservationDropReason.NOT_SAMPLED, surface=spec.surface, route=spec.route)
+        drop(RouteObservationDropReason.NOT_SAMPLED)
         return
-    if archive_root is None:
-        _DROP_LEDGER.record(RouteObservationDropReason.NO_ARCHIVE_ROOT, surface=spec.surface, route=spec.route)
+    if ops_db is None:
+        drop(RouteObservationDropReason.NO_ARCHIVE_ROOT)
         return
-    ops_db = Path(archive_root) / "ops.db"
     if not ops_db.exists():
-        _DROP_LEDGER.record(RouteObservationDropReason.OPS_DB_MISSING, surface=spec.surface, route=spec.route)
+        drop(RouteObservationDropReason.OPS_DB_MISSING)
         return
+    pending = _DROP_LEDGER.drain(ops_db)
     try:
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
 
         conn = open_observation_connection(ops_db)
         try:
-            pruned: list[tuple[str, str]] = []
             record_route_observation(
                 conn,
                 trace_id=receipt.trace_id,
@@ -676,19 +854,13 @@ def _emit_best_effort(*, archive_root: Path | None, receipt: RouteObservationRec
                 archive_epoch=receipt.archive_epoch,
                 attributes=receipt.to_attributes(),
                 sampled=receipt.sampled,
-                pruned=pruned,
+                drops=pending,
             )
-            # The writer reports each row its retention and cap prunes
-            # removed, so every drop stays attributed to its own route.
-            removed: dict[tuple[str, str], int] = {}
-            for identity in pruned:
-                removed[identity] = removed.get(identity, 0) + 1
-            for (surface, route), count in removed.items():
-                _DROP_LEDGER.record(RouteObservationDropReason.PRUNED, surface=surface, route=route, count=count)
         finally:
             conn.close()
     except Exception:
-        _DROP_LEDGER.record(RouteObservationDropReason.EMIT_FAILED, surface=spec.surface, route=spec.route)
+        _DROP_LEDGER.restore(ops_db, pending)
+        drop(RouteObservationDropReason.EMIT_FAILED)
         logger.debug(
             "route observation emit failed (best-effort, dropped): surface=%s route=%s",
             spec.surface,
@@ -757,6 +929,10 @@ class RouteLatencyReport:
 
     buckets: tuple[RouteLatencyBucket, ...]
     drops: RouteObservationDrops
+    window_exceeds_retention: bool = False
+    """The lookback window starts before the writers' age horizon, so part of
+    it can no longer be answered: its observations and its drop records were
+    retired together."""
 
     @property
     def unattributed_drops(self) -> int:
@@ -771,19 +947,24 @@ class RouteLatencyReport:
 
     @property
     def outcome(self) -> OutcomeEnvelope:
-        """The report's terminal outcome: incomplete drop accounting is a named gap.
+        """The report's terminal outcome: lost observations are a named gap.
 
-        A percentile over a sample that lost an unknown number of members is
-        not a measurement of the route, so such an answer is ``degraded`` even
-        when it holds buckets, and an empty window stays ``degraded`` too: the
-        gap, not the absence of traffic, may be why it is empty.
+        A percentile over a sample that lost members -- an unknown number, or a
+        counted one -- is not a whole measurement of the route, so such an
+        answer is ``degraded`` even when it holds buckets, and an empty window
+        stays ``degraded`` too: the gap, not the absence of traffic, may be why
+        it is empty. Complete accounting with nothing lost is ``ok``.
         """
         from polylogue.surfaces.outcome import decide_outcome
 
-        return decide_outcome(
-            matched=len(self.buckets),
-            degraded=() if self.drops.accounting_complete else (DROP_ACCOUNTING_INCOMPLETE,),
-        )
+        gaps: list[str] = []
+        if not self.drops.accounting_complete:
+            gaps.append(DROP_ACCOUNTING_INCOMPLETE)
+        elif self.drops.total > 0:
+            gaps.append(OBSERVATIONS_DROPPED)
+        if self.window_exceeds_retention:
+            gaps.append(WINDOW_EXCEEDS_RETENTION)
+        return decide_outcome(matched=len(self.buckets), degraded=tuple(gaps))
 
     def to_payload(self) -> dict[str, object]:
         drops = self.drops.to_payload()
@@ -807,6 +988,7 @@ class RouteLatencyReport:
                 for bucket in self.buckets
             ],
             "drops": drops,
+            "window_exceeds_retention": self.window_exceeds_retention,
         }
 
 
@@ -898,6 +1080,7 @@ def read_latency_report(
     *,
     since_ms: int,
     surface: str | None = None,
+    now_ms: int | None = None,
 ) -> RouteLatencyReport:
     """Compute the latency report over every sample in the lookback window.
 
@@ -908,9 +1091,11 @@ def read_latency_report(
     and its row cap for observations, ``MCP_CALL_LOG_RETENTION_MS`` for MCP
     calls), not by this reader.
 
-    A reader in another process cannot see the emitters' in-process drop
-    ledgers, so the answer's drop accounting is declared incomplete rather
-    than zero.
+    Drops come from ``route_observation_drops``, where every emitting process
+    records what it lost (polylogue-jtwu.2), so a reader in another process
+    reports them beside the percentiles and an answer with nothing lost is
+    ``ok``. A window that starts before the retention horizon is ``degraded``:
+    that part of it was retired, observations and drop records alike.
     """
     observation_sql = (
         "SELECT surface, route, duration_ms, status, started_at_ms FROM route_observations WHERE started_at_ms >= ?"
@@ -946,12 +1131,34 @@ def read_latency_report(
             )
         )
     )
-    return compute_latency_percentiles(observations, calls, drops=RouteObservationDrops.unaccounted())
+    from polylogue.storage.sqlite.archive_tiers.ops_write import ROUTE_OBSERVATION_RETENTION_MS
+
+    report = compute_latency_percentiles(observations, calls, drops=_recorded_drops(conn, since_ms, surface))
+    current_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    if since_ms < current_ms - ROUTE_OBSERVATION_RETENTION_MS:
+        return RouteLatencyReport(buckets=report.buckets, drops=report.drops, window_exceeds_retention=True)
+    return report
+
+
+def _recorded_drops(conn: sqlite3.Connection, since_ms: int, surface: str | None) -> RouteObservationDrops:
+    """Sum the drops every process recorded for the window."""
+    from polylogue.storage.sqlite.archive_tiers.ops_write import route_observation_drop_counts
+
+    rows = route_observation_drop_counts(conn, since_ms=since_ms, surface=surface)
+    reasons: dict[str, int] = {}
+    routes: dict[str, int] = {}
+    for row in rows:
+        reasons[row.reason] = reasons.get(row.reason, 0) + row.drop_count
+        key = route_key(row.surface, row.route)
+        routes[key] = routes.get(key, 0) + row.drop_count
+    return RouteObservationDrops(accounting_complete=True, by_reason=reasons, by_route=routes)
 
 
 __all__ = [
     "DEFAULT_ROUTE_PHASE",
     "DROP_ACCOUNTING_INCOMPLETE",
+    "OBSERVATIONS_DROPPED",
+    "WINDOW_EXCEEDS_RETENTION",
     "LOW_CONFIDENCE_SAMPLE_FLOOR",
     "RECEIPT_ATTRIBUTE_KEY",
     "ROUTE_OBSERVATION_WORKLOAD_FAMILY",
@@ -965,6 +1172,7 @@ __all__ = [
     "RouteObservationSpec",
     "RoutePhaseObservation",
     "compute_latency_percentiles",
+    "flush_route_observation_drops",
     "observe_route",
     "open_observation_connection",
     "read_latency_report",
