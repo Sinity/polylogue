@@ -981,8 +981,9 @@ def _copied_prefix_start(digests: Sequence[str], scope: _IdentityScope, count: i
 
     The copied messages are the run of ``count`` whose content identities
     hash to the recorded sequence; a message gained before them does not move
-    which messages they are. Without a match (the prefix itself changed) the
-    leading ``count`` messages are the prefix.
+    which messages they are. Without a match the copied prefix itself
+    changed, and no stable evidence says which messages hold its stored IDs:
+    refused by name rather than guessed from the leading ones.
     """
     if not scope.prefix_digest:
         return 0
@@ -998,7 +999,11 @@ def _copied_prefix_start(digests: Sequence[str], scope: _IdentityScope, count: i
         raise InheritedPrefixMaterializationError(
             f"the materialized prefix appears {len(matches)} times in this transcript; its stored IDs are ambiguous"
         )
-    return matches[0] if matches else 0
+    if not matches:
+        raise InheritedPrefixMaterializationError(
+            "the materialized prefix no longer appears in this transcript; its stored IDs cannot be placed"
+        )
+    return matches[0]
 
 
 class _ScopedMessages(_MessageTail):
@@ -10060,20 +10065,34 @@ def _composed_db_signatures(
         visited.add(parent_id)
         dependencies.add(parent_id)
         cursor_session_id = parent_id
-    for child_session_id, branch_point_message_id, own in reversed(chain):
-        prefix: list[tuple[str, str]] = []
-        found = False
-        for entry in composed:
-            prefix.append(entry)
-            if entry[0] == branch_point_message_id:
-                found = True
-                break
-        # A genuinely missing branch point is not a license to inherit a nearby
-        # or entire prefix. This matches the async reader's dangling-edge rule.
-        composed = (prefix if found else []) + own
-        if composed_cache is not None:
-            composed_cache[child_session_id] = composed
-        _signature_cache_set_composed(cache, child_session_id, composed, dependencies=frozenset(dependencies))
+    if not chain:
+        return composed
+    # One list is cut at each branch point and extended by each tail, with a
+    # first-position index, so a chain composes in time linear in the rows it
+    # touches; only the requested session's result is cached, since keeping
+    # every intermediate transcript would be quadratic. The start may be a
+    # cached result, so it is copied, never cut in place.
+    composed = list(composed)
+    position: dict[str, int] = {}
+    for index, (message_id, _signature) in enumerate(composed):
+        position.setdefault(message_id, index)
+    for _child_session_id, branch_point_message_id, own in reversed(chain):
+        at = position.get(branch_point_message_id)
+        if at is None:
+            # A genuinely missing branch point is not a license to inherit a
+            # nearby or entire prefix. This matches the async reader's rule.
+            composed, position = [], {}
+        else:
+            for message_id, _signature in composed[at + 1 :]:
+                if position.get(message_id, -1) > at:
+                    del position[message_id]
+            del composed[at + 1 :]
+        for entry in own:
+            position.setdefault(entry[0], len(composed))
+            composed.append(entry)
+    if composed_cache is not None:
+        composed_cache[session_id] = composed
+    _signature_cache_set_composed(cache, session_id, composed, dependencies=frozenset(dependencies))
     return composed
 
 
@@ -10747,8 +10766,10 @@ def _settle_inherited_prefixes(
     onto identical content -- keeps inheriting: it sees its parent's current
     prefix up to that point, including in-place edits of inherited messages,
     and its own references into re-anchored rows follow them. A session whose
-    branch point this write removed would otherwise compose to its bare tail;
-    its pre-write inherited prefix is materialized into its own rows instead.
+    branch point this write removed, or any of whose pre-write inherited rows
+    neither survives nor re-anchors, would otherwise compose to a shortened
+    transcript; its pre-write inherited prefix is materialized into its own
+    rows instead.
     Shallower sessions settle first, so a descendant anchored in rows its
     parent just materialized follows them rather than being copied again.
     Returns the materialized sessions.
@@ -10783,9 +10804,15 @@ def _settle_inherited_prefixes(
             inherited_now = _inherited_entries(conn, child, composed)
             if inherited_now:
                 reanchored = _reanchored_ids(guard, child, inherited_now)
-                reanchors.update(reanchored)
-                _restore_source_refs(conn, guard.source_refs[child], remap=reanchored)
-                continue
+                composed_now = {new for new, _ in inherited_now}
+                # Every pre-write inherited row must still be composed, in
+                # place or re-anchored; a surviving branch point does not prove
+                # the rows before it survived. One lost row materializes the
+                # whole pre-write prefix instead of shortening the transcript.
+                if all(old in composed_now or old in reanchored for old in guard.inherited_ids[child]):
+                    reanchors.update(reanchored)
+                    _restore_source_refs(conn, guard.source_refs[child], remap=reanchored)
+                    continue
             remap = _materialize_inherited_prefix(
                 conn,
                 child,

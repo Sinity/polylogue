@@ -3544,8 +3544,9 @@ def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
 
 def test_descendant_anchored_through_an_intermediate_parent_stays_whole(tmp_path: Path) -> None:
     """``A -> B -> C`` with C branching inside B's inherited prefix, at an
-    A-owned row. Rewriting A without that row leaves B composable, but C's
-    branch point is gone although C's resolved parent is B, not A.
+    A-owned row. Rewriting A without that row loses a row of B's inherited
+    prefix, so B materializes it, and C follows B's copy of its branch point
+    although the row it named in A is gone.
 
     Anti-vacuity: capture only A's direct children and C reads
     ``dangling_branch_point``.
@@ -3564,7 +3565,8 @@ def test_descendant_anchored_through_an_intermediate_parent_stays_whole(tmp_path
     envelope = read_archive_session_envelope(conn, c_id)
     assert envelope.lineage_complete is True
     assert [message.blocks[0].text for message in envelope.messages] == ["m0", "m1", "c2"]
-    assert _edge_state(conn, c_id) == (b_id, "spawned-fresh", None)
+    assert _edge_state(conn, c_id) == (b_id, "prefix-sharing", f"{b_id}:n:m1")
+    assert _composed_texts(conn, b_id) == ["m0", "m1", "m2", "b3"]
     assert read_archive_session_envelope(conn, b_id).lineage_complete is True
     conn.close()
 
@@ -4019,12 +4021,14 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
 
 def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Path) -> None:
     """The prefix holds two identical messages with different native ids;
-    the rewrite removes the first and keeps the second, so the child keeps
-    inheriting. The child's reference to the surviving message stays on it,
-    and its reference to the removed one is not redirected onto the survivor.
+    the rewrite removes the first and keeps the second. A lost inherited row
+    materializes the child's whole pre-write prefix, so each reference follows
+    its own copy: the removed one is neither nulled nor redirected onto the
+    survivor.
 
-    Anti-vacuity: match by content signature before stable identity in
-    ``_reanchored_ids`` and the ``a1`` event is rewritten to ``a2``.
+    Anti-vacuity: keep inheriting because the branch point survived and the
+    ``a1`` event is nulled; match copies by content alone and both events
+    name one row.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -4082,8 +4086,11 @@ def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Pa
     )
     conn.commit()
 
-    assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:a2")
-    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(None,), (f"{parent_id}:n:a2",)]
+    assert _edge_state(conn, child_id) == (parent_id, "spawned-fresh", None)
+    assert _composed_texts(conn, child_id) == ["go", "same", "same", "tail"]
+    referenced = [row[0] for row in conn.execute(events, (child_id,))]
+    owned = {str(row[0]) for row in conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (child_id,))}
+    assert len(set(referenced)) == 2 and set(referenced) <= owned
     conn.close()
 
 
@@ -4529,4 +4536,60 @@ def test_a_materialized_child_keeps_its_ids_after_a_replay_drops_its_parent(tmp_
             "SELECT 1 FROM session_links WHERE src_session_id = ?", ("codex-session:child",)
         ).fetchall()
         assert _child_ids(conn, "codex-session:child") == materialized
+    conn.close()
+
+
+def test_a_lost_row_before_a_surviving_branch_point_materializes_the_prefix(tmp_path: Path) -> None:
+    """A surviving branch point does not prove the rows before it survived.
+
+    Anti-vacuity: treat any composed inherited row as an intact prefix and the
+    parent rewritten without ``m0`` shortens the child to ``[m1, x2]``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    conn.commit()
+    assert _edge_state(conn, child_id)[1] == "prefix-sharing"
+
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m1"]))
+    conn.commit()
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
+    assert _edge_state(conn, child_id)[1] == "spawned-fresh"
+    conn.close()
+
+
+def test_a_scoped_replay_refuses_a_prefix_that_no_longer_matches(tmp_path: Path) -> None:
+    """Anti-vacuity: fall back to the leading rows and a replay without the
+    first copied row makes ``[m1, tail]`` the prefix, swapping the two
+    identical ID-less tail rows' stored occurrences."""
+    from polylogue.storage.sqlite.archive_tiers.write import InheritedPrefixMaterializationError
+
+    parent = [_msg("m0", Role.USER, "hello", 0), _msg("m1", Role.ASSISTANT, "hi there", 1)]
+    tail = [_msg("", Role.USER, "same", 2), _msg("", Role.USER, "same", 3)]
+    _materialize_then_replay(tmp_path, parent, [*parent, *tail], [_msg("m0", Role.USER, "hello", 0)])
+    with pytest.raises(InheritedPrefixMaterializationError, match="no longer appears"):
+        _replay_child(tmp_path, [parent[1], *tail])
+
+
+def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
+    """One list is cut and extended down the chain; no level's transcript is kept.
+
+    Anti-vacuity: rebuild ``prefix + own`` at every level and cache each, and
+    the composition holds every intermediate transcript, quadratic in depth.
+    """
+    from polylogue.storage.sqlite.archive_tiers import write as write_module
+
+    conn = _connect(tmp_path / "index.db")
+    depth = 60
+    write_parsed_session_to_archive(conn, _codex_session("s0", ["r0"]))
+    for level in range(1, depth):
+        texts = [f"r{index}" for index in range(level + 1)]
+        write_parsed_session_to_archive(conn, _codex_session(f"s{level}", texts, parent=f"s{level - 1}"))
+    conn.commit()
+    leaf = f"codex-session:s{depth - 1}"
+    intermediates: dict[str, list[tuple[str, str]]] = {}
+    composed = write_module._composed_db_signatures(conn, leaf, composed_cache=intermediates)
+    assert len(composed) == depth
+    assert set(intermediates) == {"codex-session:s0", leaf}
+    assert _composed_texts(conn, leaf) == [f"r{index}" for index in range(depth)]
     conn.close()

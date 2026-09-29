@@ -306,28 +306,35 @@ async def get_messages_with_lineage_completeness(
 
     # Compose from the root down: root's full transcript, then splice each
     # descendant's own tail at its branch point in the running composed view.
+    # One list is cut at each branch point and extended by each tail, with a
+    # first-position index, so a deep chain composes in linear time rather
+    # than rebuilding every intermediate transcript.
     composed = await _own_messages(conn, cursor_session)
+    position: dict[str, int] = {}
+    for index, record in enumerate(composed):
+        position.setdefault(record.message_id, index)
     dangling = False
     for child_session_id, branch_point_message_id in reversed(chain):
         own = await _own_messages(conn, child_session_id)
-        prefix: list[MessageRecord] = []
         edge = await _prefix_sharing_edge(conn, child_session_id)
         witness_matches = edge is None or await _branch_point_content_address_matches(
             conn, child_session_id, edge[0], branch_point_message_id
         )
-        found = False
-        for record in composed:
-            prefix.append(record)
-            if record.message_id == branch_point_message_id:
-                found = witness_matches
-                break
-        # Dangling branch point (e.g. the parent message was hard-deleted): return
-        # this child's own tail rather than an over-long transcript (#2467 audit).
-        if found:
-            composed = prefix + own
+        at = position.get(branch_point_message_id)
+        if at is not None and witness_matches:
+            for record in composed[at + 1 :]:
+                if position.get(record.message_id, -1) > at:
+                    del position[record.message_id]
+            del composed[at + 1 :]
         else:
-            composed = own
+            # Dangling branch point (e.g. the parent message was hard-deleted):
+            # return this child's own tail rather than an over-long transcript
+            # (#2467 audit).
+            composed, position = [], {}
             dangling = True
+        for record in own:
+            position.setdefault(record.message_id, len(composed))
+            composed.append(record)
     reason = LINEAGE_TRUNCATION_CYCLE if cycle else LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if dangling else None
     return composed, LineageCompleteness(complete=reason is None, truncation_reason=reason)
 
