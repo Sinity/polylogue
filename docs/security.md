@@ -365,11 +365,13 @@ and seeds every retained revision of the files the session owns into the
 revision closure, so their rows go and their hashes are marked (or named in
 `shared_blob_hashes` when another session's sidecar holds the same bytes).
 Ownership follows the join's own rules: the file's stem is a `tool_id` of one
-of the session's `tool_result` blocks, or a matched sidecar event of the
-session names the file. The directory is shared by a Claude Code parent and
-its subagents, and by every chat of one gemini-cli process, so a file another
-transcript owns survives, as does a file no transcript claimed. The preview
-counts them as `source_sidecar_rows`.
+of the session's `tool_result` blocks, or a sidecar event of the session
+names the file as its own (matched, or debt such as an oversize file; a
+`no_owning_*` debt names a file no transcript claims). The directory is
+shared by a Claude Code parent and its subagents, and by every chat of one
+gemini-cli process, so a file another transcript owns survives, as does a
+file no transcript claimed. The preview counts them as
+`source_sidecar_rows`.
 
 **Attachments referenced from elsewhere.** `attachment_refs.session_id`/
 `message_id` carry `ON DELETE CASCADE` to `sessions`/`messages`, so deleting

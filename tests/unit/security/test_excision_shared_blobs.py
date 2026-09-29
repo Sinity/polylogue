@@ -251,10 +251,13 @@ async def test_excising_a_parent_keeps_its_subagents_sidecar(workspace_env: dict
 
     Excising the parent removes the sidecar the parent's own tool result
     owns, and leaves the subagent's sidecar and a file no transcript claims.
+    The parent's sidecar is named by its preview's pointer, not by its
+    ``tool_use_id``, so only the parent's matched sidecar event names it.
 
     Anti-vacuity: treating every file of the scope directory as the excised
     session's (``_SidecarOwnership.owns`` returning true) removes the
-    subagent's sidecar raw and marks its hash.
+    subagent's sidecar raw and marks its hash; ignoring the session's sidecar
+    events leaves the parent's pointer-named sidecar retained.
     """
     archive_root = workspace_env["archive_root"]
     root = workspace_env["data_root"] / "projects"
@@ -262,7 +265,7 @@ async def test_excising_a_parent_keeps_its_subagents_sidecar(workspace_env: dict
     session_dir = project / _SESSION_A
     tool_results = session_dir / "tool-results"
     tool_results.mkdir(parents=True)
-    parent_sidecar = tool_results / "toolu_parent.txt"
+    parent_sidecar = tool_results / "b7x3kq.txt"
     parent_sidecar.write_text(_PARENT_TEXT, encoding="utf-8")
     subagent_sidecar = tool_results / "toolu_subagent.txt"
     subagent_sidecar.write_text(_SUBAGENT_TEXT, encoding="utf-8")
@@ -359,6 +362,9 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
     The directory is named for the wire ``sessionId`` and shared by every chat
     of that process, so a file no chat claimed stays.
 
+    The sidecar is named ``<tool id>_<slug>``, so the chat's sidecar event,
+    not the exact-stem rule, is what names it as the chat's.
+
     Anti-vacuity: dropping the gemini branch of ``_session_sidecar_raw_ids``
     leaves the sidecar raw retained and its hash unmarked.
     """
@@ -367,7 +373,7 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
     project = root / "project-hash"
     outputs = project / "tool-outputs" / f"session-{_GEMINI_WIRE_SESSION}"
     outputs.mkdir(parents=True)
-    sidecar = outputs / f"{_GEMINI_TOOL_ID}.txt"
+    sidecar = outputs / f"{_GEMINI_TOOL_ID}_stdout.txt"
     sidecar.write_text(_GEMINI_TEXT, encoding="utf-8")
     unclaimed = outputs / "read_file_1773524799999_0.txt"
     unclaimed.write_text(_ORPHAN_TEXT, encoding="utf-8")

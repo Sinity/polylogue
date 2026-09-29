@@ -71,10 +71,11 @@ its own ``tool_result_sidecar`` raw row that no session relation names.
 from its retained ``source_path`` and seeds every retained revision of the
 files the session owns into the revision closure (polylogue-8j9rh).
 Ownership follows the join's own rules: a file whose stem is a ``tool_id`` of
-one of the session's ``tool_result`` blocks, or that a matched sidecar event
-of the session names. The scope directory is shared (a Claude Code parent
-and its subagents; every chat of one gemini-cli process), so a file another
-transcript owns stays, and a file no transcript claimed stays too.
+one of the session's ``tool_result`` blocks, or that a sidecar event of the
+session names as its own (see :class:`_SidecarOwnership`). The scope
+directory is shared (a Claude Code parent and its subagents; every chat of
+one gemini-cli process), so a file another transcript owns stays, and a file
+no transcript claimed stays too.
 
 **Shared blobs.** Excision forgets the excised session, not every session
 whose content shares a content-addressed blob with it. Two sessions with the
@@ -720,6 +721,12 @@ def _session_work_event_raw_ids(conn: sqlite3.Connection, session_id: str) -> tu
     )
 
 
+#: Reason prefix both sidecar joins give the debt of a file no transcript
+#: claims (``no_owning_tool_result_block``, ``no_owning_tool_call``). Every
+#: other debt reason is recorded by the transcript that owns the file.
+_OWNERLESS_SIDECAR_REASON_PREFIX = "no_owning_"
+
+
 @dataclass(frozen=True, slots=True)
 class _SidecarOwnership:
     """Which tool-output sidecar files a session's own join claimed.
@@ -728,11 +735,14 @@ class _SidecarOwnership:
     (``sources/live/tool_result_sidecars.py``,
     ``sources/live/gemini_tool_output_sidecars.py``): a file whose stem is a
     ``tool_id`` of one of the session's ``tool_result`` blocks, and every file
-    a matched sidecar event of the session names. Both scopes are shared: a
-    Claude Code ``tool-results/`` directory by the parent and its subagent
-    transcripts, a gemini-cli ``tool-outputs/session-<id>/`` directory by
-    every chat of one CLI process. A file no transcript claimed (sidecar
-    debt) is owned by no session and stays.
+    a sidecar event of the session names -- matched, or debt the join
+    recorded against a file it had already resolved to this transcript
+    (oversize, unreadable, less complete than the inline text). Both joins
+    record the one ownerless outcome with a ``no_owning_*`` reason: a file no
+    transcript claims is owned by no session and stays. Both scopes are
+    shared: a Claude Code ``tool-results/`` directory by the parent and its
+    subagent transcripts, a gemini-cli ``tool-outputs/session-<id>/``
+    directory by every chat of one CLI process.
     """
 
     tool_ids: frozenset[str] = frozenset()
@@ -763,7 +773,12 @@ def _session_sidecar_ownership(conn: sqlite3.Connection, session_id: str) -> _Si
         (session_id, *event_types),
     ).fetchall():
         payload = json.loads(str(payload_json)) if payload_json else None
-        if not isinstance(payload, dict) or payload.get("acquisition_status") != "matched":
+        if not isinstance(payload, dict):
+            continue
+        reason = payload.get("reason")
+        if payload.get("acquisition_status") == "debt" and (
+            not isinstance(reason, str) or reason.startswith(_OWNERLESS_SIDECAR_REASON_PREFIX)
+        ):
             continue
         filename = payload.get("filename")
         if isinstance(filename, str) and filename:
@@ -840,7 +855,7 @@ def _owned_scope_children(
     for raw_id, source_path in conn.execute(
         "SELECT raw_id, source_path FROM raw_sessions WHERE source_path >= ? AND source_path < ?",
         (low, high),
-    ).fetchall():
+    ):
         filename = str(source_path)[len(low) :]
         if not filename or "/" in filename:
             continue
@@ -857,28 +872,22 @@ def _gemini_owned_sidecar_raw_ids(
     """Owned sidecars of one gemini-cli chat snapshot.
 
     The scope is ``tool-outputs/session-<sessionId>/`` for the wire
-    ``sessionId``, which the chat's native id starts with
-    (``gemini_cli_chat_identity`` composes ``<sessionId>:<kind>:<startTime>``).
-    The retained scope directories under the snapshot's project are the
-    candidates; each is confirmed through ``resolve_tool_outputs_dir``, the
-    path law the join itself uses.
+    ``sessionId``, which the chat's native id begins with, followed by a
+    colon (``gemini_cli_chat_identity`` composes
+    ``<sessionId>:<kind>:<startTime>``). Every prefix of the native id that
+    ends before a colon is a candidate, and ``resolve_tool_outputs_dir``, the
+    path law the join itself uses, turns each into its directory.
     """
-    project_outputs = Path(source_path).parent.parent / "tool-outputs"
-    low, high = _path_prefix_range(f"{project_outputs.as_posix()}/session-")
     directories: set[str] = set()
-    for (candidate_path,) in conn.execute(
-        "SELECT DISTINCT source_path FROM raw_sessions WHERE source_path >= ? AND source_path < ?",
-        (low, high),
-    ).fetchall():
-        wire_session_id, separator, _filename = str(candidate_path)[len(low) :].partition("/")
-        if not separator or not native_id.startswith(f"{wire_session_id}:"):
+    for index, character in enumerate(native_id):
+        if character != ":":
             continue
-        directory = resolve_tool_outputs_dir(source_path, wire_session_id)
+        directory = resolve_tool_outputs_dir(source_path, native_id[:index])
         if directory is not None:
             directories.add(directory.as_posix())
     found: set[str] = set()
-    for directory in sorted(directories):
-        found.update(_owned_scope_children(conn, directory, ownership))
+    for scope_directory in sorted(directories):
+        found.update(_owned_scope_children(conn, scope_directory, ownership))
     return found
 
 
