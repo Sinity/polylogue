@@ -1199,13 +1199,16 @@ class TestEmitDeleteMachineModeNoPrompt:
         archive.delete_sessions.assert_not_called()
         assert capsys.readouterr().out == ""
 
-    def test_partial_delete_error_reports_applied_counts_without_refusal_word(self) -> None:
-        """A partially applied delete is not rendered as a refusal.
+    def test_partially_applied_delete_is_a_typed_refusal_with_its_counts(self) -> None:
+        """A delete batch the daemon stopped after committing parts is not an ordinary refusal.
 
-        Anti-vacuity: delete the ``delete_partially_applied`` branch in
-        ``archive_query`` and the error falls through to ``daemon refused
-        delete``, dropping both applied counts.
+        The execute result is the daemon's batch state: ``failed`` with a
+        committed effect. Anti-vacuity: rendering it as ``daemon refused
+        delete`` drops the committed part and row counts and tells a client
+        the archive is untouched.
         """
+        from polylogue.cli.shared.helper_support import MutationPartiallyAppliedRefusal
+
         env = self._env(plain=True)
         with patch(
             "polylogue.cli.archive_query._submit_mutation_operation",
@@ -1218,19 +1221,70 @@ class TestEmitDeleteMachineModeNoPrompt:
                 },
                 {"status": "authorized", "authorization_refs": ["daemon-token"]},
                 OperationFailedError(
-                    "delete_partially_applied",
-                    "selection_changed_after_authorization",
-                    {"completed_chunks": 2, "affected_count": 512},
+                    "failed",
+                    None,
+                    {
+                        "outcome": "failed",
+                        "effect": "committed",
+                        "completed_chunks": 2,
+                        "affected_count": 512,
+                        "not_attempted": [2],
+                        "stop_reason": "refused",
+                    },
                 ),
             ],
         ):
-            with pytest.raises(click.ClickException, match="delete partially applied") as context:
+            with pytest.raises(MutationPartiallyAppliedRefusal) as context:
                 _emit_delete(env, ("s1", "s2"), params={"force": True, "dry_run": False})
 
-        message = str(context.value)
-        assert "completed_chunks=2" in message
-        assert "affected_count=512" in message
-        assert "refused" not in message
+        refusal = context.value
+        assert (refusal.completed_chunks, refusal.affected_count) == (2, 512)
+        assert refusal.not_attempted == (2,)
+        assert refusal.stop_reason == "refused"
+        assert refusal.operation == "mutation.session.delete.execute"
+
+    def test_partially_applied_delete_reaches_json_as_typed_details(self) -> None:
+        """``--format json`` carries the counts as fields, not prose."""
+        import json
+
+        import click as click_module
+
+        from polylogue.cli.machine_main import run_machine_entry
+        from polylogue.cli.shared.helper_support import MutationPartiallyAppliedRefusal
+
+        @click_module.command()
+        @click_module.option("--format", "output_format")
+        def partial(output_format: str | None) -> None:
+            del output_format
+            raise MutationPartiallyAppliedRefusal(
+                "partial",
+                operation="mutation.session.delete.execute",
+                completed_chunks=2,
+                affected_count=512,
+                not_attempted=(2,),
+                stop_reason="refused",
+            )
+
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with (
+            contextlib.redirect_stdout(out),
+            pytest.raises(SystemExit),
+            patch("sys.argv", ["polylogue", "--format", "json"]),
+        ):
+            run_machine_entry(partial, ["--format", "json"])
+
+        payload = json.loads(out.getvalue())
+        assert payload["code"] == "mutation_partially_applied"
+        assert payload["details"] == {
+            "operation": "mutation.session.delete.execute",
+            "completed_chunks": 2,
+            "affected_count": 512,
+            "not_attempted": [2],
+            "stop_reason": "refused",
+        }
 
     def test_confirmed_delete_uses_an_unbounded_daemon_wait(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

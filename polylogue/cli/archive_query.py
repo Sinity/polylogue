@@ -1630,13 +1630,12 @@ def _delete_refusal(exc: Exception, stage: str) -> click.ClickException:
             f"daemon is unavailable; it must {stage} the delete. Start one with `polylogued run`.",
             operation=operation,
         )
+    from polylogue.cli.shared.helper_support import partially_applied_refusal
+
+    partial = partially_applied_refusal(exc, operation)
+    if partial is not None:
+        return partial
     if isinstance(exc, OperationFailedError):
-        if exc.code == "delete_partially_applied":
-            return click.ClickException(
-                f"delete partially applied: {exc.detail}; "
-                f"completed_chunks={exc.data.get('completed_chunks')}; "
-                f"affected_count={exc.data.get('affected_count')}"
-            )
         return click.ClickException(f"daemon refused delete {stage} ({exc.code}): {exc.detail}")
     return click.ClickException(f"delete {stage} failed: {exc}")
 

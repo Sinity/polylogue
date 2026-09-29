@@ -2538,6 +2538,52 @@ def test_raw_frontier_integrity_snapshot_classifies_deferred_cursor_separately_f
     assert snapshot.overall_status == "healthy"
 
 
+def test_deferred_cursor_past_its_accepted_head_is_still_a_violation(tmp_path: Path) -> None:
+    """A deferred tail does not accept its prefix: offset 20 past head 10 is ahead.
+
+    Anti-vacuity: letting ``is_deferred`` skip the accepted-frontier
+    comparison reports this cursor as a healthy deferral and admits further
+    live ingestion past accepted material.
+    """
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "deferred.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-baseline",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-baseline",
+        accepted_raw_id="raw-baseline",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=20, deferred_end_offset=30)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "violated"
+    assert snapshot.cursor_ahead_count == 1
+    assert snapshot.cursor_authority_deferred_count == 0
+
+
 def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     """A hot file's deferred tail is a typed safe state, not a gate for the backlog.
 

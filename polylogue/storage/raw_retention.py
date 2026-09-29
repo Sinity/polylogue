@@ -1865,11 +1865,17 @@ def _check_cursor_ahead_of_accepted(
     for path, cursor in cursor_map.items():
         comparison_path = (cursor.canonical_source_path or path) if compare_canonical_paths else path
         cursor_offset = cursor.byte_offset
-        if cursor.is_deferred:
-            # A deferred cursor is the positive proof of a safe incomplete
-            # tail: the prefix is accepted, the captured range is recorded,
-            # and the quiet window resolves it. Counting it as a gap made
-            # every live host refuse its whole backlog while one file was hot.
+        if cursor.is_deferred and not any(
+            cursor_offset > head.accepted_frontier for head in byte_heads_by_path.get(comparison_path, ())
+        ):
+            # A deferred cursor whose committed offset stays within the
+            # accepted byte heads is a safe incomplete tail: the prefix is
+            # accepted, the captured range is recorded, and the quiet window
+            # resolves it. Counting it as a gap made every live host refuse
+            # its whole backlog while one file was hot. Its deferred range
+            # proves nothing about its prefix, though: a committed offset past
+            # an accepted head is the same violation as for any cursor, and
+            # falls through to that comparison.
             deferred_count += 1
             continue
         comparable_heads = byte_heads_by_path.get(comparison_path)

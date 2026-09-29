@@ -83,11 +83,16 @@ def run_machine_entry(
 ) -> None:
     """Run the CLI, emitting JSON machine errors when requested."""
     from polylogue.cli.operation_kernel import OperationUnavailableError
-    from polylogue.cli.shared.helper_support import DaemonRequiredError, OperationIndeterminateRefusal
+    from polylogue.cli.shared.helper_support import (
+        DaemonRequiredError,
+        MutationPartiallyAppliedRefusal,
+        OperationIndeterminateRefusal,
+    )
     from polylogue.cli.shared.machine_errors import (
         error_archive_writer_ownership,
         error_daemon_required,
         error_invalid_arguments,
+        error_mutation_partially_applied,
         error_operation_indeterminate,
         error_runtime,
         extract_command,
@@ -172,6 +177,19 @@ def run_machine_entry(
             operation=exc.operation,
             recovery=exc.recovery,
             request_id=exc.request_id,
+        ).emit(exit_code=exc.exit_code)
+    except MutationPartiallyAppliedRefusal as exc:
+        # Before ``ClickException``: ``runtime_error`` flattened the committed
+        # counts into prose, and a client could not tell a partial write from
+        # an ordinary refusal it may retry.
+        error_mutation_partially_applied(
+            exc.format_message(),
+            command=command,
+            operation=exc.operation,
+            completed_chunks=exc.completed_chunks,
+            affected_count=exc.affected_count,
+            not_attempted=exc.not_attempted,
+            stop_reason=exc.stop_reason,
         ).emit(exit_code=exc.exit_code)
     except OperationUnavailableError as exc:
         from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE

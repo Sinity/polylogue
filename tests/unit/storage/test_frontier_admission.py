@@ -536,6 +536,12 @@ def test_selected_cursor_ahead_refuses_alias_and_safe_deferred_tail(tmp_path: Pa
     assert str(path) in differently_spelled.source_paths
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=2, byte_offset=2, deferred_end_offset=3)
+    # A deferred range does not accept its prefix: committed offset 2 is past
+    # the accepted head (1), so the cursor is still ahead.
+    ahead_deferred = raw_frontier_blocked_selected_paths(tmp_path, (path,))
+    assert str(path) in ahead_deferred.source_paths
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=3, byte_offset=1, deferred_end_offset=3)
     safe = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert safe.unattributed_reason is None
     assert not safe.source_paths
