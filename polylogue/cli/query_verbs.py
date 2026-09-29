@@ -2217,21 +2217,31 @@ def analyze_verb(
     if show_portfolio:
         if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --portfolio` only supports terminal text, --format json, or markdown")
-        from polylogue.analysis.portfolio import render_portfolio_markdown, render_portfolio_plain
+        from polylogue.analysis.portfolio import portfolio_outcome, render_portfolio_markdown, render_portfolio_plain
         from polylogue.cli.shared.machine_errors import success
+        from polylogue.surfaces.outcome import outcome_exit_code
         from polylogue.surfaces.payloads import model_json_document
 
         spec = request.query_spec()
         portfolio = run_coroutine_sync(env.polylogue.portfolio_bundle(spec, limit=limit))
+        # One outcome for every format: a truncated or partly unprofiled scope
+        # is ``degraded`` and an empty one ``empty``, never a bare success.
+        outcome = portfolio_outcome(portfolio)
         if output_format == "json":
             payload = model_json_document(portfolio, exclude_none=True)
-            rendered_json = success({"portfolio": payload}).to_json()
-            click.echo(rendered_json)
-            return
-        rendered = (
-            render_portfolio_markdown(portfolio) if output_format == "markdown" else render_portfolio_plain(portfolio)
-        )
-        click.echo(rendered)
+            click.echo(success({"portfolio": payload, "outcome": outcome.to_dict()}).to_json())
+        else:
+            click.echo(
+                render_portfolio_markdown(portfolio)
+                if output_format == "markdown"
+                else render_portfolio_plain(portfolio)
+            )
+            outcome_line = render_outcome_line(outcome)
+            if outcome_line is not None:
+                click.echo(outcome_line, err=True)
+        exit_code = outcome_exit_code(outcome)
+        if exit_code:
+            raise SystemExit(exit_code)
         return
 
     if limit is not None:
