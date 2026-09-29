@@ -331,6 +331,13 @@ class ArchiveMessageRow:
     # ``message.stop_reason``). None means unreported/not-applicable, never a
     # guessed happy-path default (polylogue-cuxz.8).
     stop_reason: str | None = None
+    # Per-message usage as stored. ``None`` is "the provider reported no
+    # counter at this grain", distinct from a measured zero.
+    model_name: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 # The compact envelope projection is a subset of the canonical messages row.
@@ -3455,6 +3462,11 @@ def _row_to_archive_message(
         attachments=attachments,
         source_session_id=session_id,
         stop_reason=row["stop_reason"],
+        model_name=row["model_name"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
+        cache_read_tokens=row["cache_read_tokens"],
+        cache_write_tokens=row["cache_write_tokens"],
     )
 
 
