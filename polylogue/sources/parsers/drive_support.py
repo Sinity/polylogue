@@ -16,12 +16,13 @@ from polylogue.sources.parsers.drive_support_blocks import (
     viewport_block_payload,
 )
 from polylogue.sources.parsers.drive_support_text import (
+    TimestampBounds,
     chunk_timestamp,
     extract_text_from_chunk,
-    select_timestamp,
 )
 
 __all__ = [
+    "TimestampBounds",
     "_attachment_from_doc",
     "_collect_drive_docs",
     "attachment_block_payloads",
@@ -30,7 +31,6 @@ __all__ = [
     "collect_drive_docs",
     "extract_text_from_chunk",
     "parsed_blocks_from_meta",
-    "select_timestamp",
     "session_events_from_meta_blocks",
     "viewport_block_payload",
 ]
