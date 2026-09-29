@@ -174,7 +174,7 @@ def test_archive_reader_library_empty_page_past_the_end_claims_no_count(monkeypa
     Anti-vacuity: publishing ``offset + len(entries)`` as an exact total for
     an untruncated page reports ``total=100, total_is_exact=true`` here.
     """
-    rows = [(_attachment(index), f"title-{index}", "codex") for index in range(2)]
+    rows: list[tuple[object, str, str | None]] = [(_attachment(index), f"title-{index}", "codex") for index in range(2)]
 
     payload = _archive_reader_page(monkeypatch, rows, limit=10, offset=100)
 

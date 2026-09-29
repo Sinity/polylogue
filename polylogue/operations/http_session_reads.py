@@ -298,7 +298,7 @@ def execute_http_session_messages(
     )
     assert latest_envelope is not None
     placement = _semantic_placement(latest_envelope)
-    payload: dict[str, object] = {
+    response: dict[str, object] = {
         "session_id": latest_envelope.session_id,
         "messages": [
             _message_payload(
@@ -327,10 +327,10 @@ def execute_http_session_messages(
     }
     # Attributed last, so its elapsed time covers the resolve, the window
     # read, and the projection above rather than stopping before them.
-    payload["authority"] = serialize_authority(
+    response["authority"] = serialize_authority(
         authority_for_reader(archive, server_identity=server_identity, started_at=started_at)
     )
-    return payload
+    return response
 
 
 __all__ = ["HttpSessionProjectionAdapters", "execute_http_session_detail", "execute_http_session_messages"]
