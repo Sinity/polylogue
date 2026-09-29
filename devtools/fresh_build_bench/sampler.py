@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import sysconfig
 import threading
 import time
 from collections import Counter
@@ -76,7 +77,14 @@ class StackSampler:
         #: Without stacks the sampler only accounts per-thread CPU, which
         #: needs no ``sys._current_frames`` (a stop-the-world call on the
         #: free-threaded build) and is cheap enough to leave on for every run.
-        self.stacks = stacks
+        # Free-threaded frame chains can be torn down while this thread walks
+        # them. Keep CPU accounting, and record the unsupported profile request.
+        self.profile_refusal = (
+            "free_threaded_frame_snapshot_unavailable"
+            if (stacks and sysconfig.get_config_var("Py_GIL_DISABLED"))
+            else None
+        )
+        self.stacks = stacks and self.profile_refusal is None
         self._stop = threading.Event()
         self._wall: Counter[tuple[str, tuple[tuple[str, str, int], ...]]] = Counter()
         self._cpu: Counter[tuple[str, tuple[tuple[str, str, int], ...]]] = Counter()
@@ -177,6 +185,7 @@ class StackSampler:
             "process_cpu_ticks": _process_cpu_ticks(),
             "log_delivery": _log_delivery(),
             "stacks": stacks,
+            "profile_refusal": self.profile_refusal,
         }
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.out_path.with_suffix(".tmp")

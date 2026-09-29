@@ -2068,3 +2068,22 @@ def test_an_interrupted_receipt_skips_the_archive_census(tmp_path: Path, monkeyp
     assert receipt["qualified"] is False
     report.build_receipt(outcome="terminal", **arguments)
     assert len(entered) == 1
+
+
+def test_free_threaded_profile_refuses_frame_traversal_but_keeps_cpu_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools.fresh_build_bench import sampler as sampler_module
+
+    monkeypatch.setattr(sampler_module.sysconfig, "get_config_var", lambda name: 1)
+    monkeypatch.setattr(sampler_module.sys, "_current_frames", lambda: pytest.fail("unsafe live frame traversal"))
+    sampler = sampler_module.StackSampler(tmp_path / "stacks.json", interval_s=0.0, stacks=True)
+    waits = iter([False, True])
+    monkeypatch.setattr(sampler._stop, "wait", lambda timeout: next(waits))
+    sampler._run()
+    sampler.write()
+    document = json.loads(sampler.out_path.read_text())
+    assert document["profile_refusal"] == "free_threaded_frame_snapshot_unavailable"
+    assert document["ticks"] == 1
+    assert document["stacks"] == []
+    assert document["process_cpu_ticks"] is not None

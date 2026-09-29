@@ -9849,45 +9849,49 @@ def test_append_publication_does_not_hide_growth_after_planning(
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (3,)
 
 
-def test_append_budget_refusal_retains_retryable_raw_without_poisoning_source(
+@pytest.mark.parametrize("slow_phase", ["capture", "replay", "complete"])
+def test_append_overrun_finishes_started_plan_and_keeps_later_plans_backlog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     frozen_clock: Any,
+    slow_phase: str,
 ) -> None:
-    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
+    from polylogue.sources import revision_backfill
     from polylogue.sources.live import append_ingest
 
     path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="append-budget")
     before = processor._cursor.get_record(path)
     assert before is not None
-    original = append_ingest._write_append_raw_payload
+    if slow_phase == "capture":
+        module, name = append_ingest, "_write_append_raw_payload"
+    elif slow_phase == "replay":
+        module, name = revision_backfill, "parse_retained_raw_sessions"
+    else:
+        module, name = append_ingest, "_add_timing"
+    original = getattr(module, name)
 
-    def delayed_capture(*args: Any, **kwargs: Any) -> Any:
+    def delayed(*args: Any, **kwargs: Any) -> Any:
         result = original(*args, **kwargs)
-        frozen_clock.advance(31)
+        if slow_phase != "complete" or args[1] == "append.raw_and_index_write":
+            frozen_clock.advance(31)
         return result
 
-    monkeypatch.setattr(append_ingest, "_write_append_raw_payload", delayed_capture)
+    monkeypatch.setattr(module, name, delayed)
     token = enter_write_hold("watcher.live_ingest.append", 30)
     try:
-        with pytest.raises(WriteHoldBudgetError) as caught:
-            ingest_append_plans(cast(Any, owner), [plan])
-        assert caught.value.checkpoint == "append_parse"
+        # Offering the same plan twice proves the later plan was not attempted.
+        result = ingest_append_plans(cast(Any, owner), [plan, plan])
+        assert result.succeeded == [plan]
+        assert result.failed == []
+        assert result.write_hold_exhausted
+        assert processor._record_append_cursor(plan) is True
     finally:
         exit_write_hold(token)
     after = processor._cursor.get_record(path)
     assert after is not None
-    assert after.byte_offset == before.byte_offset
+    assert after.byte_offset == plan.last_complete_newline > before.byte_offset
     assert after.failure_count == 0
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT parse_error FROM raw_sessions WHERE source_path = ? AND source_index = -1",
-            (str(path),),
-        ).fetchall() == [(None,)]
-
-    monkeypatch.setattr(append_ingest, "_write_append_raw_payload", original)
-    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
-    assert processor._record_append_cursor(plan) is True
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)
 

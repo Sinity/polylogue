@@ -1011,6 +1011,8 @@ def build_receipt(
         summary = summarise(document, top=25, thread_filter=None)
         writer_summary = summarise(document, top=25, thread_filter="polylogue-writer:watcher.live_ingest.full")
         receipt["profile"] = {
+            "outcome": "refused" if document.get("profile_refusal") else "ok",
+            "reason": document.get("profile_refusal"),
             "sampler_overhead_s": summary["sampler_overhead_s"],
             "threads_by_cpu_s": summary["threads_by_cpu_s"],
             "leaf_kind_cpu_s": summary["leaf_kind_cpu_s"],

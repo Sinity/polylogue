@@ -1349,6 +1349,7 @@ class LiveBatchProcessor:
         cursor_records = self._cursor.get_records(paths)
         append_file_count = 0
         pending_append_plans: list[_AppendPlan] = []
+        append_write_hold_exhausted = False
         full_paths: list[Path] = []
         deferred_paths: list[Path] = []
         preparation_deferred_paths: set[Path] = set()
@@ -1360,13 +1361,14 @@ class LiveBatchProcessor:
         updated_session_touches: list[tuple[str, str]] = []
 
         async def flush_append_plans() -> None:
+            nonlocal append_write_hold_exhausted
             nonlocal convergence_time_s
             nonlocal cursor_fingerprint_read_bytes
             nonlocal ingest_worker_count_max
             nonlocal parse_time_s
             nonlocal pending_append_plans
             nonlocal stale_cursor_write_count
-            if not pending_append_plans:
+            if not pending_append_plans or append_write_hold_exhausted:
                 return
             plans = pending_append_plans
             pending_append_plans = []
@@ -1481,8 +1483,19 @@ class LiveBatchProcessor:
                     deferred_end_offset=plan.last_complete_newline,
                 )
                 deferred_paths.append(plan.path)
+            if append_result.write_hold_exhausted:
+                append_write_hold_exhausted = True
+                emit(
+                    "live.ingest.write_hold_spent_after_commit",
+                    level=WARNING,
+                    outcome="degraded",
+                    source_id=plans[0].source_name,
+                    reason="cursors_recorded_before_unit_end",
+                )
 
         for path in paths:
+            if append_write_hold_exhausted:
+                break
             if authorization is not None and authorization.force_full_ingest:
                 full_paths.append(path)
                 continue
@@ -1554,7 +1567,7 @@ class LiveBatchProcessor:
         # individually "in budget" sum to an unbounded total hold. The first
         # group across every source always completes regardless of budget
         # (forward-progress guarantee); only later groups are ever skipped.
-        full_ingest_time_budget_exceeded = False
+        full_ingest_time_budget_exceeded = append_write_hold_exhausted
         processed_any_full_group = False
         for source_name, grouped_paths in by_source.items():
             if is_fully_degraded():
