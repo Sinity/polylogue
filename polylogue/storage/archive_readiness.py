@@ -45,10 +45,9 @@ def lost_durable_tiers(archive_root: Path) -> tuple[ArchiveTier, ...]:
 
     Bootstrap creates every durable tier together under one pending intent,
     and opening the archive refuses a durable tier missing beside a surviving
-    one rather than recreating it. A fresh root (no durable tier), a pending
-    bootstrap intent, and an ``audit.db`` whose adoption receipt lets startup
-    republish it are all recoverable by opening the archive, so none of them
-    is lost.
+    one rather than recreating it. A fresh root (no durable tier) and a
+    pending bootstrap intent are recoverable by opening the archive, so
+    neither is lost.
     """
     ledger = archive_root / ".maintenance-state" / "durable-change-trains"
     if (ledger / ".bootstrap.pending").is_file():
@@ -56,8 +55,6 @@ def lost_durable_tiers(archive_root: Path) -> tuple[ArchiveTier, ...]:
     missing = tuple(tier for tier in _DURABLE_TIERS if not (archive_root / f"{tier.value}.db").exists())
     if len(missing) == len(_DURABLE_TIERS):
         return ()
-    if ArchiveTier.AUDIT in missing and (ledger / "audit-adoption.json").is_file():
-        missing = tuple(tier for tier in missing if tier is not ArchiveTier.AUDIT)
     return missing
 
 
