@@ -277,3 +277,189 @@ def test_stalled_ingest_pool_terminates_its_running_workers(
     assert worker_processes, "the pool must have started at least one real worker"
     still_alive = [process.pid for process in worker_processes if process.is_alive()]
     assert still_alive == []
+
+
+def _raw_records(count: int) -> list[RawSessionRecord]:
+    return [
+        RawSessionRecord(
+            raw_id=f"raw-{index}",
+            source_name="codex",
+            source_path=f"/tmp/raw-{index}.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+        for index in range(1, count + 1)
+    ]
+
+
+def _completed(result: IngestRecordResult) -> Future[IngestRecordResult]:
+    future: Future[IngestRecordResult] = Future()
+    future.set_result(result)
+    return future
+
+
+def test_submission_fault_after_a_delivered_result_neither_replays_nor_runs_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One pool result is delivered, then every later submission raises.
+
+    The retired coordinator caught the ``TypeError`` around the whole loop and
+    replayed the chunk in-process: ``pool:1, inline:1, inline:2, inline:3``,
+    four deliveries for three raws, with work that asked for process
+    isolation run in the coordinator. Anti-vacuity: restoring that fallback
+    makes ``inline_runs`` non-empty and delivers ``raw-1`` twice.
+    """
+    inline_runs: list[str] = []
+    submitted: list[str] = []
+
+    class FaultAfterFirstSubmit:
+        def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
+            del fn, request
+            if submitted:
+                raise TypeError("cannot pickle the coordinator's argument")
+            submitted.append(raw_record.raw_id)
+            return _completed(IngestRecordResult(raw_id=raw_record.raw_id, outcome_code="success"))
+
+        def shutdown(self, **_kwargs: object) -> None:
+            return None
+
+    def record_inline(raw_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        inline_runs.append(raw_record.raw_id)
+        return IngestRecordResult(raw_id=raw_record.raw_id)
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", lambda *, max_workers: FaultAfterFirstSubmit())
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", record_inline)
+    progress = ingest_batch_core._WorkerProgress()
+
+    results = list(
+        _iter_ingest_results_sync(
+            _raw_records(3),
+            request=_worker_request(),
+            worker_count=1,
+            progress=progress,
+            force_process_pool=True,
+        )
+    )
+
+    assert inline_runs == []
+    assert [result.raw_id for result in results] == ["raw-1", "raw-2", "raw-3"]
+    assert results[0].outcome_code == "success"
+    for refused in results[1:]:
+        assert refused.outcome_code == "transient_error"
+        assert refused.retryable is True
+        assert refused.evidence_ref == "worker:submit:TypeError"
+    assert progress.completed_raw_count == 3
+    assert progress.in_flight_raw_ids == []
+
+
+def test_a_dead_worker_is_retryable_and_undelivered_raws_run_on_a_fresh_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker death fails the raws it held, retryably, and nothing else.
+
+    Every future in flight on a broken pool raises ``BrokenProcessPool``, not
+    only the one whose worker died, so it is not a parser defect. Raws the
+    broken pool never accepted are proven undelivered and run on a new pool.
+    Anti-vacuity: classifying the death as a parser defect makes ``raw-1``
+    non-retryable; refusing instead of replacing the pool fails ``raw-2``.
+    """
+    from concurrent.futures.process import BrokenProcessPool
+
+    pools: list[str] = []
+    inline_runs: list[str] = []
+
+    class BrokenPool:
+        def __init__(self) -> None:
+            self.accepted = False
+
+        def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
+            del fn, request
+            if self.accepted:
+                raise BrokenProcessPool("a child process terminated abruptly")
+            self.accepted = True
+            future: Future[IngestRecordResult] = Future()
+            future.set_exception(BrokenProcessPool("a child process terminated abruptly"))
+            return future
+
+        def shutdown(self, **_kwargs: object) -> None:
+            pools.append("broken-shutdown")
+
+    class HealthyPool:
+        def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
+            del fn, request
+            return _completed(IngestRecordResult(raw_id=raw_record.raw_id, outcome_code="success"))
+
+        def shutdown(self, **_kwargs: object) -> None:
+            pools.append("healthy-shutdown")
+
+    def factory(*, max_workers: int) -> object:
+        pools.append("start")
+        return BrokenPool() if pools.count("start") == 1 else HealthyPool()
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", factory)
+    monkeypatch.setattr(
+        ingest_batch_core, "ingest_record", lambda raw_record, *_a, **_k: inline_runs.append(raw_record.raw_id)
+    )
+
+    results = list(
+        _iter_ingest_results_sync(
+            _raw_records(3),
+            request=_worker_request(),
+            worker_count=1,
+            force_process_pool=True,
+        )
+    )
+
+    assert inline_runs == []
+    assert [result.raw_id for result in results] == ["raw-1", "raw-2", "raw-3"]
+    assert results[0].outcome_code == "transient_error"
+    assert results[0].retryable is True
+    assert results[0].evidence_ref == "worker:BrokenProcessPool"
+    assert [result.outcome_code for result in results[1:]] == ["success", "success"]
+    assert pools == ["start", "start", "broken-shutdown", "healthy-shutdown"]
+
+
+def test_a_stalled_pool_refuses_the_raws_it_never_submitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Terminating a stalled pool must not drop the chunk's unsubmitted raws.
+
+    Anti-vacuity: without ``refuse_remaining`` on the stall path, ``raw-3``
+    (beyond the two in flight) yields no result at all and silently leaves
+    the pass.
+    """
+    clock = iter((0.0, 0.0, 301.0))
+    submitted: list[str] = []
+
+    class StalledPool:
+        def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
+            del fn, request
+            submitted.append(raw_record.raw_id)
+            return Future()
+
+        def shutdown(self, **_kwargs: object) -> None:
+            return None
+
+    def fake_wait(
+        futures: object, *, timeout: float | None = None, return_when: object | None = None
+    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
+        del timeout, return_when
+        return set(), set(futures) if isinstance(futures, tuple) else set()
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", lambda *, max_workers: StalledPool())
+    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.time.monotonic", lambda: next(clock))
+    progress = ingest_batch_core._WorkerProgress()
+
+    results = list(
+        _iter_ingest_results_sync(
+            _raw_records(3),
+            request=_worker_request(),
+            worker_count=2,
+            progress=progress,
+        )
+    )
+
+    assert submitted == ["raw-1", "raw-2"]
+    assert [result.raw_id for result in results] == ["raw-1", "raw-2", "raw-3"]
+    assert all(result.retryable is True for result in results)
+    assert all(result.evidence_ref == "worker:progress_deadline" for result in results)
+    assert progress.in_flight_raw_ids == []
