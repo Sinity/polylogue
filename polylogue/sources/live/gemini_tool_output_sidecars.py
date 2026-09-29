@@ -183,7 +183,9 @@ def _read_text_from_path(
     def read() -> str:
         with path.open("rb") as handle:
             before = os.fstat(handle.fileno())
-            payload = handle.read()
+            # One byte past the enumerated size proves growth without
+            # reading whatever a still-running writer appended.
+            payload = handle.read(expected_size + 1)
             after = os.fstat(handle.fileno())
         if (
             len(payload) != expected_size

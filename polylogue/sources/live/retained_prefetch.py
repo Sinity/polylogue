@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Executor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from typing import Any
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import is_jsonl_source_path
-from polylogue.sources.prepared_jsonl import PreparedJsonl
+from polylogue.sources.prepared_jsonl import PreparedJsonl, VerificationCancelledError
 from polylogue.sources.revision_backfill import (
     RetainedPreparationRetryableError,
     prepare_retained_jsonl_artifact,
@@ -79,6 +80,7 @@ def prepare_live_retained_raws(
     directory: Path,
     worker_executor: Executor,
     index_db_path: Path | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> dict[str, PreparedLiveRetainedRaw]:
     """Over-approximate existing members needed by a pending live path.
 
@@ -88,6 +90,9 @@ def prepare_live_retained_raws(
     prewarm that gave up at a wall-clock deadline would discard progressing
     work and leave the writer to redo it. ``index_db_path`` names the index the writer publishes
     into, when it is not the snapshot's (a cold build's candidate).
+    ``stop`` is polled before each member and during its verification; once
+    it returns true every member sealed so far is discarded and nothing is
+    returned, since a cancelled warm publishes nothing.
     """
     raw_ids: set[str] = set()
     for key in logical_keys:
@@ -104,6 +109,8 @@ def prepare_live_retained_raws(
     prepared: dict[str, PreparedLiveRetainedRaw] = {}
     try:
         for raw_id in sorted(raw_ids):
+            if stop is not None and stop():
+                raise VerificationCancelledError("retained prewarm cancelled")
             descriptor = archive.raw_revision_descriptor(raw_id)
             provider, blob_hash, source_path, kind, _size = descriptor
             if not retained_member_prepares_as_json(archive, source_path, blob_hash):
@@ -139,9 +146,17 @@ def prepare_live_retained_raws(
                 # classification; only a sealed session carrier is reused.
                 artifact.discard()
                 continue
-            artifact.verify_files(full=True)
+            try:
+                artifact.verify_files(full=True, stop=stop)
+            except BaseException:
+                artifact.discard()
+                raise
             prepared[raw_id] = PreparedLiveRetainedRaw(raw_id, descriptor, native_id, fallback_timestamp, artifact)
         return prepared
+    except VerificationCancelledError:
+        for member in prepared.values():
+            member.discard()
+        return {}
     except BaseException:
         for member in prepared.values():
             member.discard()

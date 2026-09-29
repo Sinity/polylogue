@@ -400,10 +400,13 @@ def _bind_retained_enrichment(
 ) -> None:
     """Bind a retained write to its enrichment evidence, if still current."""
     from polylogue.sources.revision_backfill import (
+        provider_binds_enrichment,
         record_session_enrichment_binding,
         session_enrichment_evidence_key,
     )
 
+    if not provider_binds_enrichment(session.source_name):
+        return
     source_conn = store._ensure_source_conn()
     row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
     native = store._conn.execute("SELECT native_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()

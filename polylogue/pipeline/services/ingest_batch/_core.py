@@ -1545,12 +1545,14 @@ def _bind_session_enrichment(
     carried key, or with evidence that moved since, nothing is bound and
     inspection re-derives the session on the retained route.
     """
-    if source_conn is None or not payload.raw_id:
-        return
     from polylogue.sources.revision_backfill import (
+        provider_binds_enrichment,
         record_session_enrichment_binding,
         session_enrichment_evidence_key,
     )
+
+    if source_conn is None or not payload.raw_id or not provider_binds_enrichment(payload.parsed_session.source_name):
+        return
 
     row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (payload.raw_id,)).fetchone()
     native = conn.execute("SELECT native_id FROM sessions WHERE session_id = ?", (payload.session_id,)).fetchone()

@@ -126,6 +126,52 @@ def test_prewarm_seals_existing_retained_members_outside_the_writer(tmp_path: Pa
         stage.shutdown()
 
 
+def test_retained_prewarm_stops_between_members_and_during_verification(tmp_path: Path) -> None:
+    """A cancelled warm seals no retained member and leaves no carrier behind.
+
+    Anti-vacuity: without the ``stop`` poll before each member the first
+    cancelled call returns the prior raw's carrier; without the discard on a
+    cancelled verification the second leaves its sealed files on disk.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from polylogue.core.identity_law import session_id as archive_session_id
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.sources.live.retained_prefetch import prepare_live_retained_raws
+
+    source = tmp_path / "sessions" / "stopped.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(_codex_lines("stopped-session", (("m0", "first draft"),)))
+    archive_root = tmp_path / "archive"
+    _ingest(archive_root, source)
+    logical_key = archive_session_id(origin_from_provider(Provider.CODEX).value, "stopped-session")
+    polls: list[bool] = []
+
+    def stop_after_first_poll() -> bool:
+        polls.append(True)
+        return len(polls) > 1
+
+    with ThreadPoolExecutor(max_workers=1) as executor, open_operation_read(archive_root) as pinned:
+        for name, stop in (("ready", None), ("before", lambda: True), ("verifying", stop_after_first_poll)):
+            directory = tmp_path / "retained" / name
+            prepared = prepare_live_retained_raws(
+                pinned.archive,
+                logical_keys={logical_key},
+                current_raw_id="not-a-retained-raw",
+                directory=directory,
+                worker_executor=executor,
+                stop=stop,
+            )
+            if stop is None:
+                assert len(prepared) == 1
+                for member in prepared.values():
+                    member.discard()
+                continue
+            assert prepared == {}
+            assert not directory.exists() or not any(path.is_file() for path in directory.rglob("*"))
+    assert len(polls) >= 2
+
+
 def test_live_claude_code_intake_uses_retained_index_titles_parsed_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -578,6 +624,43 @@ def test_session_index_dependents_are_paged_not_listed(tmp_path: Path, monkeypat
     while page := discovery._dependents_selected(None, _Adapter(), 2):
         pages.append(page)
     assert pages == [("t0", "t1"), ("t2", "t3")]
+
+
+def test_a_revised_session_index_restarts_its_queued_project_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One scan per project, restarted when the project's index arrives again.
+
+    Anti-vacuity: appending a second scan serves the project twice (and the
+    queue grows with every index revision); keeping the first scan's cursor
+    skips transcripts it served against the older index.
+    """
+    from polylogue.operations import intake_adapters
+
+    source_db = tmp_path / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE raw_sessions (raw_id TEXT, source_path TEXT)")
+        conn.execute("INSERT INTO raw_sessions VALUES ('index', '/p/proj/sessions-index.json')")
+        conn.executemany("INSERT INTO raw_sessions VALUES (?, ?)", [(f"t{n}", f"/p/proj/s{n}.jsonl") for n in range(3)])
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.connection_profile.open_readonly_connection",
+        lambda path, **_kwargs: sqlite3.connect(path),
+    )
+
+    class _Adapter:
+        def inspect(self, _frame: object, keys: tuple[str, ...]) -> dict[str, str]:
+            return dict.fromkeys(keys, "stale")
+
+    discovery = intake_adapters.RawMaterializationDiscovery(tmp_path)
+    discovery._queue_evidence_dependents(["index"])
+    assert discovery._dependents_selected(None, _Adapter(), 2) == ("t0", "t1")
+    discovery._queue_evidence_dependents(["index"])
+    assert len(discovery._evidence_projects) == 1
+
+    pages = []
+    while page := discovery._dependents_selected(None, _Adapter(), 2):
+        pages.append(page)
+    assert pages == [("t0", "t1"), ("t2",)]
 
 
 def test_session_index_dependents_rotate_with_the_fair_lanes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

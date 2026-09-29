@@ -1431,10 +1431,14 @@ class _ScratchStringSet(MutableSet[str]):
         )
 
     def __iter__(self) -> Iterator[str]:
-        for (value,) in self.conn.execute(
+        cursor = self.conn.execute(
             "SELECT value FROM scratch_string_set WHERE set_id = ? ORDER BY value", (self.set_id,)
-        ).fetchall():
-            yield str(value)
+        )
+        try:
+            for (value,) in cursor:
+                yield str(value)
+        finally:
+            cursor.close()
 
     def __len__(self) -> int:
         return int(

@@ -1541,8 +1541,16 @@ class RawMaterializationDiscovery:
                 "AND source_path LIKE '%/sessions-index.json'",
                 tuple(arrived),
             ).fetchall()
-        for project in dict.fromkeys(str(index_path).rsplit("/", 1)[0] for (index_path,) in indexes):
-            self._evidence_projects.append((project, "", -1))
+        arrived_projects = dict.fromkeys(str(index_path).rsplit("/", 1)[0] for (index_path,) in indexes)
+        if not arrived_projects:
+            return
+        # A project already queued restarts from its first transcript: the
+        # ones its scan already served were inspected against the older
+        # index. One scan per project keeps the queue bounded by projects.
+        pending = [entry for entry in self._evidence_projects if entry[0] not in arrived_projects]
+        self._evidence_projects.clear()
+        self._evidence_projects.extend(pending)
+        self._evidence_projects.extend((project, "", -1) for project in arrived_projects)
 
     def _sweep_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         # At most one released page is skipped per call, so a stalled head

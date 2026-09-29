@@ -1244,6 +1244,7 @@ class LiveParseStage:
                             directory=result.attempt_directory / "retained",
                             worker_executor=self._executor,
                             index_db_path=_publication_index_path(Path(archive.archive_root)),
+                            stop=None if cancelled is None else cancelled.is_set,
                         )
                 return replace(result, prepared_writes=tuple(writes)), frozenset(session_ids), retained
             except Exception as exc:

@@ -1022,6 +1022,11 @@ def enrichment_dependency_digest(
 _SESSION_EVIDENCE_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
 
 
+def provider_binds_enrichment(provider: Provider) -> bool:
+    """Whether sessions of ``provider`` carry a late-arriving enrichment binding."""
+    return provider in _SESSION_EVIDENCE_PROVIDERS
+
+
 def _evidence_json(value: object) -> object:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
@@ -5525,8 +5530,8 @@ def enrich_sessions_from_archive(
     return RetainedSessionEnricher(
         provider,
         source_path=source_path,
-        index_conn=getattr(archive, "index_connection", None),
-        source_conn=getattr(archive, "source_connection", None),
+        index_conn=archive.index_connection,
+        source_conn=archive.source_connection,
         blob_root=Path(archive.archive_root) / "blob",
     ).enrich_all(sessions)
 

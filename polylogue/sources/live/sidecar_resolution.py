@@ -30,7 +30,7 @@ saw -- a file that was never acquired is absent from both.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +57,10 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.tier_access import TierRefusal, open_tier_reader
 
 logger = get_logger(__name__)
+
+#: One retained revision of a sibling transcript: blob hash, revision kind, blob
+#: size, append start and end offsets, raw id, recorded predecessor raw id.
+_RevisionRow = tuple[str, str, int, int | None, int | None, str, str | None]
 
 __all__ = [
     "FilesystemSidecarResolver",
@@ -267,7 +271,7 @@ class RetainedSidecarResolver:
             (root_path.as_posix(), low, high),
         ).fetchall()
         own = path.as_posix()
-        revisions: dict[str, list[tuple[str, str, int, int | None, int | None, str, str | None]]] = {}
+        revisions: dict[str, list[_RevisionRow]] = {}
         for (
             candidate_path,
             blob_hash,
@@ -313,22 +317,22 @@ class RetainedSidecarResolver:
             # append of the same revision (``A -> A+X -> B -> A``) predates
             # the current ``A`` and is not part of it.
             last_position = max(index for index, row in enumerate(candidate_rows) if row is baseline)
-            appends = [
-                (index, row) for index, row in enumerate(candidate_rows) if row[1] == "append" and row[3] is not None
-            ]
+            # Appends indexed by recorded predecessor, so each step reads only
+            # the rows naming the chain's last raw: a file grown through
+            # thousands of appends is walked in linear time.
+            appends_by_predecessor: dict[str, list[tuple[int, _RevisionRow]]] = {}
+            for index, row in enumerate(candidate_rows):
+                if row[1] == "append" and row[3] is not None and row[6] is not None:
+                    appends_by_predecessor.setdefault(row[6], []).append((index, row))
             while True:
-                steps = {
+                steps = [
                     (index, row)
-                    for index, row in appends
-                    if index > last_position
-                    and row[6] == last_raw_id
-                    and row[3] == end
-                    and row[4] is not None
-                    and row[4] > end
-                }
+                    for index, row in appends_by_predecessor.get(last_raw_id, ())
+                    if index > last_position and row[3] == end and row[4] is not None and row[4] > end
+                ]
                 if len(steps) != 1:
                     break
-                last_position, step = next(iter(steps))
+                last_position, step = steps[0]
                 blob_hashes.append(step[0])
                 assert step[4] is not None
                 end = step[4]
@@ -336,7 +340,7 @@ class RetainedSidecarResolver:
             siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
         return tuple(siblings)
 
-    def _records_from_blobs(self, blob_hashes: list[str]):  # type: ignore[no-untyped-def]
+    def _records_from_blobs(self, blob_hashes: list[str]) -> Callable[[], Iterator[object]]:
         def open_records() -> Iterator[object]:
             for blob_hash in blob_hashes:
                 yield from self._records_from_blob(blob_hash)()
@@ -370,7 +374,7 @@ class RetainedSidecarResolver:
 
         return read
 
-    def _records_from_blob(self, blob_hash: str):  # type: ignore[no-untyped-def]
+    def _records_from_blob(self, blob_hash: str) -> Callable[[], Iterator[object]]:
         def open_records() -> Iterator[object]:
             with self._blob_path(blob_hash).open("rb") as handle:
                 yield from iter_jsonl_records(lambda: iter(handle))
