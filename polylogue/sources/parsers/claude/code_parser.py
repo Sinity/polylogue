@@ -2053,6 +2053,9 @@ class _SessionAccumulator:
     fresh_task_prompt_head: bool = False
     saw_plain_user_head: bool = False
     cwds: set[str] = field(default_factory=set)
+    # ``relocatedCwd`` values in record order. A relocation corrects the cwd
+    # stamped on earlier records, so it leads ``working_directories``.
+    relocated_cwds: list[str] = field(default_factory=list)
     models: set[str] = field(default_factory=set)
     message_position: int = 0
     background_notifications: (
@@ -2321,7 +2324,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                 # path (below), which this one never does.
                 relocated_cwd = _string_field(item, "relocatedCwd")
                 if relocated_cwd:
-                    acc.cwds.add(relocated_cwd)
+                    acc.relocated_cwds.append(relocated_cwd)
             elif record_type == "fork-context-ref":
                 # The generic evidence event below keeps the raw assertion;
                 # these two fields are what lineage actually consumes, and
@@ -2661,6 +2664,30 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     if isinstance(model_name, str) and model_name != _SYNTHETIC_MODEL_PLACEHOLDER:
         acc.models.add(model_name)
     return True
+
+
+def order_working_directories(cwds: Iterable[str], relocated_cwds: Sequence[str]) -> list[str]:
+    """Relocated cwds first, latest relocation first, then the rest sorted.
+
+    ``relocated_cwds`` is in record order. Resume and cwd display read the
+    first entry. A relocation corrects the cwd stamped on earlier records, so
+    the stale original cannot lead it, and no later ordinary record displaces
+    it either. Chunk merging applies the same rule, so a session composed
+    from several parses orders its directories as one parse would.
+    """
+    relocated = list(dict.fromkeys(reversed(relocated_cwds)))
+    return [*relocated, *sorted(set(cwds).difference(relocated))]
+
+
+def relocated_cwds_of(events: Iterable[ParsedSessionEvent]) -> list[str]:
+    """``relocatedCwd`` values carried by ``claude_session_relocated`` events, in order."""
+    return [
+        cwd
+        for event in events
+        if event.event_type == "claude_session_relocated"
+        and isinstance(cwd := event.payload.get("relocated_cwd"), str)
+        and cwd
+    ]
 
 
 def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
@@ -3031,7 +3058,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         reported_cost_usd=acc.total_cost if acc.saw_cost_field else None,
         reported_duration_ms=acc.total_duration if acc.saw_duration_field else None,
         models_used=sorted(acc.models),
-        working_directories=sorted(acc.cwds),
+        working_directories=order_working_directories(acc.cwds, acc.relocated_cwds),
         git_branch=acc.git_branch_value,
         team_name=acc.team_name_value,
         display_name=acc.session_slug_value,

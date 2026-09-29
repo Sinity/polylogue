@@ -23,7 +23,8 @@ def render_blocks_markdown(blocks: Sequence[RenderableBlock]) -> str:
     - ``tool_use``: tool header with name and input summary
     - ``tool_result``: code-fenced output
     - ``code``: language-tagged code fence
-    - ``image``/``document``/``file``: reference with metadata
+    - ``image``/``document``/``file``: reference with metadata, then any
+      carried body, fenced
     """
     parts: list[str] = []
     for block in blocks:
@@ -79,7 +80,22 @@ def _render_media_markdown(block: RenderableBlock) -> str:
         parts[0] = f"[{name}]({url})"
     if mime:
         parts.append(f"({mime})")
-    return " ".join(parts)
+    header = " ".join(parts)
+    body = _strip_text(block.text)
+    if not body:
+        return header
+    # A carried document body (a project file, a quoted page) is fenced so
+    # its own headings and lists cannot restructure the transcript around it.
+    fence = "`" * max(3, _longest_backtick_run(body) + 1)
+    return f"{header}\n\n{fence}\n{body}\n{fence}"
+
+
+def _longest_backtick_run(text: str) -> int:
+    longest = current = 0
+    for char in text:
+        current = current + 1 if char == "`" else 0
+        longest = max(longest, current)
+    return longest
 
 
 def _render_text_block_markdown(block: RenderableBlock) -> str:
@@ -210,6 +226,9 @@ def _render_media_html(block: RenderableBlock) -> str:
         parts.append(f'<span class="media-name">{name}</span>')
     if mime:
         parts.append(f'<span class="media-mime">{mime}</span>')
+    body = _strip_text(block.text)
+    if body:
+        parts.append(f'<pre class="media-text">{escape(body)}</pre>')
     parts.append("</div>")
     return "".join(parts)
 
@@ -319,7 +338,9 @@ def _render_media_plaintext(block: RenderableBlock) -> str:
         parts.append(block.url)
     if block.mime_type:
         parts.append(f"({block.mime_type})")
-    return " ".join(parts)
+    header = " ".join(parts)
+    body = _strip_text(block.text)
+    return f"{header}\n{body}" if body else header
 
 
 _PLAIN_BLOCK_RENDERERS: dict[str, Callable[[RenderableBlock], str]] = {

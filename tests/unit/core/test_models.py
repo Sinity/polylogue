@@ -369,6 +369,7 @@ class TestMessageFromRecord:
                 "tool_result_outcome_unknown_reason": None,
                 "media_type": None,
                 "metadata": {"path": "/workspace/polylogue/README.md"},
+                "name": None,
                 "semantic_type": "file_read",
                 "signature": None,
             }

@@ -254,7 +254,7 @@ def test_claude_project_export_is_detected_and_dispatched_from_parse_ai() -> Non
         MaterialOrigin.RUNTIME_CONTEXT,
         MaterialOrigin.RUNTIME_CONTEXT,
     ]
-    assert session.messages[1].blocks[0].metadata == {"doc_uuid": "doc-b", "filename": "schema-notes.md"}
+    assert session.messages[1].blocks[0].metadata == {"doc_uuid": "doc-b", "name": "schema-notes.md"}
     assert session.active_leaf_message_provider_id == "doc:doc-a"
     assert session.messages[-1].is_active_leaf is True
 
@@ -262,6 +262,48 @@ def test_claude_project_export_is_detected_and_dispatched_from_parse_ai() -> Non
     assert len(metadata_events) == 1
     assert metadata_events[0].payload["document_count"] == 2
     assert metadata_events[0].payload["is_starter_project"] is False
+
+
+def test_claude_project_documents_render_body_and_file_name_after_persistence(tmp_path: Path) -> None:
+    """A saved project document reads back as its file name and its body.
+
+    Anti-vacuity: before ``blocks.name`` the file name never left the
+    parser's block metadata, and the media renderers dropped the body, so a
+    stored document rendered as ``[document]`` in every format.
+    """
+    from polylogue.archive.hydration import archive_envelope_to_session
+    from polylogue.rendering.block_models import coerce_renderable_blocks
+    from polylogue.rendering.blocks import render_blocks_plaintext
+    from polylogue.rendering.core import format_session_markdown
+    from polylogue.rendering.renderers.html_messages import build_session_html_messages
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    payload = _project_export_payload()
+    payload["docs"] = [{"uuid": "doc-a", "filename": "a.md", "content": "body <b>one</b>"}]
+    parsed = parse_ai(payload, "fallback")
+
+    with ArchiveStore(tmp_path / "archive") as archive:
+        session_id = write_index_session(archive, parsed)
+        session = archive_envelope_to_session(archive.read_session(session_id))
+
+    [document] = [
+        message for message in session.messages if any(block.get("type") == "document" for block in message.blocks)
+    ]
+    assert document.blocks[0].get("name") == "a.md"
+    markdown = format_session_markdown(session)
+    [html] = [
+        rendered.html_content
+        for rendered in build_session_html_messages(session, render_html=lambda text: text)
+        if rendered.id == str(document.id)
+    ]
+    plaintext = render_blocks_plaintext(coerce_renderable_blocks(document.blocks))
+
+    assert "[a.md]\n\n```\nbody <b>one</b>\n```" in markdown
+    assert markdown.count("body <b>one</b>") == 1
+    assert '<span class="media-name">a.md</span>' in html
+    assert '<pre class="media-text">body &lt;b&gt;one&lt;/b&gt;</pre>' in html
+    assert plaintext == "a.md\nbody <b>one</b>"
 
 
 def test_claude_project_reimport_is_idempotent_on_project_uuid() -> None:

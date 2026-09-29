@@ -266,6 +266,18 @@ def _resource_id(resource_attrs: dict[str, object]) -> str:
     return f"resource-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
 
 
+def _session_identity(resource_id: str, kind: str, group_identity: str) -> str:
+    """Join a session's resource, grouping kind and group into one native id.
+
+    ``service.name`` and conversation ids are free text and may themselves
+    contain ``:``. Each component escapes ``%`` and ``:`` before the join, so
+    service ``svc:conversation`` with conversation ``x`` and service ``svc``
+    with conversation ``conversation:x`` stay two sessions. A component
+    without either character keeps its plain spelling.
+    """
+    return ":".join(part.replace("%", "%25").replace(":", "%3A") for part in (resource_id, kind, group_identity))
+
+
 def _iter_spans(payload: dict[str, object]) -> Iterable[tuple[str, dict[str, object], str | None]]:
     resource_spans = payload.get("resourceSpans", payload.get("resource_spans"))
     if not isinstance(resource_spans, list):
@@ -1092,7 +1104,7 @@ class OtelSpanIndex:
             group_identity = _from_text_key(identity_key)
             session = ParsedSession(
                 source_name=Provider.OTEL_GENAI,
-                provider_session_id=f"{resource_id}:{kind}:{group_identity}",
+                provider_session_id=_session_identity(resource_id, kind, group_identity),
                 title=f"OpenTelemetry GenAI {group_identity}",
                 messages=messages if isinstance(messages, list) else [],
                 session_events=events if isinstance(events, list) else [],

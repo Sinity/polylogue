@@ -759,7 +759,9 @@ def parse_project(payload: Mapping[str, object], fallback_id: str) -> ParsedSess
         filename = doc.get("filename")
         block_metadata: dict[str, object] = {"doc_uuid": doc_uuid}
         if isinstance(filename, str) and filename:
-            block_metadata["filename"] = filename
+            # ``name`` is the block display-name key the writer stores in
+            # ``blocks.name`` and renderers title the document with.
+            block_metadata["name"] = filename
         messages.append(
             ParsedMessage(
                 provider_message_id=f"doc:{doc_uuid}",

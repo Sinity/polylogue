@@ -612,6 +612,10 @@ BLOCKS_SPEC = _make_table_spec(
         ),
         _raw_column("media_type", "media_type TEXT"),
         _raw_column("language", "language TEXT"),
+        # Display name of a DOCUMENT/IMAGE block (a project document's file
+        # name), projected from parser ``metadata["name"]``; ``metadata`` has
+        # no column of its own.
+        _raw_column("name", "name TEXT", record_name="name", domain_name="name"),
         # Legacy structural fields. tool_outcome below is the canonical
         # outcome; these stay nullable compatibility columns.
         _raw_column(
