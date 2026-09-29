@@ -39,6 +39,7 @@ from polylogue.daemon.intake import (
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
+from polylogue.operations.cold_build_coverage import ColdBuildCoverageError, promote_cold_build_covering_active_index
 from polylogue.sources.live.batch import CursorAuthorityBlockedError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
@@ -63,6 +64,7 @@ from polylogue.storage.archive_identity import ArchiveLocationError
 _T = TypeVar("_T")
 
 __all__ = [
+    "ColdBuildCoverageError",
     "ColdBuildGeneration",
     "DaemonIntakeContext",
     "DaemonIntakeService",
@@ -77,6 +79,7 @@ __all__ = [
     "clear_cold_build_generation",
     "active_cold_build_generation",
     "discover_pending_raw_ids",
+    "promote_cold_build_covering_active_index",
     "register_cold_build_generation",
 ]
 
@@ -104,6 +107,8 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         exc.__cause__, Exception
     ):
         exc = exc.__cause__
+    if isinstance(exc, ColdBuildCoverageError):
+        return "active_coverage_incomplete", False
     if isinstance(exc, ProductionBaselineReadUnavailableError):
         return "source_integrity", True
     if isinstance(exc, ProductionBaselineError):

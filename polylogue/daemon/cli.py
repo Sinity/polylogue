@@ -2860,6 +2860,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         build_intake_adapters,
                         classify_cold_build_settlement_failure,
                         clear_cold_build_generation,
+                        promote_cold_build_covering_active_index,
                         register_cold_build_generation,
                     )
                     from polylogue.operations.operation_context import open_operation_read
@@ -3082,9 +3083,13 @@ async def _run_daemon_services_under_active_writer_lease(
                                     generation.session_count,
                                 )
                                 if session_count > 0:
+                                    # A candidate missing a session the active
+                                    # generation serves from a retained raw is
+                                    # refused, not promoted (polylogue-5hcbg).
                                     await write_coordinator.run_sync(
                                         "daemon.cold_build.promote",
-                                        generation.promote,
+                                        promote_cold_build_covering_active_index,
+                                        generation,
                                     )
                                     promoted = True
                                 else:
