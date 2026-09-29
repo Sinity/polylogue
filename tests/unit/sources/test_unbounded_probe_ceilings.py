@@ -23,9 +23,8 @@ from typing import Any
 import pytest
 
 from polylogue.core.content_identity import (
-    CONTENT_IDENTITY_SKIPPED_OVERSIZE,
-    bounded_payload_content_identity,
     payload_content_identity,
+    stream_payload_content_identity,
 )
 from polylogue.sources.live import watcher as live_watcher
 
@@ -104,29 +103,18 @@ def test_tail_scan_honours_the_start_offset(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_identity_below_the_ceiling_is_structural_and_reads_the_payload() -> None:
-    payload = b'{"b": 1, "a": 2}'
+def test_identity_streams_in_windows_for_every_size() -> None:
+    """The identity never reads a member whole and never switches method.
+
+    Anti-vacuity: reinstate a whole-payload ``read()`` (the old decode) and
+    ``read_sizes`` shows an unbounded read; reinstate a size ceiling that
+    substitutes the byte digest and the identity equals ``sha256(payload)``.
+    """
+    payload = b'{"a": 1, "pad": "' + b"x" * (3 * 1024 * 1024) + b'"}'
     handle = _ReadRecorder(payload)
 
-    identity, skipped = bounded_payload_content_identity(
-        handle, size=len(payload), byte_digest=sha256(payload).hexdigest(), ceiling=1024
-    )
+    identity = stream_payload_content_identity(handle)
 
-    assert skipped is None
     assert identity == payload_content_identity(payload)
-
-
-def test_identity_above_the_ceiling_reuses_the_byte_digest_and_names_the_skip() -> None:
-    """Anti-vacuity: drop the ceiling branch and ``read_sizes`` shows the whole
-    payload being loaded again, and ``skipped`` is None so the substitution is
-    silent."""
-
-    payload = b'{"a": 1}' + b" " * 4096
-    digest = sha256(payload).hexdigest()
-    handle = _ReadRecorder(payload)
-
-    identity, skipped = bounded_payload_content_identity(handle, size=len(payload), byte_digest=digest, ceiling=16)
-
-    assert skipped == CONTENT_IDENTITY_SKIPPED_OVERSIZE
-    assert identity == digest
-    assert handle.read_sizes == [], "an above-ceiling payload must not be read at all"
+    assert identity != sha256(payload).hexdigest()
+    assert all(size is not None and 0 <= size <= 1024 * 1024 for size in handle.read_sizes)

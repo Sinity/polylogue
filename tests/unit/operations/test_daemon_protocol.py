@@ -181,3 +181,18 @@ def test_archive_identity_contains_readiness_and_generation(tmp_path: Path) -> N
     assert {"source", "index", "embeddings", "user", "audit", "ops"} <= set(tiers)
     assert readiness == {"state": "ready", "ready": True, "reason": None, "degraded_components": []}
     assert DAEMON_OPERATION_PROTOCOL == "polylogue.daemon-operation/v1"
+
+
+def test_candidate_capture_evidence_is_not_capped_by_count() -> None:
+    """Source evidence is bounded by request size, not by an item count.
+
+    Anti-vacuity: restore ``max_length=64`` on ``evidence_refs`` and 65 valid
+    refs are refused before the actuator sees them.
+    """
+    from polylogue.operations.daemon_protocol import AssertionCandidateCaptureRequest
+
+    refs = [f"chatgpt/conv-{index}.json#message:turn-{index}" for index in range(65)]
+    request = AssertionCandidateCaptureRequest.model_validate(
+        {"body_text": "note", "kind": "lesson", "evidence_refs": refs}
+    )
+    assert request.evidence_refs == refs

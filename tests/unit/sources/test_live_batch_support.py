@@ -3348,6 +3348,7 @@ def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission
 
     monkeypatch.setattr(zip_admission, "MAX_UNCOMPRESSED_SIZE", 512)
     processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
+    processor._cursor = CursorStore(tmp_path / "index.db")
     sniffed_paths: list[str] = []
 
     def sniff_provider(_archive: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> Provider:
@@ -3374,6 +3375,7 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
         archive.writestr("tool-results/one.bin", b"\xff\x00opaque")
         archive.writestr("brain/one.md", b"# note\n")
     processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
+    processor._cursor = CursorStore(tmp_path / "index.db")
     records, _total_bytes = processor._extract_zip_member_records(
         bundle,
         blob_store=BlobStore(tmp_path / "blob"),

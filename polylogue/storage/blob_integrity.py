@@ -930,9 +930,14 @@ def _member_payload_by_content(
 
 def _payload_matches(payload: bytes, *, blob_hash: str | None, content_identity: str | None) -> bool:
     if content_identity is not None:
-        from polylogue.core.content_identity import payload_content_identity
+        from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
 
-        return payload_content_identity(payload) == content_identity
+        try:
+            return payload_content_identity(payload) == content_identity
+        except ContentIdentityRefusal:
+            # Acquisition refuses such a value, so no recorded identity names
+            # it: this candidate is not the referenced one.
+            return False
     return blob_hash is None or hashlib.sha256(payload).hexdigest() == blob_hash
 
 

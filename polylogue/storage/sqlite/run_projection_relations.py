@@ -18,6 +18,7 @@ from polylogue.analysis.run_projection import (
     ProjectedRun,
 )
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
+from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.types import SessionId
 from polylogue.storage.runtime import (
@@ -478,6 +479,8 @@ source_compaction_snapshots AS (
                                     ON branch_point.session_id = lineage.resolved_dst_session_id
                                    AND branch_point.message_id = lineage.branch_point_message_id
                                   WHERE lineage.src_session_id = se.session_id
+                                    AND lineage.inheritance = 'prefix-sharing'
+                                    AND {topology_status_composes_sql("lineage.status")}
                                     AND m.session_id = lineage.resolved_dst_session_id
                                     AND m.position <= branch_point.position
                               )
