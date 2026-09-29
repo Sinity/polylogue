@@ -101,10 +101,13 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
         response = await asyncio.shield(submission)
     except asyncio.CancelledError:
         # Cancelling the await cannot stop the transport thread, which may
-        # still submit the request. Let it finish, then cancel that same
-        # request by id -- as the CLI does on interrupt -- so the daemon, not a
-        # blind client retry, decides the outcome. The caller still sees the
-        # cancellation.
+        # still be submitting. Signal the daemon by the same request id at
+        # once, as the CLI does on interrupt, then join the thread and signal
+        # again in case the request was accepted after the first cancel. The
+        # daemon, not a blind client retry, decides the outcome; the caller
+        # still sees the cancellation.
+        with suppress(Exception):
+            await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
         with suppress(Exception):
             await asyncio.shield(submission)
         with suppress(Exception):

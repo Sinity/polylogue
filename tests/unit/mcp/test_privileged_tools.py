@@ -1208,8 +1208,9 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
     """A cancelled MCP call waits for its transport thread and cancels that request.
 
     Anti-vacuity: awaiting ``asyncio.to_thread`` directly abandons the thread
-    on cancellation, so the submission completes after the call has ended and
-    no ``operation.cancel`` names its request id.
+    on cancellation, so no ``operation.cancel`` names its request id; waiting
+    for the blocked submission before the first cancel never sets
+    ``cancel_sent`` and the test times out on it.
     """
     import asyncio
     import threading
@@ -1219,6 +1220,7 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
 
     submitted = threading.Event()
     release = threading.Event()
+    cancel_sent = threading.Event()
     calls: list[tuple[str, str | None]] = []
 
     class SlowClient:
@@ -1235,6 +1237,7 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
 
         def cancel(self, request_id: str, *, archive_root: str) -> dict[str, object]:
             calls.append(("operation.cancel", request_id))
+            cancel_sent.set()
             return {"outcome": "completed"}
 
     monkeypatch.setattr("polylogue.daemon_client.DaemonClient", SlowClient)
@@ -1249,10 +1252,12 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
     )
     await asyncio.to_thread(submitted.wait, 10)
     task.cancel()
-    await asyncio.sleep(0)
+    await asyncio.to_thread(cancel_sent.wait, 10)
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert [name for name, _ in calls] == ["maintenance.insights.rebuild", "operation.cancel"]
-    assert calls[0][1] == calls[1][1]
+    # The first cancel is sent while the submission is still blocked, the
+    # second after it returned; every call names the same request.
+    assert [name for name, _ in calls] == ["operation.cancel", "maintenance.insights.rebuild", "operation.cancel"]
+    assert len({request_id for _, request_id in calls}) == 1

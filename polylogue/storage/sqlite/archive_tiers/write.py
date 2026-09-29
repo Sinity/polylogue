@@ -1483,6 +1483,30 @@ def write_parsed_session_to_archive(
     repeated id is an assertion failure rather than an implicit duplicate or
     overwrite; live ingest never enables this mode.
     """
+    # A work-event raw carries one event and no session header. Writing it as
+    # an ordinary session would upsert default header values over the stored
+    # session (and, on a same-raw full replay, replace its transcript), so it
+    # is an event-only append that keeps every session-owned field. The rule
+    # keys on the retained raw identity, so events retained before this
+    # writer existed replay the same way.
+    stored_header = (
+        _stored_session_header(
+            conn,
+            archive_session_id(
+                origin_from_provider(session.source_name).value,
+                _stored_session_native_id(session.provider_session_id),
+            ),
+        )
+        if is_work_event_raw_id(raw_id) and not session.messages and not session.attachments
+        else None
+    )
+    event_only = stored_header is not None
+    if event_only:
+        # The session already exists in this generation, so even a cold build
+        # appends to it rather than asserting a fresh, absent session.
+        merge_append = True
+        force_replace = False
+        fresh_build = False
     if fresh_build and (merge_append or force_replace):
         raise ValueError("fresh_build is only valid for an untouched full-replace session")
     t0 = time.perf_counter()
@@ -1519,21 +1543,6 @@ def write_parsed_session_to_archive(
         if write_outcome is not None:
             write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, suppression_skipped=True))
         return session_id
-    # A work-event raw carries one event and no session header. Writing it as
-    # an ordinary session would upsert default header values over the stored
-    # session (and, on a same-raw full replay, replace its transcript), so it
-    # is an event-only append that keeps every session-owned field. The rule
-    # keys on the retained raw identity, so events retained before this
-    # writer existed replay the same way.
-    stored_header = (
-        _stored_session_header(conn, session_id)
-        if not fresh_build and is_work_event_raw_id(raw_id) and not session.messages and not session.attachments
-        else None
-    )
-    event_only = stored_header is not None
-    if event_only:
-        merge_append = True
-        force_replace = False
     parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
     lowering_semantic_fingerprint = lowering_fingerprint()
     # This session's own rows are about to be rewritten; drop any stale memoized

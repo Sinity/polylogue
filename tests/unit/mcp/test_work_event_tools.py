@@ -142,8 +142,8 @@ def _session_state(
     return (tuple(header.fetchone()), tuple(map(tuple, messages)), tuple(map(tuple, working_dirs)))
 
 
-@pytest.mark.parametrize("source_index", [-1, 0], ids=["append-replay", "full-replay"])
-def test_retained_work_event_replay_keeps_the_reconstructed_session(tmp_path: Path, source_index: int) -> None:
+@pytest.mark.parametrize("source_index", [-1, 0, None], ids=["append-replay", "full-replay", "cold-build-write"])
+def test_retained_work_event_replay_keeps_the_reconstructed_session(tmp_path: Path, source_index: int | None) -> None:
     """Live append and replay of a retained work event change only the events.
 
     Anti-vacuity: write the replayed skeleton as an ordinary session and the
@@ -199,18 +199,25 @@ def test_retained_work_event_replay_keeps_the_reconstructed_session(tmp_path: Pa
         archive._conn.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
         archive._conn.execute("UPDATE sessions SET content_hash = zeroblob(32) WHERE session_id = ?", (session_id,))
         archive._conn.commit()
-        _index_parsed_for_retained_raw(
-            archive,
-            replayed,
-            raw_id=raw_id,
-            source_index=source_index,
-            stage_timings_s=None,
-            stage_timing_prefix="replay",
-            manage_transaction=True,
-            preacquired_attachment_blobs={},
-            finalize_raw_parse=False,
-            revision_authoritative=True,
-        )
+        if source_index is None:
+            # The cold-build writer shortcut: the event raw reaches a session
+            # this generation already holds.
+            from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+            write_parsed_session_to_archive(archive._conn, replayed, raw_id=raw_id, fresh_build=True)
+        else:
+            _index_parsed_for_retained_raw(
+                archive,
+                replayed,
+                raw_id=raw_id,
+                source_index=source_index,
+                stage_timings_s=None,
+                stage_timing_prefix="replay",
+                manage_transaction=True,
+                preacquired_attachment_blobs={},
+                finalize_raw_parse=False,
+                revision_authoritative=True,
+            )
 
         assert _session_state(archive, session_id) == reconstructed
         events = archive._conn.execute(

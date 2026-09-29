@@ -251,3 +251,35 @@ def test_git_history_reads_pre_rename_revisions_under_their_historical_name(
         revision.observed_until_ms is None or revision.observed_until_ms > revision.observed_from_ms
         for revision in history
     )
+
+
+def test_git_history_frames_paths_that_look_like_metadata(tmp_path: Path) -> None:
+    """A path whose bytes resemble a log marker is still read as a path.
+
+    Anti-vacuity: recognize records by a text prefix such as ``commit:`` and
+    the path token is taken for a commit hash, so neither revision is read.
+    """
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    for payload in (b"first", b"second"):
+        (tmp_path / "commit:notes").write_bytes(payload)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-qm", payload.decode()], cwd=tmp_path, check=True)
+
+    history = git_artifact_history(tmp_path, "commit:notes", owner="o", kind="instruction")
+
+    expected = {
+        artifact_from_bytes(
+            kind="instruction",
+            path="commit:notes",
+            payload=payload,
+            owner="o",
+            repository=str(tmp_path),
+            observed_from_ms=0,
+        ).content_hash
+        for payload in (b"first", b"second")
+    }
+    assert {revision.content_hash for revision in history} == expected

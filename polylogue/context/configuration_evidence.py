@@ -205,9 +205,12 @@ def git_artifact_history(
 
     # ``--name-only`` names the file as it was called in each followed commit,
     # so a revision from before a rename is read under its historical name.
-    # NUL-separated output keeps unusual file names intact.
+    # With ``-z`` each record is ``<hash>\0`` followed by ``\n<path>\0``: git
+    # always separates the header from the name list with a newline, so a
+    # token starting with it is a path and any other token is a commit hash,
+    # whatever bytes the path itself contains.
     result = subprocess.run(
-        ["git", "log", "--follow", f"--max-count={limit}", "--format=%x00commit:%H", "--name-only", "-z", "--", path],
+        ["git", "log", "--follow", f"--max-count={limit}", "--format=%H", "--name-only", "-z", "--", path],
         cwd=repository,
         capture_output=True,
         check=False,
@@ -219,17 +222,17 @@ def git_artifact_history(
     located: list[tuple[str, str]] = []
     pending: str | None = None
     for token in result.stdout.split(b"\0"):
-        token = token.strip(b"\n")
         if not token:
             continue
-        if token.startswith(b"commit:"):
+        if token.startswith(b"\n"):
             if pending is not None:
-                # A commit that lists no name keeps the newer record's name.
-                located.append((pending, located[-1][1] if located else path))
-            pending = token.removeprefix(b"commit:").decode("ascii")
-        elif pending is not None:
-            located.append((pending, os.fsdecode(token)))
-            pending = None
+                located.append((pending, os.fsdecode(token[1:])))
+                pending = None
+            continue
+        if pending is not None:
+            # A commit that lists no name keeps the newer record's name.
+            located.append((pending, located[-1][1] if located else path))
+        pending = token.decode("ascii")
     if pending is not None:
         located.append((pending, located[-1][1] if located else path))
     for commit, historical_path in reversed(located):
