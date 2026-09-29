@@ -567,7 +567,31 @@ class LiveWatcher:
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+    def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """Split one page into (needed now, pending a scheduled retry).
+
+        A path whose cursor carries a retry that is not yet due is owed work,
+        not accounted for: reporting it as already admitted acknowledged the
+        page and dropped the obligation (polylogue-b8of0). Everything else
+        not needed is covered by its cursor.
+        """
+        needed = self._select_ingest_candidates(paths)
+        if len(needed) == len(paths):
+            return needed, ()
+        chosen = set(needed)
+        remaining = [path for path in paths if path not in chosen]
+        records = self._cursor.get_records(remaining)
+        pending = tuple(
+            path
+            for path in remaining
+            if (record := records.get(path)) is not None
+            and not record.excluded
+            and record.next_retry_at is not None
+            and not _retry_due(record.next_retry_at)
+        )
+        return needed, pending
+
+    def _select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
         """Narrow one admitted page to the files that actually need ingesting.
 
         The dispatcher's discovery is a bounded walk with a disposable

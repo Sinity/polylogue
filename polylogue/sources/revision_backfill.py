@@ -170,7 +170,9 @@ _DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
         "create_time",
         "current_node",
         "cwd",
+        "docs",
         "id",
+        "is_starter_project",
         "kind",
         "lastUpdated",
         "last_updated",
@@ -186,6 +188,7 @@ _DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
         "project",
         "projectHash",
         "project_memories",
+        "prompt_template",
         "record_type",
         "session",
         "sessionId",
@@ -1314,6 +1317,9 @@ def prepare_retained_jsonl_artifact(
             def classify_hermes_atif_object(witness: dict[str, JSONValue]) -> bool:
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_otel_object(witness: dict[str, JSONValue]) -> bool:
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
                 mapping = envelope["mapping"]
                 assert isinstance(mapping, Mapping)
@@ -1349,6 +1355,7 @@ def prepare_retained_jsonl_artifact(
                 classify_hermes_atif_object=classify_hermes_atif_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
+                classify_otel_object=classify_otel_object,
                 # The publisher recomputes this digest from the retained
                 # evidence for every artifact, so a pass that enriched nothing
                 # (no assembly spec, or no admitted session) must bind the

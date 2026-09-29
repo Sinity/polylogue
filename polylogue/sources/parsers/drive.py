@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable, Iterable, MutableSequence, Sequence
-from datetime import datetime, timezone
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 from pydantic import ValidationError
@@ -202,46 +204,126 @@ def _branch_child_provider_id(value: object) -> str | None:
     return _string_field(json_document(value), "id", "messageId")
 
 
-def _branch_session_child_ids(chunks: Iterable[object]) -> frozenset[str]:
-    """Return child ids whose branch declaration names a prompt/session."""
-    unresolved: set[str] = set()
-    for chunk in chunks:
-        chunk_obj = json_document(chunk)
-        branch_children = chunk_obj.get("branchChildren")
-        if not isinstance(branch_children, list):
-            continue
-        for child in branch_children:
-            prompt_id = _string_field(json_document(child), "promptId")
-            if prompt_id is not None:
-                unresolved.add(prompt_id)
-    return frozenset(unresolved)
+def _text_key(value: str) -> bytes:
+    return value.encode("utf-8", "surrogatepass")
 
 
-def _branch_child_parent_map(chunks: Iterable[object]) -> tuple[dict[str, str], frozenset[str]]:
-    """Resolve unambiguous branch parents, plus the set of genuinely ambiguous child ids.
+class _ChunkOrder:
+    """One chunked prompt's branch declarations and per-message ordering rows.
 
-    A child declared under more than one parent's ``branchChildren`` has no
-    real single-parent evidence -- it is excluded from the returned map (as
-    before) AND returned in the ambiguous set so callers can keep it excluded
-    from ``fill_linear_parent_chain``'s later gap-fill pass (bd polylogue-ksgg):
-    that pass cannot distinguish "None because ambiguous" from "None because
-    no branch data existed at all", so it would otherwise invent a parent for
-    a case this function deliberately refused to resolve.
+    Branch evidence and the linear parent chain need every chunk. Both live
+    in SQLite, so Python holds one chunk at a time whatever the prompt's
+    length; the object parser runs the same rows over an in-memory
+    connection.
     """
-    candidate_parents: dict[str, set[str]] = {}
-    for chunk in chunks:
-        chunk_obj = json_document(chunk)
-        parent_id = _string_field(chunk_obj, "id")
-        branch_children = chunk_obj.get("branchChildren")
-        if parent_id is None or not isinstance(branch_children, list):
-            continue
-        for child in branch_children:
-            child_id = _branch_child_provider_id(child)
-            if child_id is not None:
-                candidate_parents.setdefault(child_id, set()).add(parent_id)
-    resolved = {child_id: next(iter(parents)) for child_id, parents in candidate_parents.items() if len(parents) == 1}
-    ambiguous = frozenset(child_id for child_id, parents in candidate_parents.items() if len(parents) > 1)
-    return resolved, ambiguous
+
+    _TABLES = ("drive_branch_candidate", "drive_prompt_child", "drive_unresolved", "drive_prompt_parent", "drive_chain")
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        conn.execute(
+            "CREATE TABLE drive_branch_candidate (child_id BLOB NOT NULL, parent_id BLOB NOT NULL, "
+            "PRIMARY KEY (child_id, parent_id)) WITHOUT ROWID"
+        )
+        conn.execute("CREATE TABLE drive_prompt_child (child_id BLOB PRIMARY KEY) WITHOUT ROWID")
+        conn.execute("CREATE TABLE drive_unresolved (message_id BLOB PRIMARY KEY) WITHOUT ROWID")
+        conn.execute("CREATE TABLE drive_prompt_parent (parent_id BLOB PRIMARY KEY) WITHOUT ROWID")
+        # (chain instant, position, provider id, explicit parent) per message.
+        conn.execute(
+            "CREATE TABLE drive_chain (position INTEGER PRIMARY KEY, instant INTEGER NOT NULL, "
+            "message_id BLOB NOT NULL, explicit_parent INTEGER NOT NULL)"
+        )
+
+    def record_branch_declarations(self, chunks: Iterable[object]) -> None:
+        """Record every ``branchChildren`` declaration.
+
+        A child declared under a prompt (``promptId``) names another
+        session, never a local message. A child declared under more than one
+        parent's ``branchChildren`` has no real single-parent evidence: it is
+        left unresolved AND kept out of the later linear gap-fill (bd
+        polylogue-ksgg), which cannot otherwise tell "None because ambiguous"
+        from "None because no branch data existed at all".
+        """
+        for chunk in chunks:
+            chunk_obj = json_document(chunk)
+            branch_children = chunk_obj.get("branchChildren")
+            if not isinstance(branch_children, list):
+                continue
+            parent_id = _string_field(chunk_obj, "id")
+            for child in branch_children:
+                prompt_id = _string_field(json_document(child), "promptId")
+                if prompt_id is not None:
+                    self._conn.execute("INSERT OR IGNORE INTO drive_prompt_child VALUES (?)", (_text_key(prompt_id),))
+                child_id = _branch_child_provider_id(child)
+                if parent_id is not None and child_id is not None:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO drive_branch_candidate VALUES (?, ?)",
+                        (_text_key(child_id), _text_key(parent_id)),
+                    )
+
+    def _candidates(self, message_id: str) -> tuple[bytes | None, int]:
+        parent, count = self._conn.execute(
+            "SELECT MIN(parent_id), COUNT(*) FROM drive_branch_candidate WHERE child_id = ?", (_text_key(message_id),)
+        ).fetchone()
+        return parent, count
+
+    def _is_prompt_child(self, message_id: str) -> bool:
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM drive_prompt_child WHERE child_id = ?", (_text_key(message_id),)
+            ).fetchone()
+            is not None
+        )
+
+    def branch_parent(self, message_id: str) -> str | None:
+        """The one parent that declares ``message_id`` among its branch children."""
+        parent, count = self._candidates(message_id)
+        if count != 1 or parent is None or self._is_prompt_child(message_id):
+            return None
+        return parent.decode("utf-8", "surrogatepass")
+
+    def mark_unresolved(self, message_id: str) -> None:
+        """Exclude a message whose branch parent names a prompt from the gap-fill."""
+        self._conn.execute("INSERT OR IGNORE INTO drive_unresolved VALUES (?)", (_text_key(message_id),))
+
+    def add_prompt_parent(self, prompt_id: str) -> None:
+        self._conn.execute("INSERT OR IGNORE INTO drive_prompt_parent VALUES (?)", (_text_key(prompt_id),))
+
+    def only_prompt_parent(self) -> str | None:
+        rows = self._conn.execute("SELECT parent_id FROM drive_prompt_parent LIMIT 2").fetchall()
+        return rows[0][0].decode("utf-8", "surrogatepass") if len(rows) == 1 else None
+
+    def add_chain_row(self, instant: datetime, position: int, message_id: str, explicit_parent: bool) -> None:
+        self._conn.execute(
+            "INSERT INTO drive_chain VALUES (?, ?, ?, ?)",
+            (position, (instant - _EPOCH_FLOOR) // timedelta(microseconds=1), _text_key(message_id), explicit_parent),
+        )
+
+    def last_message_id(self) -> str | None:
+        row = self._conn.execute("SELECT message_id FROM drive_chain ORDER BY position DESC LIMIT 1").fetchone()
+        return row[0].decode("utf-8", "surrogatepass") if row is not None else None
+
+    def gap_fillable(self, message_id: str) -> bool:
+        """Whether no branch declaration keeps the linear fill off ``message_id``."""
+        if self._candidates(message_id)[1] > 1 or self._is_prompt_child(message_id):
+            return False
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM drive_unresolved WHERE message_id = ?", (_text_key(message_id),)
+            ).fetchone()
+            is None
+        )
+
+    def chronological(self) -> Iterable[tuple[int, str, bool]]:
+        """``(position, message id, explicit parent)`` by chain instant, then position."""
+        for position, message_id, explicit_parent in self._conn.execute(
+            "SELECT position, message_id, explicit_parent FROM drive_chain ORDER BY instant, position"
+        ):
+            yield position, message_id.decode("utf-8", "surrogatepass"), bool(explicit_parent)
+
+    def close(self) -> None:
+        for table in self._TABLES:
+            self._conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 def _instruction_text(payload: JSONDocument) -> str | None:
@@ -404,11 +486,13 @@ def parse_chunked_prompt_stream(
     messages: MutableSequence[ParsedMessage],
     session_events: MutableSequence[ParsedSessionEvent],
     attachments: MutableSequence[ParsedAttachment],
+    scratch: sqlite3.Connection,
 ) -> ParsedSession:
     """Lower a proved chunked prompt without retaining its chunk array.
 
     ``envelope`` holds the document's fields except the selected chunk list,
-    which ``chunks`` re-reads for each pass. Admission runs over a stub that
+    which ``chunks`` re-reads for each pass; per-message ordering and branch
+    rows go to ``scratch``. Admission runs over a stub that
     carries the document's first future wire type, so accounting and the
     typed unknown event match ``parse_chunked_prompt`` on the whole document.
     """
@@ -422,6 +506,7 @@ def parse_chunked_prompt_stream(
         messages=messages,
         session_events=session_events,
         attachments=attachments,
+        scratch=scratch,
     )
     admission_stub: JSONDocument = {"chunks": []}
     if isinstance(future_type, str):
@@ -440,13 +525,28 @@ def _parse_chunked_records(
     messages: MutableSequence[ParsedMessage] | None = None,
     session_events: MutableSequence[ParsedSessionEvent] | None = None,
     attachments: MutableSequence[ParsedAttachment] | None = None,
+    scratch: sqlite3.Connection | None = None,
 ) -> ParsedSession:
     """Normalize chunks read once per pass into the supplied message rows.
 
     Branch evidence and the linear parent chain need every chunk, so this
-    keeps one small ordering row per message and rewrites only the rows
-    whose parent or leaf flag the whole-prompt passes change.
+    keeps one small ordering row per message in ``scratch`` (an in-memory
+    database by default) and rewrites only the rows whose parent or leaf
+    flag the whole-prompt passes change.
     """
+    if scratch is None:
+        with closing(sqlite3.connect(":memory:")) as memory:
+            return _parse_chunked_records(
+                provider,
+                payload,
+                chunk_records,
+                fallback_id,
+                messages=messages,
+                session_events=session_events,
+                attachments=attachments,
+                scratch=memory,
+            )
+    order = _ChunkOrder(scratch)
     runtime_provider = Provider.from_string(provider)
     run_settings = json_document(payload.get("runSettings"))
     default_model_name = _string_field(run_settings, "model", "modelName", "model_name")
@@ -460,24 +560,13 @@ def _parse_chunked_records(
     event_rows: MutableSequence[ParsedSessionEvent] = session_events if session_events is not None else []
     attachment_rows: MutableSequence[ParsedAttachment] = attachments if attachments is not None else []
     observed_timestamps = TimestampBounds()
-    # (chain instant, position, provider id, explicit parent) per message.
-    chain_rows: list[tuple[datetime, int, str, str | None]] = []
     models_used: set[str] = set()
     if default_model_name is not None:
         models_used.add(default_model_name)
     if model_event := _model_config_event(run_settings, timestamp=default_timestamp):
         event_rows.append(model_event)
     event_rows.extend(_citation_events(payload))
-    branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunk_records())
-    prompt_branch_child_ids = _branch_session_child_ids(chunk_records())
-    branch_child_parents = {
-        child_id: parent_id
-        for child_id, parent_id in branch_child_parents.items()
-        if child_id not in prompt_branch_child_ids
-    }
-    ambiguous_branch_child_ids = frozenset(set(ambiguous_branch_child_ids) | set(prompt_branch_child_ids))
-    prompt_parent_ids: set[str] = set()
-    unresolved_branch_message_ids: set[str] = set(prompt_branch_child_ids)
+    order.record_branch_declarations(chunk_records())
     message_position = 0
     for _idx, chunk in enumerate(chunk_records(), start=1):
         if isinstance(chunk, str):
@@ -495,9 +584,9 @@ def _parse_chunked_records(
         msg_id = str(chunk_obj.get("id") or "")
         prompt_parent_id = _branch_parent_session_provider_id(chunk_obj)
         if prompt_parent_id is not None:
-            prompt_parent_ids.add(prompt_parent_id)
+            order.add_prompt_parent(prompt_parent_id)
             if msg_id:
-                unresolved_branch_message_ids.add(msg_id)
+                order.mark_unresolved(msg_id)
         message_timestamp = _chunk_timestamp(chunk_obj, default_timestamp)
         model_name = _string_field(chunk_obj, "model", "modelName", "model_name") or default_model_name
         if model_name is not None:
@@ -542,7 +631,10 @@ def _parse_chunked_records(
             gemini_message = GeminiMessage.model_validate(chunk_obj)
             used_typed_model = True
             content_block_payloads = _gemini_content_block_payloads(gemini_message, text)
-        except (ValidationError, Exception):
+        except ValidationError:
+            # Only a chunk the typed model rejects takes the fallback; a
+            # defect in the typed extraction must surface, not silently drop
+            # structured blocks and change the content hash (polylogue-hu24g).
             content_block_payloads = _fallback_gemini_content_blocks(chunk_obj, text)
 
         if chunk_attachments and not used_typed_model:
@@ -569,7 +661,7 @@ def _parse_chunked_records(
         resolved_message_type = (
             classify_block_message_type(tuple(block.type for block in message_blocks)) or MessageType.MESSAGE
         )
-        parent_message_provider_id = _branch_parent_message_provider_id(chunk_obj) or branch_child_parents.get(msg_id)
+        parent_message_provider_id = _branch_parent_message_provider_id(chunk_obj) or order.branch_parent(msg_id)
         message_rows.append(
             upgrade_chat_export_user_authorship(
                 runtime_provider,
@@ -614,7 +706,9 @@ def _parse_chunked_records(
                 ),
             )
         )
-        chain_rows.append((_sort_instant(message_timestamp), message_position, msg_id, parent_message_provider_id))
+        order.add_chain_row(
+            _sort_instant(message_timestamp), message_position, msg_id, parent_message_provider_id is not None
+        )
         message_position += 1
         attachment_rows.extend(chunk_attachments)
 
@@ -637,8 +731,8 @@ def _parse_chunked_records(
         else (observed_timestamps.latest[1] if observed_timestamps.latest is not None else None)
     )
     pending_drafts = _pending_drafts(prompt.get("pendingInputs"))
-    active_leaf_message_provider_id = chain_rows[-1][2] if chain_rows else None
-    if chain_rows:
+    active_leaf_message_provider_id = order.last_message_id()
+    if active_leaf_message_provider_id is not None:
         message_rows[-1] = message_rows[-1].model_copy(update={"is_active_leaf": True})
     # bd polylogue-ksgg: real Gemini branch evidence (``_branch_parent_message_provider_id``
     # / ``branch_child_parents`` above) already sets ``parent_message_provider_id``
@@ -659,20 +753,16 @@ def _parse_chunked_records(
     # The linear fill chains by order, so it runs over a temporally-sorted
     # view, not the raw chunk-input order. Every Drive message is on the
     # active path, so each one is the next message's chain predecessor.
-    previous: tuple[datetime, int, str, str | None] | None = None
-    for row in sorted(chain_rows, key=lambda row: (row[0], row[1])):
-        _instant, position, message_id, explicit_parent = row
-        if (
-            previous is not None
-            and explicit_parent is None
-            and message_id not in ambiguous_branch_child_ids
-            and message_id not in unresolved_branch_message_ids
-        ):
+    previous: tuple[int, str] | None = None
+    for position, message_id, explicit_parent in order.chronological():
+        if previous is not None and not explicit_parent and order.gap_fillable(message_id):
             update: dict[str, object] = (
-                {"parent_message_provider_id": previous[2]} if previous[2] else {"parent_message_position": previous[1]}
+                {"parent_message_provider_id": previous[1]} if previous[1] else {"parent_message_position": previous[0]}
             )
             message_rows[position] = message_rows[position].model_copy(update=update)
-        previous = row
+        previous = (position, message_id)
+    parent_session_provider_id = order.only_prompt_parent()
+    order.close()
     session = ParsedSession(
         source_name=runtime_provider,
         provider_session_id=str(payload.get("id") or fallback_id),
@@ -691,7 +781,7 @@ def _parse_chunked_records(
         # state must not enter session_revision_projection's comparison
         # axes).
         pending_drafts=pending_drafts,
-        parent_session_provider_id=(next(iter(prompt_parent_ids)) if len(prompt_parent_ids) == 1 else None),
+        parent_session_provider_id=parent_session_provider_id,
     )
     if isinstance(message_rows, list) and isinstance(event_rows, list) and isinstance(attachment_rows, list):
         return session

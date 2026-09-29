@@ -43,7 +43,7 @@ async def _ingest_selected_paths(
     ingest_pass: Callable[[list[Path]], Awaitable[Any]],
 ) -> tuple[Any, ...]:
     """Drain bounded unattempted paths, refusing any other incomplete result."""
-    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET
+    from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, REFUSED_UNATTEMPTED_TIME_BUDGET
 
     pending = list(dict.fromkeys(paths))
     receipts: list[Any] = []
@@ -85,6 +85,9 @@ async def _ingest_selected_paths(
                 f"unaccounted={len(offered_set - accounted)}"
             )
 
+        # A source that parsed to no session is settled: its raw carries the
+        # terminal outcome and its cursor advanced.
+        excluded = {path: reason for path, reason in excluded.items() if reason != REFUSED_NO_SESSIONS}
         if not excluded:
             return tuple(receipts)
 

@@ -2141,9 +2141,13 @@ def analyze_verb(
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
-    effective_output_format = output_format or (
-        request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
+    # A named projection (``analyze postmortem``) arrives with no local
+    # format; every branch below renders the inherited root format.
+    root_output_format = request.params.get("output_format")
+    effective_output_format = output_format or normalize_output_dialect(
+        root_output_format if isinstance(root_output_format, str) else None
     )
+    output_format = effective_output_format
     if _explain_terminal_action(
         request,
         action="analyze",
