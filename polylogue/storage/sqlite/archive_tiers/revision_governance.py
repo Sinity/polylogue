@@ -116,7 +116,6 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
-    LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
@@ -1252,8 +1251,7 @@ def raw_membership_retired_full_revision_siblings(
     still be told this identity has known, unresolved ambiguous
     evidence (polylogue-52l2) instead of being evaluated alone.
 
-    Matches the typed quarantine authority. Legacy detail strings are
-    migrated into that code while retained as display evidence.
+    Matches the typed quarantine authority; ``detail`` is display evidence.
     """
     rows = (
         store._ensure_source_conn()
@@ -2192,23 +2190,6 @@ def _raw_revision_matches_segments(
         return full.read(1) == b""
 
 
-def unclassified_raw_revision_rows(store: RawRevisionGovernanceHost) -> tuple[tuple[str, int], ...]:
-    """Return legacy rows that have no durable logical revision identity."""
-    rows = (
-        store._ensure_source_conn()
-        .execute(
-            """
-        SELECT raw_id, source_index
-        FROM raw_sessions
-        WHERE logical_source_key IS NULL AND revision_authority = 'quarantined'
-        ORDER BY raw_id
-        """
-        )
-        .fetchall()
-    )
-    return tuple((str(row[0]), int(row[1])) for row in rows)
-
-
 def pending_raw_revision_logical_keys(store: RawRevisionGovernanceHost) -> tuple[str, ...]:
     rows = (
         store._ensure_source_conn()
@@ -2225,28 +2206,25 @@ def pending_raw_revision_logical_keys(store: RawRevisionGovernanceHost) -> tuple
     return tuple(str(row[0]) for row in rows)
 
 
-def raw_revision_rebuild_selection(
+def raw_revision_rebuild_logical_keys(
     store: RawRevisionGovernanceHost,
     raw_ids: list[str] | None,
-) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
+) -> tuple[str, ...]:
     """Expand requested raws only to complete same-source-path cohorts."""
     conn = store._ensure_source_conn()
     if raw_ids is None:
-        return (
-            unclassified_raw_revision_rows(store),
-            tuple(
-                str(row[0])
-                for row in conn.execute(
-                    """
-                    SELECT DISTINCT logical_source_key FROM raw_sessions
-                    WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key
-                    """
-                )
-            ),
+        return tuple(
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT DISTINCT logical_source_key FROM raw_sessions
+                WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key
+                """
+            )
         )
     selected = tuple(dict.fromkeys(raw_ids))
     if not selected:
-        return (), ()
+        return ()
     placeholders = ",".join("?" for _ in selected)
     source_paths = tuple(
         str(row[0])
@@ -2256,22 +2234,9 @@ def raw_revision_rebuild_selection(
         )
     )
     if not source_paths:
-        return (), ()
+        return ()
     path_placeholders = ",".join("?" for _ in source_paths)
-    unclassified = tuple(
-        (str(row[0]), int(row[1]))
-        for row in conn.execute(
-            f"""
-            SELECT raw_id, source_index FROM raw_sessions
-            WHERE source_path IN ({path_placeholders})
-              AND logical_source_key IS NULL
-              AND revision_authority = 'quarantined'
-            ORDER BY raw_id
-            """,
-            source_paths,
-        )
-    )
-    logical_keys = tuple(
+    return tuple(
         str(row[0])
         for row in conn.execute(
             f"""
@@ -2283,7 +2248,6 @@ def raw_revision_rebuild_selection(
             source_paths,
         )
     )
-    return unclassified, logical_keys
 
 
 def raw_membership_census_rows(
@@ -2378,37 +2342,19 @@ def replace_raw_membership_census(
             # text.  Keep the detail-only bridge for older producers, but do
             # not make explicitly typed writes depend on a prose spelling.
             census_authority = revision_authority or revision_authority_for_census_detail(detail)
-            if sessions and detail in LEGACY_FULL_REVISION_GOVERNANCE_DETAILS:
-                # Unconditional, and deliberately ahead of the authority check.
-                # Typing the authority is what frees the *wording* of a recognized
-                # marker (see the test for that); it does not make the retired
-                # spelling writable again. Keyed off the authority alone, a
-                # producer passing QUARANTINED explicitly would mint the legacy
-                # detail afresh and no query could then tell a pre-#3234 row from
-                # a new one -- the compat branch this bead exists to make
-                # retirable (polylogue-sze30 AC1).
-                raise ValueError("legacy marker is read-compatibility only and may never be written")
             if sessions and census_authority is not RawRevisionAuthority.QUARANTINED:
                 # A retirement that leaves membership rows behind is only observable
-                # through its ``raw_membership_census.detail`` marker: the retired raw
-                # loses its ``logical_source_key`` and goes ``quarantined``, so
+                # through its census authority: the retired raw loses its
+                # ``logical_source_key`` and goes ``quarantined``, so
                 # ``raw_membership_retired_full_revision_siblings`` and
-                # ``_raw_revision_source_path_has_divergent_evidence`` find it by
-                # detail alone. An unrecognized marker is not a harmless label -- it
-                # makes the retirement invisible, and a later-arriving sibling for the
+                # ``_raw_revision_source_path_has_divergent_evidence`` find it by the
+                # typed quarantined authority alone. An unrecognized marker with no
+                # typed authority is not a harmless label -- it makes the retirement
+                # invisible, and a later-arriving sibling for the
                 # same identity is then accepted as an unconditional singleton
                 # byte-proven baseline, which is exactly the polylogue-52l2 hazard the
                 # marker exists to prevent. Refuse the write instead of letting an
                 # unknown source value read back as success (polylogue-sze30 AC2).
-                #
-                # The accepted set is the WRITABLE vocabulary, not the wider read
-                # vocabulary: ``LEGACY_FULL_REVISION_GOVERNANCE_DETAILS`` exists so
-                # durable pre-#3234 rows stay legible, and the module comment that
-                # declares it "read-only, never write" was until now enforced by
-                # nothing. Emitting the legacy spelling afresh would be harmless to
-                # the 52l2 guard but would make the compat branch impossible to
-                # retire, because no query could distinguish a pre-fix row from a
-                # new one (polylogue-sze30 AC1).
                 #
                 # A census with no surviving membership row (a non-session artifact or
                 # retained-state export) has no logical identity to be ambiguous
