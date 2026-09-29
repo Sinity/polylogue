@@ -362,6 +362,8 @@ def _bounded_root_dict_page(
                 candidate_root["continuation"] = None
             if "complete" in root:
                 candidate_root["complete"] = False
+            if "truncated" in root:
+                candidate_root["truncated"] = True
             if "returned" in root:
                 candidate_root["returned"] = count
         candidate = payload.model_copy(update={"root": candidate_root})

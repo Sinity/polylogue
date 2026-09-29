@@ -217,8 +217,9 @@ async def test_windowed_session_list_projection_pages_through_the_evidence_windo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("final_page", [False, True])
 async def test_budget_trimmed_window_page_narrows_from_the_windows_resolved_offset(
-    mcp_server: MCPServerUnderTest,
+    mcp_server: MCPServerUnderTest, final_page: bool
 ) -> None:
     """An oversized page reached by continuation narrows from where that page began.
 
@@ -227,7 +228,8 @@ async def test_budget_trimmed_window_page_narrows_from_the_windows_resolved_offs
     budget continuation from the request's arguments and it restarts at
     offset 0 (or repeats the same oversized token); leave the page's own
     ``continuation`` in the trimmed page and following it skips the rows the
-    trim omitted.
+    trim omitted; leave a final page's ``complete`` and the trimmed page
+    claims the relation was read to its end.
     """
     from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
 
@@ -237,13 +239,13 @@ async def test_budget_trimmed_window_page_narrows_from_the_windows_resolved_offs
     poly.read_session_evidence_window = AsyncMock(
         return_value={
             "rows": rows,
-            "total": 12,
+            "total": 8 if final_page else 12,
             "returned": 4,
             "limit": 4,
             "offset": 4,
-            "next_offset": 8,
-            "continuation": "token-after-8",
-            "complete": False,
+            "next_offset": None if final_page else 8,
+            "continuation": None if final_page else "token-after-8",
+            "complete": final_page,
         }
     )
     with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
@@ -263,6 +265,8 @@ async def test_budget_trimmed_window_page_narrows_from_the_windows_resolved_offs
     assert body["page"][projection.payload_key] == rows[:consumed]
     assert body["page"]["continuation"] is None
     assert body["page"]["next_offset"] == 4 + consumed
+    assert body["page"]["returned"] == consumed
+    assert body["page"]["complete"] is False
     assert body["continuation"]["tool"] == "read"
     arguments = body["continuation"]["arguments"]
     assert arguments["view"] == projection.name
