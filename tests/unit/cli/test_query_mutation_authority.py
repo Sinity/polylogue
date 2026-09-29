@@ -200,3 +200,35 @@ def test_single_session_tag_route_uses_the_same_operation(
             {"session_ids": ["claude-ai-export:ext-conv-1"], "tags": ["triage"]},
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("--add-tag", "triage"), ("--set", "lane", "triage"), ("--add-tag", "triage", "--set", "lane", "x")],
+)
+def test_zero_match_mutation_is_a_no_op_not_a_refusal(
+    tagged_archive: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+) -> None:
+    """A selection that matched nothing sends no mutation and reports zero changes.
+
+    Anti-vacuity: submitting the empty selection issues an operation whose
+    ``session_ids`` the daemon rejects (``min_length=1``), so the command
+    fails as a mutation refusal instead of exiting 0.
+    """
+    issued: list[str] = []
+
+    def _served(_config: object, name: str, _payload: dict[str, object]) -> dict[str, object]:
+        issued.append(name)
+        return {"status": "ok", "affected_count": 0}
+
+    with (
+        cli_daemon_archive(tagged_archive, monkeypatch),
+        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
+    ):
+        result = CliRunner().invoke(cli, [*args, "find", "origin:chatgpt"])
+
+    assert result.exit_code == 0, result.output
+    assert issued == []
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    assert all(payload.get(key) in (None, 0) for key in ("affected_count", "tag_count", "applied_count"))

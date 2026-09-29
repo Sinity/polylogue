@@ -4985,7 +4985,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "lineage_complete": completeness.complete,
             "lineage_truncation_reason": completeness.truncation_reason,
             "outcome": lineage_page_outcome(
-                matched=total,
+                matched=len(messages),
                 complete=completeness.complete,
                 truncation_reason=completeness.truncation_reason,
             ).to_dict(),

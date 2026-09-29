@@ -389,11 +389,40 @@ def test_await_interrupt_cancels_the_original_request_not_the_control_exchange(
 
     monkeypatch.setattr(client, "await_operation", interrupted)
     monkeypatch.setattr(client, "cancel", lambda request_id, **kwargs: cancelled.append(request_id))
-    with pytest.raises(DaemonMutationIndeterminateError):
+    with pytest.raises(DaemonMutationIndeterminateError) as raised:
         client.operation_to_completion(
             "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
         )
     assert cancelled == ["accepted-mutation"]
+    assert raised.value.request_id == "accepted-mutation"
+
+
+def test_await_disconnect_reports_the_accepted_mutation_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A dropped ``operation.await`` exchange names the accepted write for recovery.
+
+    Anti-vacuity: re-raising the await's own failure carries the control
+    call's id, which has no durable mutation receipt to recover.
+    """
+    from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    monkeypatch.setattr(
+        client,
+        "operation",
+        lambda *args, **kwargs: {"request_id": "accepted-mutation", "outcome": "accepted", "result": {"sequence": 1}},
+    )
+
+    def disconnected(*args: object, **kwargs: object) -> object:
+        raise DaemonMutationIndeterminateError(
+            method="POST", path="/api/operation", request_id="await-control"
+        ) from ConnectionResetError()
+
+    monkeypatch.setattr(client, "await_operation", disconnected)
+    with pytest.raises(DaemonMutationIndeterminateError) as raised:
+        client.operation_to_completion(
+            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+        )
+    assert raised.value.request_id == "accepted-mutation"
 
 
 def test_an_accepted_write_is_never_called_indeterminate_without_one_receipt_read(

@@ -71,3 +71,27 @@ def test_mcp_archive_message_payload_preserves_unknown_active_path() -> None:
     assert payload.variant_index == 1
     assert payload.is_active_path is None
     assert payload.is_active_leaf is False
+
+
+def test_archive_messages_payload_page_past_the_end_is_empty() -> None:
+    """The page outcome counts the page's rows, not the session's messages.
+
+    Anti-vacuity: deciding it from the filtered total (1) labels the empty
+    page at offset 5 ``ok``.
+    """
+    from dataclasses import replace
+
+    row = ArchiveMessageRow(
+        message_id="m1",
+        native_id="native-m1",
+        role="assistant",
+        position=0,
+        variant_index=0,
+        is_active_path=True,
+        is_active_leaf=True,
+        blocks=(ArchiveBlockRow(block_id="m1:0", message_id="m1", block_type="text", text="answer"),),
+    )
+    session = replace(_envelope(lineage_complete=True, lineage_truncation_reason=None), messages=(row,))
+
+    assert archive_messages_payload(session, limit=50, offset=5).outcome.state == "empty"
+    assert archive_messages_payload(session, limit=50, offset=0).outcome.state == "ok"
