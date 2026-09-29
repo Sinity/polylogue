@@ -1018,7 +1018,8 @@ def test_composed_limit_and_resume_neither_overdeliver_nor_skip_messages(
 ) -> None:
     """A 250-row page narrows its last 200-row transport window to 50."""
     expected = [f"message {index:04d}" for index in range(401)]
-    session_id = _seed_messages(tmp_path, *[{"text": text} for text in expected])
+    messages: list[dict[str, object]] = [{"text": text} for text in expected]
+    session_id = _seed_messages(tmp_path, *messages)
     run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, limit=250, output_format="json")
     first = json.loads(capsys.readouterr().out)
     assert first["limit"] == 250

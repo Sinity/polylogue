@@ -1379,7 +1379,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     hooks,
                     projection,
                     limit=limit,
-                    offset=offset,
+                    offset=0 if offset is None else offset,
                     origin=origin,
                     tag=tag,
                     repo=repo,
