@@ -389,6 +389,80 @@ async def test_cancelled_pre_admission_scan_never_reaches_archive_worker(tmp_pat
     assert controller.in_flight_weight == 0
 
 
+async def test_queued_async_admission_sleeps_until_it_can_be_admitted() -> None:
+    """A queued async read is woken by state changes, not by polling.
+
+    Anti-vacuity: restoring a timed re-check loop in ``_admit_async`` (the
+    former 10 ms ``asyncio.sleep`` cadence) re-evaluates admission dozens of
+    times while capacity is held, and the check count below goes red.
+    """
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    holder = QueryExecutionContext.create(query_text="hold", timeout_s=None)
+    queued = QueryExecutionContext.create(query_text="queued", timeout_s=None)
+    holder_weight = await controller._admit_async(holder)
+
+    checks = 0
+    may_admit = controller._may_admit_locked
+
+    def _counting_may_admit(ctx: QueryExecutionContext, weight: int) -> bool:
+        nonlocal checks
+        if ctx.call_id == queued.call_id:
+            checks += 1
+        return may_admit(ctx, weight)
+
+    controller._may_admit_locked = _counting_may_admit  # type: ignore[method-assign]
+    waiter = asyncio.create_task(controller._admit_async(queued))
+    await asyncio.sleep(0.3)
+    assert controller.queue_position(queued) == 0
+    assert not waiter.done()
+    assert checks <= 2
+
+    # Release from another thread, as an executor-owned lease does.
+    await asyncio.to_thread(controller._release, holder, holder_weight)
+    weight = await asyncio.wait_for(waiter, timeout=2)
+    assert queued.receipt.state == "admitted"
+    controller._release(queued, weight)
+    assert controller.in_flight_weight == 0
+
+
+async def test_cross_thread_cancel_wakes_queued_async_admission() -> None:
+    """Cancelling a queued context from another thread aborts its wait.
+
+    Anti-vacuity: without the context's cancel listener waking the waiter,
+    a deadline-free queued read sleeps until capacity frees and the
+    ``wait_for`` below times out.
+    """
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    holder = QueryExecutionContext.create(query_text="hold", timeout_s=None)
+    queued = QueryExecutionContext.create(query_text="queued", timeout_s=None)
+    holder_weight = await controller._admit_async(holder)
+    waiter = asyncio.create_task(controller._admit_async(queued))
+    await asyncio.sleep(0.05)
+    assert controller.queue_position(queued) == 0
+
+    await asyncio.to_thread(queued.cancel)
+    with pytest.raises(QueryCancelledError):
+        await asyncio.wait_for(waiter, timeout=2)
+    assert controller.queue_position(queued) is None
+    controller._release(holder, holder_weight)
+    assert controller.in_flight_weight == 0
+
+
+async def test_queued_async_deadline_expiry_reports_timeout() -> None:
+    """A queued async read wakes at its deadline without any state change."""
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    holder = QueryExecutionContext.create(query_text="hold", timeout_s=None)
+    holder_weight = await controller._admit_async(holder)
+    queued = QueryExecutionContext.create(query_text="queued", timeout_s=0.2)
+
+    with pytest.raises(QueryTimeoutError):
+        await asyncio.wait_for(controller._admit_async(queued), timeout=2)
+    assert queued.receipt.state == "timed_out"
+    assert controller.queue_position(queued) is None
+    controller._release(holder, holder_weight)
+    assert controller.in_flight_weight == 0
+
+
 def test_admission_fifo_within_class(tmp_path: Path) -> None:
     controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
     holder = QueryExecutionContext.create(query_text="hold", timeout_s=None)
