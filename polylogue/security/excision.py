@@ -68,7 +68,7 @@ whose content shares a content-addressed blob with it. Two sessions with the
 same tool output or the same attachment own one blob hash. After the excised
 session's source rows are deleted, each hash they named is marked in
 ``excised_content`` only when
-:func:`polylogue.storage.blob_liveness.inspect_session_blob_reference`
+:func:`polylogue.storage.blob_liveness.inspect_session_blob_references`
 finds no other session's reference to it (a retained raw, a live ledger row,
 a hook event, a material, a retained container, or an index attachment
 linked to another session). A shared hash stays unmarked and readable for
@@ -137,7 +137,7 @@ from polylogue.storage.accepted_marker_inputs import (
     marker_input_excision_targets_sync,
 )
 from polylogue.storage.blob_gc_index_watermark import index_liveness_authority_blocker
-from polylogue.storage.blob_liveness import LivenessState, inspect_session_blob_reference
+from polylogue.storage.blob_liveness import LivenessState, inspect_session_blob_references
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     delete_source_hook_event,
@@ -1339,14 +1339,15 @@ def _apply_single_session_excision(
                 # outside this excision still references it: excision forgets
                 # this session, not every session whose content shares a
                 # content-addressed blob with it.
+                references = inspect_session_blob_references(
+                    conn,
+                    tuple(owned_hashes),
+                    index_conn=index_conn,
+                    excluding_session_ids=frozenset({session_id}),
+                    index_authority_blocker=index_authority_blocker,
+                )
                 for blob_hash, prior_revision in owned_hashes.items():
-                    reference = inspect_session_blob_reference(
-                        conn,
-                        blob_hash,
-                        index_conn=index_conn,
-                        excluding_session_ids=frozenset({session_id}),
-                        index_authority_blocker=index_authority_blocker,
-                    )
+                    reference = references[blob_hash]
                     if reference.state is LivenessState.BLOCKED:
                         raise ExcisionBlobReferenceUnknownError(blob_hash=blob_hash, blockers=reference.blockers)
                     if reference.state is LivenessState.LIVE:

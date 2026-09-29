@@ -12,6 +12,13 @@ refused (its tool result falls back to the preview) and the shared-hash
 assertions fail. Marking nothing leaves A's own sidecar hash unmarked and A's
 transcript re-admissible.
 
+``test_excising_a_keeps_the_attachment_it_shares_with_b`` covers the
+attachment class on the ingest batch's writer (``_write_session``) and the
+acquire-time raw writer (``write_source_raw_session``). B's reference to the
+shared attachment lives only in ``index.attachments``, the shape the live
+batch writes; ignoring the index there marks B's attachment and refuses B's
+next revision.
+
 Synthetic fixtures only: invented tool output, invented paths.
 """
 
@@ -26,16 +33,28 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
-from polylogue.core.enums import BlockType
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.services.ingest_batch._core import _write_session
+from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.security.excision import apply_session_excision
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceBlobRef,
+    ContentExcisedError,
+    is_blob_hash_excised,
+    write_source_raw_session,
+)
+from polylogue.storage.sqlite.connection import open_connection
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
 _SESSION_B = "5c3d1e40-0000-4000-8000-00000000b002"
@@ -250,3 +269,107 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b_and_forgets_its_own
             ).fetchall()
         ]
     assert len(texts) == 2 and all("zz_shared_build_log_line" in text for text in texts)
+
+
+_SHARED_ATTACHMENT = b"shared synthetic attachment bytes\n" * 64
+_A_ONLY_ATTACHMENT = b"attachment only session A carried\n" * 64
+
+
+def _attachment_ref(content: bytes) -> ArchiveSourceBlobRef:
+    return ArchiveSourceBlobRef(
+        blob_hash=hashlib.sha256(content).digest(),
+        ref_type="attachment",
+        source_path="/synthetic/export.json",
+        size_bytes=len(content),
+        acquired_at_ms=1_000,
+    )
+
+
+def _acquire(archive_root: Path, native_id: str, payload: bytes, refs: tuple[bytes, ...]) -> str:
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        return write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_AI_EXPORT.value,
+            source_path=f"/synthetic/{native_id}.json",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1_000,
+            native_id=native_id,
+            additional_blob_refs=tuple(_attachment_ref(content) for content in refs),
+        )
+
+
+def _attachment_session(native_id: str, raw_id: str, attachments: dict[str, bytes]) -> SessionWritePayload:
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id=native_id,
+        title="Synthetic",
+        created_at="2026-04-02T00:00:00Z",
+        updated_at="2026-04-02T00:00:00Z",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.normalize("user"), text="see attached")],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id=f"{native_id}-{name}",
+                message_provider_id="m1",
+                name=name,
+                mime_type="text/plain",
+                size_bytes=len(content),
+                inline_bytes=content,
+            )
+            for name, content in attachments.items()
+        ],
+    )
+    bound = str(session_content_hash(session))
+    return SessionWritePayload(
+        session_id=f"{Origin.CLAUDE_AI_EXPORT.value}:{native_id}",
+        content_hash=bound,
+        parsed_session=session.model_copy(update={"content_hash": bound}),
+        message_count=1,
+        attachment_count=len(attachments),
+        raw_id=raw_id,
+    )
+
+
+def test_excising_a_keeps_the_attachment_it_shares_with_b(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    payload_a = b'{"uuid": "att-a", "synthetic": "session a"}'
+    raw_a = _acquire(archive_root, "att-a", payload_a, (_SHARED_ATTACHMENT, _A_ONLY_ATTACHMENT))
+    raw_b = _acquire(archive_root, "att-b", b'{"uuid": "att-b", "synthetic": "session b"}', ())
+    publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+    with open_connection(archive_root / "index.db") as conn:
+        for payload in (
+            _attachment_session("att-a", raw_a, {"shared.txt": _SHARED_ATTACHMENT, "own.txt": _A_ONLY_ATTACHMENT}),
+            _attachment_session("att-b", raw_b, {"shared.txt": _SHARED_ATTACHMENT}),
+        ):
+            changed, _counts = _write_session(conn, payload, blob_publisher=publisher)
+            assert changed is True
+        conn.commit()
+        session_a = str(conn.execute("SELECT session_id FROM sessions WHERE native_id = 'att-a'").fetchone()[0])
+
+    shared = hashlib.sha256(_SHARED_ATTACHMENT).digest()
+    own = hashlib.sha256(_A_ONLY_ATTACHMENT).digest()
+    receipt = apply_session_excision(archive_root, session_a, reason="synthetic secret", actor="user:local")
+
+    assert receipt.found is True
+    assert _excised(archive_root, hashlib.sha256(payload_a).digest())
+    assert _excised(archive_root, own)
+    assert not _excised(archive_root, shared)
+    assert receipt.shared_blob_hashes == (shared.hex(),)
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        kept = conn.execute(
+            "SELECT a.acquisition_status FROM attachments AS a JOIN attachment_refs AS r "
+            "ON r.attachment_id = a.attachment_id WHERE r.session_id = ? AND a.blob_hash = ?",
+            (f"{Origin.CLAUDE_AI_EXPORT.value}:att-b", shared),
+        ).fetchall()
+    assert [tuple(row) for row in kept] == [("acquired",)]
+    assert BlobStore(archive_root / "blob").read_all(shared.hex()) == _SHARED_ATTACHMENT
+
+    # B's next revision still carries the shared attachment and is admitted;
+    # A's unchanged export and a new raw carrying A's own attachment are not.
+    _acquire(archive_root, "att-b", b'{"uuid": "att-b", "synthetic": "session b, revised"}', (_SHARED_ATTACHMENT,))
+    with pytest.raises(ContentExcisedError):
+        _acquire(archive_root, "att-a", payload_a, ())
+    with pytest.raises(ContentExcisedError):
+        _acquire(archive_root, "att-c", b'{"uuid": "att-c"}', (_A_ONLY_ATTACHMENT,))
