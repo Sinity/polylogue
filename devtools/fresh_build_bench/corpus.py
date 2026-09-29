@@ -555,16 +555,16 @@ def corpus_from_files(
                 continue
             copied.add(member)
             _copy_private(member, out / "home" / member.relative_to(home))
-    staged: set[Path] = set()
+    staged: set[str] = set()
     for origin, file in exports:
         if origin not in EXPORT_ORIGINS:
             raise ValueError(f"unknown export origin {origin!r}; known: {', '.join(EXPORT_ORIGINS)}")
         resolved = file.resolve(strict=True)
-        destination = out / "exports" / origin / resolved.name
-        # Two exports with one basename would overwrite each other and seal
-        # fewer files than were declared.
-        if destination in staged:
-            raise ValueError(f"two --export {origin} files share the name {resolved.name!r}; rename one")
-        staged.add(destination)
-        _copy_private(resolved, destination)
+        # Two exports with one basename would overwrite each other: here, in
+        # one origin's directory, and in the run's archive inbox, which every
+        # origin shares.
+        if resolved.name in staged:
+            raise ValueError(f"two --export files share the name {resolved.name!r}; rename one")
+        staged.add(resolved.name)
+        _copy_private(resolved, out / "exports" / origin / resolved.name)
     return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files), "exports": len(exports)})

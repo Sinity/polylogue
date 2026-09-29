@@ -1231,9 +1231,9 @@ def test_exports_are_staged_into_the_archive_inbox_as_copies(tmp_path: Path) -> 
 
     corpus = tmp_path / "corpus"
     (corpus / "home").mkdir(parents=True)
-    for origin in ("chatgpt", "claude-ai"):
+    for origin, name in (("chatgpt", "conversations.json"), ("claude-ai", "claude.json")):
         (corpus / "exports" / origin).mkdir(parents=True)
-        (corpus / "exports" / origin / "conversations.json").write_text(f'["{origin}"]', encoding="utf-8")
+        (corpus / "exports" / origin / name).write_text(f'["{origin}"]', encoding="utf-8")
     sealed = corpus / "exports" / "chatgpt" / "conversations.json"
     before = sealed.stat().st_ctime_ns
     config = RunConfig(corpus=corpus, work=tmp_path / "work", candidate=tmp_path, python="p", label="l")
@@ -1241,14 +1241,27 @@ def test_exports_are_staged_into_the_archive_inbox_as_copies(tmp_path: Path) -> 
     paths = run._prepare_paths(config)
 
     inbox = paths["archive"] / "inbox"
-    assert sorted(path.name for path in inbox.iterdir()) == [
-        "chatgpt-conversations.json",
-        "claude-ai-conversations.json",
-    ]
-    assert (inbox / "chatgpt-conversations.json").read_text(encoding="utf-8") == '["chatgpt"]'
-    assert (inbox / "chatgpt-conversations.json").stat().st_ino != sealed.stat().st_ino
+    assert sorted(path.name for path in inbox.iterdir()) == ["claude.json", "conversations.json"]
+    assert (inbox / "conversations.json").read_text(encoding="utf-8") == '["chatgpt"]'
+    assert (inbox / "conversations.json").stat().st_ino != sealed.stat().st_ino
     assert sealed.stat().st_ctime_ns == before
     assert "sources" not in paths["config"].read_text(encoding="utf-8")
+
+
+def test_exports_of_two_origins_with_one_name_are_refused(tmp_path: Path) -> None:
+    """Anti-vacuity: stage without checking and the second origin's export
+    overwrites the first in the inbox, so one sealed file is never ingested."""
+    from devtools.fresh_build_bench import run
+
+    corpus = tmp_path / "corpus"
+    (corpus / "home").mkdir(parents=True)
+    for origin in ("chatgpt", "claude-ai"):
+        (corpus / "exports" / origin).mkdir(parents=True)
+        (corpus / "exports" / origin / "conversations.json").write_text("[]", encoding="utf-8")
+    config = RunConfig(corpus=corpus, work=tmp_path / "work", candidate=tmp_path, python="p", label="l")
+
+    with pytest.raises(ValueError, match="share the name"):
+        run._prepare_paths(config)
 
 
 def test_a_refresh_over_changed_evidence_does_not_qualify(tmp_path: Path) -> None:

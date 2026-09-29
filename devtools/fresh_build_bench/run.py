@@ -677,8 +677,11 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
                 if file.is_symlink() or not file.is_file():
                     raise ValueError(f"corpus export is not a sealed regular file: {file}")
                 inbox.mkdir(mode=0o700, exist_ok=True)
-                # The origin prefix keeps two origins' same-named exports apart.
-                shutil.copyfile(file, inbox / f"{path.name}-{file.name}")
+                # Staged under its own name, as ``polylogue import`` stages it.
+                staged = inbox / file.name
+                if staged.exists():
+                    raise ValueError(f"two corpus exports share the name {file.name!r}; rename one")
+                shutil.copyfile(file, staged)
     config_path = paths["xdg"] / "config" / "polylogue" / "polylogue.toml"
     config_path.parent.mkdir(parents=True)
     # Embeddings are external API work and stay off.
