@@ -8,7 +8,6 @@ route as batch acquisition.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,6 +149,7 @@ def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> N
 def test_common_live_batch_admits_conversation_through_vendor_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     root = tmp_path / "antigravity"
     conversation = root / "conversations" / "cascade.pb"
@@ -183,7 +183,7 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
 
     result = processor._ingest_full_paths_sync([conversation], source_name="antigravity")
 
-    assert result.succeeded == [conversation]
+    assert result.succeeded == [conversation], (result, caplog.text)
     assert result.failed == []
 
 
@@ -225,12 +225,15 @@ def test_failed_conversion_still_records_the_attempted_observation(
     assert conversation in result.captured_file_observations
 
 
-def test_common_live_batch_retries_a_failed_vendor_conversion(
-    tmp_path: Path,
+@pytest.mark.asyncio
+async def test_common_live_batch_retries_a_failed_vendor_conversion(
+    workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue import Polylogue
+
+    tmp_path = workspace_env["archive_root"]
 
     root = tmp_path / "antigravity"
     conversation = root / "conversations" / "cascade.pb"
@@ -259,34 +262,185 @@ def test_common_live_batch_retries_a_failed_vendor_conversion(
 
     client = Client()
     monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: client)
-    initialize_active_archive_root(tmp_path)
-    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    archive = Polylogue(archive_root=tmp_path, db_path=workspace_env["data_root"] / "index.db")
     index_db = tmp_path / "cursor.db"
     processor = LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        archive,
         (WatchSource(name="antigravity", root=root),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
 
     try:
-        first = asyncio.run(processor.ingest_files([conversation], emit_event=False))
+        first = await processor.ingest_files([conversation], emit_event=False)
         failed_cursor = processor._cursor.get_record(conversation)
 
-        assert first.failed_file_count == 1
+        assert first.failed_file_count == 1, (first, caplog.text)
         assert failed_cursor is not None
         assert failed_cursor.failure_count == 1
         assert failed_cursor.next_retry_at is not None
 
-        second = asyncio.run(processor.ingest_files([conversation], emit_event=False))
+        second = await processor.ingest_files([conversation], emit_event=False)
         recovered_cursor = processor._cursor.get_record(conversation)
-    finally:
-        clear_degraded()
 
-    assert second.failed_file_count == 0
-    assert recovered_cursor is not None
-    assert recovered_cursor.failure_count == 0
-    assert recovered_cursor.next_retry_at is None
+        assert client.attempts == 2
+        assert second.succeeded_file_count == 1
+        assert second.ingested_session_count == 1
+        assert second.failed_file_count == 0
+        assert recovered_cursor is not None
+        assert recovered_cursor.failure_count == 0
+        assert recovered_cursor.next_retry_at is None
+
+    finally:
+        await archive.close()
+
+
+def _live_vendor_cohort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    on_export: Any = None,
+) -> tuple[LiveBatchProcessor, list[Path], list[str]]:
+    root = tmp_path / "antigravity"
+    (root / "conversations").mkdir(parents=True)
+    paths = [root / "conversations" / f"cascade-{number}.pb" for number in range(3)]
+    for number, path in enumerate(paths):
+        path.write_bytes(f"protobuf revision {number}".encode())
+    exported: list[str] = []
+
+    class Client:
+        def start(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def search_sessions(
+            self, *, limit: int = 10000, query: str = ""
+        ) -> list[antigravity.AntigravitySessionSummary]:
+            return []
+
+        def export_markdown(self, cascade_id: str) -> str:
+            exported.append(cascade_id)
+            if on_export is not None:
+                on_export()
+            return f"### User Input\n\nSynthetic conversation {cascade_id}"
+
+    monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: Client())
+    db_path = tmp_path / "cursor.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="antigravity", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test",
+    )
+    return processor, paths, exported
+
+
+def test_vendor_conversion_cannot_publish_a_later_protobuf_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import sqlite3
+    from hashlib import sha256
+
+    from polylogue.sources import source_parsing
+    from polylogue.sources.acquisition_boundary import capture_bound_path
+
+    processor, paths, exported = _live_vendor_cohort(tmp_path, monkeypatch)
+    converted_digest = sha256(paths[0].read_bytes()).hexdigest()
+    original_capture = capture_bound_path
+
+    def replace_between_conversion_and_capture(store: Any, path: Path, provider: Provider) -> tuple[str, int]:
+        if path == paths[0]:
+            path.write_bytes(b"different protobuf after the successful conversion")
+        return original_capture(store, path, provider)
+
+    monkeypatch.setattr(source_parsing, "capture_bound_path", replace_between_conversion_and_capture)
+    result = processor._ingest_full_paths_sync(paths, source_name="antigravity")
+    assert set(exported) == {path.stem for path in paths}, (exported, result, caplog.text)
+    assert result.failed == [paths[0]]
+    assert result.succeeded == paths[1:]
+    assert paths[0] not in result.raw_fingerprints
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        retained = conn.execute("SELECT source_path, hex(blob_hash) FROM raw_sessions ORDER BY source_path").fetchall()
+    assert retained == [(str(path), sha256(path.read_bytes()).hexdigest().upper()) for path in paths[1:]]
+    assert converted_digest != sha256(paths[0].read_bytes()).hexdigest()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
+            (path.stem,) for path in paths[1:]
+        ]
+
+
+def test_vendor_cohort_checks_the_pass_budget_between_conversations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frozen_clock: Any,
+) -> None:
+    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET
+
+    processor, paths, exported = _live_vendor_cohort(
+        tmp_path,
+        monkeypatch,
+        on_export=lambda: frozen_clock.advance(2),
+    )
+    result = processor._ingest_full_paths_sync(
+        paths,
+        source_name="antigravity",
+        max_pass_seconds=1,
+        pass_started=frozen_clock.monotonic(),
+    )
+    assert exported == [paths[0].stem]
+    assert result.failed == []
+    assert result.time_budget_exceeded
+    assert result.excluded == dict.fromkeys(paths[1:], REFUSED_UNATTEMPTED_TIME_BUDGET)
+    assert paths[0] in result.succeeded or paths[0] in result.raw_deferred
+    assert all(processor._cursor.get_record(path) is None for path in paths[1:])
+
+
+def test_vendor_cohort_propagates_writer_budget_refusal_without_poisoning_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frozen_clock: Any,
+) -> None:
+    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+
+    processor, paths, exported = _live_vendor_cohort(
+        tmp_path,
+        monkeypatch,
+        on_export=lambda: frozen_clock.advance(31),
+    )
+    token = enter_write_hold("watcher.live_ingest.full", 30)
+    try:
+        with pytest.raises(WriteHoldBudgetError) as caught:
+            processor._ingest_full_paths_sync(paths, source_name="antigravity")
+        assert caught.value.checkpoint == "full_acquisition_file"
+    finally:
+        exit_write_hold(token)
+    assert exported == [paths[0].stem]
+    assert all(processor._cursor.get_record(path) is None for path in paths)
+
+
+def test_vendor_admission_refusal_happens_before_server_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    processor, paths, exported = _live_vendor_cohort(tmp_path, monkeypatch)
+    starts: list[Path] = []
+
+    class RefusedClient:
+        def start(self) -> None:
+            starts.append(paths[0])
+            raise AssertionError("unadmitted cohort started a vendor process")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: RefusedClient())
+    assert (
+        list(antigravity.iter_language_server_export_results(paths[0].parent.parent, admit_path=lambda _path: False))
+        == []
+    )
+    assert starts == []
+    assert exported == []
 
 
 def test_an_excised_conversation_snapshot_is_reported_as_excised(

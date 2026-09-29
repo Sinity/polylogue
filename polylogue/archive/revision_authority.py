@@ -57,7 +57,10 @@ BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision a
 #: Both admission writers and replay readers depend on revision authority, so
 #: this token belongs with that shared contract rather than either storage
 #: projection that consumes it.
-RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v4"
+#: v5: claude.ai project and account-memory documents, and Codex rollouts
+#: with bare ``token_usage_record`` lines, are session-bearing; OTel session
+#: ids escape their components.
+RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v5"
 
 
 def decided_unresolved_membership_sql(table_alias: str = "r") -> str:

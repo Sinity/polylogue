@@ -1030,3 +1030,52 @@ def test_dispatch_retains_unprojected_span_fields_in_evidence() -> None:
     unprojected = cast(dict[str, object], event.payload["unprojected_span_fields"])
     assert {key: unprojected[key] for key in extra} == extra
     assert "attributes" not in unprojected
+
+
+def _conversation_resource(
+    service: str, conversation: str, trace_id: str
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    span = _chat(trace_id, "1" * 16, 1_000, ["Q"], f"A from {service}")
+    span["attributes"] = [
+        _attr("gen_ai.conversation.id", conversation) if attribute["key"] == "gen_ai.conversation.id" else attribute
+        for attribute in cast(list[dict[str, object]], span["attributes"])
+    ]
+    return ([_attr("service.name", service)], [span])
+
+
+def test_session_identity_components_cannot_run_into_each_other(tmp_path: Path) -> None:
+    """A ``:`` inside a service name or conversation id is not a separator.
+
+    Anti-vacuity: join the raw components with ``:`` and service
+    ``svc:conversation`` / conversation ``x`` and service ``svc`` /
+    conversation ``conversation:x`` both become
+    ``svc:conversation:conversation:x`` and are written as one session.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    sessions = parse_payload(
+        Provider.OTEL_GENAI,
+        _document(
+            _conversation_resource("svc:conversation", "x", "a" * 32),
+            _conversation_resource("svc", "conversation:x", "b" * 32),
+        ),
+        "ignored",
+    )
+
+    assert sorted(session.provider_session_id for session in sessions) == [
+        "svc%3Aconversation:conversation:x",
+        "svc:conversation:conversation%3Ax",
+    ]
+    with ArchiveStore(tmp_path / "archive") as archive:
+        stored = {write_index_session(archive, session) for session in sessions}
+    assert len(stored) == 2
+
+
+def test_session_identity_escapes_the_escape_character() -> None:
+    """``%`` is escaped too, so a literal ``%3A`` never reads as an escaped ``:``."""
+    (literal,) = otel_genai.parse(_document(_conversation_resource("svc%3Ax", "c", "c" * 32)), "ignored")
+    (escaped,) = otel_genai.parse(_document(_conversation_resource("svc:x", "c", "d" * 32)), "ignored")
+
+    assert literal.provider_session_id == "svc%253Ax:conversation:c"
+    assert escaped.provider_session_id == "svc%3Ax:conversation:c"

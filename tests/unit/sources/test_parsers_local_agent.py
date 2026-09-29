@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1589,11 +1589,17 @@ def test_antigravity_source_walk_prefers_language_server_exports(
     (tmp_path / "conversations" / "cascade-1.pb").write_bytes(b"opaque protobuf")
 
     def fake_exports(
-        root: Path, *, only_cascade_ids: frozenset[str] | None = None
+        root: Path,
+        *,
+        only_cascade_ids: frozenset[str] | None = None,
+        admit_path: Callable[[Path], bool] | None = None,
     ) -> list[antigravity.AntigravityExportOutcome]:
         assert root == tmp_path
         del only_cascade_ids
-        return [antigravity.AntigravityExportOutcome(tmp_path / "conversations/cascade-1.pb", "cascade-1", exported)]
+        path = tmp_path / "conversations/cascade-1.pb"
+        if admit_path is not None and not admit_path(path):
+            return []
+        return [antigravity.AntigravityExportOutcome(path, "cascade-1", exported)]
 
     monkeypatch.setattr(
         "polylogue.sources.source_parsing.antigravity.iter_language_server_export_results",

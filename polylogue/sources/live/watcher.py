@@ -75,7 +75,11 @@ logger = get_logger(__name__)
 # watcher pass -- the production convergence route, not a manual rebuild.
 # v3: tool-result outcomes now derive `is_error` from an explicit exit code
 # (#4539), so records parsed under v2 retain a stale unknown outcome.
-_PARSER_FINGERPRINT = "live-batched-v3"
+# v4: relocated Claude Code cwds lead working_directories, argument-less
+# ChatGPT commands and ID-less Antigravity tool steps become paired tool
+# calls, OTel session ids escape their components, and a complete JSONL
+# record that does not decode is terminal for every provider.
+_PARSER_FINGERPRINT = "live-batched-v4"
 # polylogue-11cg9: the dispatcher's byte budget bounds an admitted page's
 # *size* but not the *time* a single full-ingest pass can hold the sole
 # archive writer -- a handful of files, or one slow-to-parse file, can still
@@ -110,6 +114,10 @@ _INCOMPLETE_APPEND_PROBE_CHUNK_BYTES = 1024 * 1024
 # pass would have re-observed the file anyway.
 _STUCK_DEFERRED_APPEND_AGE_S = 60.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
+
+#: The Codex artifact rules the ``codex-state`` source admits beside its
+#: databases: the raw-only JSONL sidecars at the install root.
+CODEX_STATE_SIDECAR_KINDS = frozenset({"session_index", "prompt_history_log"})
 
 
 class _ArchivedCursorReconciliation(str, Enum):
@@ -201,10 +209,12 @@ class WatchSource:
     source_id: str | None = None
     role: str | None = None
     # Most provider sources use OriginSpec path rules as an admission
-    # escape-hatch for extensionless or otherwise path-scoped artifacts. A
-    # source may disable that routing when its suffix set is deliberately a
-    # hard boundary (for example, the default Codex state database source).
-    allow_path_scoped_artifacts: bool = True
+    # escape-hatch for extensionless or otherwise path-scoped artifacts.
+    # ``None`` admits every declared rule of the source's provider. A source
+    # whose suffix set is deliberately a hard boundary names the only rule
+    # kinds it admits (the default Codex state database source admits its
+    # install-level JSONL sidecars and nothing else).
+    path_artifact_kinds: frozenset[str] | None = None
     required: bool = False
     recursive: bool = True
     exact_paths: frozenset[Path] | None = None
@@ -228,7 +238,8 @@ class WatchSource:
             provider = Provider.from_string(self.name)
         except ValueError:
             return any(name.endswith(suffix) for suffix in self.suffixes)
-        if self.allow_path_scoped_artifacts and artifact_rule_for_path(provider, str(path)) is not None:
+        rule = artifact_rule_for_path(provider, str(path))
+        if rule is not None and (self.path_artifact_kinds is None or rule.kind in self.path_artifact_kinds):
             return True
         return any(name.endswith(suffix) for suffix in self.suffixes)
 
@@ -1006,10 +1017,13 @@ class LiveWatcher:
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection,
     ) -> tuple[object, ...] | None:
-        """Newest session-bearing raw for ``path`` that the index contains."""
+        """Newest session-bearing raw for ``path`` that the index contains.
+
+        The row is ``(raw_id, origin, blob_hash, blob_size, acquired_at_ms)``.
+        """
         rows = source_conn.execute(
             """
-            SELECT raw_id, origin, blob_hash, blob_size
+            SELECT raw_id, origin, blob_hash, blob_size, acquired_at_ms
             FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
@@ -1047,13 +1061,14 @@ class LiveWatcher:
         proof of what was consumed, and the caller re-verifies them against
         the archived blob hash before advancing, so a changed observation
         still returns through full ingest -- the only route that can carry
-        the new evidence the verdict needs.
+        the new evidence the verdict needs. The row has the shape of
+        :meth:`_archived_cursor_row`'s.
         """
         return cast(
             "tuple[object, ...] | None",
             source_conn.execute(
                 f"""
-                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size
+                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size, r.acquired_at_ms
                 FROM raw_sessions AS r
                 WHERE r.source_path = ?
                   AND COALESCE(r.source_index, 0) >= 0
@@ -1065,6 +1080,35 @@ class LiveWatcher:
                 (str(path),),
             ).fetchone(),
         )
+
+    @classmethod
+    def _newest_archived_outcome_row(
+        cls,
+        path: Path,
+        *,
+        source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection,
+    ) -> tuple[object, ...] | None:
+        """Newest raw for ``path`` with a settled outcome: materialized or decided unresolved.
+
+        Both classes are proof of consumed bytes, so the newest acquisition
+        across them is what the cursor restores to, ordered exactly as each
+        class orders itself (acquisition time, then ``raw_id``). Preferring
+        any materialized raw would restore an older, shorter prefix behind a
+        newer decided raw, and every restart would re-read the newer bytes
+        only to reach the same verdict.
+        """
+        candidates = [
+            row
+            for row in (
+                cls._archived_cursor_row(path, source_conn=source_conn, index_conn=index_conn),
+                cls._decided_unresolved_cursor_row(path, source_conn=source_conn),
+            )
+            if row is not None
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda row: (int(cast("int", row[4])), str(row[0])))
 
     @classmethod
     def _path_corroborated_by_index(
@@ -1144,9 +1188,7 @@ class LiveWatcher:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:
             if shared is not None:
-                row = self._archived_cursor_row(
-                    path, source_conn=shared[0], index_conn=shared[1]
-                ) or self._decided_unresolved_cursor_row(path, source_conn=shared[0])
+                row = self._newest_archived_outcome_row(path, source_conn=shared[0], index_conn=shared[1])
             else:
                 source_db = archive_root / "source.db"
                 index_db = _published_index_path(archive_root)
@@ -1156,14 +1198,12 @@ class LiveWatcher:
                     closing(open_readonly_connection(source_db, timeout=1.0)) as source_conn,
                     closing(open_readonly_connection(index_db, timeout=1.0)) as index_conn,
                 ):
-                    row = self._archived_cursor_row(
-                        path, source_conn=source_conn, index_conn=index_conn
-                    ) or self._decided_unresolved_cursor_row(path, source_conn=source_conn)
+                    row = self._newest_archived_outcome_row(path, source_conn=source_conn, index_conn=index_conn)
         except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
             return _ArchivedCursorReconciliation.INCOMPATIBLE
-        _raw_id, origin, blob_hash, blob_size = row
+        _raw_id, origin, blob_hash, blob_size, _acquired_at_ms = row
         archived_size = int(cast("int | None", blob_size) or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
@@ -1497,12 +1537,15 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # about history.jsonl/config.toml/log/ under the shared root. Suffix
         # filtering alone (".sqlite"/".db") keeps this cheap; the acquisition
         # path (sources/live/batch.py) re-verifies table shape by name and
-        # structure before treating anything as in-scope evidence.
+        # structure before treating anything as in-scope evidence. The only
+        # other files it admits are the install-level ``session_index.jsonl``
+        # and ``history.jsonl`` sidecars, by their declared exact-coordinate
+        # rules: retained replay reads them for Codex titles and history.
         WatchSource(
             name="codex-state",
             root=codex_path().parent,
             suffixes=(".sqlite", ".db"),
-            allow_path_scoped_artifacts=False,
+            path_artifact_kinds=CODEX_STATE_SIDECAR_KINDS,
         ),
         # polylogue-rovf5: Codex keeps harness-authored memory documents in
         # ~/.codex/memories/, a sibling of sessions/. Rooted there rather

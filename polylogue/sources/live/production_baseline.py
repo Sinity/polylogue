@@ -44,9 +44,14 @@ from polylogue.sources.source_acquisition_components import (
     replay_zip_entry_acquisition_revisions,
     sniff_zip_provider,
 )
-from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
+from polylogue.sources.sqlite_snapshot import (
+    is_sqlite_path,
+    original_sqlite_source_path,
+    sqlite_member_revision_and_size,
+)
 from polylogue.sources.walk_faults import WalkRefusedError
 from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -206,24 +211,232 @@ class ProductionSourceBaseline:
 
 
 def unretained_source_decisions(baseline: ProductionSourceBaseline, source_db: Path) -> tuple[SourceDecision, ...]:
-    """Accepted coordinates absent from the durable raw-session ledger."""
+    """Accepted revisions whose exact bytes the durable raw-session ledger does not hold.
+
+    A revision is retained by a raw row with its exact coordinate and hash,
+    or, for a file that kept growing after it was baselined, by retained
+    bytes that reproduce it as a prefix (see :func:`_retained_as_prefix`).
+    """
     conn = open_readonly_connection(
         source_db, tier=ArchiveTier.SOURCE, validate_schema=False, timeout_class="background-read"
     )
     try:
         retained = {
-            (
-                str(path),
-                int(source_index),
-                bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash),
-            )
+            (str(path), int(source_index), _hex(blob_hash))
             for path, source_index, blob_hash in conn.execute(
                 "SELECT source_path, source_index, blob_hash FROM raw_sessions"
             )
         }
+        blobs = BlobStore(source_db.parent / "blob")
+        return tuple(
+            row
+            for row in baseline.accepted
+            if (row.path, row.source_index or 0, row.revision) not in retained
+            and not _retained_as_prefix(conn, blobs, row)
+        )
     finally:
         conn.close()
-    return tuple(row for row in baseline.accepted if (row.path, row.source_index or 0, row.revision) not in retained)
+
+
+def _hex(blob_hash: object) -> str:
+    return bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash)
+
+
+@dataclass(frozen=True, slots=True)
+class _RetainedPathRow:
+    raw_id: str
+    source_index: int
+    blob_hash: str
+    blob_size: int
+    revision_kind: str
+    revision_authority: str
+    source_revision: str | None
+    predecessor_raw_id: str | None
+    predecessor_source_revision: str | None
+    baseline_raw_id: str | None
+    append_start_offset: int | None
+    append_end_offset: int | None
+
+
+def _retained_as_prefix(conn: sqlite3.Connection, blobs: BlobStore, row: SourceDecision) -> bool:
+    """Whether the path's retained bytes reproduce ``row``'s revision as a prefix.
+
+    A live file can grow between the baseline hashing it and intake
+    retaining it. Intake then holds a larger whole-file capture, or an
+    earlier capture followed by byte-proven append tails, and no raw row
+    carries the baselined whole-file hash. The revision is still retained
+    when those bytes, read in their recorded order, begin with exactly the
+    baselined bytes: the first ``material_bytes`` of a whole-file capture
+    or of a contiguous append chain rooted at one are streamed and hashed.
+    Row metadata alone never proves retention; a missing blob, a short
+    read, a gap, an unproven tail or different bytes leaves the revision
+    unretained. A database export and a ZIP member are whole units, never
+    prefixes.
+    """
+    if (
+        row.revision is None
+        or row.material_bytes is None
+        or (row.source_index or 0) != 0
+        or row.reason == "archive_member"
+        or is_sqlite_path(Path(row.path))
+    ):
+        return False
+    size = row.material_bytes
+    rows = {
+        str(raw_id): _RetainedPathRow(
+            raw_id=str(raw_id),
+            source_index=int(source_index),
+            blob_hash=_hex(blob_hash),
+            blob_size=int(blob_size),
+            revision_kind=str(revision_kind),
+            revision_authority=str(revision_authority),
+            source_revision=None if source_revision is None else str(source_revision),
+            predecessor_raw_id=None if predecessor_raw_id is None else str(predecessor_raw_id),
+            predecessor_source_revision=(
+                None if predecessor_source_revision is None else str(predecessor_source_revision)
+            ),
+            baseline_raw_id=None if baseline_raw_id is None else str(baseline_raw_id),
+            append_start_offset=None if append_start_offset is None else int(append_start_offset),
+            append_end_offset=None if append_end_offset is None else int(append_end_offset),
+        )
+        for (
+            raw_id,
+            source_index,
+            blob_hash,
+            blob_size,
+            revision_kind,
+            revision_authority,
+            source_revision,
+            predecessor_raw_id,
+            predecessor_source_revision,
+            baseline_raw_id,
+            append_start_offset,
+            append_end_offset,
+        ) in conn.execute(
+            """
+            SELECT raw_id, source_index, blob_hash, blob_size, revision_kind, revision_authority,
+                   source_revision, predecessor_raw_id, predecessor_source_revision, baseline_raw_id,
+                   append_start_offset, append_end_offset
+            FROM raw_sessions
+            WHERE source_path = ?
+            ORDER BY raw_id
+            """,
+            (row.path,),
+        )
+    }
+    # Covers over the same blobs read the same bytes; each is hashed once.
+    blob_sequences = {tuple(member.blob_hash for member in cover) for cover in _prefix_covers(rows, size)}
+    sizes = {member.blob_hash: member.blob_size for member in rows.values()}
+    return any(
+        _prefix_digest(blobs, tuple((blob_hash, sizes[blob_hash]) for blob_hash in sequence), size) == row.revision
+        for sequence in sorted(blob_sequences, key=len)
+    )
+
+
+def _chain_end(member: _RetainedPathRow) -> int:
+    return member.blob_size if member.revision_kind != "append" else int(member.append_end_offset or 0)
+
+
+def _proven_parent(rows: Mapping[str, _RetainedPathRow], member: _RetainedPathRow) -> _RetainedPathRow | None:
+    """The retained predecessor an append tail continues byte for byte, or None."""
+    if (
+        member.revision_authority != "byte_proven"
+        or member.append_start_offset is None
+        or member.append_end_offset is None
+        or member.blob_size != member.append_end_offset - member.append_start_offset
+        or member.predecessor_raw_id is None
+    ):
+        return None
+    parent = rows.get(member.predecessor_raw_id)
+    if (
+        parent is None
+        or parent.source_revision is None
+        or parent.source_revision != member.predecessor_source_revision
+        or _chain_end(parent) != member.append_start_offset
+    ):
+        return None
+    return parent
+
+
+def _prefix_covers(rows: Mapping[str, _RetainedPathRow], size: int) -> set[tuple[_RetainedPathRow, ...]]:
+    """Every retained member sequence that holds source bytes ``[0, size)`` in order.
+
+    A whole-file capture (``source_index`` 0) starts at byte 0. An append
+    tail extends a chain only when :func:`_proven_parent` accepts its link
+    and it names the chain's full capture as its baseline. A sequence ends at
+    the first member that reaches ``size``, so a longer chain through the
+    same members is the same proof. Each member's chain root is resolved
+    once per path.
+    """
+    roots: dict[str, str | None] = {}
+
+    def root_of(head: _RetainedPathRow) -> str | None:
+        trail: list[_RetainedPathRow] = []
+        on_trail: set[str] = set()
+        member = head
+        while member.raw_id not in roots:
+            if member.raw_id in on_trail:
+                for link in trail:
+                    roots[link.raw_id] = None
+                return None
+            if member.revision_kind != "append":
+                roots[member.raw_id] = member.raw_id if member.source_index == 0 else None
+                break
+            parent = _proven_parent(rows, member)
+            if parent is None:
+                roots[member.raw_id] = None
+                break
+            trail.append(member)
+            on_trail.add(member.raw_id)
+            member = parent
+        for link in reversed(trail):
+            root = roots[str(link.predecessor_raw_id)]
+            chained = root is not None and rows[root].revision_kind == "full" and link.baseline_raw_id == root
+            roots[link.raw_id] = root if chained else None
+        return roots[head.raw_id]
+
+    covers: set[tuple[_RetainedPathRow, ...]] = set()
+    for member in rows.values():
+        if _chain_end(member) < size or root_of(member) is None:
+            continue
+        if member.revision_kind == "append" and _chain_end(rows[str(member.predecessor_raw_id)]) >= size:
+            continue
+        chain = [member]
+        while chain[-1].revision_kind == "append":
+            chain.append(rows[str(chain[-1].predecessor_raw_id)])
+        covers.add(tuple(reversed(chain)))
+    return covers
+
+
+def _prefix_digest(blobs: BlobStore, cover: tuple[tuple[str, int], ...], size: int) -> str | None:
+    """Stream the first ``size`` bytes of ``cover``'s ``(blob_hash, blob_size)`` members.
+
+    None when a blob is absent, short or otherwise not the retained bytes. A
+    read fault a later read can clear is raised, typed retryable, rather than
+    reported as a revision the archive does not hold.
+    """
+    digest = hashlib.sha256()
+    remaining = size
+    for blob_hash, blob_size in cover:
+        take = min(blob_size, remaining)
+        try:
+            with blobs.blob_path(blob_hash).open("rb") as stream:
+                while take:
+                    chunk = stream.read(min(1024 * 1024, take))
+                    if not chunk:
+                        return None
+                    digest.update(chunk)
+                    take -= len(chunk)
+                    remaining -= len(chunk)
+        except OSError as exc:
+            if retryable_read_fault(exc):
+                raise ProductionBaselineReadUnavailableError(f"retained blob {blob_hash} is unreadable: {exc}") from exc
+            return None
+        except ValueError:
+            return None
+        if not remaining:
+            break
+    return digest.hexdigest() if not remaining else None
 
 
 def unretained_source_material(
@@ -560,7 +773,7 @@ def capture_production_source_baseline(
                     sorted(source.ignored_dir_names),
                     source.source_id,
                     source.role,
-                    source.allow_path_scoped_artifacts,
+                    None if source.path_artifact_kinds is None else sorted(source.path_artifact_kinds),
                     source.required,
                 )
                 for source in sources
@@ -616,6 +829,7 @@ def capture_production_source_baseline(
     }
     for source_name, path, disposition, reason in observed:
         _check_observation_cancelled(cancelled)
+        retained_path = _retained_source_path(path)
         if path.is_symlink():
             target = str(path.resolve())
             independently_accepted = (
@@ -668,7 +882,7 @@ def capture_production_source_baseline(
                     # decision itself and stays a fault (handled below).
                     decisions.append(
                         SourceDecision(
-                            source_name, str(path), "excluded", f"intake_excluded:{admission.excluded_reason}"
+                            source_name, retained_path, "excluded", f"intake_excluded:{admission.excluded_reason}"
                         )
                     )
                     continue
@@ -683,7 +897,7 @@ def capture_production_source_baseline(
                 except ForeignOriginContentError as exc:
                     decisions.append(
                         SourceDecision(
-                            source_name, str(path), "excluded", f"intake_excluded:{foreign_origin_exclusion(exc)}"
+                            source_name, retained_path, "excluded", f"intake_excluded:{foreign_origin_exclusion(exc)}"
                         )
                     )
                     continue
@@ -691,17 +905,32 @@ def capture_production_source_baseline(
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
             except RetryableSourceReadError as exc:
                 decisions.append(
-                    SourceDecision(source_name, str(path), "fault", f"revision_io_unavailable:{exc.cause}")
+                    SourceDecision(source_name, retained_path, "fault", f"revision_io_unavailable:{exc.cause}")
                 )
                 continue
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
-                decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
+                decisions.append(SourceDecision(source_name, retained_path, "fault", f"{reason}:{exc}"))
                 continue
         else:
             revision = None
             material_bytes = None
         decisions.append(
-            SourceDecision(source_name, str(path), disposition, reason, revision, material_bytes=material_bytes)
+            SourceDecision(source_name, retained_path, disposition, reason, revision, material_bytes=material_bytes)
         )
     return _seal(operation_id, signature, tuple(decisions))
+
+
+def _retained_source_path(path: Path) -> str:
+    """The ``raw_sessions.source_path`` acquisition records for a discovered ``path``.
+
+    ``polylogue import`` stages a SQLite snapshot beside a provenance sidecar,
+    and acquisition retains it under the original database path that sidecar
+    names. Every decision about the file uses that coordinate, so an accepted
+    revision, its fault and its exclusion all key the row intake writes.
+    """
+    if is_sqlite_path(path):
+        original = original_sqlite_source_path(path)
+        if original is not None:
+            return str(original)
+    return str(path)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
@@ -12,7 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import ERROR, WARNING, emit, get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -25,6 +25,7 @@ from .acquisition_boundary import (
     open_admitted_blob,
     open_bound_path,
     refuse_foreign_path,
+    release_refused_capture,
 )
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
@@ -86,6 +87,7 @@ def iter_antigravity_language_server_sessions(
     blob_store: BlobStore | None = None,
     only_cascade_ids: frozenset[str] | None = None,
     excised: set[Path] | None = None,
+    admit_path: Callable[[Path], bool] | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Yield Antigravity language-server export sessions for a source.
 
@@ -141,6 +143,7 @@ def iter_antigravity_language_server_sessions(
         for outcome in antigravity.iter_language_server_export_results(
             source.path,
             only_cascade_ids=only_cascade_ids,
+            admit_path=admit_path,
         ):
             if outcome.converter is not None and not handshake_recorded:
                 logger.info(
@@ -167,7 +170,7 @@ def iter_antigravity_language_server_sessions(
             try:
                 raw_data = _antigravity_raw_snapshot(
                     outcome.source_path,
-                    session,
+                    source_sha256=outcome.source_sha256,
                     capture_raw=capture_raw,
                     blob_root=blob_root,
                     blob_store=blob_store,
@@ -184,6 +187,18 @@ def iter_antigravity_language_server_sessions(
                 )
                 if excised is not None:
                     excised.add(Path(outcome.source_path))
+                continue
+            except antigravity.AntigravitySourceMutationError as exc:
+                emit(
+                    "source.antigravity.item_failed",
+                    level=ERROR,
+                    source_name="antigravity",
+                    source_path=str(outcome.source_path),
+                    native_id=outcome.cascade_id,
+                    reason="source_changed_after_conversion",
+                    outcome="refused",
+                    error_detail=str(exc),
+                )
                 continue
             yield (raw_data, session)
     except antigravity.AntigravityBinaryUnavailableError as exc:
@@ -223,8 +238,8 @@ def iter_antigravity_language_server_sessions(
 
 def _antigravity_raw_snapshot(
     source_path: Path,
-    session: ParsedSession,
     *,
+    source_sha256: str | None,
     capture_raw: bool,
     blob_root: Path | None,
     blob_store: BlobStore | None,
@@ -232,24 +247,28 @@ def _antigravity_raw_snapshot(
     """Snapshot the raw ``.pb`` bytes backing an exported session, if requested."""
     if not capture_raw:
         return None
-    del session
+    if source_sha256 is None:
+        raise antigravity.AntigravitySourceMutationError("conversion has no verified protobuf digest")
     pb_path = source_path
     if not pb_path.is_file():
-        return None
+        raise antigravity.AntigravitySourceMutationError("conversation protobuf disappeared after conversion")
     resolved_blob_root = blob_root
     if resolved_blob_root is None:
         from polylogue.paths import blob_store_root
 
         resolved_blob_root = blob_store_root()
     resolved_store = blob_store or BlobStore(resolved_blob_root)
-    blob_hash, blob_size = capture_bound_path(resolved_store, pb_path, Provider.ANTIGRAVITY)
     from polylogue.storage.blob_publication import (
         flush_blob_publications,
         publication_receipt_id,
         require_published,
     )
 
+    blob_hash, blob_size = capture_bound_path(resolved_store, pb_path, Provider.ANTIGRAVITY)
     receipt_id = publication_receipt_id(resolved_store, blob_hash)
+    if blob_hash != source_sha256:
+        release_refused_capture(resolved_store, blob_hash, receipt_id)
+        raise antigravity.AntigravitySourceMutationError("conversation protobuf changed after conversion")
     flush_blob_publications(resolved_store)
     require_published(resolved_store, blob_hash, source_path=str(pb_path))
     return RawSessionData(

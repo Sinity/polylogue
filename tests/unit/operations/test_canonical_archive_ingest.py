@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,18 +27,22 @@ def _install_antigravity_export_stub(monkeypatch: pytest.MonkeyPatch, roots: lis
         blob_root: Path | None,
         blob_store: BlobStore | None,
         only_cascade_ids: frozenset[str] | None = None,
+        excised: set[Path] | None = None,
+        admit_path: Callable[[Path], bool] | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         assert source.path is not None
         roots.append(source.path)
         for cascade_id in sorted(only_cascade_ids or ()):
             pb_path = source.path / "conversations" / f"{cascade_id}.pb"
+            if admit_path is not None and not admit_path(pb_path):
+                continue
             session = parse_markdown_export(
                 f"### User Input\n\nQuestion from {cascade_id}.\n\n### Planner Response\n\nAnswer.\n",
                 AntigravitySessionSummary(cascade_id=cascade_id),
             )
             raw = source_parsing._antigravity_raw_snapshot(
                 pb_path,
-                session,
+                source_sha256=sha256(pb_path.read_bytes()).hexdigest(),
                 capture_raw=capture_raw,
                 blob_root=blob_root,
                 blob_store=blob_store,

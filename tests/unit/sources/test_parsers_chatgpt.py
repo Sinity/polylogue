@@ -3626,6 +3626,48 @@ def test_chatgpt_command_and_args_carry_a_tool_call_without_recipient() -> None:
     assert block.type is BlockType.TOOL_USE
     assert block.tool_name == "search"
     assert block.tool_input == {"args": ["interception tools"]}
+    # Text that is not the call's JSON input stays on the call block.
+    assert block.text == "not json"
+
+
+@pytest.mark.parametrize("args", [{}, None], ids=["empty-args", "absent-args"])
+def test_chatgpt_zero_argument_command_is_a_tool_call_its_result_pairs_with(args: dict[str, Any] | None) -> None:
+    """``computer.initialize`` with no arguments is still a call.
+
+    Anti-vacuity: without the zero-argument branch the call lowers to a TEXT
+    block, and the tool-role result names a ``tool_id`` no TOOL_USE carries.
+    """
+    metadata: dict[str, Any] = {"command": "computer.initialize"}
+    if args is not None:
+        metadata["args"] = args
+    messages, _ = extract_messages_from_mapping(
+        {
+            "root": _reduced_node("root", "user", "open the browser"),
+            "call": _reduced_node("call", "assistant", "starting the computer", parent="root", metadata=metadata),
+            "out": _reduced_node("out", "tool", "computer ready", parent="call"),
+        }
+    )
+
+    by_id = {message.provider_message_id: message for message in messages}
+    [call] = by_id["call"].blocks
+    assert call.type is BlockType.TOOL_USE
+    assert call.tool_name == "computer.initialize"
+    assert call.tool_input == {}
+    assert call.tool_id == "call"
+    assert call.text == "starting the computer"
+    [result] = by_id["out"].blocks
+    assert result.type is BlockType.TOOL_RESULT
+    assert result.tool_id == call.tool_id
+
+
+def test_chatgpt_zero_argument_branch_leaves_non_assistant_command_nodes_alone() -> None:
+    """A user turn carrying ``metadata.command`` is not the model calling a tool."""
+    messages, _ = extract_messages_from_mapping(
+        {"root": _reduced_node("root", "user", "plain words", metadata={"command": "computer.initialize"})}
+    )
+
+    [block] = messages[0].blocks
+    assert block.type is BlockType.TEXT
 
 
 def test_chatgpt_finish_details_maps_only_exact_stop_reasons() -> None:

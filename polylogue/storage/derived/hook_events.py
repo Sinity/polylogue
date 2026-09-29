@@ -314,7 +314,14 @@ class HookEventsDerivation:
         )
 
     def publish(self, frame: object, replacement: HookEventsReplacement) -> bool:
+        from polylogue.archive.message.paste_detection import has_paste_indicator
+        from polylogue.core.enums import Origin
         from polylogue.sources.live.archive_open import _open_archive_for_live_write
+        from polylogue.sources.live.cursor import (
+            ConvergenceDebtBatchEntry,
+            ConvergenceDebtWrite,
+            CursorStore,
+        )
         from polylogue.storage.index_generation import ActiveWriterLease
 
         lease = ActiveWriterLease(self.archive_root)
@@ -327,6 +334,35 @@ class HookEventsDerivation:
                     return False
             if replacement.empty:
                 return True
+            paste_sessions = {
+                f"{Origin(carried.event.origin).value}:{carried.event.session_native_id}"
+                for carried in replacement.payload
+                if carried.event.event_type == "UserPromptSubmit"
+                and carried.event.session_native_id
+                and has_paste_indicator(carried.event.payload)
+            }
+            # Queue the affected old sessions, not the next transcript batch.
+            # This commits BEFORE the hook rows under the same writer lease:
+            # a crash after hook publication cannot lose the enrichment work.
+            # The batch API refuses failed writes rather than silently losing
+            # debt. A failed hook publication remains stale and queues again.
+            if paste_sessions:
+                CursorStore(self.archive_root / "ops.db").apply_convergence_debt_batch(
+                    (
+                        ConvergenceDebtBatchEntry(
+                            writes=tuple(
+                                ConvergenceDebtWrite(
+                                    stage="hook_paste_enrichment",
+                                    subject_type="session_id",
+                                    subject_id=session_id,
+                                    error="retained hook paste evidence awaiting session enrichment",
+                                    deferred=True,
+                                )
+                                for session_id in sorted(paste_sessions)
+                            )
+                        ),
+                    )
+                )
             store = _open_archive_for_live_write(self.archive_root)
             with store as archive:
                 archive.write_hook_events_from_carrier(

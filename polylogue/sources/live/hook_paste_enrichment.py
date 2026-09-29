@@ -170,12 +170,11 @@ def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, obje
                 continue
             rows = conn.execute(
                 """
-                SELECT m.message_id, m.session_id
+                SELECT m.message_id, m.session_id, m.has_paste
                 FROM messages AS m
                 JOIN sessions AS s ON s.session_id = m.session_id
                 WHERE (s.session_id = ? OR s.native_id = ?)
                   AND m.role = 'user'
-                  AND m.has_paste = 0
                   AND m.occurred_at_ms IS NOT NULL
                   AND abs(m.occurred_at_ms - ?) < ?
                 ORDER BY abs(m.occurred_at_ms - ?), m.position
@@ -189,7 +188,12 @@ def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, obje
                     hook_epoch_ms,
                 ),
             ).fetchall()
-            for message_id, matched_session_id in rows:
+            for message_id, matched_session_id, has_paste in rows:
+                # Retry the same match. Excluding enriched messages from the
+                # search would move old evidence onto a nearby, unrelated
+                # prompt every time a new hook requeues this session.
+                if has_paste:
+                    continue
                 conn.execute(
                     """
                     UPDATE messages

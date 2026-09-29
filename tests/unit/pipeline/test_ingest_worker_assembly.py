@@ -354,16 +354,24 @@ def _retained_artifact_kinds(archive_root: Path) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_codex_retained_root_sidecar_titles_survive_without_a_live_tree(
-    blob_store: BlobStore, tmp_path: Path
+    blob_store: BlobStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Retained Codex root sidecars title one rollout without minting another.
 
-    The live source only admits the two exact root coordinates despite having
-    no JSONL suffix intake. Once those bytes and the rollout disappear, the
-    canonical ingest worker must resolve the title from the archive itself.
-    """
-    from polylogue.sources.live import WatchSource
+    The daemon's default ``codex-state`` source admits the two exact root
+    coordinates despite having no JSONL suffix intake, and nothing else of
+    JSONL shape under the install root. Once those bytes and the rollout
+    disappear, the canonical ingest worker must resolve the title from the
+    archive itself.
 
+    Anti-vacuity (polylogue-ez5b9, 11.F069): with the default source's
+    path-rule escape hatch closed, it refuses both sidecars and they are
+    never retained.
+    """
+    from polylogue.sources.live.source_selection import deepest_source_for_path
+    from polylogue.sources.live.watcher import default_sources
+
+    monkeypatch.setenv("HOME", str(tmp_path))
     archive_root = tmp_path / "archive"
     session_id = "retained-codex-sidecar-thread"
     content = _codex_stream(session_id, "opening prompt must not win")
@@ -374,10 +382,27 @@ async def test_codex_retained_root_sidecar_titles_survive_without_a_live_tree(
     index_path.write_text(json.dumps({"id": session_id, "thread_name": "Retained curated title"}) + "\n")
     history_path.write_text(json.dumps({"session_id": session_id, "ts": 1, "text": "Retained history title"}) + "\n")
 
-    source = WatchSource(name="codex-state", root=codex_root, suffixes=(".sqlite", ".db"))
+    codex_sources = tuple(
+        source for source in default_sources() if source.name in {"codex", "codex-state", "codex-memories"}
+    )
+    source = next(source for source in codex_sources if source.name == "codex-state")
+    assert source.root == codex_root
     assert source.accepts(index_path)
     assert source.accepts(history_path)
-    assert not source.accepts(codex_root / "sessions" / "nested" / "session_index.jsonl")
+    for unrelated in (
+        codex_root / "sessions" / "nested" / "session_index.jsonl",
+        codex_root / "other.jsonl",
+        codex_root / "log" / "history.jsonl",
+        codex_root / "skills" / "tool" / "memories" / "note.md",
+        rollout,
+    ):
+        assert not source.accepts(unrelated), unrelated
+    owners = {path: deepest_source_for_path(path, codex_sources) for path in (index_path, history_path, rollout)}
+    assert {path: owner.name for path, owner in owners.items() if owner is not None} == {
+        index_path: "codex-state",
+        history_path: "codex-state",
+        rollout: "codex",
+    }
     await _acquire_evidence(archive_root, source, [index_path, history_path])
     assert _retained_artifact_kinds(archive_root) == {
         str(history_path): "prompt_history_log",

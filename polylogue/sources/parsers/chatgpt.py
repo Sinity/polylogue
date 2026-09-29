@@ -1776,8 +1776,20 @@ def _collect_message_entries(
                 parsed_tool_json = None
             if isinstance(parsed_tool_json, dict):
                 tool_call_input = parsed_tool_json
-        if tool_call_input is None and tool_target is not None and tool_args not in (None, [], {}, ""):
-            tool_call_input = {"args": tool_args}
+        # Text that parsed as the call's JSON payload IS its input; any other
+        # text stays on the call block rather than vanishing with it.
+        tool_call_text = None if tool_call_input is not None else (text or None)
+        if tool_call_input is None and tool_target is not None:
+            if tool_args not in (None, [], {}, ""):
+                tool_call_input = {"args": tool_args}
+            elif tool_command is not None and role is Role.ASSISTANT and content.get("content_type", "text") == "text":
+                # ``metadata.command`` states the call outright, so a command
+                # with no arguments (``computer.initialize`` with ``args: {}``
+                # or none) is still a call: lowering it to TEXT left its
+                # result node with nothing to pair with. A bare ``recipient``
+                # does not: prose addressed to a tool (an image caption)
+                # stays text unless it parses as the call's JSON input.
+                tool_call_input = {}
 
         # Build structured content blocks
         content_blocks: list[ParsedContentBlock] = []
@@ -1804,6 +1816,7 @@ def _collect_message_entries(
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_USE,
+                    text=tool_call_text,
                     tool_name=tool_target,
                     # tool_id = this node's own id, so the mapping-tree child
                     # node that carries the result (parent == this id) can
