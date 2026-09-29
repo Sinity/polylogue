@@ -726,7 +726,10 @@ def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> in
         query_kwargs.pop(key, None)
     query_text = _archive_text_query(spec)
     if query_text is not None:
-        return int(archive.count_search_sessions(query_text, **query_kwargs))
+        # An actions-lane count counts only sessions its search can return.
+        return int(
+            archive.count_search_sessions(query_text, actions_only=spec.retrieval_lane == "actions", **query_kwargs)
+        )
     return int(archive.count_sessions(**query_kwargs))
 
 

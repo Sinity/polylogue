@@ -119,6 +119,22 @@ async def test_actions_lane_count_counts_only_sessions_its_search_returns(lane_a
     assert await count_archive(dialogue, archive_root=root, config=None) == 3
 
 
+def test_spec_count_counts_only_sessions_its_actions_search_returns(lane_archive: LaneArchive) -> None:
+    """The facade and daemon count seam applies the same actions lane.
+
+    Anti-vacuity: drop ``actions_only`` from ``_archive_count_sessions_for_spec``
+    and the dialogue session is counted for the actions lane too (3).
+    """
+    from polylogue.api.archive import _archive_count_sessions_for_spec
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root, _config, _ids = lane_archive
+    actions = SessionQuerySpec(query_terms=("needle",), retrieval_lane="actions")
+    with ArchiveStore.open_existing(root) as archive:
+        assert _archive_count_sessions_for_spec(archive, actions) == 2
+        assert _archive_count_sessions_for_spec(archive, replace(actions, retrieval_lane="dialogue")) == 3
+
+
 def test_vector_execution_failure_degrades_hybrid_and_refuses_semantic(lane_archive: LaneArchive) -> None:
     """F872: an uncaught query failure loses real lexical hits and leaks its detail."""
     root, config, ids = lane_archive
