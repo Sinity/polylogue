@@ -1666,3 +1666,72 @@ async def test_source_required_mode_refuses_before_index_processing(
     monkeypatch.setattr(ingest_batch_core, "_process_ingest_batch_sync", should_not_process)
     with pytest.raises(PublicationEncodingError, match="refusing before index publication"):
         await ingest_batch_core.process_ingest_batch(service, backend, ["required-source"], ParseResult(), None)
+
+
+@pytest.mark.asyncio
+async def test_witnessed_replay_restores_a_session_deleted_after_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replaying a witnessed raw after an ordinary session delete restores the session.
+
+    The delete leaves the ``ingest_marker_witnesses`` row. Anti-vacuity:
+    reusing the carrier on the witness alone skips the session writer, so
+    the deleted session stays absent after the replay.
+    """
+    bootstrap_archive_root(tmp_path)
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    payload_bytes = b"witnessed then deleted"
+    BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.CODEX_SESSION,
+            source_path="witnessed-delete.jsonl",
+            source_index=0,
+            payload=payload_bytes,
+            acquired_at_ms=1,
+        )
+    parsed = _session("::note: witnessed then deleted")
+    template = SessionWritePayload(
+        session_id="codex-session:session",
+        content_hash=str(session_content_hash(parsed)),
+        parsed_session=parsed,
+        message_count=len(parsed.messages),
+        raw_id=raw_id,
+    )
+
+    def fresh_ingest(_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        return IngestRecordResult(
+            raw_id=raw_id,
+            payload_provider=Provider.CODEX.value,
+            validation_status="passed",
+            outcome_code="success",
+            sessions=[copy.deepcopy(template)],
+        )
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fresh_ingest)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+    )
+    try:
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute("PRAGMA foreign_keys = ON")
+            assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (1,)
+            index.execute("DELETE FROM sessions WHERE session_id = 'codex-session:session'")
+            assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (1,)
+
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT session_id FROM sessions").fetchall() == [("codex-session:session",)]
+    finally:
+        await repository.close()

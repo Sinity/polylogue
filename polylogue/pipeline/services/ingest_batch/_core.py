@@ -1840,9 +1840,30 @@ def _reuse_current_accepted_marker_carrier(
     if witness is not None:
         if tuple(witness) != (batch.payload_sha256, encoded, current_incarnation_id):
             return False
+        # A witness outlives an ordinary session delete (a deleted session is
+        # re-ingest resurrectable), so it proves the carrier committed, not
+        # that its sessions are still present. Any missing one sends this
+        # request through the ordinary writer, which restores it.
+        if not _index_sessions_present(index_conn, {entry["session_id"] for entry in dispositions}):
+            return False
         summary.marker_batches_by_raw_id[ir.raw_id] = batch
         return True
     return False
+
+
+def _index_sessions_present(index_conn: sqlite3.Connection, session_ids: set[str]) -> bool:
+    """Whether every named session has an index row, read in pages."""
+    pending = {session_id for session_id in session_ids if session_id}
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ",".join("?" for _ in batch)
+        present = index_conn.execute(
+            f"SELECT COUNT(*) FROM sessions WHERE session_id IN ({placeholders})", batch
+        ).fetchone()[0]
+        if int(present) != len(batch):
+            return False
+    return True
 
 
 class FtsTriggerRestorationError(RuntimeError):

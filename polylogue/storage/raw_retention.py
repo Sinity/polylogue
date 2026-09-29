@@ -1318,22 +1318,16 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
             if any(raw_id not in paths_by_raw for raw_id in raw_ids):
                 return RawFrontierBlockedPaths(frozenset(), "selected raw has no durable source path")
             paths = frozenset(paths_by_raw.values())
-            marks = ",".join("?" for _ in component)
-            key_marks = ",".join("?" for _ in logical_keys)
-            rows = conn.execute(
-                f"""SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
-                    accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset
-                FROM index_tier.raw_revision_heads
-                WHERE accepted_raw_id IN ({marks}) OR logical_source_key IN ({key_marks})""",
-                (*component, *logical_keys),
-            ).fetchall()
-            heads = tuple(_IndexRawRevisionHead(*tuple(row)) for row in rows)
-            sessions = frozenset(
-                str(row[0])
-                for row in conn.execute(
-                    f"SELECT DISTINCT raw_id FROM index_tier.sessions WHERE raw_id IN ({marks})", component
-                )
-            )
+            # One physical path can carry several independent authority
+            # components. A broken chain or cursor-ahead head of another
+            # component on a selected path refuses that path too, exactly as
+            # the path-level projection would, so every head and session on
+            # the selected paths is checked, not only the selected component's.
+            path_raws = _raw_ids_and_keys_for_source_paths(conn, set(paths))
+            checked_raw_ids = set(component) | set(path_raws)
+            checked_keys = set(logical_keys) | {key for key in path_raws.values() if key is not None}
+            heads = _heads_for_raws_or_keys(conn, checked_raw_ids, checked_keys)
+            sessions = _session_raw_ids_among(conn, checked_raw_ids)
             broken, count, _checked, _samples, reason = _check_broken_active_chains(
                 conn, sessions, heads, sample_limit=len(component) + len(heads)
             )
@@ -1979,6 +1973,61 @@ def _canonical_paths_for_raw_ids(conn: sqlite3.Connection, raw_ids: set[str]) ->
         ):
             result[str(row[0])] = str(row[1])
     return result
+
+
+def _raw_ids_and_keys_for_source_paths(conn: sqlite3.Connection, source_paths: set[str]) -> dict[str, str | None]:
+    """Every raw recorded at one of ``source_paths``, with its logical source key."""
+    result: dict[str, str | None] = {}
+    pending = set(source_paths)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        for raw_id, logical_key in conn.execute(
+            f"SELECT raw_id, logical_source_key FROM raw_sessions WHERE source_path IN ({placeholders})", batch
+        ):
+            result[str(raw_id)] = None if logical_key is None else str(logical_key)
+    return result
+
+
+def _heads_for_raws_or_keys(
+    conn: sqlite3.Connection, raw_ids: set[str], logical_keys: set[str]
+) -> tuple[_IndexRawRevisionHead, ...]:
+    """Index heads accepting one of ``raw_ids`` or governing one of ``logical_keys``, read in pages."""
+    found: dict[str, _IndexRawRevisionHead] = {}
+    columns = (
+        "logical_source_key, accepted_raw_id, accepted_source_revision, "
+        "accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset"
+    )
+    for column, values in (("accepted_raw_id", raw_ids), ("logical_source_key", logical_keys)):
+        pending = set(values)
+        while pending:
+            batch = tuple(sorted(pending)[:500])
+            pending.difference_update(batch)
+            placeholders = ", ".join("?" for _ in batch)
+            for row in conn.execute(
+                f"SELECT {columns} FROM index_tier.raw_revision_heads WHERE {column} IN ({placeholders})", batch
+            ):
+                head = _IndexRawRevisionHead(*tuple(row))
+                found[head.logical_source_key] = head
+    return tuple(found[key] for key in sorted(found))
+
+
+def _session_raw_ids_among(conn: sqlite3.Connection, raw_ids: set[str]) -> frozenset[str]:
+    """The subset of ``raw_ids`` that an index session is materialized from."""
+    result: set[str] = set()
+    pending = set(raw_ids)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        result.update(
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT DISTINCT raw_id FROM index_tier.sessions WHERE raw_id IN ({placeholders})", batch
+            )
+        )
+    return frozenset(result)
 
 
 def _source_paths_for_logical_keys(conn: sqlite3.Connection, logical_keys: set[str]) -> set[str]:
