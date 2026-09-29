@@ -32,16 +32,17 @@ from polylogue.security.lifecycle import (
     read_lifecycle_request,
     submit_lifecycle_request,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 @pytest.fixture
 def user_db(tmp_path: Path) -> Path:
-    db_path = tmp_path / "user.db"
-    initialize_archive_database(db_path, ArchiveTier.USER)
-    return db_path
+    # A real archive root: excision opens the archive to drop the index
+    # session, which needs the format marker a root carries.
+    initialize_active_archive_root(tmp_path)
+    return tmp_path / "user.db"
 
 
 class TestSubmitLifecycleRequest:

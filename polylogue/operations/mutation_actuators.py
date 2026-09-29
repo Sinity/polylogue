@@ -195,7 +195,11 @@ class SessionExcisionActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: SessionExcisionArgs) -> MutationReceipt:
-        from polylogue.security.excision import LineageDependentsError, apply_session_excision
+        from polylogue.security.excision import (
+            ExcisionBlobReferenceUnknownError,
+            LineageDependentsError,
+            apply_session_excision,
+        )
 
         if not plan.context.get("found"):
             return MutationReceipt(
@@ -216,7 +220,8 @@ class SessionExcisionActuator(ConvergentReplay):
                 actor=args.actor,
                 cascade_lineage=args.cascade_lineage,
             )
-        except LineageDependentsError as exc:
+        except (LineageDependentsError, ExcisionBlobReferenceUnknownError) as exc:
+            # Both refusals roll the excision back before any write.
             return MutationReceipt(
                 operation=self.operation,
                 plan_hash=plan.plan_hash,
@@ -273,7 +278,11 @@ class SessionExcisionActuator(ConvergentReplay):
         own, dependents before the sessions they depend on; one that no
         longer resolves must carry its excision record.
         """
-        from polylogue.security.excision import LineageDependentsError, apply_session_excision
+        from polylogue.security.excision import (
+            ExcisionBlobReferenceUnknownError,
+            LineageDependentsError,
+            apply_session_excision,
+        )
 
         args = self.replay_args(handles, plan)
         remaining = [*cast("list[str]", plan.context["lineage_dependent_session_ids"]), args.session_id]
@@ -287,6 +296,8 @@ class SessionExcisionActuator(ConvergentReplay):
                     )
                 except LineageDependentsError:
                     continue
+                except ExcisionBlobReferenceUnknownError as exc:
+                    return RecoveryResolution("replay-failed", f"{session_id}: {exc}")
                 if not receipt.found and not _excision_recorded(args.archive_root, session_id):
                     return RecoveryResolution(
                         "replay-failed",

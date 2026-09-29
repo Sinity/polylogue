@@ -8,9 +8,9 @@ else has, then excise A through ``apply_session_excision``.
 
 Excision does not yet reach a session's sidecar raws at all
 (polylogue-8j9rh), so the shared-sidecar test guards B's side of that future
-reach -- a reach that marks every hash A's sidecars named refuses B's next
-sidecar with the same bytes -- and the forgets-its-own test is a strict xfail
-that flips when the reach lands.
+reach -- a reach that marks every hash A's sidecars named refuses a later
+session's sidecar with the same bytes -- and the forgets-its-own test is a
+strict xfail that flips when the reach lands.
 
 ``test_excising_a_keeps_the_attachment_it_shares_with_b`` covers the
 attachment class on the ingest batch's writer (``_write_session``) and the
@@ -253,37 +253,36 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
     assert BlobStore(archive_root / "blob").read_all(_sha(_SHARED_TEXT).hex()) == _SHARED_TEXT.encode("utf-8")
     assert _session_row(archive_root, _SESSION_B) == session_b
 
-    # B grows by a second output with the same bytes as the one it shared
-    # with A; A's unchanged export arrives again. A fresh cursor makes the
-    # watcher read both files from the start.
-    tree_b = _session_tree(root, _SESSION_B, [("toolu_b_shared", _SHARED_TEXT), ("toolu_b_again", _SHARED_TEXT)])
+    # A new session C whose tool output has the same bytes as the blob A and
+    # B shared arrives, together with A's unchanged export. C is admitted
+    # with its sidecar matched; A is not resurrected.
+    session_c = "5c3d1e40-0000-4000-8000-00000000c003"
+    tree_c = _session_tree(root, session_c, [("toolu_c_shared", _SHARED_TEXT)])
     await _ingest(
         workspace_env,
         root,
-        [tree_b["toolu_b_again"], tree_a["transcript"], tree_b["transcript"]],
+        [tree_c["toolu_c_shared"], tree_a["transcript"], tree_c["transcript"]],
         cursor_name="cursor-reingest.db",
     )
 
     assert _session_row(archive_root, _SESSION_A) is None, "re-ingesting A's export resurrected it"
-    grown_b = _session_row(archive_root, _SESSION_B)
-    assert grown_b is not None
-    events = _sidecar_payloads(archive_root, grown_b[0])
-    assert [(event["tool_use_id"], event["acquisition_status"]) for event in events] == [
-        ("toolu_b_shared", "matched"),
-        ("toolu_b_again", "matched"),
-    ]
-    assert _raw_hash(archive_root, tree_b["toolu_b_again"]) == _sha(_SHARED_TEXT)
-    assert grown_b[2] != session_b[2]
-    assert grown_b[2] == _rederived_hash(archive_root, grown_b[1])
+    stored_c = _session_row(archive_root, session_c)
+    assert stored_c is not None
+    events = _sidecar_payloads(archive_root, stored_c[0])
+    assert [(event.get("tool_use_id"), event["acquisition_status"]) for event in events] == [
+        ("toolu_c_shared", "matched")
+    ], events
+    assert _raw_hash(archive_root, tree_c["toolu_c_shared"]) == _sha(_SHARED_TEXT)
+    assert stored_c[2] == _rederived_hash(archive_root, stored_c[1])
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         texts = [
             str(row[0])
             for row in conn.execute(
                 "SELECT text FROM blocks WHERE session_id = ? AND block_type = ?",
-                (grown_b[0], BlockType.TOOL_RESULT.value),
+                (stored_c[0], BlockType.TOOL_RESULT.value),
             ).fetchall()
         ]
-    assert len(texts) == 2 and all("zz_shared_build_log_line" in text for text in texts)
+    assert len(texts) == 1 and "zz_shared_build_log_line" in texts[0]
 
 
 _SHARED_ATTACHMENT = b"shared synthetic attachment bytes\n" * 64
