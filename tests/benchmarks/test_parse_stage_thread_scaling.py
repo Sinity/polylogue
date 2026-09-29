@@ -4,15 +4,11 @@ polylogue-dcz5's deploy phase existed to unlock ``ThreadPoolExecutor`` census
 parse (``_parse_unique_retained_raws`` in
 ``polylogue.sources.revision_backfill``, gated by
 ``parallel_threads_effective()`` in ``polylogue.pipeline.services.process_pool``)
-on a genuinely free-threaded (no-GIL) interpreter. The gate that used to keep
-this path from ever running in production
-(``daemon_parse_stage_split``, a config flag defaulted off) was deleted in
-``ef8a4c3d0`` -- ``_maybe_warm_raw_materialization_parse_stage`` now always
-attempts the off-writer-hold warm; a GIL build or a warm failure degrades to
-the unmodified sequential in-hold parse. So the remaining, previously-unmet
-acceptance criterion is a *measurement*: does thread-parallel parse actually
-win on the interpreter this process is running, using the exact dispatch
-function the daemon calls (not a synthetic ThreadPoolExecutor toy)?
+on a genuinely free-threaded (no-GIL) interpreter; a GIL build degrades to the
+sequential parse. The remaining acceptance criterion is a *measurement*: does
+thread-parallel parse actually win on the interpreter this process is
+running, using the exact dispatch function the census path calls (not a
+synthetic ThreadPoolExecutor toy)?
 
 This benchmark calls ``_parse_unique_retained_raws`` itself at
 ``ingest_workers=1`` (forces the sequential branch) and at

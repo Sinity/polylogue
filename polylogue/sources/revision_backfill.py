@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import Counter, OrderedDict
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -880,19 +880,11 @@ class _RevisionCensusState:
         return self.provisional_key_by_raw_id.get(raw_id)
 
 
-@dataclass(slots=True)
-class _PrefetchedParse:
-    sessions: list[ParsedSession]
-    payload_bytes: int
-    revision_kind: RawRevisionKind
-
-
-#: Content-cache dedup key: ``(provider, blob_hash, dedup_path, native_id)``,
-#: identical in shape to the per-batch grouping key ``_parse_retained_raws``
-#: already uses (``dedup_path`` is ``""`` for
+#: Per-batch parse dedup key used by ``_parse_retained_raws``:
+#: ``(provider, blob_hash, dedup_path, native_id)`` (``dedup_path`` is ``""`` for
 #: :data:`_PATH_INDEPENDENT_PARSE_PROVIDERS`, else the raw's own
 #: ``source_path``) -- see :func:`_parse_retained_raws`'s docstring for why
-#: that key shape is safe to reuse across rows. ``native_id`` (polylogue-
+#: that key shape is safe to share across rows. ``native_id`` (polylogue-
 #: 6lyh1) is the fallback-identity hint an APPEND-kind raw recovers at
 #: replay time (``None`` for every FULL raw and every APPEND raw with no
 #: recorded hint); without it in the key, two byte-identical APPEND payloads
@@ -900,20 +892,7 @@ class _PrefetchedParse:
 #: cannot see that divergence, since path-independent providers deliberately
 #: ignore ``source_path`` too -- would incorrectly fan the SAME parsed
 #: session identity out to both raw_ids.
-ContentCacheKey = tuple[Provider, str, str, str | None]
-
-#: Default budget for :class:`RawParsePrefetchCache`'s cross-page content
-#: cache (polylogue-oab7). Deliberately a small, fixed, conservative default
-#: independent of ``max_inflight_bytes`` (the daemon's adaptive 64MiB-2GiB
-#: single-tick budget for its OWN raw_id-keyed warm-ahead entries) rather than
-#: reusing that number: the two caches are separate dicts inside the same
-#: object and can both be resident at once, so summing an adaptive multi-GiB
-#: budget with itself risks doubling the daemon's already-tuned whale-memory
-#: ceiling. 256 MiB mirrors this file's own ``_DECODED_CACHE_MIN_TREE_BYTES``
-#: and ``daemon/parse_prefetch.py``'s ``_MIN_MAX_CACHED_TREE_BYTES`` floor --
-#: small enough to be noise against either budget, still large enough to hold
-#: several typical (non-whale) parsed sessions resident across page boundaries.
-_DEFAULT_CONTENT_CACHE_BYTES: Final[int] = 256 * 1024 * 1024
+_ParseDedupKey = tuple[Provider, str, str, str | None]
 
 
 class RetainedPreparationRetryableError(RuntimeError):
@@ -1693,184 +1672,6 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-class RawParsePrefetchCache:
-    """Bounded, thread-safe store of parse results computed off the writer hold.
-
-    polylogue-m6tp phase (a): the daemon's parse-stage warmer
-    (``polylogue.daemon.parse_prefetch.DaemonParseStage``) populates this
-    cache from a bounded ``ThreadPoolExecutor`` BEFORE the raw-materialization
-    conveyor's writer-hold pass runs. ``_parse_retained_raws`` below consults
-    it first and only falls back to its normal (writer-hold-resident) parse
-    on a miss.
-
-    A miss is always safe: it reproduces the exact unmodified parse path, so
-    an empty, absent, or partially-warmed cache degrades to identical
-    behavior -- never incorrect behavior. This is what makes the cache purely
-    additive and lets every existing caller default to ``prefetch_cache=None``
-    with zero change in outcome.
-
-    Admission is capped by ``max_inflight_bytes`` (an explicit whale-memory
-    budget): a payload that would exceed the remaining budget is silently NOT
-    cached and is parsed normally, in the writer hold, when its turn comes.
-
-    polylogue-oab7: this class ALSO carries a second, independent store --
-    the "content cache" (``get_content``/``put_content``) -- keyed by
-    :data:`ContentCacheKey` rather than ``raw_id``. Unlike the raw_id-keyed
-    entries above (single-pop, meant to be consumed exactly once by the
-    specific raw the daemon's warmer pre-parsed), content-cache entries are
-    LRU-retained until evicted, so a raw whose bytes were already parsed on
-    an EARLIER page of the SAME long-lived cache instance (the daemon's
-    ``DaemonParseStage.cache`` is a process-lifetime singleton -- see
-    ``daemon/cli.py``'s ``_daemon_parse_stage()``) is served
-    from cache on a LATER page instead of reparsed, closing the one real gap
-    left by polylogue-869u's existing dedup (which only reuses a parse
-    WITHIN one bounded ``_parse_retained_raws`` batch/page, never across the
-    many pages one archive-wide rebuild is split into). A miss here degrades
-    identically to a miss on the raw_id-keyed store: parsed normally, nothing
-    lost, only possibly reparsed.
-    """
-
-    def __init__(self, *, max_inflight_bytes: int, max_content_cache_bytes: int | None = None) -> None:
-        if max_inflight_bytes < 1:
-            raise ValueError("max_inflight_bytes must be positive")
-        self._max_inflight_bytes = max_inflight_bytes
-        self._lock = threading.Lock()
-        self._entries: dict[str, _PrefetchedParse] = {}
-        self._inflight_bytes = 0
-        self._max_content_cache_bytes = (
-            max_content_cache_bytes if max_content_cache_bytes is not None else _DEFAULT_CONTENT_CACHE_BYTES
-        )
-        if self._max_content_cache_bytes < 1:
-            raise ValueError("max_content_cache_bytes must be positive")
-        self._content_entries: OrderedDict[ContentCacheKey, _PrefetchedParse] = OrderedDict()
-        self._content_bytes = 0
-
-    @property
-    def max_inflight_bytes(self) -> int:
-        """Maximum source-payload bytes admitted across warm results."""
-        return self._max_inflight_bytes
-
-    @property
-    def inflight_bytes(self) -> int:
-        """Current source-payload bytes retained in raw-id cache entries."""
-        with self._lock:
-            return self._inflight_bytes
-
-    def __len__(self) -> int:
-        with self._lock:
-            return len(self._entries)
-
-    def contains(self, raw_id: str) -> bool:
-        with self._lock:
-            return raw_id in self._entries
-
-    def try_admit(
-        self,
-        raw_id: str,
-        sessions: list[ParsedSession],
-        *,
-        payload_bytes: int,
-        revision_kind: RawRevisionKind,
-    ) -> bool:
-        """Admit one already-parsed raw's output. False means the cache
-        already held ``raw_id`` or admitting it would exceed the budget --
-        either way the caller's parse output is simply discarded, not an
-        error: the writer-held pass reparses that raw normally."""
-        with self._lock:
-            if raw_id in self._entries:
-                return False
-            if self._inflight_bytes + payload_bytes > self._max_inflight_bytes:
-                return False
-            self._entries[raw_id] = _PrefetchedParse(sessions, payload_bytes, revision_kind)
-            self._inflight_bytes += payload_bytes
-            return True
-
-    def pop(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | None:
-        """Remove and return one cached parse result, releasing its budget share."""
-        with self._lock:
-            entry = self._entries.pop(raw_id, None)
-            if entry is None:
-                return None
-            self._inflight_bytes -= entry.payload_bytes
-            return entry.sessions, entry.payload_bytes, entry.revision_kind
-
-    def peek_logical_keys(self) -> dict[str, str]:
-        """Non-destructive ``raw_id -> "{origin}:{provider_session_id}"`` map.
-
-        Lets a caller partition raw ids by revision cohort BEFORE consuming
-        this cache with ``pop``, using the exact same logical-key derivation
-        ``_parse_retained_raws`` uses when
-        it writes ``membership_candidates``/``provisional_full_raw_ids``
-        (``f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"``),
-        so a byte-growth chain member or an ambiguous-identity pair never
-        gets scheduled onto two different shards, each of which would see
-        only a partial candidate set and reach a wrong (or crashing)
-        classification. Unlike ``pop``, this never removes an entry or
-        touches budget accounting -- reading it does not consume the cache
-        for whichever shard's own replay pops these raw ids afterwards.
-        Sessions with more than one parsed logical unit (bundle raws) are
-        skipped: sharding falls back to that raw id's own ``source_path`` for
-        those, matching pre-classification behavior for any raw this cache
-        does not cover.
-        """
-        with self._lock:
-            keys: dict[str, str] = {}
-            for raw_id, entry in self._entries.items():
-                if len(entry.sessions) == 1:
-                    session = entry.sessions[0]
-                    keys[raw_id] = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-            return keys
-
-    def content_len(self) -> int:
-        """Number of distinct content-cache entries currently resident."""
-        with self._lock:
-            return len(self._content_entries)
-
-    def get_content(self, key: ContentCacheKey) -> tuple[list[ParsedSession], int, RawRevisionKind] | None:
-        """Peek a content-cache entry without consuming it (unlike ``pop``).
-
-        Multiple later raw_ids sharing ``key`` may each hit the same entry;
-        touching it here marks it most-recently-used for the LRU eviction
-        order in :meth:`put_content`.
-        """
-        with self._lock:
-            entry = self._content_entries.get(key)
-            if entry is None:
-                return None
-            self._content_entries.move_to_end(key)
-            return entry.sessions, entry.payload_bytes, entry.revision_kind
-
-    def put_content(
-        self,
-        key: ContentCacheKey,
-        sessions: list[ParsedSession],
-        *,
-        payload_bytes: int,
-        revision_kind: RawRevisionKind,
-    ) -> bool:
-        """Admit one freshly-parsed representative's output into the content cache.
-
-        Returns ``False`` (a pure no-op) when ``key`` is already resident or
-        ``payload_bytes`` alone exceeds the whole budget -- a single whale
-        entry must never be admitted only to immediately evict every other
-        entry and then still not fit itself. Otherwise admits and evicts
-        least-recently-used entries (oldest ``get_content``/``put_content``
-        touch first) until back under budget.
-        """
-        with self._lock:
-            if key in self._content_entries:
-                return False
-            if payload_bytes > self._max_content_cache_bytes:
-                return False
-            self._content_entries[key] = _PrefetchedParse(sessions, payload_bytes, revision_kind)
-            self._content_entries.move_to_end(key)
-            self._content_bytes += payload_bytes
-            while self._content_bytes > self._max_content_cache_bytes and self._content_entries:
-                _evicted_key, evicted_entry = self._content_entries.popitem(last=False)
-                self._content_bytes -= evicted_entry.payload_bytes
-            return True
-
-
 class RawRevisionReplayResourceBlockedError(RuntimeError):
     def __init__(self, raw_ids: list[str], limit_bytes: int, total_bytes: int) -> None:
         self.raw_ids = tuple(raw_ids)
@@ -2142,16 +1943,10 @@ def _census_historical_revision_evidence(
     max_payload_bytes: int | None,
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
-    prefetch_cache: RawParsePrefetchCache | None = None,
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     shard_transport: _FrozenReplayShardTransport | None = None,
 ) -> _RevisionCensusState:
     """Persist a complete bounded parser census without mutating index.db.
-
-    ``prefetch_cache`` (polylogue-m6tp phase (a)), when supplied, is threaded
-    to ``_parse_retained_raws`` so a raw already parsed off the writer hold
-    is applied directly instead of reparsed here. ``None`` (every existing
-    caller) reproduces the exact unmodified parse path.
 
     ``commit_batch_size`` (polylogue-amg1): when set to a positive integer,
     ``replace_raw_membership_census``/``bind_raw_revision`` writes for up to
@@ -2503,7 +2298,6 @@ def _census_historical_revision_evidence(
                     archive,
                     dispatch_raw_ids,
                     ingest_workers=ingest_workers,
-                    prefetch_cache=prefetch_cache,
                     prepared_inputs=prepared_inputs,
                 ) as parsed_outcomes:
                     for raw_id, source_index in pending_rows:
@@ -2528,7 +2322,6 @@ def _census_historical_revision_evidence(
                             archive,
                             unresolved,
                             ingest_workers=ingest_workers,
-                            prefetch_cache=prefetch_cache,
                             prepared_inputs=prepared_inputs,
                         )
                         if unresolved
@@ -2559,7 +2352,6 @@ def _census_historical_revision_evidence(
                                     archive,
                                     [older_raw_id],
                                     ingest_workers=ingest_workers,
-                                    prefetch_cache=prefetch_cache,
                                     prepared_inputs=prepared_inputs,
                                 ),
                             )
@@ -2590,7 +2382,6 @@ def _load_frozen_revision_evidence(
     selected_raw_ids: list[str] | None,
     max_payload_bytes: int | None,
     ingest_workers: int,
-    prefetch_cache: RawParsePrefetchCache | None,
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     shard_transport: _FrozenReplayShardTransport | None = None,
 ) -> _RevisionCensusState:
@@ -2629,7 +2420,6 @@ def _load_frozen_revision_evidence(
         parseable_raw_ids,
         ingest_workers=ingest_workers,
         prepared_inputs=prepared_inputs,
-        prefetch_cache=prefetch_cache,
     )
     state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set(frozen_codex_state_raw_ids))
     for raw_id, source_index, terminal_non_session, _raw_rowid in rows:
@@ -3172,18 +2962,15 @@ def census_historical_revision_evidence(
     max_payload_bytes: int | None = None,
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
-    prefetch_cache: RawParsePrefetchCache | None = None,
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     classification_proofs: Mapping[str, PreparedRawRevisionClassification] | None = None,
 ) -> RevisionCensusResult:
     """Complete the source-tier census stage without applying index changes.
 
-    ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) lets a
-    caller (the daemon conveyor) substitute already-parsed output computed
-    off the writer hold for any raw it warmed ahead of time. ``prepared_inputs``
-    consumes sealed disk-backed sessions for a source-only first pass; this
-    commits identity and parser census before an append-chain composer takes
-    a read-only replay plan on the next derivation attempt.
+    ``prepared_inputs`` consumes sealed disk-backed sessions for a
+    source-only first pass; this commits identity and parser census before an
+    append-chain composer takes a read-only replay plan on the next
+    derivation attempt.
     """
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
@@ -3201,7 +2988,6 @@ def census_historical_revision_evidence(
             max_payload_bytes=max_payload_bytes,
             ingest_workers=ingest_workers,
             commit_batch_size=commit_batch_size,
-            prefetch_cache=prefetch_cache,
             prepared_inputs=prepared_inputs,
         )
         archive.commit()
@@ -3732,7 +3518,6 @@ def backfill_historical_revision_evidence(
     replay_commit_batch_size: int | None = None,
     bulk_fts: bool = False,
     bulk_build: bool = False,
-    prefetch_cache: RawParsePrefetchCache | None = None,
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     prepared_aggregates: Mapping[str, PreparedRetainedAggregate] | None = None,
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite] | None = None,
@@ -3797,18 +3582,6 @@ def backfill_historical_revision_evidence(
     bulk-generation-build lifecycle: per-session FTS refresh is skipped during
     replay and deferred to one archive-wide repopulate at readiness. The
     action and delegation surfaces are query-time views and need no refresh.
-
-    ``prefetch_cache`` (polylogue-gd6v, default ``None``) is threaded to the
-    census phase exactly like ``census_historical_revision_evidence``'s own
-    parameter: a raw already parsed off the writer hold (the daemon's
-    ``DaemonParseStage``, warmed ahead of a bounded bulk-rebuild pass) is
-    consumed directly instead of reparsed. A prefetch hit still flows through
-    ``apply_outcome``'s ``spill.add(...)`` exactly like a freshly-parsed
-    outcome, so the REPLAY phase's own ``spill.for_raw`` lookups (which do
-    all of the actual cohort writes) see identical warmed content -- this is
-    what makes prefetching the census phase alone enough to also skip
-    replay-phase reparsing for the same raws. ``None`` (every existing
-    caller) reproduces the exact unmodified parse path.
 
     ``pipeline_decode`` (Lever A, parse ∥ apply) engages a
     :class:`_ReplaySpillPrefetcher` that decodes upcoming replay cohorts'
@@ -3965,7 +3738,6 @@ def backfill_historical_revision_evidence(
                 selected_raw_ids=selected_raw_ids,
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
-                prefetch_cache=prefetch_cache,
                 prepared_inputs=prepared_inputs,
                 shard_transport=shard_transport,
             )
@@ -3977,7 +3749,6 @@ def backfill_historical_revision_evidence(
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
                 commit_batch_size=commit_batch_size,
-                prefetch_cache=prefetch_cache,
                 prepared_inputs=prepared_inputs,
                 shard_transport=shard_transport,
             )
@@ -4667,15 +4438,10 @@ def census_parse_worker(
     ``ArchiveStore`` at all.
 
     Dispatched onto a ``ThreadPoolExecutor`` (real free-threading, see
-    ``_parse_unique_retained_raws_via_threads``) and the daemon's own
-    off-writer-hold pre-parse ``ThreadPoolExecutor``
-    (``polylogue.daemon.parse_prefetch.DaemonParseStage``, polylogue-m6tp
-    phase (a)), plus the pipelined replay prefetcher's reparse fallback
-    (``_ReplaySpillPrefetcher._decode``) -- the function is identical every
-    time; only the executor and the recreated ``ArchiveBlobPublisher``'s
-    process/thread affinity differ. Public (not module-private) precisely so
-    the daemon's warmer can import and dispatch it without duplicating this
-    parse logic.
+    ``_parse_unique_retained_raws_via_threads``) and by the pipelined replay
+    prefetcher's reparse fallback (``_ReplaySpillPrefetcher._decode``) -- the
+    function is identical every time; only the executor and the recreated
+    ``ArchiveBlobPublisher``'s process/thread affinity differ.
     """
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
@@ -4780,7 +4546,6 @@ def _parse_retained_raws(
     raw_ids: list[str],
     *,
     ingest_workers: int,
-    prefetch_cache: RawParsePrefetchCache | None = None,
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
     """Parse a batch of retained raws, deduplicating byte-identical inputs.
@@ -4804,31 +4569,11 @@ def _parse_retained_raws(
     this cross-path widening, paid a full parse each time. Per-row
     ``revision_kind`` is re-attached from each row's own descriptor.
 
-    ``prefetch_cache`` (polylogue-m6tp phase (a)) is consulted BEFORE any of
-    the above: a raw_id already popped from the cache is used directly and
-    excluded from dedup/dispatch entirely, so it costs neither a parse nor a
-    process/thread-pool round trip here. Every raw_id NOT found in the cache
-    (including all of them, when ``prefetch_cache`` is ``None`` -- the
-    default for every existing caller) is parsed exactly as before.
-
-    polylogue-oab7: after the per-page dedup grouping above, each group's
-    ``(provider, blob_hash, dedup_path)`` key is also checked against
-    ``prefetch_cache``'s CONTENT cache (``get_content``/``put_content``,
-    distinct from the raw_id-keyed ``pop`` used above). A hit there means
-    this exact content was already parsed on an EARLIER call to this
-    function against the SAME ``prefetch_cache`` instance -- e.g. an earlier
-    *page* of the same archive-wide rebuild, not just an earlier row of this
-    same page -- and is reused without a second parse. A miss falls through
-    to the unchanged dispatch path and, once parsed, is admitted into the
-    content cache so a LATER page can reuse it. ``prefetch_cache=None``
-    (every caller that does not opt in) skips this lookup/store entirely and
-    is byte-identical to today's behavior.
     """
     with stream_retained_raws(
         archive,
         raw_ids,
         ingest_workers=ingest_workers,
-        prefetch_cache=prefetch_cache,
         prepared_inputs=prepared_inputs,
     ) as outcomes:
         return {raw_id: outcomes[raw_id] for raw_id in raw_ids}
@@ -4970,10 +4715,9 @@ class _OrderedParseOutcomes(Mapping[str, "tuple[list[ParsedSession], int, RawRev
     """Retained-raw parse outcomes resolved on first read, released after it.
 
     A drop-in for the dict ``_parse_retained_raws`` used to return: the census
-    apply loop only ever does ``outcomes[raw_id]``. Dedup fan-out, the
-    raw_id-keyed prefetch pop, the content cache and replay enrichment all
-    behave exactly as they did eagerly -- they are simply performed for one
-    raw at the moment that raw is read.
+    apply loop only ever does ``outcomes[raw_id]``. Dedup fan-out and replay
+    enrichment behave exactly as they did eagerly -- they are simply
+    performed for one raw at the moment that raw is read.
 
     A group's parsed sessions are held only until its last member has been
     read, so a dedup group costs one live parse rather than one per member,
@@ -4990,23 +4734,19 @@ class _OrderedParseOutcomes(Mapping[str, "tuple[list[ParsedSession], int, RawRev
         raw_ids: Sequence[str],
         *,
         descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-        prefetched: dict[str, tuple[list[ParsedSession], int, RawRevisionKind]],
-        key_by_raw_id: dict[str, ContentCacheKey],
-        pending_by_key: dict[ContentCacheKey, int],
-        representative_by_key: dict[ContentCacheKey, str],
+        key_by_raw_id: dict[str, _ParseDedupKey],
+        pending_by_key: dict[_ParseDedupKey, int],
+        representative_by_key: dict[_ParseDedupKey, str],
         unique: _OrderedUniqueParse,
-        prefetch_cache: RawParsePrefetchCache | None,
     ) -> None:
         self._archive = archive
         self._raw_ids = list(raw_ids)
         self._descriptors = descriptors
-        self._prefetched = prefetched
         self._key_by_raw_id = key_by_raw_id
         self._pending_by_key = pending_by_key
         self._representative_by_key = representative_by_key
         self._unique = unique
-        self._prefetch_cache = prefetch_cache
-        self._group_outcome: dict[ContentCacheKey, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
+        self._group_outcome: dict[_ParseDedupKey, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._raw_ids)
@@ -5029,28 +4769,15 @@ class _OrderedParseOutcomes(Mapping[str, "tuple[list[ParsedSession], int, RawRev
         """Whether the owned parse executor is still live."""
         return self._unique.executor_running
 
-    def _group_result(self, key: ContentCacheKey) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+    def _group_result(self, key: _ParseDedupKey) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
         cached = self._group_outcome.get(key)
         if cached is not None:
             return cached
-        if self._prefetch_cache is not None:
-            content_hit = self._prefetch_cache.get_content(key)
-            if content_hit is not None:
-                self._group_outcome[key] = content_hit
-                return content_hit
         outcome = self._unique.resolve(self._representative_by_key[key])
-        if self._prefetch_cache is not None and not isinstance(outcome, Exception):
-            sessions, rep_size, rep_kind = outcome
-            self._prefetch_cache.put_content(key, sessions, payload_bytes=rep_size, revision_kind=rep_kind)
         self._group_outcome[key] = outcome
         return outcome
 
     def __getitem__(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
-        popped = self._prefetched.pop(raw_id, None)
-        if popped is not None:
-            return _enrich_retained_parse_outcome(
-                self._archive, raw_id, descriptor=self._descriptors[raw_id], outcome=popped
-            )
         key = self._key_by_raw_id[raw_id]
         group_outcome = self._group_result(key)
         remaining = self._pending_by_key[key] - 1
@@ -5072,7 +4799,6 @@ def stream_retained_raws(
     raw_ids: list[str],
     *,
     ingest_workers: int,
-    prefetch_cache: RawParsePrefetchCache | None = None,
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
 ) -> Iterator[_OrderedParseOutcomes]:
     """Parse ``raw_ids`` lazily, in caller order, with the executor owned here.
@@ -5113,21 +4839,10 @@ def stream_retained_raws(
         native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
         descriptors[raw_id] = (provider, blob_hash, source_path, kind, size, native_id)
 
-    prefetched: dict[str, tuple[list[ParsedSession], int, RawRevisionKind]] = {}
-    remaining_raw_ids = raw_ids
-    if prefetch_cache is not None and raw_ids:
-        remaining_raw_ids = []
-        for raw_id in raw_ids:
-            cached = prefetch_cache.pop(raw_id)
-            if cached is None:
-                remaining_raw_ids.append(raw_id)
-            else:
-                prefetched[raw_id] = cached
-
-    key_by_raw_id: dict[str, ContentCacheKey] = {}
-    pending_by_key: dict[ContentCacheKey, int] = {}
-    representative_by_key: dict[ContentCacheKey, str] = {}
-    for raw_id in remaining_raw_ids:
+    key_by_raw_id: dict[str, _ParseDedupKey] = {}
+    pending_by_key: dict[_ParseDedupKey, int] = {}
+    representative_by_key: dict[_ParseDedupKey, str] = {}
+    for raw_id in raw_ids:
         provider, blob_hash, source_path, _kind, _size, native_id = descriptors[raw_id]
         dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
         key = (provider, blob_hash, dedup_path, native_id)
@@ -5138,19 +4853,17 @@ def stream_retained_raws(
     # Dispatch order follows the caller's read order through each group's
     # representative, so a bounded in-flight window always holds the raws the
     # consumer is about to ask for rather than an arbitrary prefix.
-    order = [representative_by_key[key] for key in dict.fromkeys(key_by_raw_id[raw_id] for raw_id in remaining_raw_ids)]
+    order = [representative_by_key[key] for key in dict.fromkeys(key_by_raw_id[raw_id] for raw_id in raw_ids)]
     unique = _OrderedUniqueParse(archive, order, descriptors=descriptors, ingest_workers=ingest_workers)
     try:
         yield _OrderedParseOutcomes(
             archive,
             raw_ids,
             descriptors=descriptors,
-            prefetched=prefetched,
             key_by_raw_id=key_by_raw_id,
             pending_by_key=pending_by_key,
             representative_by_key=representative_by_key,
             unique=unique,
-            prefetch_cache=prefetch_cache,
         )
     finally:
         unique.close()
@@ -6004,8 +5717,7 @@ class _ReplaySpillPrefetcher:
     ``for_raw()`` becomes a buffer pop for every raw the prefetcher reached
     first.
 
-    Correctness model -- a miss is always safe, mirroring
-    :class:`RawParsePrefetchCache`:
+    Correctness model -- a miss is always safe:
 
     * The prefetcher performs **zero archive writes**. Every index/source
       write stays on the calling (writer) thread in unchanged order, so a
@@ -7244,7 +6956,6 @@ def _parse_stream_raw(
 
 __all__ = [
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
-    "RawParsePrefetchCache",
     "RetainedSessionEnricher",
     "RawRevisionReplayResourceBlockedError",
     "RebuildDeadlineExceededError",

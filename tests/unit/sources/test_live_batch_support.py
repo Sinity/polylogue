@@ -2676,14 +2676,9 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index.full_replace.messages",
         "full.index.full_replace.blocks",
     }.issubset(result.stage_timings_s)
-    # The in-transaction FTS repair is still skipped (``defer_fts=True``), but
-    # the deferral is no longer observable at the end of this route: #5049
-    # made live full ingest honour that contract by running its own targeted
-    # ``repair_message_fts_index_sync`` over the session ids it just wrote,
-    # because nothing else did -- a freshly ingested session searched as empty
-    # until the daemon's next 60s convergence tick. Assert the repair, which
-    # is what a searchable archive depends on: blocks landed, and their FTS
-    # rows landed with them. Deleting that call zeroes ``indexed``.
+    # The revision replay settles the session's FTS rows in the transaction
+    # that writes its blocks, so a just-ingested session is searchable when
+    # the route returns. Skipping that repair zeroes ``indexed``.
     with sqlite3.connect(index_db) as conn:
         blocks = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
         indexed = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
@@ -5680,7 +5675,7 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
         ]
         from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 
-        repair_message_fts_index_sync(conn, ["codex-session:split-record"], record_exact_snapshot=False)
+        repair_message_fts_index_sync(conn, ["codex-session:split-record"])
         assert conn.execute(
             "SELECT b.search_text FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid ORDER BY b.message_id"
         ).fetchall() == [("zero",), ("one",)]

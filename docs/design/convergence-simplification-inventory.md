@@ -20,6 +20,12 @@ per `polylogue/daemon/parse_prefetch.py`'s module docstring). References
 below to the flag being "off (today's default)" describe the pre-deletion
 state and are historical.
 
+**2026-09-29 update:** the daemon parse stage (`DaemonParseStage`,
+`polylogue/daemon/parse_prefetch.py`, `CensusParseStage`) and its
+`daemon_parse_stage_*` settings are deleted; they had no production caller
+after the manual rebuild engine went. Every reference to them below is
+historical.
+
 ## Sequencing recap (from polylogue-m6tp's design sketch)
 
 1. **(a) parse-stage extraction behind a flag on the standard build** — this

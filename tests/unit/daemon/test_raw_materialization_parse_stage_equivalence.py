@@ -188,9 +188,7 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
     )
     try:
         for raw_id in raw_notes:
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
     finally:
         await repository.close()
 

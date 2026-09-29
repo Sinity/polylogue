@@ -328,7 +328,6 @@ async def parse_from_raw(
     provider: str | None = None,
     progress_callback: ProgressCallback | None = None,
     force_write: bool = False,
-    repair_message_fts: bool = True,
     max_pass_seconds: float | None = None,
 ) -> ParseResult:
     """Parse raw_sessions from DB into sessions.
@@ -342,7 +341,7 @@ async def parse_from_raw(
     With phased execution, each completed raw unit has its own admitted
     publication; download and parser preparation do not hold that admission.
     """
-    from polylogue.pipeline.services.ingest_batch import process_ingest_batch, repair_message_fts_bulk
+    from polylogue.pipeline.services.ingest_batch import process_ingest_batch
 
     result = ParseResult()
     backend = service._require_backend()
@@ -393,7 +392,6 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
-                repair_message_fts=service.execution is not None and repair_message_fts,
                 suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
@@ -456,7 +454,6 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
-                repair_message_fts=service.execution is not None and repair_message_fts,
                 suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
@@ -479,9 +476,6 @@ async def parse_from_raw(
                     elapsed_s=round(batch_elapsed, 2),
                     rate=round(len(batch_ids) / batch_elapsed, 1) if batch_elapsed > 0 else 0,
                 )
-
-    if repair_message_fts and batches_processed > 0 and service.execution is None:
-        await repair_message_fts_bulk(backend, result.fts_repair_session_ids)
 
     elapsed = time.perf_counter() - t_start
     logger.info(

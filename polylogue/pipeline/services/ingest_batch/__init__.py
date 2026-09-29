@@ -15,7 +15,6 @@ from polylogue.pipeline.services.ingest_batch._core import (
     _successful_raw_state_update,
     _topo_sort_session_entries,
     process_ingest_batch,
-    repair_message_fts_bulk,
 )
 from polylogue.pipeline.services.ingest_batch._models import (
     _IngestBatchSummary,
@@ -48,5 +47,4 @@ __all__ = [
     "ingest_record",
     "process_ingest_batch",
     "process_pool_executor",
-    "repair_message_fts_bulk",
 ]

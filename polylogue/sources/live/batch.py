@@ -195,7 +195,7 @@ from polylogue.sources.live.metrics import (
     LiveFullIngestAggregate,
     split_offered_bytes,
 )
-from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage, ReadSnapshot
+from polylogue.sources.live.parse_prefetch import LiveParseStage, ReadSnapshot
 from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -237,7 +237,6 @@ from polylogue.sources.sqlite_snapshot import (
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ActiveByteRevisionChainError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -657,33 +656,6 @@ def _retained_chain_prepared(
         if member is None or not member.current(archive):
             return False
     return True
-
-
-def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
-    """Build byte-backed JSONL candidates for legacy prefetch callers."""
-    candidates: list[LiveParseCandidate] = []
-    for path in paths:
-        if not is_jsonl_source_path(str(path)):
-            continue
-        provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
-        if not parse_as_session:
-            continue
-        try:
-            payload = path.read_bytes()
-        except OSError:
-            continue
-        source_path = str(path)
-        candidates.append(
-            LiveParseCandidate(
-                cache_key=source_path,
-                provider=provider,
-                payload=payload,
-                source_path=source_path,
-                fallback_id=path.stem,
-                is_stream=is_stream_record_provider(source_path, str(provider)),
-            )
-        )
-    return candidates
 
 
 def _live_parse_stage_path_candidates(
@@ -4821,13 +4793,12 @@ class LiveBatchProcessor:
                         else {}
                     )
                     if cached_sessions is not None:
-                        # polylogue-wf8a: this record's decode already ran
-                        # off the writer hold (``LiveParseStage.warm``,
-                        # re-verified byte-identical to what
-                        # ``blob_store.write_from_bytes`` just wrote --
-                        # see ``LiveParsePrefetchCache.pop``). Every branch
-                        # below is skipped; this is a pure shortcut of the
-                        # SAME parse, never a different one.
+                        # This record's decode already ran off the writer
+                        # hold: a sealed path preparation whose blob hash
+                        # ``LiveParseStage.pop_path`` checked against this
+                        # capture, or a session parsed earlier in this pass.
+                        # Every branch below is skipped; this is the same
+                        # parse, never a different one.
                         sessions = cached_sessions
                     elif provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
                         blob_store.blob_path(blob_hash), immutable=True
@@ -5104,7 +5075,6 @@ class LiveBatchProcessor:
                                         acquired_at_ms=acquired_at_ms,
                                         stage_timings_s=record_timings,
                                         stage_timing_prefix="full",
-                                        defer_fts=True,
                                         fresh_build=replay_fresh,
                                         fresh_build_batch=fresh_build_batch if replay_fresh else None,
                                         prepared_by_raw_id=_shard_prepared_by_raw_id(
@@ -5390,18 +5360,6 @@ class LiveBatchProcessor:
                         exc,
                         exc_info=True,
                     )
-            # Honour the ``defer_fts`` contract. Both deferred write paths above
-            # (``apply_raw_revision_replay`` and
-            # ``apply_raw_membership_classification``) pass ``defer_fts=True``,
-            # which skips the in-transaction FTS repair on the explicit promise
-            # that "an authoritative raw-revision replay ... owns one targeted
-            # repair and exactness proof after its writes" (see
-            # ``archive_tiers/write.py``). Live ingest never performed that
-            # repair, so a just-ingested session was absent from FTS until the
-            # daemon's periodic convergence happened to run -- a 60s tick, which
-            # is why a freshly ingested 50k-message session searched as empty.
-            if result.session_ids:
-                repair_message_fts_index_sync(archive._conn, list(dict.fromkeys(result.session_ids)))
             if active_cold_build:
                 # The cold-build shape is licensed per pass, so it is also
                 # surrendered per pass. There is nothing to verify and nothing
@@ -5743,7 +5701,6 @@ class LiveBatchProcessor:
                         acquired_at_ms=acquired_at_ms,
                         stage_timings_s=stage_timings_s,
                         stage_timing_prefix="full",
-                        defer_fts=True,
                         fresh_build=member_fresh,
                         fresh_build_batch=fresh_build_batch if member_fresh else None,
                         prepared_by_raw_id=prepared_by_raw_id,

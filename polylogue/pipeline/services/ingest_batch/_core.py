@@ -168,7 +168,6 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _DEFAULT_INGEST_WORKER_LIMIT,
     _SINEX_STAGED_PAYLOAD_LIMIT_BYTES,
     _BulkConnectionBackendLike,
-    _ConnectionBackendLike,
     _IngestBatchSummary,
     _IngestWorkerRequest,
     _ParsingServiceRawStateLike,
@@ -2930,7 +2929,6 @@ def _consume_ingest_results(
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
-    mark_fts_stale_on_suspend: bool = False,
     force_process_pool: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
@@ -2965,7 +2963,7 @@ def _consume_ingest_results(
 
             _open_unscoped_foreign_key_window(conn)
             summary.foreign_key_window_open = True
-            suspend_fts_triggers_sync(conn, mark_stale=mark_fts_stale_on_suspend)
+            suspend_fts_triggers_sync(conn)
         transaction_started = True
 
     while True:
@@ -3027,7 +3025,6 @@ def _commit_sync_ingest_side_effects(
     *,
     db_path: Path,
     changed_session_ids: Sequence[str],
-    repair_message_fts: bool = True,
     settle_deferred_effects: bool = False,
 ) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
@@ -3040,7 +3037,6 @@ def _commit_sync_ingest_side_effects(
         {
             "_connection": conn,
             "changed_session_ids": tuple(changed_session_ids),
-            "repair_message_fts": repair_message_fts,
             **({"deferred_scheduler": settle_effect} if settle_deferred_effects else {}),
         },
     )
@@ -3476,7 +3472,6 @@ def _process_ingest_batch_sync(
     measure_ingest_result_size: bool,
     publication_mode: PublicationMode = PublicationMode.OFF,
     force_write: bool = False,
-    repair_message_fts: bool = True,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
@@ -3599,7 +3594,6 @@ def _process_ingest_batch_sync(
                 progress=progress,
                 ingest_result_chunk_size=ingest_result_chunk_size,
                 suspend_fts_triggers=suspend_fts_triggers,
-                mark_fts_stale_on_suspend=suspend_fts_triggers and not repair_message_fts,
                 force_process_pool=force_process_pool,
                 blob_publisher=blob_publisher,
                 pending_attachment_receipts=pending_attachment_receipts,
@@ -3658,7 +3652,6 @@ def _process_ingest_batch_sync(
                 conn,
                 db_path=db_path,
                 changed_session_ids=tuple(fts_repair_ids),
-                repair_message_fts=repair_message_fts,
                 **({"settle_deferred_effects": True} if prepared_unit is not None else {}),
             )
             if pending_attachment_receipts:
@@ -3766,7 +3759,6 @@ async def process_ingest_batch(
     progress_callback: ProgressCallback | None,
     *,
     force_write: bool = False,
-    repair_message_fts: bool = True,
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
     fresh_build: bool = False,
@@ -3812,7 +3804,6 @@ async def process_ingest_batch(
                     result,
                     progress_callback,
                     force_write=force_write,
-                    repair_message_fts=repair_message_fts,
                     fresh_build=fresh_build,
                     prepared_unit=unit,
                 )
@@ -3856,7 +3847,6 @@ async def process_ingest_batch(
         "measure_ingest_result_size": service.measure_ingest_result_size,
         "publication_mode": publication_mode,
         "force_write": force_write,
-        "repair_message_fts": repair_message_fts,
         "ingest_result_chunk_size": ingest_result_chunk_size,
         "suspend_fts_triggers": suspend_fts_triggers,
     }
@@ -4188,24 +4178,7 @@ async def _persist_batch_raw_state_updates(
     return time.perf_counter() - raw_state_update_started
 
 
-async def repair_message_fts_bulk(
-    backend: _ConnectionBackendLike,
-    changed_session_ids: Sequence[str],
-) -> None:
-    """Repair message FTS once after a multi-batch ingest pass."""
-    session_ids = tuple(dict.fromkeys(changed_session_ids))
-    if not session_ids:
-        return
-
-    from polylogue.storage.fts.fts_lifecycle import repair_fts_index_async
-
-    async with backend.connection() as conn:
-        await repair_fts_index_async(conn, session_ids)
-        await conn.commit()
-
-
 __all__ = [
     "_INGEST_RESULT_CHUNK_SIZE",
     "process_ingest_batch",
-    "repair_message_fts_bulk",
 ]

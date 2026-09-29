@@ -3342,7 +3342,6 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
         ingest_workers: int | None,
         measure_ingest_result_size: bool,
         force_write: bool,
-        repair_message_fts: bool,
         ingest_result_chunk_size: int,
         suspend_fts_triggers: bool,
     ) -> _IngestBatchSummary:
@@ -3357,7 +3356,6 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
                 "ingest_workers": ingest_workers,
                 "measure_ingest_result_size": measure_ingest_result_size,
                 "force_write": force_write,
-                "repair_message_fts": repair_message_fts,
                 "ingest_result_chunk_size": ingest_result_chunk_size,
                 "suspend_fts_triggers": suspend_fts_triggers,
             }
@@ -4671,7 +4669,6 @@ async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution
             [raw_id],
             parse_result,
             None,
-            repair_message_fts=False,
         )
     finally:
         await repository.close()
@@ -4776,7 +4773,6 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
             [raw_id],
             parse_result,
             None,
-            repair_message_fts=False,
         )
     finally:
         await repository.close()
@@ -4909,7 +4905,6 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
             [raw_id],
             parse_result,
             None,
-            repair_message_fts=False,
         )
     finally:
         await repository.close()

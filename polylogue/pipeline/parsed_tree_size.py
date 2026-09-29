@@ -1,10 +1,9 @@
 """Cheap structural size estimation for parsed session trees.
 
-Shared by the daemon parse-prefetch cache (polylogue-xb4i) and the
-historical-backfill census spill's decoded layer: any component that retains
-``ParsedSession`` trees in RAM budgets them by ESTIMATED TREE BYTES, never by
-raw payload bytes (parsed trees inflate payload size by roughly 2-14x
-depending on text density -- see the calibration data below).
+Used by the historical-backfill census spill's decoded layer: any component
+that retains ``ParsedSession`` trees in RAM budgets them by ESTIMATED TREE
+BYTES, never by raw payload bytes (parsed trees inflate payload size by
+roughly 2-14x depending on text density -- see the calibration data below).
 """
 
 from __future__ import annotations
@@ -15,8 +14,8 @@ from pathlib import Path, PurePosixPath
 
 from polylogue.sources.parsers.base import ParsedSession
 
-# Calibration (measured 2026-07-20, see test_parse_prefetch.py for the exact
-# reproducer): a manual deep-object-graph walk (sys.getsizeof over every
+# Calibration (measured 2026-07-20, see tests/unit/pipeline/test_parsed_tree_size.py
+# for the exact reproducer): a manual deep-object-graph walk (sys.getsizeof over every
 # reachable dict/list/model instance, the same technique pympler.asizeof
 # uses, without adding a new dependency for one calibration script) against
 # synthetic ParsedSession trees of increasing size gave:
@@ -70,10 +69,10 @@ def estimate_parsed_tree_bytes(sessions: Sequence[ParsedSession]) -> int:
 
     Deliberately NOT a recursive ``sys.getsizeof``/pympler-style deep walk --
     that is accurate but O(object graph size) with real per-call overhead,
-    and this runs on ``warm()``'s hot path for every raw in a page (up to a
-    couple thousand). Instead: a single linear pass sums text/content field
-    lengths and counts model-instance nodes (sessions, messages, blocks,
-    attachments, session events, web constructs), then applies two constants
+    and this runs for every raw in a page (up to a couple thousand). Instead:
+    a single linear pass sums text/content field lengths and counts
+    model-instance nodes (sessions, messages, blocks, attachments, session
+    events, web constructs), then applies two constants
     calibrated against a real deep-size measurement -- see the constants'
     docstring/comment above for the calibration data and measured ratio.
     """

@@ -164,9 +164,8 @@ def configure_bounded_fts_repair_connection(conn: sqlite3.Connection) -> None:
     conn.execute(f"PRAGMA main.mmap_size = {BOUNDED_REPAIR_MMAP_SIZE_BYTES}")
 
 
-def suspend_fts_triggers_sync(conn: sqlite3.Connection, *, mark_stale: bool = True) -> None:
+def suspend_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Drop FTS triggers for bulk sync operations."""
-    del mark_stale
     for name in _FTS_TRIGGER_NAMES:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
@@ -486,14 +485,11 @@ async def rebuild_fts_index_async(
 def repair_message_fts_index_sync(
     conn: sqlite3.Connection,
     session_ids: Sequence[str],
-    *,
-    record_exact_snapshot: bool = True,
 ) -> None:
     """Repair message FTS rows for the supplied sessions.
 
     The supplied sessions are a bounded scope, so this operation never
-    publishes a global READY verdict. ``record_exact_snapshot`` is retained
-    for caller compatibility but no longer authorizes an archive-wide scan.
+    publishes a global READY verdict.
 
     The repair is one transaction over the whole batch, not one per session
     (polylogue-av5j1). ``publish_partition`` already declines to own a
@@ -523,7 +519,6 @@ def repair_message_fts_index_sync(
         if owns_transaction and conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
-    del record_exact_snapshot
 
 
 def repair_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
@@ -559,7 +554,7 @@ def replace_fts_rows_for_messages_sync(
         return
 
     session_ids = sorted({_indexed_message_parts(message)[1] for message in messages})
-    repair_message_fts_index_sync(conn, session_ids, record_exact_snapshot=False)
+    repair_message_fts_index_sync(conn, session_ids)
 
 
 def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:

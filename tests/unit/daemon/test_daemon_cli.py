@@ -3306,7 +3306,6 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     """Canonical replay keeps FTS/index publication under one writer lease."""
     from contextlib import contextmanager
 
-    from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
 
     held = 0
@@ -3377,7 +3376,7 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     replacement = RawObservationReplacement(
         key="raw-1",
         input_binding="binding",
-        payload=RawParsePrefetchCache(max_inflight_bytes=4096),
+        payload=None,
         raw_ids=("raw-1",),
     )
 
