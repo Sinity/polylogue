@@ -26,7 +26,7 @@ import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -120,30 +120,36 @@ def _timed_map(
     """
     counts: dict[str, int] = defaultdict(int)
 
-    def run(item: tuple[Path, str, int]) -> tuple[str, int, float, Callable[[], dict[str, int]]]:
+    def run(item: tuple[Path, str, int]) -> tuple[str, int, float, float, Callable[[], dict[str, int]]]:
         began = time.perf_counter()
         finish = work(item)
-        elapsed = time.perf_counter() - began
-        return item[1], item[2], elapsed, finish
+        ended = time.perf_counter()
+        return item[1], item[2], ended - began, ended, finish
 
-    began = time.perf_counter()
-    if workers <= 1:
-        results = [run(item) for item in files]
-    else:
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="component") as pool:
-            results = list(pool.map(run, files))
-    wall = time.perf_counter() - began
-    # ``finish()`` (artifact rereads, session/message counting) is the
-    # caller's own consumption, not the timed production stage; calling it
-    # here, after ``wall`` is fixed, keeps it out of both the per-file
-    # ``elapsed`` boundary (already true above) and this outer wall timer --
-    # `pool.map` above would otherwise not return until every `finish()` had
-    # also run, folding that consumption into `wall`/`mib_per_s_wall`.
-    rows = []
-    for origin, size, seconds, finish in results:
+    rows: list[tuple[str, int, float]] = []
+    last_ended = began = time.perf_counter()
+
+    def consume(result: tuple[str, int, float, float, Callable[[], dict[str, int]]]) -> None:
+        # ``finish()`` (artifact rereads, session/message counting) is the
+        # caller's own consumption, not the timed production stage. It runs
+        # as each file completes, so a prepared artifact's scratch is released
+        # while the rest are still being prepared, and the stage's wall is
+        # read from the workers' own end times rather than from this loop.
+        nonlocal last_ended
+        origin, size, seconds, ended, finish = result
         rows.append((origin, size, seconds))
+        last_ended = max(last_ended, ended)
         for key, value in finish().items():
             counts[key] += value
+
+    if workers <= 1:
+        for item in files:
+            consume(run(item))
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="component") as pool:
+            for future in as_completed([pool.submit(run, item) for item in files]):
+                consume(future.result())
+    wall = last_ended - began
     return rows, wall, dict(counts)
 
 

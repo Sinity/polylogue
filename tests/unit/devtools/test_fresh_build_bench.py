@@ -1585,3 +1585,141 @@ def test_named_transcripts_bring_their_sidecar_units(tmp_path: Path) -> None:
     sealed = tmp_path / "corpus" / "home" / ".claude" / "projects" / "proj"
     assert (sealed / "s1.jsonl").is_file()
     assert (sealed / "s1" / "tool-results" / "toolu_1.txt").is_file()
+
+
+def test_a_file_below_a_linked_source_directory_is_a_member_by_its_lexical_path(tmp_path: Path) -> None:
+    """``corpus files`` accepts a transcript production reaches through a linked directory.
+
+    Anti-vacuity (Codex P2, #5678): resolve the file before the membership
+    check and ``/mnt/team/session.jsonl`` is outside the sessions root.
+    """
+    from devtools.fresh_build_bench.corpus import corpus_from_files
+
+    home = tmp_path / "home"
+    sessions = home / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    team = tmp_path / "mnt" / "team"
+    team.mkdir(parents=True)
+    rollout = team / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "00000000-0000-0000-0000-000000000001"}}) + "\n",
+        encoding="utf-8",
+    )
+    (sessions / "team").symlink_to(team, target_is_directory=True)
+
+    corpus_from_files(tmp_path / "corpus", [sessions / "team" / rollout.name], home=home)
+
+    assert (tmp_path / "corpus" / "home" / ".codex" / "sessions" / "team" / rollout.name).is_file()
+
+
+def test_a_cancellation_interrupts_the_fingerprint_sort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancellation during SQLite's own sort pass ends the fingerprint.
+
+    Anti-vacuity (Codex P2, #5678): check ``cancelled`` only between scanned
+    rows and a cancellation after spooling waits out the whole sort and
+    digest.
+    """
+    import sqlite3
+    from contextlib import closing
+
+    import tests.infra.reindex_differential as differential
+    from devtools.fresh_build_bench import report
+
+    index = tmp_path / "index.db"
+    with closing(sqlite3.connect(index)) as conn:
+        conn.execute("CREATE TABLE big (value TEXT)")
+        conn.executemany("INSERT INTO big VALUES (?)", ((f"{index:08d}",) for index in range(20_000)))
+        conn.commit()
+    monkeypatch.setattr(differential, "compared_table_census", lambda: ["big"])
+    monkeypatch.setattr(differential, "_VOLATILE_COLUMNS", {"big": set()})
+    monkeypatch.setattr(report, "_CANCEL_CHECK_OPS", 100)
+    spooled = {"rows": 0}
+    real_fact_row = differential._fact_row
+
+    def counting(row: Any) -> Any:
+        spooled["rows"] += 1
+        return real_fact_row(row)
+
+    monkeypatch.setattr(differential, "_fact_row", counting)
+
+    with pytest.raises(report.FingerprintCancelledError):
+        report.output_fingerprint(
+            tmp_path, str(index), tmp_path / "scratch", cancelled=lambda: spooled["rows"] >= 20_000
+        )
+
+
+def test_component_preparations_are_consumed_as_they_finish() -> None:
+    """A finished file's preparation is consumed while others still run.
+
+    Anti-vacuity (Codex P2, #5678): collect every result before consuming
+    any and the second item never sees the first one's cleanup.
+    """
+    import threading
+
+    from devtools.fresh_build_bench.components import _timed_map
+
+    first_consumed = threading.Event()
+    saw_cleanup: list[bool] = []
+
+    def work(item: tuple[Path, str, int]) -> Any:
+        if item[1] == "late":
+            saw_cleanup.append(first_consumed.wait(10))
+
+        def finish() -> dict[str, int]:
+            if item[1] == "early":
+                first_consumed.set()
+            return {"files": 1}
+
+        return finish
+
+    rows, _wall, counts = _timed_map(work, [(Path("a"), "early", 1), (Path("b"), "late", 1)], workers=2)
+
+    assert saw_cleanup == [True]
+    assert counts == {"files": 2} and len(rows) == 2
+
+
+def test_the_periodic_profile_dump_counts_as_sampler_overhead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sampler's own snapshot writes are overhead, not workload CPU.
+
+    Anti-vacuity (Codex P2, #5678): finalize the tick's time before the
+    periodic dump and the ten seconds it spent vanish from overhead.
+    """
+    from devtools.fresh_build_bench import sampler as sampler_module
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr("devtools.fresh_build_bench.sampler.time.perf_counter", lambda: clock["now"])
+    monkeypatch.setattr(sampler_module, "_FLUSH_EVERY_S", 0.0)
+    sampler = sampler_module.StackSampler(tmp_path / "stacks.json", interval_s=0.0, stacks=False)
+    waits = iter([False, True])
+    monkeypatch.setattr(sampler._stop, "wait", lambda _timeout: next(waits))
+
+    def slow_dump() -> None:
+        clock["now"] += 10.0
+
+    monkeypatch.setattr(sampler, "_dump", slow_dump)
+    sampler._run()
+
+    assert sampler._sample_seconds >= 10.0
+
+
+def test_deep_stacks_keep_every_frame() -> None:
+    """A stack deeper than 96 frames keeps its outer callers.
+
+    Anti-vacuity (Codex P2, #5678): stop at a fixed depth and the outermost
+    frames of this 200-deep recursion are dropped.
+    """
+    import sys
+
+    from devtools.fresh_build_bench.sampler import _stack
+
+    captured: list[Any] = []
+
+    def recurse(depth: int) -> None:
+        if depth == 0:
+            captured.append(_stack(sys._getframe()))
+            return
+        recurse(depth - 1)
+
+    recurse(200)
+
+    assert sum(1 for frame in captured[0] if frame[1].endswith("recurse")) == 201

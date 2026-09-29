@@ -53,8 +53,6 @@ def _parser() -> argparse.ArgumentParser:
     sample.add_argument("--seed", type=int, default=1)
     sample.add_argument("--fraction", type=float, required=True)
     sample.add_argument("--home", type=Path, default=Path.home())
-    sample.add_argument("--whale-mib", type=int, default=64)
-    sample.add_argument("--max-whales-per-origin", type=int, default=1)
 
     explicit = corpus_kinds.add_parser("files", help="copy the named real files (e.g. one whale) into a corpus")
     explicit.add_argument("--out", type=Path, required=True)
@@ -160,8 +158,6 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
                 fraction=args.fraction,
                 sources=default_sample_sources(args.home),
-                whale_bytes=args.whale_mib << 20,
-                max_whales_per_origin=args.max_whales_per_origin,
             )
         else:
             from devtools.fresh_build_bench.corpus import corpus_from_files

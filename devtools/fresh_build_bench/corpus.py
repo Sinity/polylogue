@@ -384,15 +384,14 @@ def sample_real(
     seed: int,
     fraction: float,
     sources: Sequence[SampleSource],
-    whale_bytes: int = 64 << 20,
-    max_whales_per_origin: int = 1,
 ) -> dict[str, Any]:
     """Copy a seeded byte-fraction of every (origin, size-bucket) stratum.
 
     Within each stratum units are shuffled with the seed and taken until the
-    stratum's byte fraction is reached, rounding the last unit stochastically. Units above ``whale_bytes`` are capped per origin, because one
-    whale dominates a small sample; the receipt's per-origin fit extrapolates
-    whales from bytes rather than from their share of the sample.
+    stratum's byte fraction is reached, rounding the last unit stochastically.
+    Large units are sampled like any other: their own size buckets are
+    strata, so a sample holds whales at their byte fraction and a full
+    fraction holds every one.
     """
     if not 0 < fraction <= 1:
         raise ValueError("fraction must be in (0, 1]")
@@ -409,7 +408,6 @@ def sample_real(
         strata: dict[int, list[tuple[str, list[Path], int]]] = defaultdict(list)
         for unit in units:
             strata[_size_bucket(unit[2])].append(unit)
-        whales = 0
         for bucket in sorted(strata):
             members = strata[bucket]
             rng.shuffle(members)
@@ -427,12 +425,6 @@ def sample_real(
                 boundary = taken + size > goal
                 if boundary and rng.random() > (goal - taken) / size:
                     break
-                if size >= whale_bytes:
-                    if whales >= max_whales_per_origin:
-                        if boundary:
-                            break
-                        continue
-                    whales += 1
                 copied = 0
                 for path in paths:
                     destination = out / source.target / path.relative_to(source.root)
@@ -463,8 +455,6 @@ def sample_real(
         parameters={
             "seed": seed,
             "fraction": fraction,
-            "whale_bytes": whale_bytes,
-            "max_whales_per_origin": max_whales_per_origin,
             "population": population,
         },
     )
@@ -500,34 +490,41 @@ def corpus_from_files(
     from polylogue.core.enums import Provider
     from polylogue.sources.origin_specs import recognize_source_class
 
-    sources = [(source.root.resolve(), source) for source in default_sample_sources(home)]
-    home = home.resolve()
-    #: Each session-unit source's units, read once: ``{resolved file: unit files}``.
+    # Membership and layout follow the lexical path, as production discovery
+    # does: a transcript below a linked source directory is under its root.
+    # The file itself is read through its resolved path and must be a real
+    # file there (production does not ingest a linked file).
+    home = Path(os.path.abspath(home))
+    sources = [(Path(os.path.abspath(source.root)), source) for source in default_sample_sources(home)]
+    #: Each session-unit source's units, read once: ``{file: unit files}``.
     unit_of: dict[str, dict[Path, list[Path]]] = {}
     copied: set[Path] = set()
-    for file in files:
+    for named in files:
+        file = Path(os.path.abspath(named))
         resolved = file.resolve(strict=True)
-        admitted = [source for root, source in sources if root in resolved.parents]
+        if file.is_symlink() or not resolved.is_file():
+            raise ValueError(f"{named} is not a regular transcript file")
+        admitted = [source for root, source in sources if root in file.parents]
         if not admitted:
-            raise ValueError(f"{file} is not under a default source root of {home}")
+            raise ValueError(f"{named} is not under a default source root of {home}")
         # The watcher cursors only its declared transcript suffixes; any other
         # file would never be admitted, and the build could not go terminal.
         if resolved.suffix.lower() not in admitted[0].suffixes:
-            raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0].suffixes)})")
+            raise ValueError(f"{named} is not a transcript its source root admits ({', '.join(admitted[0].suffixes)})")
         # The suffix makes a file observable, not a session: production's own
         # source classifier decides (a Gemini tool-output sidecar is raw-only).
         recognition = recognize_source_class(Provider(admitted[0].origin), resolved)
         if recognition is not None and recognition.source_class != "session":
-            raise ValueError(f"{file} is not a session transcript: {recognition.reason}")
-        unit = [resolved]
+            raise ValueError(f"{named} is not a session transcript: {recognition.reason}")
+        unit = [file]
         if admitted[0].session_units:
             if admitted[0].origin not in unit_of:
                 unit_of[admitted[0].origin] = {
-                    path.resolve(): [member.resolve() for member in members]
+                    Path(os.path.abspath(path)): [Path(os.path.abspath(member)) for member in members]
                     for _key, members, _size in _units(admitted[0])
                     for path in members
                 }
-            unit = unit_of[admitted[0].origin].get(resolved, unit)
+            unit = unit_of[admitted[0].origin].get(file, unit)
         for member in unit:
             if member in copied:
                 continue

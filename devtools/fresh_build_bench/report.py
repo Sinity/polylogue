@@ -368,8 +368,28 @@ class FingerprintCancelledError(RuntimeError):
     """A cancellation arrived while the output fingerprint was being taken."""
 
 
+#: SQLite virtual-machine steps between cancellation checks.
+_CANCEL_CHECK_OPS: Final = 100_000
+
+
 def output_fingerprint(
     archive: Path, promoted_index: str, scratch: Path, *, cancelled: Callable[[], bool] = lambda: False
+) -> dict[str, Any]:
+    """Per-table digests over the comparable index relations (see :func:`_output_fingerprint`).
+
+    A cancellation that interrupts a SQLite pass surfaces as
+    :class:`FingerprintCancelledError`, like one seen between rows.
+    """
+    try:
+        return _output_fingerprint(archive, promoted_index, scratch, cancelled=cancelled)
+    except sqlite3.OperationalError as exc:
+        if cancelled():
+            raise FingerprintCancelledError("cancelled during the output fingerprint") from exc
+        raise
+
+
+def _output_fingerprint(
+    archive: Path, promoted_index: str, scratch: Path, *, cancelled: Callable[[], bool]
 ) -> dict[str, Any]:
     """Per-table digests over the comparable index relations.
 
@@ -391,6 +411,11 @@ def output_fingerprint(
         read.row_factory = sqlite3.Row
         spool.execute("PRAGMA journal_mode=OFF")
         spool.execute("PRAGMA synchronous=OFF")
+        # SQLite's own long passes (the unindexed ORDER BY sort of a large
+        # spool, a big table scan before its first row) run with no Python
+        # between rows; the progress handler interrupts them on cancellation.
+        for connection in (read, spool):
+            connection.set_progress_handler(lambda: 1 if cancelled() else 0, _CANCEL_CHECK_OPS)
         for table in compared_table_census():
             volatile = _VOLATILE_COLUMNS[table]
             if not _has_table(read, table):

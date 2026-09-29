@@ -28,7 +28,6 @@ from types import FrameType
 from typing import Final
 
 _THREAD_SUFFIX: Final = re.compile(r"(_\d+|-\d+)$")
-_MAX_DEPTH: Final = 96
 _FLUSH_EVERY_S: Final = 60.0
 _CLOCK_TICKS: Final = os.sysconf("SC_CLK_TCK")
 
@@ -57,8 +56,10 @@ def _thread_cpu_ticks(native_id: int) -> int | None:
 
 
 def _stack(frame: FrameType | None) -> tuple[tuple[str, str, int], ...]:
+    # Every frame: a truncated deep stack would credit its CPU to the inner
+    # frames only and never to the callers the profile claims to show.
     frames: list[tuple[str, str, int]] = []
-    while frame is not None and len(frames) < _MAX_DEPTH:
+    while frame is not None:
         code = frame.f_code
         frames.append((code.co_filename, code.co_qualname, frame.f_lineno or 0))
         frame = frame.f_back
@@ -135,9 +136,12 @@ class StackSampler:
             self._sample_seconds += time.perf_counter() - began
             if time.monotonic() - self._last_flush >= _FLUSH_EVERY_S:
                 # A daemon killed by its supervisor never runs atexit;
-                # periodic snapshots keep the measured part of the run.
+                # periodic snapshots keep the measured part of the run. The
+                # dump is the sampler's own work, so it counts as overhead.
                 self._last_flush = time.monotonic()
+                dump_began = time.perf_counter()
                 self._dump()
+                self._sample_seconds += time.perf_counter() - dump_began
 
     def write(self) -> None:
         if self._written:
