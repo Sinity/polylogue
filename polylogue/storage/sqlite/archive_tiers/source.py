@@ -6,8 +6,6 @@ live in index.db and are rebuilt from this tier.
 
 from __future__ import annotations
 
-from typing import Final
-
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 # Source remains intentionally hand-written.  Unlike the index/embeddings
@@ -63,69 +61,6 @@ SOURCE_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
 )
 
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
-# These objects may remain in a migrated historical source tier. Fresh source
-# generations omit them, and parity excludes only this explicit retired set.
-RETIRED_SOURCE_SCHEMA_OBJECTS: Final[frozenset[str]] = frozenset(
-    {
-        # The raw-authority census ledger (polylogue-6kur ruling 2026-09-15,
-        # polylogue-6kur.3 AC10): per-pass snapshots of the whole pending plan
-        # set, re-recorded every inspection. Durable frontier authorization
-        # lives on in raw_authority_blockers, which carries each blocked plan's
-        # full snapshot in expected_json and no longer references these rows.
-        "table:raw_authority_censuses",
-        "table:raw_authority_plans",
-        "table:raw_authority_census_plans",
-        "index:idx_raw_authority_census_plans_status",
-        "index:idx_raw_authority_census_plans_attempts",
-        "table:raw_authority_census_post_plans",
-        "table:raw_authority_artifact_census_receipts",
-        "index:idx_raw_authority_artifact_census_receipts_applied_at",
-        "table:raw_authority_artifact_census_checkpoints",
-        "table:raw_authority_artifact_census_checkpoint_members",
-        "index:idx_raw_authority_artifact_census_checkpoint_members_page",
-        "trigger:invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete",
-        "index:idx_raw_sessions_raw_authority_census_candidates",
-        "table:raw_live_source_reconciliation_receipts",
-        "index:idx_raw_live_source_reconciliation_receipts_compared_at",
-        "table:raw_membership_writeback_receipts",
-        "index:idx_raw_membership_writeback_receipts_promoted_at",
-        "table:raw_append_chain_backfill_receipts",
-        "index:idx_raw_append_chain_backfill_receipts_compared_at",
-        "table:raw_byte_duplicate_supersession_receipts",
-        "index:idx_raw_byte_duplicate_supersession_receipts_promoted_at",
-        "index:idx_raw_byte_duplicate_supersession_receipts_duplicate_of",
-        "table:raw_failure_disposition_receipts",
-        "index:idx_raw_failure_disposition_receipts_disposed_at",
-        "table:raw_non_session_duplicate_exclusion_receipts",
-        "index:idx_raw_non_session_duplicate_exclusion_receipts_twin",
-        "table:raw_quarantine_group_dedup_receipts",
-        "index:idx_raw_quarantine_group_dedup_receipts_promoted_at",
-        "index:idx_raw_quarantine_group_dedup_receipts_representative",
-        "table:raw_unknown_export_reclassification_receipts",
-        "index:idx_raw_unknown_export_reclassification_receipts_reclassified_at",
-        # Inbound OTLP span storage (polylogue-enrpa). No production writer or
-        # reader ever existed for it: the outbound projection
-        # (``telemetry/otel_projection.py``) reads canonical query rows, and no
-        # inbound receiver route is reachable. Session excision still deletes
-        # the rows a migrated historical tier carries.
-        "table:otlp_spans",
-        "index:idx_otlp_spans_trace",
-        "index:idx_otlp_spans_session",
-        # polylogue-48bos: raw_authority_parser_census kept a censused_at_ms
-        # column declared INTEGER NOT NULL CHECK(>= 0) as if it were a wall
-        # clock. Both production writers bound the SQL literal 0 and no
-        # reader ever selected it, so no historical row carries information
-        # to migrate. The table itself stays: its other four columns are the
-        # durable authority receipt.
-        "column:raw_authority_parser_census.censused_at_ms",
-    }
-)
-
-# ddl-lifecycle-waiver: version DROP TABLE artifact-census schema objects are
-# omitted from fresh source generations; frozen historical databases remain
-# readable and are not migrated by this change.
-# ddl-lifecycle-waiver: version schema and trigger removals above
-# are fresh-generation-only and leave frozen historical databases untouched.
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS pending_accepted_marker_inputs (
     request_key TEXT PRIMARY KEY CHECK(length(request_key) = 64),
@@ -794,7 +729,6 @@ WHERE artifact_kind NOT IN (
     'deferred_hot_jsonl_capture',
     'deferred_claude_code_partial_jsonl',
     'deferred_cas_frontier',
-    'deferred_codex_cas_frontier',
     'terminal_corrupt_input',
     'terminal_superseded_deferred_cas_frontier',
     'terminal_unknown_json_decode',
@@ -808,7 +742,6 @@ WHERE artifact_kind IN (
     'deferred_hot_jsonl_capture',
     'deferred_claude_code_partial_jsonl',
     'deferred_cas_frontier',
-    'deferred_codex_cas_frontier',
     'terminal_corrupt_input',
     'terminal_superseded_deferred_cas_frontier',
     'terminal_unknown_json_decode',
@@ -1023,4 +956,4 @@ INSERT OR IGNORE INTO audit_continuity_control(
 
 """
 
-__all__ = ["RETIRED_SOURCE_SCHEMA_OBJECTS", "SOURCE_DDL", "SOURCE_HAND_WRITTEN_DDL_REASONS"]
+__all__ = ["SOURCE_DDL", "SOURCE_HAND_WRITTEN_DDL_REASONS"]

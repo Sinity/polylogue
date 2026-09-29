@@ -29,9 +29,7 @@ excision:
    Whatever is still readable after the commit is named on the receipt as
    ``retained_hook_events`` and makes ``ExcisionReceipt.complete`` false.
 4. Disposes the manifest containers holding those raw acquisitions per
-   member (``source_item_raw_members`` + ``source_items``), deletes the
-   session's telemetry spans (``otlp_spans``, addressed by the same
-   ``(origin, session_native_id)`` key as hook events) and drops any
+   member (``source_item_raw_members`` + ``source_items``), and drops any
    ``blob_publication_reservations`` still reserving a now-excised hash.
    See :class:`ContainerDisposition` and
    :mod:`polylogue.security.excision_carriers`.
@@ -242,11 +240,6 @@ class ExcisionTarget:
     #: (polylogue-si5kj). Each also appears in ``raw_targets``; this tuple
     #: exists so the plan and receipt can name them separately.
     fact_raw_ids: tuple[str, ...] = ()
-    #: Telemetry spans addressed by ``(origin, session_native_id)``. Like
-    #: hook events they carry no ``raw_sessions`` row, so no raw target
-    #: reaches them; their attributes/events are session-addressable
-    #: evidence and the apply deletes them by name.
-    otlp_span_ids: tuple[str, ...] = ()
     #: Per-member disposition of the manifest containers that hold these raw
     #: acquisitions (polylogue-q4f6d).
     containers: ContainerDisposition = field(default_factory=lambda: ContainerDisposition())
@@ -277,7 +270,6 @@ class ExcisionTarget:
             or self.message_ids
             or self.block_ids
             or self.hook_event_ids
-            or self.otlp_span_ids
             or self.material_ids
             or self.marker_input_targets
         )
@@ -348,7 +340,6 @@ def _resolve_session_excision_target(
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
     hook_event_ids: tuple[str, ...] = ()
     fact_raw_ids: tuple[str, ...] = ()
-    otlp_span_ids: tuple[str, ...] = ()
     containers = ContainerDisposition()
     material_ids: tuple[str, ...] = ()
     material_blob_hashes: tuple[bytes, ...] = ()
@@ -405,7 +396,6 @@ def _resolve_session_excision_target(
                     target_raw_ids=marker_target_raw_ids,
                 )
             hook_event_ids = _session_hook_event_ids(conn, session_id)
-            otlp_span_ids = _session_otlp_span_ids(conn, session_id)
             material_ids, material_blob_hashes = _session_material_targets(conn, session_id)
         finally:
             conn.close()
@@ -418,7 +408,6 @@ def _resolve_session_excision_target(
         block_ids=block_ids,
         hook_event_ids=hook_event_ids,
         fact_raw_ids=fact_raw_ids,
-        otlp_span_ids=otlp_span_ids,
         containers=containers,
         material_ids=material_ids,
         material_blob_hashes=material_blob_hashes,
@@ -557,28 +546,6 @@ def _session_hook_event_ids(conn: sqlite3.Connection, session_id: str) -> tuple[
         str(row[0])
         for row in conn.execute(
             "SELECT hook_event_id FROM raw_hook_events WHERE origin = ? AND session_native_id = ?",
-            (origin, native_id),
-        ).fetchall()
-    )
-
-
-def _session_otlp_span_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
-    """Telemetry spans addressed to this session, which excision removes.
-
-    ``otlp_spans`` carries the ``(origin, session_native_id)`` session key and
-    no ``raw_sessions`` row, so it is reachable only by name --- the same
-    shape as hook events. Its ``attributes_json``/``events_json`` are
-    session-addressable evidence, so an excision that left them readable
-    would be the next instance of the defect the carrier registry exists to
-    prevent.
-    """
-    origin, _, native_id = session_id.partition(":")
-    if not origin or not native_id or not _table_exists(conn, "otlp_spans"):
-        return ()
-    return tuple(
-        str(row[0])
-        for row in conn.execute(
-            "SELECT span_id FROM otlp_spans WHERE origin = ? AND session_native_id = ?",
             (origin, native_id),
         ).fetchall()
     )
@@ -837,8 +804,6 @@ class ExcisionPlan:
     #: Already counted in ``source_raw_rows``; named so the preview shows
     #: that this evidence class is in scope.
     source_fact_rows: int = 0
-    #: Telemetry spans addressed to this session that an apply will remove.
-    source_otlp_spans: int = 0
     #: Container member rows an apply will remove (polylogue-q4f6d).
     source_container_members: int = 0
     #: Container items an apply will remove because no live member remains.
@@ -871,7 +836,6 @@ class ExcisionPlan:
             "lineage_dependent_session_ids": list(self.lineage_dependent_session_ids),
             "source_hook_events": self.source_hook_events,
             "source_fact_rows": self.source_fact_rows,
-            "source_otlp_spans": self.source_otlp_spans,
             "source_container_members": self.source_container_members,
             "source_container_items": self.source_container_items,
             "retained_source_containers": list(self.retained_source_containers),
@@ -980,7 +944,6 @@ def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineag
         lineage_dependent_session_ids=dependent_ids,
         source_hook_events=len({item for current in targets for item in current.hook_event_ids}),
         source_fact_rows=len({item for current in targets for item in current.fact_raw_ids}),
-        source_otlp_spans=len({item for current in targets for item in current.otlp_span_ids}),
         source_container_members=len(
             {
                 (member.source_generation_id, member.source_item_id, member.record_coordinate)
@@ -1113,7 +1076,6 @@ def _apply_single_session_excision(
         "source_raw_rows": 0,
         "source_fact_rows": len(target.fact_raw_ids),
         "source_hook_events": 0,
-        "source_otlp_spans": 0,
         "source_container_members": 0,
         "source_container_items": 0,
         "source_publication_reservations": 0,
@@ -1187,11 +1149,7 @@ def _apply_single_session_excision(
     retained_hook_events: tuple[str, ...] = ()
     retained_source_containers = tuple(item.label for item in target.containers.retained_items)
     if source_db.exists() and (
-        target.raw_targets
-        or target.hook_event_ids
-        or target.otlp_span_ids
-        or target.material_ids
-        or target.marker_input_targets
+        target.raw_targets or target.hook_event_ids or target.material_ids or target.marker_input_targets
     ):
         conn = _connect_rw(source_db, archive_root=archive_root)
         conn.execute("PRAGMA foreign_keys = ON")
@@ -1241,10 +1199,6 @@ def _apply_single_session_excision(
                             excised_at_ms=timestamp,
                         )
                         removed_hashes.append(item.blob_hash.hex())
-
-                for span_id in target.otlp_span_ids:
-                    cursor = conn.execute("DELETE FROM otlp_spans WHERE span_id = ?", (span_id,))
-                    counts["source_otlp_spans"] += max(cursor.rowcount, 0)
 
                 for raw_target in target.raw_targets:
                     # blob_refs groups every blob published under this raw

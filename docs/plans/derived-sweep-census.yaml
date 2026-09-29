@@ -751,10 +751,3 @@ sites:
     scope: "state_predicate"
     classification: declared_retention
     reason: "DELETE FROM attachments WHERE ref_count <= 0 after the refs this session dropped were recounted; it removes rows nothing references and never rewrites a retained one"
-  - file: "polylogue/storage/sqlite/schema_bootstrap.py"
-    function: "ensure_derived_schema_identity_async"
-    subject: "schema_identity"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
