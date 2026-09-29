@@ -233,6 +233,7 @@ def _ingest_append_plans_archive(
     )
     from polylogue.sources.revision_backfill import (
         _declared_non_session_artifact_classification,
+        enrich_sessions_from_archive,
         parse_retained_raw_sessions,
     )
 
@@ -453,7 +454,15 @@ def _ingest_append_plans_archive(
                         continue
                     parsed_by_raw_id: dict[str, Any] = {}
                     for replay_raw_id in replay_plan.accepted_raw_ids:
-                        replay_sessions = parse_retained_raw_sessions(archive, replay_raw_id)
+                        replay_provider, _hash, replay_path, _kind, _size = archive.raw_revision_descriptor(
+                            replay_raw_id
+                        )
+                        replay_sessions = enrich_sessions_from_archive(
+                            archive,
+                            replay_provider,
+                            replay_path,
+                            parse_retained_raw_sessions(archive, replay_raw_id),
+                        )
                         if len(replay_sessions) != 1:
                             raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")
                         parsed_by_raw_id[replay_raw_id] = replay_sessions[0]

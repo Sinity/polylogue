@@ -154,8 +154,8 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   head covering every affected file, and batch review-thread fixes into one
   push. Re-running only the failing ids is diagnosis on an unchanged tree;
   after a source change, re-run the complete affected selection. Reuse a receipt across related
-  tasks. The hosted quick gate covers static checks, so a local
-  `verify --quick` before pushing is optional.
+  tasks. The pre-push hook runs `devtools verify --quick` on the pushed HEAD;
+  the hosted quick gate stays the enforced record.
 - `devtools verify --quick` runs the static gates (`devtools gate --list`
   enumerates them; `devtools gate <name>` runs one).
   `devtools verify` selects affected tests from a usable testmon graph and
@@ -182,7 +182,8 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
 
 ## Code Review Rules
 
-Read and apply `docs/review/codex-review-guide.md` (checks, severity, noise)
+Read and apply `docs/review/codex-review-guide.md` (exhaustive review,
+checklist, severity, noise)
 and the nested `AGENTS.md` beside each changed file.
 - A change to an interface, command, config key, schema, route, or file format
   updates every consumer (callers, CLI/MCP, tests, docs, generated references,
@@ -205,6 +206,11 @@ Product code lands through feature branches and squash-merged PRs to
 protected `master`. The PR title is the conventional squash subject (72
 characters or fewer, imperative). The body has Summary, Problem (with
 evidence), Solution, Verification (exact commands and the line that matters),
-and honest residuals. Put no resolver keywords beside issue numbers unless the
-operator asks. release-please owns the version and changelog. Before writing
-"unified" or "complete", grep the diff and check both paths.
+Self-review, and honest residuals. Before every push, the author reviews its
+full diff against `master` with the checklist in
+`docs/review/codex-review-guide.md`, fixes everything found, and repeats until
+a pass is clean; Self-review narrates that last pass item by item (a tick or
+N/A with the reason, how it applied, evidence) and is public text. Put no
+resolver keywords beside issue numbers unless the operator asks.
+release-please owns the version and changelog. Before writing "unified" or
+"complete", grep the diff and check both paths.

@@ -56,6 +56,8 @@ from polylogue.archive.topology.edge import (
 )
 from polylogue.core.enums import BlockType, LinkType, Origin, Provider
 from polylogue.logging import capture
+from polylogue.sources.codex_state_projection import write_thread_state_projection
+from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -440,3 +442,193 @@ def test_unreadable_spawn_edge_projection_is_reported_not_silently_rootless(
         and event.get("session_id") == "child-thread"
         for event in events
     )
+
+
+# ---------------------------------------------------------------------------
+# Child archived before the state export that names its parent
+# ---------------------------------------------------------------------------
+
+
+def _project_state_export(
+    conn: sqlite3.Connection, *, parent: str, child: str, raw_id: str = "state-raw", observed_at_ms: int = 1_000
+) -> None:
+    """Land one retained state export through the production projection writer."""
+    snapshot = codex_state.CodexStateSnapshot(
+        threads=(),
+        spawn_edges=(codex_state.CodexSpawnEdge(parent_thread_id=parent, child_thread_id=child, status="closed"),),
+    )
+    write_thread_state_projection(
+        conn, snapshot, raw_id=raw_id, blob_hash=f"blob-{raw_id}", observed_at_ms=observed_at_ms
+    )
+    conn.commit()
+
+
+def _edge_decisions(conn: sqlite3.Connection, child_id: str) -> dict[str, tuple[object, ...]]:
+    return {
+        name: (row["link_type"], row["method"], row["status"], row["resolved_dst_session_id"])
+        for name, row in _links(conn, child_id).items()
+    }
+
+
+def _composed_parent(conn: sqlite3.Connection, child_id: str) -> tuple[object, object]:
+    row = conn.execute(
+        "SELECT parent_session_id, session_kind FROM sessions WHERE session_id = ?", (child_id,)
+    ).fetchone()
+    return row[0], row[1]
+
+
+@pytest.mark.parametrize("parser_parent", [None, _PARSER_PARENT, _HOOK_PARENT])
+def test_state_export_after_the_child_reaches_the_same_topology(tmp_path: Path, parser_parent: str | None) -> None:
+    """Topology must not depend on whether the child or its state export landed first.
+
+    Red twin: drop the ``rederive_codex_spawn_parent_links`` call from
+    ``write_thread_state_projection`` and the child-first archive keeps the
+    parser-only edge (or none) and composes through the wrong parent.
+    """
+    state_first = _index_conn(tmp_path / "state-first.db")
+    source = _source_conn(tmp_path / "source.db")
+    _project_state_export(state_first, parent=_HOOK_PARENT, child=_CHILD)
+    write_parsed_session_to_archive(state_first, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(state_first, _session(_PARSER_PARENT), source_conn=source)
+    expected_child = write_parsed_session_to_archive(
+        state_first, _session(_CHILD, parent=parser_parent), source_conn=source
+    )
+
+    child_first = _index_conn(tmp_path / "child-first.db")
+    write_parsed_session_to_archive(child_first, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(child_first, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(child_first, _session(_CHILD, parent=parser_parent), source_conn=source)
+    before = _edge_decisions(child_first, child_id)
+    _project_state_export(child_first, parent=_HOOK_PARENT, child=_CHILD)
+
+    assert child_id == expected_child
+    assert _edge_decisions(child_first, child_id) == _edge_decisions(state_first, expected_child) != before
+    assert _composed_parent(child_first, child_id) == _composed_parent(state_first, expected_child)
+    assert _composed_parent(child_first, child_id)[0] == f"{Origin.CODEX_SESSION.value}:{_HOOK_PARENT}"
+
+
+def test_revised_state_export_moves_an_already_archived_child(tmp_path: Path) -> None:
+    """A newer export naming a different parent re-decides the stored child.
+
+    The parser agreed with the first export, so its edge was upgraded in place;
+    the revision must find that parser claim again and mark it contradicted.
+    Red twin: drop the ``rederive_codex_spawn_parent_links`` call from
+    ``write_thread_state_projection`` and the child keeps composing through
+    the first export's parent, because nothing re-saves its transcript.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD)
+    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(index, _session("revised-hook-parent"), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_HOOK_PARENT), source_conn=source)
+    assert _links(index, child_id)[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+
+    _project_state_export(index, parent="revised-hook-parent", child=_CHILD, raw_id="state-raw-2", observed_at_ms=2_000)
+
+    links = _links(index, child_id)
+    assert links["revised-hook-parent"]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert links["revised-hook-parent"]["status"] is None
+    assert links[_HOOK_PARENT]["method"] == HOOK_CONTRADICTED_LINK_METHOD
+    assert links[_HOOK_PARENT]["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
+    assert links[_HOOK_PARENT]["resolved_dst_session_id"] is None
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:revised-hook-parent"
+
+
+def test_export_returning_to_an_earlier_parent_moves_the_child_back(tmp_path: Path) -> None:
+    """A -> B -> A across three exports leaves the child under A.
+
+    Red twin: decide which children to re-derive from the difference of the
+    scope's edge-key sets. The graph retains B's superseded edge and A's edge
+    already exists, so the third export adds no key and the child keeps B.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    for parent in (_HOOK_PARENT, "second-hook-parent"):
+        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-a", observed_at_ms=1_000)
+    _project_state_export(index, parent="second-hook-parent", child=_CHILD, raw_id="state-b", observed_at_ms=2_000)
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:second-hook-parent"
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-a2", observed_at_ms=3_000)
+
+    links = _links(index, child_id)
+    assert links[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert links["second-hook-parent"]["method"] == HOOK_SUPERSEDED_LINK_METHOD
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:{_HOOK_PARENT}"
+
+
+def test_rederivation_uses_the_current_parser_parent_not_a_retired_one(tmp_path: Path) -> None:
+    """A parser revision A -> B under hook H, then a hook move H -> C, keeps B as the parser claim.
+
+    Red twin: drop ``_retire_stale_parser_assertions`` from
+    ``_write_session_link``. The full replace keeps A's contradicted row, it
+    sorts before B's, and the re-derivation recovers A as the parser parent.
+    """
+    revised_parser_parent = "revised-parser-parent"
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-h", observed_at_ms=1_000)
+    for parent in (_HOOK_PARENT, _PARSER_PARENT, revised_parser_parent, "moved-hook-parent"):
+        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
+    write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(
+        index, _session(_CHILD, parent=revised_parser_parent), source_conn=source
+    )
+    links = _links(index, child_id)
+    assert links[revised_parser_parent]["method"] == HOOK_CONTRADICTED_LINK_METHOD
+    assert _PARSER_PARENT not in links
+
+    _project_state_export(index, parent="moved-hook-parent", child=_CHILD, raw_id="state-c", observed_at_ms=2_000)
+
+    links = _links(index, child_id)
+    assert _PARSER_PARENT not in links
+    assert links[revised_parser_parent]["method"] == HOOK_CONTRADICTED_LINK_METHOD
+    moved = links["moved-hook-parent"]
+    assert moved["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert json.loads(moved["evidence_json"])["superseded_parser_parent"] == revised_parser_parent
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:moved-hook-parent"
+
+
+def test_rederiving_a_deep_chain_projects_each_session_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One export that parents a whole chain refreshes the closure in one traversal.
+
+    Red twin: refresh each rewritten child with its own ``seen`` set. Every
+    child then climbs its whole ancestor chain again, so the refresh count
+    grows with the square of the chain depth instead of linearly.
+    """
+    from polylogue.storage.sqlite.archive_tiers import write as write_module
+
+    depth = 20
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    chain = ["chain-root", *(f"chain-{position:02d}" for position in range(1, depth + 1))]
+    for native_id in chain:
+        write_parsed_session_to_archive(index, _session(native_id), source_conn=source)
+
+    calls: list[str] = []
+    original = write_module._refresh_session_projection
+
+    def counting(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
+        calls.append(session_id)
+        original(conn, session_id, seen=seen)
+
+    monkeypatch.setattr(write_module, "_refresh_session_projection", counting)
+    snapshot = codex_state.CodexStateSnapshot(
+        threads=(),
+        spawn_edges=tuple(
+            codex_state.CodexSpawnEdge(parent_thread_id=parent, child_thread_id=child, status="closed")
+            for parent, child in zip(chain, chain[1:], strict=False)
+        ),
+    )
+    write_thread_state_projection(index, snapshot, raw_id="chain", blob_hash="blob-chain", observed_at_ms=1_000)
+    index.commit()
+
+    assert len(calls) <= 2 * depth
+    root_id = f"{Origin.CODEX_SESSION.value}:chain-root"
+    rows = index.execute(
+        "SELECT session_id, parent_session_id, root_session_id FROM sessions WHERE session_id != ?", (root_id,)
+    ).fetchall()
+    assert len(rows) == depth
+    assert all(row["root_session_id"] == root_id and row["parent_session_id"] is not None for row in rows)

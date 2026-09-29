@@ -67,12 +67,12 @@ from polylogue.sources.prepared_message_sink import (
     ClaudeAttachmentScratch,
     ClaudeChatEvidence,
     GeminiToolOutputIndex,
+    ScratchSessionSpill,
     SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
     discard_decoded_sessions,
-    prepare_simple_chatgpt_mapping,
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
@@ -599,6 +599,7 @@ def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: P
         attachments.extend(session.attachments)
     metadata = session.model_dump(mode="json", exclude={"messages", "session_events", "attachments"})
     metadata["content_hash"] = session.content_hash
+    metadata["enrichment_evidence_key"] = session.enrichment_evidence_key
     metadata["unit_accounting"] = (
         session.unit_accounting.model_dump(mode="json") if session.unit_accounting is not None else None
     )
@@ -697,6 +698,9 @@ def prepare_jsonl_blob(
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
             if (
                 read_result is not None
+                # Detector precedence: a browser-capture envelope may also
+                # carry a valid ``mapping``; the capture route owns it.
+                and not browser_capture.looks_like({**read_result[0], "mapping": {}})
                 and read_result[1].children_are_all_strings()
                 and chatgpt._mapping_nodes_are_valid(read_result[1].shallow_view())
             ):
@@ -920,10 +924,13 @@ def prepare_jsonl_blob(
             chatgpt_admitted = (
                 classify_chatgpt_object(chatgpt_envelope) if classify_chatgpt_object is not None else True
             )
+            # The parser reads the mapping node by node from scratch, and
+            # keeps its normalized messages, attachments and events there.
             session: ParsedSession | None = (
-                (
-                    prepare_simple_chatgpt_mapping(chatgpt_envelope, chatgpt_mapping, store, f"{fallback_id}-0")
-                    or chatgpt.parse(chatgpt_envelope, f"{fallback_id}-0")
+                chatgpt.parse(
+                    {**chatgpt_envelope, "mapping": chatgpt_mapping.shallow_view()},
+                    f"{fallback_id}-0",
+                    spill=ScratchSessionSpill(store),
                 )
                 if chatgpt_admitted
                 else None
@@ -938,10 +945,18 @@ def prepare_jsonl_blob(
                 next_attachment = store._next_attachment_ordinal
                 next_event = store._next_event_ordinal
                 try:
-                    attachments = store.new_attachment_sink()
-                    attachments.extend(session.attachments)
-                    events = store.new_event_sink()
-                    events.extend(session.session_events)
+                    source_attachments: object = session.attachments
+                    if isinstance(source_attachments, SqliteAttachmentSink):
+                        attachments = source_attachments
+                    else:
+                        attachments = store.new_attachment_sink()
+                        attachments.extend(session.attachments)
+                    source_events: object = session.session_events
+                    if isinstance(source_events, SqliteSessionEventSink):
+                        events = source_events
+                    else:
+                        events = store.new_event_sink()
+                        events.extend(session.session_events)
                     session = session.model_copy(update={"attachments": attachments, "session_events": events})
                     if prepare_sessions is not None:
                         selected = prepare_sessions([session])
@@ -984,14 +999,14 @@ def prepare_jsonl_blob(
                     "DELETE FROM prepared_attachment WHERE session_ordinal NOT IN "
                     "(SELECT attachment_ordinal FROM prepared_session)"
                 )
-            store.conn.execute("DROP TABLE chatgpt_node")
-            store.conn.execute("DROP TABLE chatgpt_child")
+            # Parser-only scratch never reaches the sealed artifact.
             for table in (
-                "chatgpt_simple_node",
-                "chatgpt_simple_sibling",
-                "chatgpt_simple_child",
-                "chatgpt_simple_active",
-                "chatgpt_simple_message",
+                "chatgpt_node",
+                "chatgpt_child",
+                "chatgpt_sibling",
+                "chatgpt_entry",
+                "scratch_string_set",
+                "scratch_string_map",
             ):
                 store.conn.execute(f"DROP TABLE IF EXISTS {table}")
             after_hash = _source_digest(source)

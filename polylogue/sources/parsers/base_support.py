@@ -340,7 +340,7 @@ class AdmissionObserver:
             existing_types = {
                 str(event.payload.get("wire_type")) for event in events if event.payload.get("wire_type") is not None
             }
-            if isinstance(events, list):
+            if isinstance(events, list) or not isinstance(events, MutableSequence):
                 events = list(events)
             self._append_unknown_events(events, existing_types, provider)
             if provider == "claude_code":
