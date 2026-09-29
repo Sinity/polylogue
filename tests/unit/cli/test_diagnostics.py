@@ -798,25 +798,18 @@ def test_latency_command_excludes_observations_outside_lookback_window(tmp_path:
     assert json.loads(result.output)["buckets"] == []
 
 
-def test_latency_plain_zero_rows_reports_unknown_drop_accounting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.operations.route_observation import RouteObservationDrops
+def test_latency_json_zero_rows_reports_unknown_drop_accounting(tmp_path: Path) -> None:
+    """An empty window read from another process is "drops unknown", never "zero drops"."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
-    monkeypatch.setattr(
-        "polylogue.operations.route_observation.read_side_drops",
-        lambda **_kwargs: RouteObservationDrops(False, {"process_local": 2}),
-    )
-    env = _env_with_archive_root(tmp_path)
-    result = CliRunner().invoke(diagnostics.latency_command, ["--format", "plain"], obj=env)
+    result = CliRunner().invoke(diagnostics.latency_command, ["--format", "json"], obj=_env_with_archive_root(tmp_path))
 
     assert result.exit_code == 0, result.output
-    assert "No route observations" in result.output
-    assert "dropped observations: not fully countable" in result.output
-    assert "process_local=2" in result.output
+    payload = json.loads(result.output)
+    assert payload["buckets"] == []
+    assert payload["drops"]["accounting_complete"] is False
 
 
 @pytest.mark.asyncio

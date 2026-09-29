@@ -932,7 +932,6 @@ async def _tools(
     help="Only rows for this surface (" + ", ".join(get_args(TelemetrySurface)) + ").",
 )
 @click.option("--since-hours", type=float, default=24.0, show_default=True, help="Lookback window in hours.")
-@click.option("--limit", "-l", "-n", type=int, default=1000, help="Max rows read per source table.")
 @click.option(
     "--format",
     "-f",
@@ -946,7 +945,6 @@ def latency_command(
     ctx: click.Context,
     surface: str | None,
     since_hours: float,
-    limit: int,
     output_format: str,
 ) -> None:
     """Report p50/p95 route latency from ops-tier telemetry (polylogue-jtwu).
@@ -964,8 +962,7 @@ def latency_command(
 
     from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
-    from polylogue.operations.route_observation import compute_latency_percentiles, read_side_drops
-    from polylogue.storage.sqlite.archive_tiers.ops_write import list_mcp_calls, list_route_observations
+    from polylogue.operations.route_observation import read_latency_report
 
     env: AppEnv = ctx.obj
     config = load_effective_config(env)
@@ -980,19 +977,7 @@ def latency_command(
         return
 
     with one_shot_diagnostic_read(ops_db) as conn:
-        observations = list_route_observations(conn, surface=surface, since_ms=since_ms, limit=limit)
-        calls = list_mcp_calls(conn, limit=limit) if surface in (None, "mcp") else ()
-        calls = tuple(call for call in calls if call.started_at_ms >= since_ms)
-
-    report = compute_latency_percentiles(
-        observations,
-        calls,
-        drops=read_side_drops(
-            observation_count=len(observations),
-            mcp_call_count=len(calls),
-            row_limit=limit,
-        ),
-    )
+        report = read_latency_report(conn, since_ms=since_ms, surface=surface)
     buckets = report.buckets
 
     if output_format == "json":

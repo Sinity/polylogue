@@ -1076,7 +1076,7 @@ class TestAdvertisedTopicContracts:
 
 @contextlib.contextmanager
 def _retention(max_rows: int | None = None, max_age_ms: int | None = None) -> Iterator[None]:
-    """Install a declared ledger bound through the production injection point."""
+    """Install a declared ledger bound (unbounded when both are ``None``)."""
     from polylogue.daemon.events import DaemonEventRetention, set_daemon_event_retention
 
     previous = set_daemon_event_retention(DaemonEventRetention(max_rows=max_rows, max_age_ms=max_age_ms))
@@ -1087,23 +1087,60 @@ def _retention(max_rows: int | None = None, max_age_ms: int | None = None) -> It
 
 
 class TestDaemonEventRetention:
-    """The ledger has a named enforcement point, and no invented bound."""
+    """The ledger has a named enforcement point and a declared production bound."""
 
-    def test_default_retention_is_declared_unbounded_not_silently_bounded(self) -> None:
-        """No retention value is invented; an unbounded ledger says it is unbounded."""
-        from polylogue.daemon.events import daemon_event_retention
+    def test_production_ledger_is_bounded_by_age_and_id_span(self) -> None:
+        """Anti-vacuity: restoring the unbounded default leaves the disposable
+        tier growing without limit, and both assertions go red."""
+        from polylogue.daemon.events import (
+            DAEMON_EVENT_RETENTION_MAX_AGE_MS,
+            DAEMON_EVENT_RETENTION_MAX_ROWS,
+            daemon_event_retention,
+        )
 
         retention = daemon_event_retention()
-        assert retention.max_rows is None
-        assert retention.max_age_ms is None
-        assert retention.is_bounded is False
+        assert retention.is_bounded is True
+        assert (retention.max_rows, retention.max_age_ms) == (
+            DAEMON_EVENT_RETENTION_MAX_ROWS,
+            DAEMON_EVENT_RETENTION_MAX_AGE_MS,
+        )
+
+    def test_production_bound_is_enforced_by_the_real_emit(self, empty_events_db: Path) -> None:
+        """The default bound runs on the production emit, not only an injected one.
+
+        Each emit prunes against its own ``observed_at_ms``, so no wall clock is read."""
+        from polylogue.daemon.events import DAEMON_EVENT_RETENTION_MAX_AGE_MS, emit_daemon_event, query_events_since
+
+        base_ms = 1_700_000_000_000
+        emit_daemon_event("ingestion_batch", payload={"n": "old"}, observed_at_ms=base_ms)
+        emit_daemon_event(
+            "ingestion_batch", payload={"n": "new"}, observed_at_ms=base_ms + DAEMON_EVENT_RETENTION_MAX_AGE_MS + 1
+        )
+
+        assert [cast("dict[str, object]", event["payload"])["n"] for event in query_events_since(0).events] == ["new"]
 
     def test_unbounded_retention_prunes_nothing(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import emit_daemon_event, query_events_since
 
-        for index in range(6):
-            emit_daemon_event("ingestion_batch", payload={"n": index})
+        with _retention():
+            for index in range(6):
+                emit_daemon_event("ingestion_batch", payload={"n": index})
         assert len(query_events_since(0).events) == 6
+
+    def test_row_bound_is_an_id_span_behind_the_latest_row(self, empty_events_db: Path) -> None:
+        """The retained ids are the ``max_rows`` ids ending at the newest row.
+
+        Anti-vacuity: a prune that deleted an interior row, or kept the oldest
+        rows instead of the newest, breaks the contiguous suffix asserted here."""
+        from polylogue.daemon.events import emit_daemon_event, query_events_since
+
+        with _retention(max_rows=3):
+            for index in range(5):
+                emit_daemon_event("ingestion_batch", payload={"n": index})
+            page = query_events_since(0)
+
+        ids = [cast("int", event["id"]) for event in page.events]
+        assert ids == list(range(page.latest_id - 2, page.latest_id + 1))
 
     def test_declared_row_cap_is_enforced_on_every_emit(self, empty_events_db: Path) -> None:
         """Anti-vacuity: a no-op enforcement point leaves all six rows behind."""

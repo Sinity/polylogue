@@ -8,6 +8,10 @@ The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordina
 
 Convergence emits structured events (`emit`/`span` from `polylogue/logging.py`) rather than free-form log lines: field names pass an allowlist and quarantined names are stripped from both rendered forms when `POLYLOGUE_LOG_REDACT=1` is set, so a rebuild is read from named events such as `daemon.barrier.failed` and their typed fields (`polylogue/logging.py:482-486`; `polylogue/logging.py:770-781`; `polylogue/daemon/convergence.py:1120-1126`).
 
+Each daemon run has one run id, bound into the logging run context before the first event and written as the `daemon_lifecycle` row's `run_id`, so the row, its heartbeats, the status projection of that row and every event of the run join on it (`polylogue/daemon/cli.py:1887`).
+
+The SSE replay ledger `daemon_events` is a resume buffer in the disposable ops tier, bounded to a week and a 250,000-id span; every emit enforces the bound (`polylogue/daemon/events.py:169`; `polylogue/daemon/events.py:189`). A `Last-Event-ID` below the retained range is answered with a typed `aged_out` resync envelope rather than a short page (`polylogue/daemon/events.py:539`).
+
 Correlation crosses the compute boundary explicitly. Neither `threading.Thread`
 nor `ThreadPoolExecutor.submit` copies contextvars, so both derivation-kernel
 submits wrap their `partial` in `propagate(...)`; without it the work runs on a

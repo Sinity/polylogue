@@ -1,10 +1,11 @@
 """Cold-CLI status latency benchmark (polylogue-8s70 / polylogue-20d.14 / polylogue-jtwu).
 
-Covers: the direct-fallback ``polylogue status`` cold-subprocess path -- one
-whole Python process invocation, import tax included -- against a minimal
-(empty, ops-tier-only) archive. This is the "interactive" SLO tier's
-``cli_status_cold`` surface: no daemon reachable, so this measures the same
-cost polylogue-8s70's own manual cProfile/importtime investigation targeted.
+Covers: the ``polylogue status`` cold-subprocess path with no daemon reachable
+-- one whole Python process invocation, import tax included -- against a
+minimal (empty, ops-tier-only) archive. Status is daemon-served, so this path
+ends in the typed ``daemon_absent`` snapshot (exit 1); this is the
+"interactive" SLO tier's ``cli_status_cold`` surface and the cost
+polylogue-8s70's cProfile/importtime investigation targets.
 
 Run with:
     pytest tests/benchmarks/test_cli_cold_start.py --benchmark-enable -p no:xdist -v
@@ -12,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import os
 import resource
 import subprocess
@@ -64,7 +66,12 @@ def test_bench_cli_status_cold(
             timeout=30,
         )
         elapsed_ms = (perf_counter() - started) * 1000
-        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        # No daemon is reachable by construction, so status answers with its
+        # typed daemon-absent snapshot and exits 1. Anything else (a crash, a
+        # non-JSON answer) is not the path this lane measures.
+        payload = json.loads(result.stdout)
+        assert result.returncode == 1, result.stderr.decode(errors="replace")
+        assert payload["status_snapshot"]["reason"] == "daemon_absent", payload
         imported_modules = result.stderr.count(b"import time:")
         record_metrics(
             benchmark,
