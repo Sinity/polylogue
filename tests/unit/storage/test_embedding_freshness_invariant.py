@@ -707,6 +707,32 @@ def test_embedding_completion_pages_references_below_sqlite_bind_limit(
             )
 
         before = conn.execute("SELECT message_id FROM message_embedding_refs ORDER BY message_id").fetchall()
+        # Cancel after the first deletion page starts. The next page must
+        # observe the compute owner's event and roll the first page back.
+        from threading import Event
+
+        from polylogue.core.compute_cancel import compute_cancel
+
+        cancelled = Event()
+        cancel_token = compute_cancel.set(cancelled)
+        conn.set_trace_callback(
+            lambda sql: cancelled.set() if sql.startswith("DELETE FROM message_embedding_refs") else None
+        )
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                if route == "windowed":
+                    finalize_embedding_attempt_success(
+                        conn, attempt=attempt, message_ids=desired_ids, completed_at_ms=4
+                    )
+                else:
+                    complete_embedding_attempt_success(conn, attempt=attempt, writes=writes, completed_at_ms=4)
+        finally:
+            conn.set_trace_callback(None)
+            compute_cancel.reset(cancel_token)
+        assert cancelled.is_set()
+        assert conn.execute("SELECT message_id FROM message_embedding_refs ORDER BY message_id").fetchall() == before
+        assert conn.execute("SELECT attempt_state FROM embedding_derivation_state").fetchone()[0] == "pending"
+
         conn.set_authorizer(deny_completion)
         try:
             with pytest.raises(sqlite3.DatabaseError):

@@ -248,9 +248,9 @@ async def test_async_backend_preserves_lease_at_the_worker_open(tmp_path: Path, 
 
     root = tmp_path / "archive"
     backend = SQLiteBackend(root / "index.db")
-    with closing(sqlite3.connect(backend.db_path)) as conn:
-        conn.execute("CREATE TABLE lease_probe (value TEXT NOT NULL)")
-        conn.commit()
+    with closing(sqlite3.connect(backend.db_path)) as setup_conn:
+        setup_conn.execute("CREATE TABLE lease_probe (value TEXT NOT NULL)")
+        setup_conn.commit()
 
     async def mutate() -> None:
         if route == "begin":

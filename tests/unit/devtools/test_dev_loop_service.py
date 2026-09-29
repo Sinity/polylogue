@@ -622,7 +622,9 @@ def test_main_emits_one_bounded_json_error(monkeypatch: pytest.MonkeyPatch, caps
 def test_receiver_smoke_mints_a_different_token_for_each_invocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = dev_loop_service.make_server
+    from polylogue.browser_capture.server import make_server
+
+    original = make_server
     tokens: list[str] = []
 
     def observe(*args: Any, **kwargs: Any) -> Any:

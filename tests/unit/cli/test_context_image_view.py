@@ -17,6 +17,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.context.compiler import ContextImage, ContextSpec
+from polylogue.context.scheduler import ContextLedgerRow
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -132,9 +133,11 @@ async def test_max_tokens_bounds_output_with_omission_accounting(tmp_path: Path)
     assert bounded.token_estimate == sum(segment.token_estimate for segment in bounded.segments) == 0
     assert not bounded.segments
     assert len(bounded.ledger) == 2
-    assert {row.decision for row in bounded.ledger} == {"dropped"}
-    assert all(row.token_cost > 1 for row in bounded.ledger)
-    assert all(row.budget_before == row.budget_after == 1 for row in bounded.ledger)
+    for row in bounded.ledger:
+        assert isinstance(row, ContextLedgerRow)
+        assert row.decision == "dropped"
+        assert row.token_cost > 1
+        assert row.budget_before == row.budget_after == 1
 
 
 @pytest.mark.asyncio

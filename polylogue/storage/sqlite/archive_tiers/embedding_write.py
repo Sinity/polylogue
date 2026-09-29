@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Sequence, Set
 from dataclasses import dataclass
-from itertools import batched
+from itertools import islice
 from typing import Literal, cast
 
 from polylogue.core.compute_cancel import compute_cancel_requested
@@ -477,15 +477,19 @@ def _delete_stale_message_embedding_refs(conn: sqlite3.Connection, session_id: s
     after_rowid: int | None = None
     while True:
         _check_embedding_publication_cancelled()
-        after = "" if after_rowid is None else " AND rowid > ?"
-        params = (session_id,) if after_rowid is None else (session_id, after_rowid)
-        # The session index carries rowid as its tie-breaker. Each page is
-        # closed before deletion, with no growing OFFSET or whole-session set.
-        rows = conn.execute(
-            "SELECT rowid, message_id FROM message_embedding_refs "
-            f"WHERE session_id = ?{after} ORDER BY rowid LIMIT {_EMBEDDING_REF_PAGE_SIZE}",
-            params,
-        ).fetchall()
+        # Both queries require a session. Keeping the first-page and keyset
+        # forms explicit lets SQLite use the session index's rowid tie-breaker.
+        if after_rowid is None:
+            rows = conn.execute(
+                "SELECT rowid, message_id FROM message_embedding_refs WHERE session_id = ? ORDER BY rowid LIMIT ?",
+                (session_id, _EMBEDDING_REF_PAGE_SIZE),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT rowid, message_id FROM message_embedding_refs "
+                "WHERE session_id = ? AND rowid > ? ORDER BY rowid LIMIT ?",
+                (session_id, after_rowid, _EMBEDDING_REF_PAGE_SIZE),
+            ).fetchall()
         if not rows:
             return
         after_rowid = int(rows[-1][0])
@@ -703,7 +707,8 @@ def finalize_embedding_attempt_success(
         # retry can reuse surviving vectors without a false counter mismatch.
         if desired_ids:
             page_size = min(_EMBEDDING_REF_PAGE_SIZE, conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) - 1)
-            for page in batched(desired_ids, page_size):
+            remaining = iter(desired_ids)
+            while page := tuple(islice(remaining, page_size)):
                 _check_embedding_publication_cancelled()
                 placeholders = ", ".join("?" for _ in page)
                 present_count = conn.execute(
