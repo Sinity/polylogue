@@ -1634,7 +1634,7 @@ def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRo
     ``reclaimed_bytes``) recorded by ``run_blob_gc``. Per-skip diagnostics are
     in-process log detail only and are not persisted (#1743).
     """
-    conn = open_connection(db_path)
+    conn = open_connection(db_path, archive_root=Path(db_path).parent)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
 from functools import wraps
 from typing import Any, TypeVar
 
@@ -212,12 +212,21 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
                 (index, wire_type) for index, wire_type in enumerate(observed, start=1) if wire_type is not None
             ]
 
-            existing_types = {
-                str(event.payload.get("wire_type"))
-                for event in session.session_events
-                if event.payload.get("wire_type") is not None
-            }
-            events = list(session.session_events)
+            existing_types = (
+                {
+                    str(event.payload.get("wire_type"))
+                    for event in session.session_events
+                    if event.payload.get("wire_type") is not None
+                }
+                if unknowns
+                else set()
+            )
+            # The parser owns its event sequence; a scratch-backed one must
+            # stay on disk, so admission events are appended in place rather
+            # than collecting the sequence into a list.
+            events = session.session_events
+            if not isinstance(events, MutableSequence):
+                events = list(events)
             for index, wire_type in unknowns:
                 if wire_type in existing_types:
                     continue

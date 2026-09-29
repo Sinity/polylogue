@@ -1388,6 +1388,7 @@ def _write_session(
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         if _needs_session_fts_repair(conn, payload.session_id):
             counts[_FTS_REPAIR_COUNT_KEY] = 1
+        _bind_session_enrichment(conn, source_conn, payload)
         return False, counts
 
     if (
@@ -1407,9 +1408,16 @@ def _write_session(
     if blob_publisher is not None:
         preacquired_attachment_blobs = {}
         for attachment in session_to_write.attachments:
-            if attachment.inline_bytes is None:
+            if attachment.inline_bytes is not None:
+                hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
+            elif attachment.precomputed_blob is not None:
+                # Bytes a parse worker already published (a streamed browser
+                # capture's spilled carriers, ChatGPT asset sidecars) are
+                # GC-eligible until referenced; reserve them like a write so
+                # the flush proves they are still present.
+                hash_hex, size = blob_publisher.adopt_published(*attachment.precomputed_blob)
+            else:
                 continue
-            hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
             receipt_id = blob_publisher.receipt_id(hash_hex)
             blob_hash = bytes.fromhex(hash_hex)
             preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
@@ -1420,13 +1428,12 @@ def _write_session(
         )
         counts.update(sidecar_blob_counts)
         blob_publisher.flush()
-    for attachment in session_to_write.attachments:
+    for attachment in session_to_write.attachments if blob_publisher is None else ():
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
         # asset acquisition) -- record the already-known hash/size directly
-        # rather than re-hashing. Independent of ``blob_publisher`` (no new
-        # write happens here) and skipped when ``inline_bytes`` already
-        # claimed this attachment above.
+        # rather than re-hashing. With a publisher the loop above already
+        # reserved and recorded it; this covers publisher-less callers.
         if attachment.inline_bytes is not None or attachment.precomputed_blob is None:
             continue
         if preacquired_attachment_blobs is None:
@@ -1512,6 +1519,8 @@ def _write_session(
         counts["skipped_attachments"] = payload.attachment_count
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         return False, counts
+    if not (writer_outcomes and writer_outcomes[0].suppression_skipped):
+        _bind_session_enrichment(conn, source_conn, payload)
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
     if attachment_owner_resolutions is not None and writer_outcomes:
@@ -1530,6 +1539,45 @@ def _write_session(
     counts["session_events"] = len(session_to_write.session_events)
 
     return True, counts
+
+
+def _bind_session_enrichment(
+    conn: sqlite3.Connection, source_conn: sqlite3.Connection | None, payload: SessionWritePayload
+) -> None:
+    """Bind this accepted session to its enrichment evidence, if still current.
+
+    The parsed session carries the key of the evidence it was enriched from
+    (stamped by the worker or retained enricher). Without a source handle, a
+    carried key, or with evidence that moved since, nothing is bound and
+    inspection re-derives the session on the retained route.
+    """
+    from polylogue.sources.revision_backfill import (
+        provider_binds_enrichment,
+        record_session_enrichment_binding,
+        session_enrichment_evidence_key,
+    )
+
+    if source_conn is None or not payload.raw_id or not provider_binds_enrichment(payload.parsed_session.source_name):
+        return
+
+    row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (payload.raw_id,)).fetchone()
+    native = conn.execute("SELECT native_id FROM sessions WHERE session_id = ?", (payload.session_id,)).fetchone()
+    main = next((entry for entry in source_conn.execute("PRAGMA database_list") if entry[1] == "main"), None)
+    if row is None or row[0] is None or native is None or main is None or not main[2]:
+        return
+    record_session_enrichment_binding(
+        conn,
+        session_id=payload.session_id,
+        carried_key=payload.parsed_session.enrichment_evidence_key,
+        current_key=session_enrichment_evidence_key(
+            provider=payload.parsed_session.source_name,
+            source_path=str(row[0]),
+            native_id=str(native[0]),
+            index_conn=conn,
+            source_conn=source_conn,
+            blob_root=Path(main[2]).parent / "blob",
+        ),
+    )
 
 
 def _refresh_session_raw_link(conn: sqlite3.Connection, session_id: str, raw_id: str | None) -> bool:
