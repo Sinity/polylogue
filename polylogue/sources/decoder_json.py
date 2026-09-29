@@ -631,6 +631,11 @@ def _root_envelope_without(
     builder = ijson.common.ObjectBuilder()
     future_type = _FirstFutureType()
     arrays = dict.fromkeys(streamed, 0)
+    # A repeated key on the way to a streamed array would make the decoder
+    # keep only its last value, while the stream would already have taken the
+    # overwritten array; such documents stay on the collecting route.
+    guarded = {".".join(path.split(".")[: depth + 1]) for path in streamed for depth in range(path.count(".") + 1)}
+    seen_guarded: set[str] = set()
     skipped: str | None = None
     expect_array: str | None = None
     try:
@@ -654,6 +659,10 @@ def _root_envelope_without(
                 path = f"{prefix}.{value}" if prefix else str(value)
                 if not prefix and path in rerouted_root_keys:
                     return None
+                if path in guarded:
+                    if path in seen_guarded:
+                        return None
+                    seen_guarded.add(path)
                 if path in arrays:
                     arrays[path] += 1
                     expect_array = path

@@ -309,3 +309,16 @@ def test_retained_chunked_prompt_uses_streamed_replay_route(tmp_path: Path, monk
     [actual] = artifact.iter_sessions()
     assert actual.provider_session_id == "neutral-prompt"
     assert len(actual.messages) == 306
+
+
+def test_repeated_ancestor_key_keeps_the_document_on_the_object_parser() -> None:
+    """The decoder keeps the last ``chunkedPrompt``; streaming must not take the first one's chunks.
+
+    Anti-vacuity: without the duplicate-key guard the probe returns an
+    envelope that streams the discarded turn.
+    """
+    document = (
+        b'{"id":"p","chunkedPrompt":{"chunks":[{"role":"user","text":"discarded"}]},'
+        b'"chunkedPrompt":{"pendingInputs":[]}}'
+    )
+    assert drive_chunked_prompt_envelope(BytesIO(document)) is None
