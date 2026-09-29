@@ -487,10 +487,13 @@ def test_spool_handoff_leaves_a_new_empty_active_generation(tmp_path: Path, role
     assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
 
 
-def test_cut_reclaims_incomplete_publication_and_orphaned_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Mutation: a crash before the final marker must be retried as absent output."""
+def test_cut_reclaims_only_staging_it_owns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crash before the final marker is retried as absent output.
+
+    Anti-vacuity: reclaim by request-id prefix alone and the unowned
+    ``.crash-boundary.backup`` directory is deleted; skip reclamation and the
+    owned crashed staging directory survives.
+    """
     root = tmp_path / "source"
     root.mkdir()
     (root / "one.jsonl").write_text("one\n", encoding="utf-8")
@@ -498,8 +501,12 @@ def test_cut_reclaims_incomplete_publication_and_orphaned_staging(
         [SourceDeclaration("source", SourceRole.APPEND_JSONL, root, True)], request_id="crash-boundary"
     )
     destination = tmp_path / "cut"
-    orphan = tmp_path / ".crash-boundary.orphan"
-    orphan.mkdir()
+    unowned = tmp_path / ".crash-boundary.backup"
+    unowned.mkdir()
+    (unowned / "unowned.txt").write_text("keep", encoding="utf-8")
+    owned = tmp_path / ".crash-boundary.crashed"
+    owned.mkdir()
+    (owned / source_snapshot._STAGING_OWNER_MARKER).write_text("crash-boundary\n", encoding="utf-8")
     original_write = source_snapshot._write_durable
 
     def crash_before_marker(path: Path, payload: str) -> None:
@@ -513,16 +520,15 @@ def test_cut_reclaims_incomplete_publication_and_orphaned_staging(
     assert not (destination / ".source-cut-complete").exists()
     with pytest.raises(FileNotFoundError):
         source_snapshot.load_source_cut(destination)
+    assert not owned.exists()
 
     monkeypatch.setattr(source_snapshot, "_write_durable", original_write)
     recovered = execute_source_cut(preflight, destination)
     assert recovered.counts.conserved
-    assert not orphan.exists()
-
-    valid_orphan = tmp_path / ".crash-boundary.valid-orphan"
-    valid_orphan.mkdir()
+    assert (unowned / "unowned.txt").read_text(encoding="utf-8") == "keep"
+    assert not (destination / source_snapshot._STAGING_OWNER_MARKER).exists()
     assert execute_source_cut(preflight, destination).cut_identity == recovered.cut_identity
-    assert not valid_orphan.exists()
+    assert unowned.is_dir()
 
     (destination / ".source-cut-complete").write_text("partial", encoding="utf-8")
     with pytest.raises(FileNotFoundError):
@@ -594,3 +600,63 @@ def test_source_id_cannot_escape_candidate_staging(tmp_path: Path) -> None:
     with pytest.raises(SourceSnapshotError, match="source_id"):
         preflight_source_cut([SourceDeclaration(str(escaped), SourceRole.DIRECTORY, root, True)])
     assert not escaped.exists()
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_cut_refuses_staging_inside_source_before_mutating_it(tmp_path: Path, alias: bool) -> None:
+    """Without the overlap guard, the census includes its own staging output."""
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "one.jsonl").write_text("one\n", encoding="utf-8")
+    parent = root
+    if alias:
+        parent = tmp_path / "source-alias"
+        parent.symlink_to(root, target_is_directory=True)
+    preflight = preflight_source_cut([SourceDeclaration("source", SourceRole.APPEND_JSONL, root, True)])
+
+    with pytest.raises(SourceSnapshotError):
+        execute_source_cut(preflight, parent / "nested" / "cut")
+
+    assert sorted(path.name for path in root.iterdir()) == ["one.jsonl"]
+
+
+def test_sqlite_cut_keeps_dotted_source_ids_distinct(tmp_path: Path) -> None:
+    """Replacing a suffix makes state.first and state.second overwrite state.jsonl."""
+    declarations = []
+    for name in ("first", "second"):
+        database = tmp_path / f"{name}.sqlite"
+        with sqlite3.connect(database) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+            conn.execute("INSERT INTO state VALUES (?)", (name,))
+        declarations.append(SourceDeclaration(f"state.{name}", SourceRole.MUTABLE_SQLITE, database, True))
+
+    result = execute_source_cut(preflight_source_cut(declarations), tmp_path / "cut")
+    inputs = reacquire_candidate(result)
+
+    assert {item.path.name for item in inputs} == {"state.first.jsonl", "state.second.jsonl"}
+    assert len({item.path.read_bytes() for item in inputs}) == 2
+
+
+def test_archive_cut_reacquires_member_bytes_and_detects_member_mutation(tmp_path: Path) -> None:
+    """Comparing the ZIP file digest to a member digest rejects an intact cut."""
+    import zipfile
+
+    source = tmp_path / "export.zip"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("one.json", "one")
+        archive.writestr("nested/two.json", "two")
+    result = execute_source_cut(
+        preflight_source_cut([SourceDeclaration("export", SourceRole.ARCHIVE_MEMBER, source)]), tmp_path / "cut"
+    )
+
+    inputs = reacquire_candidate(result)
+    assert {item.coordinate for item in inputs} == {"export.zip!one.json", "export.zip!nested/two.json"}
+    assert {item.size_bytes for item in inputs} == {3}
+    assert len({item.path for item in inputs}) == 1
+    assert reacquire_candidate(result, coordinates=[inputs[0].coordinate]) == (inputs[0],)
+
+    with zipfile.ZipFile(inputs[0].path, "w") as archive:
+        archive.writestr("one.json", "changed")
+        archive.writestr("nested/two.json", "two")
+    with pytest.raises(SourceMutationError):
+        reacquire_candidate(result)

@@ -57,6 +57,24 @@ def _attributes(value: object) -> dict[str, object]:
     return result
 
 
+#: Span fields ``otel_span_evidence`` carries in their own projected keys.
+_PROJECTED_SPAN_FIELDS = frozenset(
+    {
+        "traceId",
+        "trace_id",
+        "spanId",
+        "span_id",
+        "parentSpanId",
+        "parent_span_id",
+        "name",
+        "kind",
+        "status",
+        "attributes",
+        "events",
+    }
+)
+
+
 def _json_value(value: object) -> object:
     if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
         return value
@@ -489,6 +507,16 @@ def _messages_for_span(
     if not transcript.has_assistant_tool(tool_id):
         transcript.append((Role.ASSISTANT.value, None, (tool_id,)))
     transcript.append((Role.TOOL.value, None, (tool_id,)))
+    # A structured, numeric or boolean result is still the provider's result:
+    # serialize it rather than leave the result block empty. An absent
+    # attribute stays absent.
+    result_text = (
+        tool_result
+        if isinstance(tool_result, str)
+        else json.dumps(_json_value(tool_result), ensure_ascii=False, sort_keys=True)
+        if "gen_ai.tool.call.result" in attrs
+        else None
+    )
     messages.extend(
         (
             ParsedMessage(
@@ -515,7 +543,7 @@ def _messages_for_span(
                     ParsedContentBlock(
                         type=BlockType.TOOL_RESULT,
                         tool_id=tool_id,
-                        text=tool_result if isinstance(tool_result, str) else None,
+                        text=result_text,
                         tool_outcome=outcome,
                         is_error=is_error,
                         outcome_unknown_reason=unknown_reason,
@@ -591,6 +619,12 @@ def _span_evidence_event(
             },
             "usage_fidelity": _usage_fidelity(attrs),
             "events": _json_value(span.get("events", [])),
+            # Every span field this payload does not project (end time,
+            # links, trace state, flags, dropped counts, fields a later OTLP
+            # revision adds) stays recoverable from the evidence.
+            "unprojected_span_fields": {
+                key: _json_value(value) for key, value in span.items() if key not in _PROJECTED_SPAN_FIELDS
+            },
             # A span from another resource of the same trace keeps its own
             # resource identity.
             **({"resource_id": foreign_resource_id} if foreign_resource_id is not None else {}),
