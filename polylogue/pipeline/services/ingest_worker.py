@@ -31,6 +31,7 @@ from polylogue.archive.raw_payload.decode import (
 )
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
+from polylogue.core.storage_faults import storage_fault_kind
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -41,6 +42,7 @@ from polylogue.pipeline.ingest_outcomes import (
     corrupt_input_disposition,
     non_session_artifact_disposition,
     parser_defect_disposition,
+    storage_fault_disposition,
     success_disposition,
     unsupported_shape_disposition,
     validation_rejected_disposition,
@@ -1114,7 +1116,10 @@ def _browser_capture_payload(context: _IngestContext, blob_store: BlobStore) -> 
         except ValueError:
             return None
         try:
-            blob_hash, size_bytes = blob_store.publish_prepared(prepared)
+            # This worker holds no write lease, so the writer reserves the
+            # blob later (``ArchiveBlobPublisher.adopt_published``); renewing
+            # a deduplicated copy's age keeps GC off it until then.
+            blob_hash, size_bytes = blob_store.publish_prepared_renewing(prepared)
         finally:
             blob_store.discard_prepared(prepared)
         return SpilledCarrier(blob_hash, size_bytes)
@@ -1196,6 +1201,9 @@ def ingest_record(
             sqlite_immutable=True,
         )
     except Exception as exc:
+        # Spilling a capture's carriers writes to the blob store, so a full or
+        # failing archive disk surfaces here; it says nothing about the input.
+        fault = storage_fault_kind(exc)
         return _record_result(
             context,
             stored_payload_provider,
@@ -1203,7 +1211,11 @@ def ingest_record(
             validation_error=f"decode: {exc}",
             parse_error=f"decode: {exc}",
             error=f"decode: {exc}",
-            disposition=classify_decode_exception(exc),
+            disposition=(
+                classify_decode_exception(exc)
+                if fault is None
+                else storage_fault_disposition(fault, diagnostic=str(exc))
+            ),
         )
 
     return _run_parse_plan(context, _build_envelope_parse_plan(context, envelope))

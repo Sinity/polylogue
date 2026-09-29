@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -133,6 +135,8 @@ def test_ingest_worker_decodes_a_capture_as_a_stream_and_spills_its_carriers(
     ``inline_bytes`` instead of a blob reference. Identity parity: each
     attachment's identity payload equals the one a whole-document parse
     derives, so the streamed route cannot mint different attachment ids.
+    Deduplicating against an aged copy renews its age: plain publication
+    leaves it GC-eligible until the writer reserves it.
     """
     from polylogue.core.enums import Provider
     from polylogue.pipeline.ids import _attachment_hash_payload
@@ -149,6 +153,8 @@ def test_ingest_worker_decodes_a_capture_as_a_stream_and_spills_its_carriers(
     reset_blob_store()
     raw_id, blob_size = store.write_from_bytes(raw)
     raw_blob = store.blob_path(raw_id)
+    aged_hash, _ = store.write_from_bytes(carriers["att-session"])
+    os.utime(store.blob_path(aged_hash), (0, 0))
     original_read_bytes = Path.read_bytes
 
     def refuse_whole_read(self: Path) -> bytes:
@@ -187,3 +193,61 @@ def test_ingest_worker_decodes_a_capture_as_a_stream_and_spills_its_carriers(
         assert _attachment_hash_payload(attachment) == _attachment_hash_payload(expected[attachment_id])
         assert attachment.size_bytes == expected[attachment_id].size_bytes
         assert attachment.upload_origin == expected[attachment_id].upload_origin
+    assert store.blob_path(aged_hash).stat().st_mtime > 0
+
+
+def test_the_admission_summary_retains_no_turn() -> None:
+    """Every turn is validated and folded; none stays in the summary head.
+
+    Anti-vacuity: keeping the first validated turn in ``head`` retains its
+    whole text while admission summarizes the resident capture beside it.
+    """
+    capture = _capture_with_carriers({"att-turn": b"carrier"})
+    capture["session"]["turns"][0]["text"] = "t" * 65536  # type: ignore[index]
+    summary = capture_stream.summarize_capture_stream(io.BytesIO(json.dumps(capture).encode()))
+
+    assert summary.turn_count == 2
+    assert summary.head.session.turns == []
+    assert summary.turn_identities == ()
+
+
+def test_a_session_without_turns_is_still_refused() -> None:
+    """The head's placeholder turn only stands in for turns that streamed past.
+
+    Anti-vacuity: always supplying the placeholder admits a turnless session.
+    """
+    capture = _capture_with_carriers({"att-turn": b"carrier"})
+    capture["session"]["turns"] = []  # type: ignore[index]
+    with pytest.raises(capture_stream.CaptureEnvelopeError) as refused:
+        capture_stream.summarize_capture_stream(io.BytesIO(json.dumps(capture).encode()))
+    assert refused.value.reason == "invalid_payload"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [OverflowError("Python int too large to convert to C long"), OSError(errno.EFBIG, os.strerror(errno.EFBIG))],
+)
+def test_a_body_past_the_largest_file_is_the_typed_physical_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    """An unrepresentable or over-large length is refused like a full disk, before any read.
+
+    Anti-vacuity: ``OverflowError`` is not an ``OSError`` and ``EFBIG`` is not
+    ENOSPC, so either escapes as an untyped failure (a dropped response or a
+    500) instead of the retryable 507.
+    """
+
+    def failing_fallocate(fd: int, offset: int, length: int) -> None:
+        raise failure
+
+    monkeypatch.setattr(os, "posix_fallocate", failing_fallocate, raising=False)
+    reads: list[int] = []
+
+    def read(size: int) -> bytes:
+        reads.append(size)
+        return b"x" * size
+
+    with pytest.raises(capture_stream.SpoolStorageExhaustedError):
+        capture_stream.stage_capture_body(read, 2**62, spool_root=tmp_path)
+    assert reads == []
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
