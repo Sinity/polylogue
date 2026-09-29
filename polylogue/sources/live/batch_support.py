@@ -408,7 +408,7 @@ class JsonlBoundary:
     malformed_record: bool = False
 
 
-_JSONL_BLANK_LINE_RE = re.compile(rb"(?:\A|\n)[ \t\r]*(?:\n|\Z)")
+_JSONL_BLANK_LINE_RE = re.compile(rb"(?:\A|\n)(?:[ \t\r]*\n|[ \t\r]+\Z)")
 
 
 def _jsonl_record_count(prefix: bytes) -> int:

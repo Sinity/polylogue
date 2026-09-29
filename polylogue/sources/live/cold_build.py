@@ -270,7 +270,8 @@ def _ops_holder_is_attached(conn: sqlite3.Connection, ops_db: Path) -> bool:
     not that answer and is not caught here.
     """
     conn.execute("SELECT count(*) FROM sqlite_schema").fetchall()
-    return ops_db.with_name(f"{ops_db.name}-shm").exists()
+    physical_ops_db = ops_db.resolve()
+    return physical_ops_db.with_name(f"{physical_ops_db.name}-shm").exists()
 
 
 def active_index_generation_is_empty(archive_root: Path) -> bool:
@@ -353,8 +354,9 @@ class ColdBuildGeneration:
     def accepted_progress(self) -> tuple[int | None, int, float | None, float | None]:
         """Matching applied revisions, sealed denominator, lifetime rate, and ETA.
 
-        The rate is cumulative from build start. ETA is available only after
-        recent count advancement; an observation alone never renews its clock.
+        The rate is cumulative from build start. A sealed complete count has
+        zero ETA. Otherwise ETA requires recent count advancement; an
+        observation alone never renews its clock.
         A warm status call only reads this cached projection. An intake pass
         advances it from candidate receipts after its writer has closed.
         """
@@ -372,9 +374,13 @@ class ColdBuildGeneration:
                 last_advanced_at is not None and observed_at - last_advanced_at <= _ACCEPTED_PROGRESS_STALL_AFTER_S
             )
             eta = (
-                max(0, denominator - count) / rate
-                if self._accepted_progress_denominator_sealed and advancing and rate is not None
-                else None
+                0.0
+                if self._accepted_progress_denominator_sealed and count >= denominator
+                else (
+                    (denominator - count) / rate
+                    if self._accepted_progress_denominator_sealed and advancing and rate is not None
+                    else None
+                )
             )
             return count, denominator, rate, eta
 

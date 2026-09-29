@@ -1994,6 +1994,7 @@ class LiveBatchProcessor:
             skipped_file_count=metrics.skipped_file_count,
             succeeded_file_count=len(succeeded_paths),
             failed_file_count=len(failed_paths),
+            materialized_count=materialized_session_count,
             input_bytes=input_bytes,
             ingested_bytes=metrics.ingested_bytes,
             failed_bytes=metrics.failed_bytes,
@@ -3234,7 +3235,8 @@ class LiveBatchProcessor:
         antigravity_pb_paths = [
             path
             for path in paths
-            if fallback_provider is Provider.ANTIGRAVITY
+            if not source_only
+            and fallback_provider is Provider.ANTIGRAVITY
             and path.suffix.lower() == ".pb"
             and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
         ]
