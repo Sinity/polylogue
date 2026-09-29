@@ -558,11 +558,6 @@ class TestPolylogueConfigDefaults:
         cfg = load_polylogue_config()
         assert cfg.health_check_tiers == "fast,medium"
 
-    def test_hermes_root_default(self, workspace_env: dict[str, Path]) -> None:
-        from polylogue.config import load_polylogue_config
-
-        assert load_polylogue_config().hermes_root == ""
-
 
 class TestPolylogueConfigEnvOverrides:
     """POLYLOGUE_* env vars override defaults."""
@@ -633,12 +628,6 @@ class TestPolylogueConfigEnvOverrides:
         cfg = load_polylogue_config()
         assert cfg.browser_capture_port == 8888
 
-    def test_env_overrides_hermes_root(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
-        from polylogue.config import load_polylogue_config
-
-        monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", "/srv/hermes")
-        assert load_polylogue_config().hermes_root == "/srv/hermes"
-
 
 class TestPolylogueConfigCLIOverrides:
     """CLI overrides take highest precedence."""
@@ -708,13 +697,21 @@ class TestPolylogueConfigTOML:
         assert cfg.browser_capture_host == "0.0.0.0"
         assert cfg.browser_capture_port == 9997
 
-    def test_toml_sets_hermes_root(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-        from polylogue.config import load_polylogue_config, resolve_runtime_config
+    def test_hermes_root_is_hermes_home(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        """Hermes's own ``HERMES_HOME`` names its root; ``~/.hermes`` otherwise.
 
-        toml_path = tmp_path / "polylogue.toml"
-        toml_path.write_text('[sources.hermes]\nroot = "/srv/hermes"\n', encoding="utf-8")
-        assert load_polylogue_config(config_path=toml_path).hermes_root == "/srv/hermes"
-        assert resolve_runtime_config(config_path=toml_path).source_paths.hermes == Path("/srv/hermes")
+        Anti-vacuity: resolving the Hermes root from the home directory alone
+        ignores the ``HERMES_HOME`` given here.
+        """
+        from polylogue.config import resolve_runtime_config
+
+        home = tmp_path / "home"
+        relocated = tmp_path / "hermes"
+        assert resolve_runtime_config(environment={"HOME": str(home)}).source_paths.hermes == home / ".hermes"
+        assert (
+            resolve_runtime_config(environment={"HOME": str(home), "HERMES_HOME": str(relocated)}).source_paths.hermes
+            == relocated
+        )
 
     def test_toml_env_cli_precedence(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]

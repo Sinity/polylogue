@@ -153,7 +153,6 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 

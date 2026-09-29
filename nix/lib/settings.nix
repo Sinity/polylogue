@@ -71,11 +71,6 @@ let
           secret over rendering this into TOML.
         '';
       };
-      spool-path = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Browser-capture spool path.";
-      };
     };
 
     embedding = {
@@ -267,7 +262,6 @@ let
           || settings.browser-capture.allowed-origins != null
           || settings.browser-capture.allow-remote != null
           || settings.browser-capture.auth-token != null
-          || settings.browser-capture.spool-path != null
         ) {
           browser_capture = dropNulls {
             host = settings.browser-capture.host;
@@ -275,7 +269,6 @@ let
             allowed_origins = settings.browser-capture.allowed-origins;
             allow_remote = settings.browser-capture.allow-remote;
             auth_token = settings.browser-capture.auth-token;
-            spool_path = settings.browser-capture.spool-path;
           };
         }
       );

@@ -530,10 +530,6 @@ class PolylogueConfig:
         return str(self._data.get("browser_capture_host", "127.0.0.1"))
 
     @property
-    def browser_capture_spool_path(self) -> str:
-        return str(self._data.get("browser_capture_spool_path", ""))
-
-    @property
     def browser_capture_auth_token(self) -> str | None:
         v = self._data.get("browser_capture_auth_token")
         return v if isinstance(v, str) and v else None
@@ -547,40 +543,8 @@ class PolylogueConfig:
         return _require_bool_config_value(self._data, "browser_capture_allow_no_auth", allow_blank=True)
 
     @property
-    def hermes_root(self) -> str:
-        """Optional layered override for the Hermes runtime root."""
-        return str(self._data.get("hermes_root", ""))
-
-    @property
-    def drive_credentials_path(self) -> str:
-        return str(self._data.get("drive_credentials_path", ""))
-
-    @property
-    def drive_token_path(self) -> str:
-        return str(self._data.get("drive_token_path", ""))
-
-    @property
-    def hook_sidecar_dir(self) -> str:
-        return str(self._data.get("hook_sidecar_dir", ""))
-
-    @property
-    def hook_provider(self) -> str | None:
-        """Forced hook-harness id ('claude-code'/'codex') or None to auto-detect.
-
-        Returned as a raw string (not the ``HookHarness`` literal) to avoid a
-        ``polylogue.hooks`` import here; callers validate/narrow the value.
-        """
-        value = self._data.get("hook_provider")
-        return value if isinstance(value, str) and value else None
-
-    @property
     def backup_verify_tmpdir(self) -> str | None:
         value = self._data.get("backup_verify_tmpdir")
-        return value if isinstance(value, str) and value else None
-
-    @property
-    def antigravity_language_server(self) -> str | None:
-        value = self._data.get("antigravity_language_server")
         return value if isinstance(value, str) and value else None
 
     @property
@@ -953,23 +917,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Explicit opt-out of the auto-minted receiver bearer token (receiver serves unauthenticated).",
     ),
     ConfigInventoryEntry(
-        "browser_capture_spool_path",
-        toml_path="daemon.browser_capture.spool_path",
-        env_var="POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH",
-        cli_override="polylogued run --spool",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description="Spool directory for browser-capture JSONL before archive ingestion.",
-    ),
-    ConfigInventoryEntry(
-        "hermes_root",
-        toml_path="sources.hermes.root",
-        env_var="POLYLOGUE_HERMES_ROOT",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description="Hermes runtime root containing state, snapshots, and observability artifacts.",
-    ),
-    ConfigInventoryEntry(
         "embedding_enabled",
         toml_path="embedding.enabled",
         env_var="POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS",
@@ -1216,54 +1163,12 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         toml_kind="table",
     ),
     ConfigInventoryEntry(
-        "drive_credentials_path",
-        toml_path="drive.credentials_path",
-        env_var="POLYLOGUE_CREDENTIAL_PATH",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description="Google Drive OAuth client credentials path.",
-    ),
-    ConfigInventoryEntry(
-        "drive_token_path",
-        toml_path="drive.token_path",
-        env_var="POLYLOGUE_TOKEN_PATH",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description="Google Drive OAuth token path.",
-    ),
-    ConfigInventoryEntry(
-        "hook_sidecar_dir",
-        toml_path="sources.hook_sidecar_dir",
-        env_var="POLYLOGUE_HOOK_SIDECAR_DIR",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description="Durable hook-event sidecar/spool directory.",
-    ),
-    ConfigInventoryEntry(
-        "hook_provider",
-        toml_path="sources.hook_provider",
-        env_var="POLYLOGUE_HOOK_PROVIDER",
-        owner_class="deployment-policy",
-        reload_behavior="per-invocation-client",
-        description=(
-            "Force hook-event harness detection to 'claude-code' or 'codex' instead of sniffing the payload shape."
-        ),
-    ),
-    ConfigInventoryEntry(
         "backup_verify_tmpdir",
         toml_path="maintenance.backup_verify_tmpdir",
         env_var="POLYLOGUE_BACKUP_VERIFY_TMPDIR",
         owner_class="path-layout",
         reload_behavior="startup-bound",
         description="Preferred parent directory for backup verification scratch data.",
-    ),
-    ConfigInventoryEntry(
-        "antigravity_language_server",
-        toml_path="sources.antigravity.language_server",
-        env_var="POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description="Antigravity language-server executable override.",
     ),
     ConfigInventoryEntry(
         "ingest_commit_batch_messages",
@@ -1706,23 +1611,10 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "health_convergence_debt": {},
         "health_cursor_lag": {},
         "browser_capture_host": "127.0.0.1",
-        "browser_capture_spool_path": "",
         "browser_capture_auth_token": None,
         "browser_capture_allow_remote": False,
         "browser_capture_allow_no_auth": False,
-        "hermes_root": "",
-        "drive_credentials_path": str(captured.config_home / "polylogue-credentials.json"),
-        "drive_token_path": str(captured.state_home / "token.json"),
-        # Blank (like browser_capture_spool_path above), not a hardcoded
-        # ``data_home / "hooks"``: resolve_runtime_config()'s archive-derived
-        # fallback only takes effect when this default is genuinely absent
-        # (polylogue-o7hx). A non-blank default here would silently override
-        # the archive-derived path for every archive root, defeating scratch
-        # archive isolation of the hook spool.
-        "hook_sidecar_dir": "",
-        "hook_provider": None,
         "backup_verify_tmpdir": None,
-        "antigravity_language_server": None,
         "ingest_commit_batch_messages": 8000,
         "live_full_ingest_workers": 1,
         "memory_budget_bytes": None,
@@ -2088,7 +1980,6 @@ class ResolvedRuntimeConfig:
     state_home: Path
     runtime_root: Path
     backup_verify_tmpdir: Path | None
-    antigravity_language_server: Path | None
 
     def as_config(self) -> Config:
         """Return a defensive legacy projection without ambient re-resolution."""
@@ -2178,30 +2069,12 @@ def resolve_runtime_config(
     )
     archive = _resolved_archive_root(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
     render = archive / "render"
-    browser_spool = _resolved_runtime_path(
-        settings.browser_capture_spool_path,
-        bootstrap=bootstrap,
-        fallback=archive / "browser-capture",
-    )
-    hook_sidecar = _resolved_runtime_path(
-        settings.hook_sidecar_dir,
-        bootstrap=bootstrap,
-        # Mirrors browser_spool above (polylogue-o7hx): must fall back to the
-        # resolved archive root, not the XDG data home, or a scratch/test
-        # POLYLOGUE_ARCHIVE_ROOT fails to isolate its hook spool from the real
-        # one.
-        fallback=archive / "hooks",
-    )
-    drive_credentials = _resolved_runtime_path(
-        settings.drive_credentials_path,
-        bootstrap=bootstrap,
-        fallback=bootstrap.config_home / "polylogue-credentials.json",
-    )
-    drive_token = _resolved_runtime_path(
-        settings.drive_token_path,
-        bootstrap=bootstrap,
-        fallback=bootstrap.state_home / "token.json",
-    )
+    # Polylogue-owned spools live under the resolved archive root, never the
+    # XDG data home, so a scratch archive root isolates them (polylogue-o7hx).
+    browser_spool = archive / "browser-capture"
+    hook_sidecar = archive / "hooks"
+    drive_credentials = bootstrap.config_home / "polylogue-credentials.json"
+    drive_token = bootstrap.state_home / "token.json"
     drive_cache = bootstrap.data_home / "drive-cache"
     paths = ResolvedArchivePaths(
         archive_root=archive,
@@ -2224,8 +2097,9 @@ def resolve_runtime_config(
         codex=bootstrap.home / ".codex" / "sessions",
         codex_memories=bootstrap.home / ".codex" / "memories",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
+        # Hermes's own HERMES_HOME names its runtime root.
         hermes=_resolved_runtime_path(
-            settings.hermes_root,
+            bootstrap.environment.get("HERMES_HOME"),
             bootstrap=bootstrap,
             fallback=bootstrap.home / ".hermes",
         ),
@@ -2256,11 +2130,6 @@ def resolve_runtime_config(
         if settings.backup_verify_tmpdir
         else None
     )
-    antigravity_server = (
-        _resolved_runtime_path(settings.antigravity_language_server, bootstrap=bootstrap, fallback=bootstrap.cwd)
-        if settings.antigravity_language_server
-        else None
-    )
     return ResolvedRuntimeConfig(
         settings=settings,
         paths=paths,
@@ -2276,7 +2145,6 @@ def resolve_runtime_config(
         state_home=bootstrap.state_home,
         runtime_root=bootstrap.runtime_root,
         backup_verify_tmpdir=backup_tmp,
-        antigravity_language_server=antigravity_server,
     )
 
 

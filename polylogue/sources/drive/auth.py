@@ -55,17 +55,9 @@ def default_token_path(config: DriveConfigLike | None = None) -> Path:
 
 
 def _resolve_credentials_path(ui: DriveUILike | _PromptBridge | None, config: DriveConfigLike | None = None) -> Path:
-    """Resolve credentials path from config, environment, or defaults."""
+    """Resolve the credentials path from the runtime DriveConfig or the canonical location."""
     if configured := _configured_path(config, "credentials_path"):
         return configured
-
-    from polylogue.config import load_polylogue_config
-
-    settings = load_polylogue_config()
-    if settings.layer_of("drive_credentials_path") != "default":
-        configured_path = settings.drive_credentials_path
-        if configured_path:
-            return Path(configured_path).expanduser()
 
     default_path = default_credentials_path(config)
     if default_path.exists():
@@ -82,24 +74,13 @@ def _resolve_credentials_path(ui: DriveUILike | _PromptBridge | None, config: Dr
                     shutil.copy(candidate, default_path)
                 return default_path
 
-    raise DriveAuthError(
-        f"Drive credentials not found. Set POLYLOGUE_CREDENTIAL_PATH or place a client JSON at {default_path}."
-    )
+    raise DriveAuthError(f"Drive credentials not found. Place a Google OAuth client JSON at {default_path}.")
 
 
 def _resolve_token_path(config: DriveConfigLike | None = None) -> Path:
-    """Resolve token path from config, environment, or defaults."""
+    """Resolve the token path from the runtime DriveConfig or the canonical location."""
     if configured := _configured_path(config, "token_path"):
         return configured
-
-    from polylogue.config import load_polylogue_config
-
-    settings = load_polylogue_config()
-    if settings.layer_of("drive_token_path") != "default":
-        configured_path = settings.drive_token_path
-        if configured_path:
-            return Path(configured_path).expanduser()
-
     return default_token_path(config)
 
 
@@ -182,7 +163,7 @@ class DriveAuthManager:
         if self._prompter is None:
             raise DriveAuthError(
                 "Drive authorization required but no interactive UI is available. "
-                "Run with --interactive or set POLYLOGUE_TOKEN_PATH with a valid token."
+                f"Run with --interactive, or place a valid token at {token_path}."
             )
 
         flow: DriveLocalServerFlowLike = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)

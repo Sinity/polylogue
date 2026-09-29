@@ -68,7 +68,6 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 |------|---------|-------------|
 | `--host` | `127.0.0.1` | Browser-capture receiver host |
 | `--port` | `8765` | Browser-capture receiver port |
-| `--spool` | (auto) | Browser-capture artifact spool path |
 | `--browser-capture-auth-token` | auto | Receiver bearer token; auto-minted/loaded from a 0600 file if not given |
 | `--browser-capture-allow-no-auth` | off | Explicit opt-out: serve with no bearer token at all |
 | `--browser-capture-origin` | none | Additional allowed origin (repeatable) |

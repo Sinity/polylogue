@@ -285,8 +285,9 @@ def gemini_cli_path() -> Path:
 
 
 def hermes_sessions_path() -> Path:
-    """Hermes agent state directory."""
-    return Path.home() / ".hermes"
+    """Hermes agent state directory: Hermes's own ``HERMES_HOME``, else ``~/.hermes``."""
+    raw = os.environ.get("HERMES_HOME", "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".hermes"
 
 
 def antigravity_path() -> Path:

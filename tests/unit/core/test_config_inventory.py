@@ -40,7 +40,7 @@ def test_inventory_toml_paths_drive_loader_and_formatter(tmp_path: Path, workspa
     cfg_path.write_text(
         """
 [daemon.browser_capture]
-spool_path = "/tmp/polylogue-browser-spool"
+allowed_origins = "https://workbench.example"
 auth_token = "bc-token"
 
 [embedding]
@@ -55,15 +55,15 @@ blob_integrity_sample_size = 7
     cfg = load_polylogue_config(config_path=cfg_path, site_config_path=tmp_path / "absent.toml")
 
     inventory = config_inventory_by_key()
-    assert inventory["browser_capture_spool_path"].toml_path == "daemon.browser_capture.spool_path"
+    assert inventory["browser_capture_allowed_origins"].toml_path == "daemon.browser_capture.allowed_origins"
     assert inventory["voyage_api_key"].toml_path == "embedding.voyage_api_key"
-    assert cfg.browser_capture_spool_path == "/tmp/polylogue-browser-spool"
+    assert cfg.browser_capture_allowed_origins == "https://workbench.example"
     assert cfg.browser_capture_auth_token == "bc-token"
     assert cfg.voyage_api_key == "voyage-token"
     assert cfg.health_blob_integrity_sample_size == 7
 
     rendered = format_config_toml(cfg.raw)
-    assert "spool_path" in rendered
+    assert "allowed_origins" in rendered
     assert "blob_integrity_sample_size" in rendered
     assert "bc-token" not in rendered
     assert "voyage-token" not in rendered
@@ -87,6 +87,36 @@ def test_retired_whale_escalation_setting_is_refused(tmp_path: Path, workspace_e
     assert "raw_authority_whale_payload_bytes" not in config_inventory_by_key()
 
 
+@pytest.mark.parametrize(
+    ("table", "key", "refused"),
+    [
+        ("daemon.browser_capture", "spool_path", "daemon.browser_capture.spool_path"),
+        ("sources.hermes", "root", "sources"),
+        ("sources", "hook_sidecar_dir", "sources"),
+        ("sources", "hook_provider", "sources"),
+        ("drive", "credentials_path", "drive"),
+        ("drive", "token_path", "drive"),
+        ("sources.antigravity", "language_server", "sources"),
+    ],
+)
+def test_removed_path_override_is_refused(
+    tmp_path: Path, workspace_env: dict[str, Path], table: str, key: str, refused: str
+) -> None:
+    """A per-origin path override fails the load instead of being ignored.
+
+    Anti-vacuity: declaring the key in the inventory again makes the load
+    succeed.
+    """
+    from polylogue.config import ConfigError, load_polylogue_config
+
+    config_path = tmp_path / "polylogue.toml"
+    config_path.write_text(f'[{table}]\n{key} = "/somewhere"\n', encoding="utf-8")
+
+    # The refusal names the key, or the outermost table no declared key lives under.
+    with pytest.raises(ConfigError, match=rf"does not read: {re.escape(refused)};"):
+        load_polylogue_config(config_path=config_path, site_config_path=tmp_path / "absent.toml")
+
+
 def test_inventory_env_mapping_is_executable(monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
     from polylogue.config import config_inventory_by_key, load_polylogue_config
 
@@ -94,7 +124,6 @@ def test_inventory_env_mapping_is_executable(monkeypatch: pytest.MonkeyPatch, wo
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:9999")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE", "true")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN", "receiver-token")
-    monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH", "/tmp/polylogue-spool")
     monkeypatch.setenv("POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE", "3")
     monkeypatch.setenv("POLYLOGUE_MEMORY_BUDGET_BYTES", "123456789")
     monkeypatch.setenv("NO_COLOR", "1")
@@ -108,7 +137,6 @@ def test_inventory_env_mapping_is_executable(monkeypatch: pytest.MonkeyPatch, wo
     assert cfg.layer_of("daemon_url") == "env"
     assert cfg.browser_capture_allow_remote is True
     assert cfg.browser_capture_auth_token == "receiver-token"
-    assert cfg.browser_capture_spool_path == "/tmp/polylogue-spool"
     assert cfg.health_blob_integrity_sample_size == 3
     assert inventory["memory_budget_bytes"].env_var == "POLYLOGUE_MEMORY_BUDGET_BYTES"
     assert cfg.memory_budget_bytes == 123456789

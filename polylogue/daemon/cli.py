@@ -395,13 +395,9 @@ def _enable_faulthandler_if_supported() -> None:
         faulthandler.enable()
 
 
-def _watch_sources(
-    *,
-    browser_capture_spool_path: Path | None = None,
-    hermes_root: Path | None = None,
-) -> tuple[WatchSource, ...]:
+def _watch_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """The daemon's watch set (see :func:`daemon_watch_sources`)."""
-    return daemon_watch_sources(browser_capture_spool_path=browser_capture_spool_path, hermes_root=hermes_root)
+    return daemon_watch_sources(hermes_root=hermes_root)
 
 
 def _is_polylogue_owned_source(source: WatchSource) -> bool:
@@ -1949,7 +1945,6 @@ async def run_daemon_services(
     enable_browser_capture: bool,
     browser_capture_host: str,
     browser_capture_port: int,
-    browser_capture_spool_path: Path | None,
     browser_capture_allow_remote: bool = False,
     browser_capture_auth_token: str | None = None,
     browser_capture_allow_no_auth: bool = False,
@@ -1998,7 +1993,6 @@ async def run_daemon_services(
             enable_browser_capture=enable_browser_capture,
             browser_capture_host=browser_capture_host,
             browser_capture_port=browser_capture_port,
-            browser_capture_spool_path=browser_capture_spool_path,
             browser_capture_allow_remote=browser_capture_allow_remote,
             browser_capture_auth_token=browser_capture_auth_token,
             browser_capture_allow_no_auth=browser_capture_allow_no_auth,
@@ -2057,7 +2051,6 @@ async def _run_daemon_services_under_active_writer_lease(
     enable_browser_capture: bool,
     browser_capture_host: str,
     browser_capture_port: int,
-    browser_capture_spool_path: Path | None,
     browser_capture_allow_remote: bool = False,
     browser_capture_auth_token: str | None = None,
     browser_capture_allow_no_auth: bool = False,
@@ -2149,7 +2142,6 @@ async def _run_daemon_services_under_active_writer_lease(
         watcher_enabled=enable_watch,
         watcher_roots=tuple(str(source.root) for source in sources),
         browser_capture_enabled=enable_browser_capture,
-        browser_capture_spool_path=browser_capture_spool_path,
     )
 
     emit("daemon.started", outcome="ok", pid=os.getpid(), root=archive_root_path)
@@ -2572,7 +2564,6 @@ async def _run_daemon_services_under_active_writer_lease(
             server = make_server(
                 browser_capture_host,
                 browser_capture_port,
-                spool_path=browser_capture_spool_path,
                 allow_remote=browser_capture_allow_remote,
                 auth_token=resolved_browser_capture_auth_token,
                 extra_origins=browser_capture_extra_origins,
@@ -2589,9 +2580,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     payload={
                         "host": browser_capture_host,
                         "port": browser_capture_port,
-                        "spool_path": str(browser_capture_spool_path)
-                        if browser_capture_spool_path is not None
-                        else None,
+                        "spool_path": str(server.config.spool_path),
                         "auth_enabled": resolved_browser_capture_auth_token is not None,
                     },
                 )
@@ -3828,35 +3817,21 @@ def _live_daemon_status_payload() -> JSONDocument | None:
 
 @main.command("status", help="Show configured daemon component status.")
 @click.option(
-    "--spool",
-    "spool_path",
-    type=click.Path(path_type=Path),
-    default=None,
-)
-@click.option(
     "--format",
     "output_format",
     type=click.Choice(["json"]),
     default=None,
     help="Output format.",
 )
-def status_command(spool_path: Path | None, output_format: str | None) -> None:
+def status_command(output_format: str | None) -> None:
     configure_logging()
-    # An explicit ``--spool`` asks about a path the running daemon's cached
-    # status does not describe, so it is always answered in this process.
-    payload = None if spool_path is not None else _live_daemon_status_payload()
+    payload = _live_daemon_status_payload()
     if payload is None:
         if output_format == "json":
             with redirect_stdout(sys.stderr):
-                payload = daemon_status_payload(
-                    browser_capture_spool_path=spool_path,
-                    include_browser_capture_spool_path=spool_path is not None,
-                )
+                payload = daemon_status_payload()
         else:
-            payload = daemon_status_payload(
-                browser_capture_spool_path=spool_path,
-                include_browser_capture_spool_path=spool_path is not None,
-            )
+            payload = daemon_status_payload()
     status_ok = payload.get("ok") is True
     if output_format == "json":
         click.echo(dumps(payload))
@@ -3936,12 +3911,6 @@ def health_command(
     show_default=True,
     type=int,
     help="Browser-capture receiver port.",
-)
-@click.option(
-    "--spool",
-    "spool_path",
-    type=click.Path(path_type=Path),
-    default=None,
 )
 @click.option(
     "--no-watch",
@@ -4039,7 +4008,6 @@ def run_command(
     ctx: click.Context,
     host: str,
     port: int,
-    spool_path: Path | None,
     no_watch: bool,
     cold_build_index: bool,
     no_source_catchup: bool,
@@ -4083,8 +4051,6 @@ def run_command(
         host = cfg.browser_capture_host
     if parameter_is_default("port") and cfg.layer_of("browser_capture_port") != "default":
         port = cfg.browser_capture_port
-    if parameter_is_default("spool_path") and cfg.browser_capture_spool_path:
-        spool_path = Path(cfg.browser_capture_spool_path).expanduser()
     if parameter_is_default("insecure_allow_remote"):
         insecure_allow_remote = cfg.browser_capture_allow_remote
     if parameter_is_default("browser_capture_auth_token") and cfg.browser_capture_auth_token:
@@ -4113,10 +4079,7 @@ def run_command(
 
     atexit.register(_cleanup_pidfile)
 
-    sources = _watch_sources(
-        browser_capture_spool_path=spool_path,
-        hermes_root=runtime.source_paths.hermes,
-    )
+    sources = _watch_sources(hermes_root=runtime.source_paths.hermes)
     components = []
     if enable_watch:
         components.append(f"watch={len(sources)} source(s)")
@@ -4140,7 +4103,6 @@ def run_command(
                 enable_browser_capture=enable_browser_capture,
                 browser_capture_host=host,
                 browser_capture_port=port,
-                browser_capture_spool_path=spool_path,
                 browser_capture_allow_remote=insecure_allow_remote,
                 browser_capture_auth_token=browser_capture_auth_token,
                 browser_capture_allow_no_auth=browser_capture_allow_no_auth,
@@ -4189,7 +4151,6 @@ def watch_command() -> None:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 startup_message=f"Watching {len(sources)} source(s). Ctrl-C to stop.",
             )

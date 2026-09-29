@@ -742,32 +742,18 @@ def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument
     )
 
 
-def browser_capture_status_payload(
-    spool_path: Path | None = None,
-    *,
-    include_spool_path: bool = False,
-) -> JSONDocument:
+def browser_capture_status_payload(*, include_spool_path: bool = False) -> JSONDocument:
     """Return safe status for the browser-capture receiver component."""
-    cfg_default = BrowserCaptureReceiverConfig.default()
-    if spool_path is not None:
-        config = BrowserCaptureReceiverConfig(
-            spool_path=spool_path,
-            allowed_origins=cfg_default.allowed_origins,
-            allow_remote=cfg_default.allow_remote,
-            auth_token=cfg_default.auth_token,
-        )
-    else:
-        config = cfg_default
-    payload = receiver_status_payload(config)
+    payload = receiver_status_payload(BrowserCaptureReceiverConfig.default())
     if not include_spool_path:
         payload.pop("spool_path", None)
         payload.pop("artifact_path", None)
     return json_document(payload)
 
 
-def browser_capture_status_public_payload(spool_path: Path | None = None) -> JSONDocument:
+def browser_capture_status_public_payload() -> JSONDocument:
     """Return browser-capture status safe for the daemon web/status API."""
-    return browser_capture_status_payload(spool_path, include_spool_path=False)
+    return browser_capture_status_payload(include_spool_path=False)
 
 
 def _db_size_info() -> dict[str, object]:
@@ -2973,7 +2959,6 @@ def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
     browser_capture_enabled: bool | None = None,
-    browser_capture_spool_path: Path | None = None,
     include_expensive_health: bool = False,
     include_raw_replay_backlog: bool = True,
     include_exact_raw_materialization_readiness: bool = True,
@@ -2999,16 +2984,9 @@ def build_daemon_status(
     -recompute contract.
     """
     watch_sources = sources if sources is not None else default_sources()
-    effective_browser_capture_spool_path = (
-        browser_capture_spool_path
-        if browser_capture_spool_path is not None
-        else BrowserCaptureReceiverConfig.default().spool_path
-    )
-    browser_capture_active = (
-        browser_capture_enabled
-        if browser_capture_enabled is not None
-        else effective_browser_capture_spool_path is not None
-    )
+    # Unknown means a status read outside the daemon, which serves the
+    # receiver by default.
+    browser_capture_active = browser_capture_enabled if browser_capture_enabled is not None else True
     active_db = _active_status_db_path()
 
     # Status observes the configured health schedule. This keeps MEDIUM
@@ -3483,8 +3461,6 @@ def daemon_status_payload(
     config: Config | None = None,
     sources: tuple[WatchSource, ...] | None = None,
     browser_capture_enabled: bool | None = None,
-    browser_capture_spool_path: Path | None = None,
-    include_browser_capture_spool_path: bool = False,
     include_raw_replay_backlog: bool = False,
     include_exact_raw_materialization_readiness: bool = False,
     include_archive_debt: bool = False,
@@ -3528,7 +3504,6 @@ def daemon_status_payload(
     status = build_daemon_status(
         sources=sources,
         browser_capture_enabled=browser_capture_enabled,
-        browser_capture_spool_path=browser_capture_spool_path,
         include_raw_replay_backlog=include_raw_replay_backlog,
         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
         registry=registry,
@@ -3666,10 +3641,7 @@ def daemon_status_payload(
             "status_components": status.status_components,
             "claim_guard": status.claim_guard,
             "live": live_source_status_payload(watch_sources),
-            "browser_capture": browser_capture_status_payload(
-                browser_capture_spool_path,
-                include_spool_path=include_browser_capture_spool_path,
-            ),
+            "browser_capture": browser_capture_status_payload(),
             "db_path": str(_active_status_db_path()),
             "db_size_bytes": status.db_size_bytes,
             "wal_size_bytes": status.wal_size_bytes,
