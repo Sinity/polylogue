@@ -356,6 +356,21 @@ declared identity and seeds them into the revision closure, so every
 retained revision of the plan file is excised with the session. A fact kind
 whose identity is not session-derived is deliberately not matched.
 
+**Tool-output sidecars.** A Claude Code or gemini-cli tool result that
+overflowed its inline envelope left its full output in a sidecar file
+(`<session>/tool-results/`, `tool-outputs/session-<id>/`), retained as its
+own `tool_result_sidecar` raw row that no session relation names. Excision
+derives each transcript's sidecar directory from its retained `source_path`
+and seeds every retained revision of the files the session owns into the
+revision closure, so their rows go and their hashes are marked (or named in
+`shared_blob_hashes` when another session's sidecar holds the same bytes).
+Ownership follows the join's own rules: the file's stem is a `tool_id` of one
+of the session's `tool_result` blocks, or a matched sidecar event of the
+session names the file. The directory is shared by a Claude Code parent and
+its subagents, and by every chat of one gemini-cli process, so a file another
+transcript owns survives, as does a file no transcript claimed. The preview
+counts them as `source_sidecar_rows`.
+
 **Attachments referenced from elsewhere.** `attachment_refs.session_id`/
 `message_id` carry `ON DELETE CASCADE` to `sessions`/`messages`, so deleting
 the excised session's row already removes only its own attachment

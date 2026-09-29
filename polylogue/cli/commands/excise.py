@@ -221,7 +221,12 @@ def excise_command(
             f"Would excise session {session_id}",
             [
                 f"  source.db raw rows: {plan.source_raw_rows}"
-                + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else ""),
+                + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else "")
+                + (
+                    f" (including {plan.source_sidecar_rows} tool-output sidecar row(s))"
+                    if plan.source_sidecar_rows
+                    else ""
+                ),
                 f"  source.db hook events: {plan.source_hook_events}",
                 f"  source.db container members: {plan.source_container_members}"
                 + (
