@@ -161,7 +161,7 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "raw-authority-frontier",
         "_raw_identity",
         "raw_authority_frontier_command",
-        "Inspect and record the raw-authority frontier; plan application is daemon-owned.",
+        "Have the daemon record the raw-authority frontier census; plans are never applied.",
     ),
     _command(
         "raw-authority-blockers",

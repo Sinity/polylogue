@@ -833,6 +833,10 @@ class RawAuthorityBlockerResolveRequest(_OperationPayload):
     confirm: bool = False
 
 
+class RawAuthorityFrontierRequest(_OperationPayload):
+    """Publish the accepted-frontier census's durable obligations; no parameters."""
+
+
 class ResetRequest(_OperationPayload):
     index: bool = False
     database: bool = False
@@ -2506,6 +2510,23 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_model=MutationResult,
         handler="mutation_raw_authority_blocker_resolve",
         authorization=DaemonAuthorization.CONFIRMATION,
+    ),
+    DaemonOperationSpec(
+        # The census publishes ``raw_authority_blockers`` rows into source.db,
+        # so it is a write of the durable tier, not an inspection a CLI may run
+        # beside the daemon (polylogue-5vps8 AC1).
+        "maintenance.raw-authority-frontier",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.raw_authority.inspect_frontier",
+        deadline_s=300.0,
+        request_contract="maintenance.raw-authority-frontier.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="RawAuthorityFrontierRequest",
+        result_type="MutationResult",
+        request_model=RawAuthorityFrontierRequest,
+        result_model=MutationResult,
+        handler="maintenance_raw_authority_frontier",
     ),
     DaemonOperationSpec(
         "maintenance.reset",

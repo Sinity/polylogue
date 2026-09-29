@@ -22,8 +22,9 @@ from polylogue.storage.derived.session.profiles import (
     user_turn_texts,
 )
 from polylogue.storage.derived.session.storage import (
+    SESSION_PROFILE_INSERT_COLUMNS,
     replace_session_profile_sync,
-    session_profile_insert_columns,
+    session_profile_insert_values,
 )
 from tests.infra.builders import make_conv, make_msg
 
@@ -349,26 +350,46 @@ def test_session_profile_record_exposes_tool_active_duration() -> None:
     assert record.inference_payload.tool_active_minutes == 3.0
 
 
-def test_session_profile_input_content_hash_round_trips_through_storage() -> None:
-    """The content binding must survive the production profile INSERT route.
+def test_session_profile_round_trips_through_the_canonical_table(tmp_path: Path) -> None:
+    """The one canonical insert shape writes the fresh table and reads back intact.
 
-    Anti-vacuity: removing the model field, insert column, or corresponding
-    binding would either raise during record construction/INSERT or make this
-    assertion lose the sentinel hash.
+    The writer used to probe the live table for a ``payload_json`` column the
+    canonical DDL does not have, serialize a merged evidence/inference payload
+    for it on every write, and probe ``input_content_hash`` too (polylogue-77tzg).
+    Now the insert binds exactly the canonical columns, and every stored field
+    round-trips through the typed reader.
+
+    Anti-vacuity: drop ``input_content_hash`` (or any payload column) from
+    ``SESSION_PROFILE_INSERT_COLUMNS`` and the sentinel hash or payload comes
+    back empty; add ``payload_json`` back and the INSERT into the canonical
+    table fails.
     """
+    from polylogue.storage.derived.session.storage import _INFERENCE_NATIVE_MIRRORED_FIELDS
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.queries.mappers_insight_profiles import _row_to_session_profile_record
+
+    initialize_active_archive_root(tmp_path)
     profile = build_session_profile(_enrichment_session())
     record = build_session_profile_record(profile, input_content_hash="a1b2c3")
-    columns = session_profile_insert_columns(has_fallback_payload=False)
+    assert len(session_profile_insert_values(record)) == len(SESSION_PROFILE_INSERT_COLUMNS)
 
-    with sqlite3.connect(":memory:") as conn:
-        conn.execute("CREATE TABLE session_profiles (" + ", ".join(f'"{column}" TEXT' for column in columns) + ")")
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.row_factory = sqlite3.Row
+        table_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(session_profiles)")}
+        assert "payload_json" not in table_columns
+        assert set(SESSION_PROFILE_INSERT_COLUMNS) <= table_columns
         replace_session_profile_sync(conn, record)
-        row = conn.execute(
-            "SELECT input_content_hash FROM session_profiles WHERE session_id = ?",
-            (record.session_id,),
-        ).fetchone()
+        row = conn.execute("SELECT * FROM session_profiles WHERE session_id = ?", (record.session_id,)).fetchone()
 
-    assert row == ("a1b2c3",)
+    restored = _row_to_session_profile_record(row)
+    assert restored.input_content_hash == "a1b2c3"
+    assert restored.evidence_payload == record.evidence_payload
+    assert restored.enrichment_payload == record.enrichment_payload
+    mirrored = set(_INFERENCE_NATIVE_MIRRORED_FIELDS)
+    assert restored.inference_payload.model_dump(exclude=mirrored) == record.inference_payload.model_dump(
+        exclude=mirrored
+    )
+    assert (restored.workflow_shape, restored.terminal_state) == (record.workflow_shape, record.terminal_state)
 
 
 def test_session_profile_evidence_payload_exposes_token_cost_fields() -> None:

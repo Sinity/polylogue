@@ -91,7 +91,12 @@ def _refusal_text(result: Result) -> str:
 
 
 def _run_machine(
-    archive_root: Path, argv: tuple[str, ...], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    archive_root: Path,
+    argv: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    format_flag: str = "--format",
 ) -> tuple[int, dict[str, object]]:
     """Run one invocation through the REAL machine entry and parse its envelope.
 
@@ -101,7 +106,7 @@ def _run_machine(
     directly skips the entire mapping, so a test that did so would assert a
     code no operator invocation ever produces.
     """
-    full_argv = ["polylogue", *argv, "--format", "json"]
+    full_argv = ["polylogue", *argv, format_flag, "json"]
     monkeypatch.setattr(sys, "argv", full_argv)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_DB_PATH", str(archive_root / "index.db"))
@@ -165,11 +170,12 @@ def test_judge_accept_refuses_without_a_daemon(authority_archive: Path) -> None:
 # Daemon-down matrix over every CLI-bound mutating operation
 # --------------------------------------------------------------------------
 
-#: One invocation per CLI-bound mutating operation, and the operation each one
-#: must name when it refuses.  Hand-written because no declaration knows what
-#: argv reaches a verb; kept honest by
-#: :func:`test_the_matrix_covers_every_cli_bound_mutating_operation`, which
-#: fails when a new mutating operation gains a CLI binding without a row here.
+#: One invocation per mutating operation the CLI submits, and the operation
+#: each one must name when it refuses.  Hand-written because no declaration
+#: knows what argv reaches a verb; kept honest by
+#: :func:`test_the_matrix_covers_every_mutating_operation_the_cli_submits`,
+#: which fails when CLI code starts submitting a mutating operation without a
+#: row here.
 #: A real provider export: ``import`` stages it and runs the admissibility
 #: preflight before it reaches the daemon probe.
 _IMPORTABLE_EXPORT = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
@@ -244,46 +250,102 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         ),
         "mutation.annotation.import_batch",
     ),
+    # The three maintenance rows submit before they read anything, so an
+    # unknown id reaches the daemon probe exactly as a live one would.
+    (
+        "blob-publications-abandon",
+        ("ops", "maintenance", "blob-publications", "--abandon", "publication:matrix", "--yes"),
+        "maintenance.blob-publications.abandon",
+    ),
+    (
+        "raw-authority-blocker-resolve",
+        (
+            "ops",
+            "maintenance",
+            "raw-authority-blocker-resolve",
+            "--blocker-id",
+            "raw-authority-blocker:matrix",
+            "--reason",
+            "r",
+            "--yes",
+        ),
+        "mutation.raw-authority-blocker.resolve",
+    ),
+    (
+        "raw-authority-frontier",
+        ("ops", "maintenance", "raw-authority-frontier"),
+        "maintenance.raw-authority-frontier",
+    ),
+    ("reset-tier", ("ops", "reset", "--index", "--yes"), "maintenance.reset"),
 )
 
-#: Mutating operations whose CLI route refuses before it reaches the daemon
-#: probe, so a daemon-down run never produces the ``daemon_required`` refusal.
-#: Each needs an argument this matrix cannot synthesize (a manifest on disk, a
-#: staged export, a live blob-GC generation id), so the row would be asserting
-#: the argument check rather than the authority check.
-_MATRIX_EXEMPT: Mapping[str, str] = {
-    "maintenance.demo.augment": "only reachable behind `import --demo`, which seeds a fixture world first",
-    "maintenance.blob-publications.abandon": "needs live publication ids read from source.db",
-    "mutation.raw-authority-blocker.resolve": "needs a live blocker id read from source.db",
+#: The machine-format flag of each row whose command spells it differently
+#: from ``--format``; ``None`` marks a command with no machine envelope.
+_MACHINE_FORMAT_FLAG: Mapping[str, str | None] = {
+    "blob-publications-abandon": "--output-format",
+    "raw-authority-blocker-resolve": "--output-format",
+    "raw-authority-frontier": "--output-format",
     # `ops reset` accepts --format/--json only alongside --session/--source,
-    # so its tier-reset branch has no machine envelope to carry a code in. The
-    # identity-reset branch IS covered above, which is what proves the shared
-    # translator reached this command.
-    "maintenance.reset": "the tier-reset branch of `ops reset` has no --format json route to assert a code on",
+    # so its tier-reset branch has no machine envelope to carry a code in; the
+    # terminal row above still proves the branch refuses without writing.
+    "reset-tier": None,
+}
+
+#: Mutating operations the CLI submits whose route cannot reach the daemon
+#: probe from a daemon-down invocation, with the reason.
+_MATRIX_EXEMPT: Mapping[str, str] = {
+    "maintenance.demo.augment": (
+        "submitted only after `import --demo --wait` saw its ingest complete, and that ingest already needs the daemon"
+    ),
+    "mutation.facade.context_ledger": (
+        "a best-effort receipt the `read context` views submit after a read the daemon already served"
+    ),
 }
 
 
-def test_the_matrix_covers_every_cli_bound_mutating_operation() -> None:
-    """A new mutating CLI route cannot be added without a daemon-down row.
+def _cli_submitted_mutations() -> frozenset[str]:
+    """Every declared mutating operation that ``polylogue/cli`` names as a literal.
 
-    Anti-vacuity: bind a mutating operation in ``CLI_OPERATION_BINDINGS``
-    without adding it to ``_MUTATING_INVOCATIONS`` or ``_MATRIX_EXEMPT`` and
-    this is red. Without it the matrix below silently stops covering the newest
-    writer, which is precisely how a bypass survives a green suite.
+    The CLI submits operations by name at its call sites, so the names spelled
+    in its source are the real inventory of what it can ask the daemon to
+    write -- no registry beside the code can drift from it.
     """
-    from polylogue.cli.operation_bindings import CLI_OPERATION_BINDINGS
+    import ast
+
+    import polylogue.cli
     from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
 
-    bound_mutations = set(CLI_OPERATION_BINDINGS) & set(MUTATION_OPERATION_NAMES)
+    names: set[str] = set()
+    for path in Path(polylogue.cli.__file__).parent.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value in MUTATION_OPERATION_NAMES
+            ):
+                names.add(node.value)
+    return frozenset(names)
+
+
+def test_the_matrix_covers_every_mutating_operation_the_cli_submits() -> None:
+    """A new mutating CLI route cannot be added without a daemon-down row.
+
+    Anti-vacuity: submit a mutating operation from a new CLI command without
+    adding a row to ``_MUTATING_INVOCATIONS`` (or ``_MATRIX_EXEMPT``) and this
+    is red. Without it the matrix below silently stops covering the newest
+    writer, which is precisely how a bypass survives a green suite.
+    """
+    submitted = _cli_submitted_mutations()
     covered = {operation for _, _, operation in _MUTATING_INVOCATIONS}
     uncovered = {
         operation
-        for operation in bound_mutations
+        for operation in submitted
         if operation not in _MATRIX_EXEMPT and not any(operation.startswith(prefix) for prefix in covered)
     }
     assert not uncovered, uncovered
     # The exemption list may not outlive its entries either.
-    assert set(_MATRIX_EXEMPT) <= bound_mutations, set(_MATRIX_EXEMPT) - bound_mutations
+    assert set(_MATRIX_EXEMPT) <= submitted, set(_MATRIX_EXEMPT) - submitted
+    assert set(_MACHINE_FORMAT_FLAG) <= {name for name, _, _ in _MUTATING_INVOCATIONS}
 
 
 @pytest.mark.parametrize(
@@ -316,10 +378,13 @@ def test_daemon_down_refusal_names_polylogued_run_in_terminal_format(
     assert opened == [], f"{operation} opened writable archive tiers in the CLI process: {opened}"
 
 
+_MACHINE_INVOCATIONS = tuple(row for row in _MUTATING_INVOCATIONS if _MACHINE_FORMAT_FLAG.get(row[0], "--format"))
+
+
 @pytest.mark.parametrize(
     ("name", "argv", "operation"),
-    _MUTATING_INVOCATIONS,
-    ids=[row[0] for row in _MUTATING_INVOCATIONS],
+    _MACHINE_INVOCATIONS,
+    ids=[row[0] for row in _MACHINE_INVOCATIONS],
 )
 def test_daemon_down_refusal_is_typed_daemon_required_in_machine_format(
     authority_archive: Path,
@@ -343,11 +408,11 @@ def test_daemon_down_refusal_is_typed_daemon_required_in_machine_format(
     assertion while the terminal test above stays green -- the exact asymmetry
     that let the gap survive.
     """
-    del name
+    flag = _MACHINE_FORMAT_FLAG.get(name) or "--format"
     before = _user_tier_digest(authority_archive)
 
     with _recording_writable_tier_opens() as opened:
-        exit_code, payload = _run_machine(authority_archive, argv, monkeypatch, capsys)
+        exit_code, payload = _run_machine(authority_archive, argv, monkeypatch, capsys, format_flag=flag)
 
     assert exit_code != 0, payload
     assert payload["status"] == "error", payload
@@ -357,3 +422,26 @@ def test_daemon_down_refusal_is_typed_daemon_required_in_machine_format(
     assert isinstance(details, dict) and details.get("remedy") == "polylogued run", payload
     assert _user_tier_digest(authority_archive) == before
     assert opened == [], f"{operation} opened writable archive tiers in the CLI process: {opened}"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [("demo", "verify"), ("ops", "maintenance", "gc-history")],
+    ids=["demo-verify", "gc-history"],
+)
+def test_read_only_commands_open_no_writable_tier(authority_archive: Path, argv: tuple[str, ...]) -> None:
+    """A verification or history view reads; it never opens a tier for writing.
+
+    Both opened plain ``sqlite3.connect``/write-profile connections, which
+    create a missing tier file and contend with the daemon's writer, and a
+    sweep of every CLI leaf command found them as the only read commands that
+    did so.
+
+    Anti-vacuity: open ``demo/verify.py``'s connections with
+    ``sqlite3.connect(path)`` again (or ``read_gc_history`` with
+    ``open_connection``) and the recorded opens are non-empty.
+    """
+    with _recording_writable_tier_opens() as opened:
+        _run(authority_archive, *argv)
+
+    assert opened == [], opened

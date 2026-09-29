@@ -120,6 +120,7 @@ from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.enums import DisplayLabelSource, Origin, Provider
 from polylogue.core.errors import (
+    FIRST_RUN_INDEX_GUIDANCE,
     ArchiveTierUnavailableError,
     UnsupportedInsightFilterError,
 )
@@ -1010,7 +1011,7 @@ class ArchiveStore:
                     tier="index",
                     path=str(self.index_db_path),
                     reason="database file not found",
-                    guidance="run `polylogue ingest` to create the archive, or point --archive-root at an existing one",
+                    guidance=FIRST_RUN_INDEX_GUIDANCE,
                 ) from exc
             pragma_statements: tuple[str, ...] = ()
         else:

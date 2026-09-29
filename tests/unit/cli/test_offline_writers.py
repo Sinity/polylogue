@@ -82,16 +82,56 @@ _OFFLINE_WRITERS: tuple[tuple[str, Callable[[Path, Path], tuple[str, ...]], str,
 )
 
 
-def test_rows_are_exactly_the_declared_offline_writers() -> None:
-    """The production declaration and this matrix name the same commands.
+def _cli_offline_writer_commands() -> set[str]:
+    """The CLI commands whose own body reaches the guarded demo seeder.
 
-    Anti-vacuity: declare a new offline writer in ``CLI_OFFLINE_WRITERS``
-    without a row here (or drop one) and this is red, so no in-process writer
-    is declared without its refusal proof.
+    Derived from the source rather than from a registry beside it: every CLI
+    module that imports ``seed_demo_archive`` is an in-process writer, and in
+    the one module that does, each Click command whose body calls the local
+    ``_seed_demo_archive`` wrapper is one offline-writer route.
     """
-    from polylogue.cli.operation_bindings import CLI_OFFLINE_WRITERS
+    import ast
 
-    assert {row[0] for row in _OFFLINE_WRITERS} == set(CLI_OFFLINE_WRITERS)
+    import polylogue.cli
+
+    cli_root = Path(polylogue.cli.__file__).parent
+    importers: set[Path] = set()
+    for path in cli_root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and any(alias.name == "seed_demo_archive" for alias in node.names):
+                importers.add(path.relative_to(cli_root))
+    assert importers == {Path("commands/demo.py")}, importers
+
+    commands: set[str] = set()
+    tree = ast.parse((cli_root / "commands" / "demo.py").read_text(encoding="utf-8"))
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        names = [
+            decorator.args[0].value
+            for decorator in function.decorator_list
+            if isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Attribute)
+            and decorator.func.attr == "command"
+            and decorator.args
+            and isinstance(decorator.args[0], ast.Constant)
+        ]
+        calls_seeder = any(
+            isinstance(node, ast.Name) and node.id == "_seed_demo_archive" for node in ast.walk(function)
+        )
+        if names and calls_seeder:
+            commands.update(f"demo {name}" for name in names)
+    return commands
+
+
+def test_rows_are_exactly_the_cli_offline_writers() -> None:
+    """The CLI's actual offline-writer routes and this matrix name the same commands.
+
+    Anti-vacuity: make another command call ``_seed_demo_archive`` (or import
+    ``seed_demo_archive`` into another CLI module) without a row here and this
+    is red, so no in-process writer exists without its refusal proof.
+    """
+    assert {row[0] for row in _OFFLINE_WRITERS} == _cli_offline_writer_commands()
 
 
 @pytest.fixture

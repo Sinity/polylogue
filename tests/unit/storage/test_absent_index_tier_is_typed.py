@@ -47,7 +47,7 @@ def test_a_present_but_unreadable_index_tier_is_not_reported_as_absent(tmp_path:
 
     Anti-vacuity: drop the ``index_db_path.exists()`` guard and a permission
     or corruption failure is reported to the operator as "database file not
-    found. run `polylogue ingest`" -- advice that would destroy nothing but
+    found" with the first-run next actions -- advice that would destroy nothing but
     points at the wrong problem entirely.
     """
     root = tmp_path / "archive"

@@ -1,66 +1,13 @@
-"""Every declared operation is joined to CLI code, or explicitly is not.
+"""The CLI's request lowerings build exactly the declared operation payloads.
 
-This is the registry diff the CLI-unification design names: a declaration step
-that adds operations no surface can build a request for or render a result
-from has added nothing, and without this test that is invisible.
+Each lowering is the one place a CLI verb turns its syntax into an operation
+request, so a lowering that forwards a value the declared request model refuses
+reaches the operator as a daemon refusal instead of a usage error.
 """
 
 from __future__ import annotations
 
 import pytest
-
-from polylogue.cli.operation_bindings import (
-    CLI_EXTERNAL_OPERATIONS,
-    CLI_OPERATION_BINDINGS,
-    CLI_PENDING_ADOPTION,
-    OperationBindingError,
-    binding_for,
-    resolve_reference,
-    unclassified_operations,
-)
-from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS
-
-#: Operations that are declared but not yet reachable from a CLI route.  This
-#: set is closed on purpose: a new declaration is red until someone either
-#: binds it or adds it here with the step that adopts it.  It is empty --
-#: every declared operation the CLI serves has a lowering and a renderer.
-EXPECTED_PENDING_ADOPTION: frozenset[str] = frozenset()
-
-
-def test_every_declared_operation_is_classified_exactly_once() -> None:
-    """Mutation: declare an operation and skip the registry -- it lands here
-    first, before it can be mistaken for a served surface."""
-
-    assert unclassified_operations() == ()
-    names = [*CLI_OPERATION_BINDINGS, *CLI_PENDING_ADOPTION, *CLI_EXTERNAL_OPERATIONS]
-    assert len(names) == len(set(names)), "an operation is classified in more than one table"
-    declared = {spec.name for spec in DAEMON_OPERATION_SPECS}
-    assert set(names) <= declared, "the registry classifies an operation that is not declared"
-
-
-def test_pending_adoption_stays_closed() -> None:
-    """Mutation: park a new declaration in CLI_PENDING_ADOPTION to quiet the
-    totality check -- this assertion is what makes that an explicit decision."""
-
-    assert set(CLI_PENDING_ADOPTION) == EXPECTED_PENDING_ADOPTION
-    for operation, reason in CLI_PENDING_ADOPTION.items():
-        assert reason.strip(), operation
-
-
-def test_completion_is_bound_to_a_lowering_and_a_renderer() -> None:
-    """The archive-backed completer is a served route, not a deferred one.
-
-    Mutation: return ``completion`` to ``CLI_PENDING_ADOPTION`` and the
-    lookup raises instead of naming the two callables -- which is the state
-    the registry described while the code had already moved on, because a
-    parked reason string is never checked against the code it describes.
-    """
-
-    binding = binding_for("completion")
-    assert binding.lowering == "polylogue.cli.lowering:lower_completion"
-    assert binding.renderers == ("polylogue.cli.shell_completion_values:render_completion_values",)
-    assert callable(resolve_reference(binding.lowering))
-    assert callable(resolve_reference(binding.renderers[0]))
 
 
 def test_completion_lowering_clamps_into_the_declared_request_bound() -> None:
@@ -85,40 +32,8 @@ def test_completion_lowering_clamps_into_the_declared_request_bound() -> None:
         CompletionRequest.model_validate(payload)
 
 
-@pytest.mark.parametrize("operation", sorted(CLI_OPERATION_BINDINGS))
-def test_each_binding_resolves_to_real_callables(operation: str) -> None:
-    """Mutation: rename or delete a bound CLI function and the registry stops
-    describing the code that exists."""
-
-    binding = binding_for(operation)
-    for reference in (binding.lowering, *binding.renderers):
-        assert callable(resolve_reference(reference)), reference
-
-
-def test_read_operations_declared_for_the_cli_are_bound_not_pending() -> None:
-    """Mutation: declare a root-query read and wire nothing -- the point of the
-    step is that each arrives with a Seam A lowering and a real renderer."""
-
-    for operation in ("cli.query", "query.units", "query.aggregate", "session.read", "session.reference"):
-        binding = binding_for(operation)
-        assert binding.lowering.startswith("polylogue.cli.lowering:"), (
-            f"{operation} must lower through Seam A, not through a surface-local helper"
-        )
-        assert binding.renderers
-
-
-def test_an_unclassified_operation_names_itself() -> None:
-    """Mutation: return a bare None from binding_for and the caller cannot tell
-    a deliberate exclusion from a missing one."""
-
-    with pytest.raises(OperationBindingError, match="not classified"):
-        binding_for("operation.that.is.not.declared")
-    with pytest.raises(OperationBindingError, match="transport-owned"):
-        binding_for("operation.await")
-
-
 class TestSeamALowerings:
-    """The real Seam A lowerings the registry now names."""
+    """The Seam A lowerings the root query verbs call."""
 
     def test_aggregate_mode_reads_the_mode_from_the_root_flags(self) -> None:
         """Mutation: hardcode a mode and ``analyze --count`` and ``analyze --by``

@@ -520,7 +520,7 @@ def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, worksp
     source.write_text(json.dumps(_supported_import_payload()), encoding="utf-8")
     assert import_source_admissibility(source).admissible, "fixture must reach the daemon guard"
 
-    result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:9"])
+    result = CliRunner().invoke(cli, ["import", str(source)])
 
     assert result.exit_code == OUTCOME_EXIT_CODES["error"], result.output
 

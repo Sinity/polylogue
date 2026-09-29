@@ -67,7 +67,6 @@ from polylogue.storage.blob_liveness import (
     inspect_blob_reservation,
 )
 from polylogue.storage.sqlite.connection_profile import (
-    open_connection,
     open_isolated_write_connection,
     open_readonly_connection,
 )
@@ -1528,8 +1527,11 @@ def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRo
     Each row carries the typed reclaim counters (``reclaimed_count`` /
     ``reclaimed_bytes``) recorded by ``run_blob_gc``. Per-skip diagnostics are
     in-process log detail only and are not persisted (#1743).
+
+    A read: the connection is read-only, so this history view neither creates
+    a missing tier nor contends with the daemon's writer.
     """
-    conn = open_connection(db_path, archive_root=Path(db_path).parent)
+    conn = _readonly(Path(db_path))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

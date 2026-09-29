@@ -232,12 +232,21 @@ rules:
       neither touches ``_execute_facade_mutation`` nor imports any of the four
       executor modules named above. A rule that certifies sole-writer adoption
       has to match the write, not one spelling of it (polylogue-gjwto).
+
+      ``polylogue/api/facade_client`` and ``polylogue/api/ingest`` are the
+      Python facade's write routes (polylogue-re6s3). Since #5550 they submit
+      declared daemon operations, so a CLI verb reaching them would not write
+      in-process, but it would be a second lowering of a CLI write beside the
+      verb's own ``submit_cli_mutation`` call: the CLI names its operations
+      itself, and the zero baseline keeps it that way.
     disallow:
       from:
         - polylogue/operations/mutation_transaction
         - polylogue/operations/mutation_actuators
         - polylogue/operations/delete_authorization
         - polylogue/annotations/importer
+        - polylogue/api/facade_client
+        - polylogue/api/ingest
       baseline: docs/plans/layering-cli-mutation-authority-baseline.json
 
   - target: polylogue/api

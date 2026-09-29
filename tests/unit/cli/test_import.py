@@ -122,7 +122,7 @@ def test_import_command_stages_local_path_before_daemon_request(
     with _patch_submit(submit):
         result = runner.invoke(
             cli,
-            ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"],
+            ["import", str(source)],
         )
 
     assert result.exit_code == 0, result.output
@@ -172,7 +172,7 @@ def test_staged_import_is_read_by_no_watch_root_or_configured_source(
     source = _write_supported_source(tmp_path / "exports" / "session.jsonl")
     submit = _RecordingSubmit()
     with _patch_submit(submit):
-        result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+        result = CliRunner().invoke(cli, ["import", str(source)])
     assert result.exit_code == 0, result.output
 
     staged = Path(str(submit.payload["path"])).resolve()
@@ -280,7 +280,7 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
             _patch_submit(submit),
             patch("polylogue.sources.import_preflight.preflight_import_source", new=admissible),
         ):
-            result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+            result = CliRunner().invoke(cli, ["import", str(source)])
     finally:
         writer.close()
 

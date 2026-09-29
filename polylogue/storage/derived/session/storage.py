@@ -19,7 +19,6 @@ from polylogue.storage.runtime import (
 # ---------------------------------------------------------------------------
 
 
-_SYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
 _DELETE_WHERE_IN_CHUNK_SIZE = 900
 SqlValue = str | int | float | None
 SqlBindings = tuple[SqlValue, ...]
@@ -127,16 +126,6 @@ _TIMELINE_PAYLOAD_COLUMNS = (
 )
 
 
-def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    key = (id(conn), f"{table}.{column}")
-    cached = _SYNC_COLUMN_CACHE.get(key)
-    if cached is not None:
-        return cached
-    found = any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
-    _SYNC_COLUMN_CACHE[key] = found
-    return found
-
-
 def _placeholders(columns: Sequence[str]) -> str:
     return ", ".join("?" for _ in columns)
 
@@ -156,31 +145,6 @@ def _delete_where_in(conn: sqlite3.Connection, table: str, column: str, values: 
         chunk = normalized[start : start + _DELETE_WHERE_IN_CHUNK_SIZE]
         placeholders = ", ".join("?" for _ in chunk)
         conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", chunk)
-
-
-def _with_fallback_payload_column(
-    base_columns: tuple[str, ...],
-    payload_columns: tuple[str, ...],
-    *,
-    has_fallback_payload: bool,
-) -> tuple[str, ...]:
-    if has_fallback_payload:
-        return base_columns + ("payload_json",) + payload_columns
-    return base_columns + payload_columns
-
-
-def _compose_bindings(
-    base_values: Sequence[SqlValue],
-    payload_values: Sequence[SqlValue],
-    *,
-    has_fallback_payload: bool,
-    fallback_payload_json: str | None,
-) -> SqlBindings:
-    values = list(base_values)
-    if has_fallback_payload:
-        values.append(fallback_payload_json)
-    values.extend(payload_values)
-    return tuple(values)
 
 
 # The denormalized native session_profiles columns (workflow_shape /
@@ -212,40 +176,13 @@ def _stored_inference_payload_json(record: SessionProfileRecord) -> str | None:
     )
 
 
-def _fallback_profile_payload_json(record: SessionProfileRecord) -> str | None:
-    return _json_or_none(
-        {
-            **record.evidence_payload.model_dump(mode="json"),
-            **record.inference_payload.model_dump(mode="json"),
-            "session_id": str(record.session_id),
-            "logical_session_id": str(record.logical_session_id),
-            "provider": record.source_name,
-            "title": record.title,
-        }
-    )
+#: The one insert shape of the canonical ``session_profiles`` table. The table
+#: is created fresh from its spec, so its columns are known; nothing probes the
+#: live table for optional ones (polylogue-77tzg).
+SESSION_PROFILE_INSERT_COLUMNS: tuple[str, ...] = _SESSION_PROFILE_BASE_COLUMNS + _SESSION_PROFILE_PAYLOAD_COLUMNS
 
 
-def session_profile_insert_columns(
-    *,
-    has_fallback_payload: bool,
-    has_content_hash: bool = True,
-) -> tuple[str, ...]:
-    base_columns = tuple(
-        column for column in _SESSION_PROFILE_BASE_COLUMNS if has_content_hash or column != "input_content_hash"
-    )
-    return _with_fallback_payload_column(
-        base_columns,
-        _SESSION_PROFILE_PAYLOAD_COLUMNS,
-        has_fallback_payload=has_fallback_payload,
-    )
-
-
-def session_profile_insert_values(
-    record: SessionProfileRecord,
-    *,
-    has_fallback_payload: bool,
-    has_content_hash: bool = True,
-) -> SqlBindings:
+def session_profile_insert_values(record: SessionProfileRecord) -> SqlBindings:
     base_values: list[SqlValue] = [
         record.session_id,
         record.logical_session_id,
@@ -255,7 +192,7 @@ def session_profile_insert_values(
         record.source_sort_key,
         record.input_high_water_mark,
         record.input_high_water_mark_source,
-        *([record.input_content_hash] if has_content_hash else []),
+        record.input_content_hash,
         record.input_row_count,
         record.source_name,
         record.title,
@@ -305,12 +242,7 @@ def session_profile_insert_values(
         record.inference_version,
         record.inference_family,
     )
-    return _compose_bindings(
-        base_values,
-        payload_values,
-        has_fallback_payload=has_fallback_payload,
-        fallback_payload_json=_fallback_profile_payload_json(record),
-    )
+    return (*base_values, *payload_values)
 
 
 def session_latency_profile_insert_values(record: SessionLatencyProfileRecord) -> SqlBindings:
@@ -354,16 +286,9 @@ def _epoch_ms_or_none(value: str | None) -> int | None:
 
 def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfileRecord) -> None:
     conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (record.session_id,))
-    has_fallback_payload = table_has_column(conn, "session_profiles", "payload_json")
-    has_content_hash = table_has_column(conn, "session_profiles", "input_content_hash")
-    columns = session_profile_insert_columns(
-        has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
-    )
     conn.execute(
-        build_insert_sql("session_profiles", columns),
-        session_profile_insert_values(
-            record, has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
-        ),
+        build_insert_sql("session_profiles", SESSION_PROFILE_INSERT_COLUMNS),
+        session_profile_insert_values(record),
     )
 
 
@@ -375,19 +300,9 @@ def replace_session_profiles_bulk_sync(
         return
     records = _dedupe_records_by_session(records)
     _delete_where_in(conn, "session_profiles", "session_id", [record.session_id for record in records])
-    has_fallback_payload = table_has_column(conn, "session_profiles", "payload_json")
-    has_content_hash = table_has_column(conn, "session_profiles", "input_content_hash")
-    columns = session_profile_insert_columns(
-        has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
-    )
     conn.executemany(
-        build_insert_sql("session_profiles", columns),
-        [
-            session_profile_insert_values(
-                record, has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
-            )
-            for record in records
-        ],
+        build_insert_sql("session_profiles", SESSION_PROFILE_INSERT_COLUMNS),
+        [session_profile_insert_values(record) for record in records],
     )
 
 
@@ -411,12 +326,11 @@ def replace_session_latency_profiles_bulk_sync(
 
 
 __all__ = [
+    "SESSION_PROFILE_INSERT_COLUMNS",
     "build_insert_sql",
     "replace_session_latency_profiles_bulk_sync",
     "replace_session_profiles_bulk_sync",
     "replace_session_profile_sync",
-    "session_profile_insert_columns",
     "session_profile_insert_values",
     "session_latency_profile_insert_values",
-    "table_has_column",
 ]
