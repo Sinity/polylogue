@@ -6793,7 +6793,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
 
     The streaming threshold is patched down (matching the pattern used
     elsewhere in this file, e.g. ``test_full_ingest_reports_heartbeat_stage_events``)
-    so both fixture files route through ``blob_store.write_from_path`` /
+    so both fixture files route through ``capture_bound_path`` /
     ``archive.write_raw_blob_ref`` -> ``write_source_raw_session_blob_ref``,
     the same code path a real >8MB capture takes -- not the small-payload
     ``write_raw_payload`` -> ``write_source_raw_session`` gate, which is a
@@ -6859,7 +6859,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
 
     # Force both fixture files through the streaming blob-ref write path
-    # (>= this threshold uses blob_store.write_from_path + write_raw_blob_ref,
+    # (>= this threshold uses capture_bound_path + write_raw_blob_ref,
     # never populating raw_payloads) rather than the small-payload
     # write_raw_payload path -- see polylogue-re4a.
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
