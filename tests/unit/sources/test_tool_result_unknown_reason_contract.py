@@ -1030,10 +1030,12 @@ def test_every_routed_origin_declares_its_reasons() -> None:
     Anti-vacuity: clearing an origin's declaration makes its unknown results
     refuse at the writer, which the provider routes above then catch.
     """
-    routed_origins = {Origin.from_string(name) for name in _routed_origin_names()}
+    routed_origins = {Origin.from_string(name) for name in _unknown_routed_origin_names()}
     for origin in routed_origins:
         assert tool_outcome_unknown_reasons_for_origin(origin), f"{origin.value} produces unknowns but declares none"
 
 
-def _routed_origin_names() -> Sequence[str]:
-    return sorted({origin_from_provider(route[1]).value for route in _ROUTES})
+def _unknown_routed_origin_names() -> Sequence[str]:
+    return sorted(
+        {origin_from_provider(route[1]).value for route in _ROUTES if route[3][0] == ToolOutcome.UNKNOWN.value}
+    )

@@ -7,6 +7,7 @@ assert parser, read, mutation-isolation, and transport behavior separately.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from time import perf_counter
@@ -87,6 +88,7 @@ def test_pilot_reuses_the_declared_shared_artifact_instead_of_rebuilding_one(
     assert reacquired.manifest.manifest_id == pilot_artifact.manifest.manifest_id
 
 
+@pytest.mark.uses_real_clock("provider-byte construction timings are retained as host measurements")
 def test_pilot_repeated_provider_build_reports_setup_and_byte_cost(tmp_path: Path) -> None:
     """Keep a small, reproducible cost receipt for the demand-driven pilot.
 
@@ -95,6 +97,7 @@ def test_pilot_repeated_provider_build_reports_setup_and_byte_cost(tmp_path: Pat
     above covers the separate cache/build path.  The receipt is diagnostic,
     while equal identities and byte counts make the comparison deterministic.
     """
+    from devtools.measurement_receipts import emit_receipt
     from tests.infra.pilot_resources import build_pilot_provider_packages
 
     measurements: list[tuple[float, int, tuple[str, ...]]] = []
@@ -110,11 +113,16 @@ def test_pilot_repeated_provider_build_reports_setup_and_byte_cost(tmp_path: Pat
     assert first[1] > 0
     assert second[1] == first[1]
     assert second[2] == first[2]
-    print(
-        "pilot-provider-build-cost="
-        f"{{'builds': 2, 'bytes': {first[1]}, 'setup_seconds': "
-        f"[{first[0]:.6f}, {second[0]:.6f}], 'identities_equal': true}}"
-    )
+    measurement = {
+        "builds": len(measurements),
+        "bytes": first[1],
+        "setup_seconds": [first[0], second[0]],
+        "identities_equal": first[2] == second[2],
+    }
+    # Passing-test stdout is not retained by the managed stream reporter.
+    # Use the same observation store as the finished-build benchmarks.
+    emitted = emit_receipt("pilot-provider-build-cost", measurement)
+    assert json.loads(emitted.read_text(encoding="utf-8"))["measurement"] == measurement
 
 
 def test_pilot_archive_reuse_reports_cold_warm_setup_and_bytes(tmp_path: Path) -> None:
