@@ -12,6 +12,9 @@ without updating the table makes the method-existence assertion red.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, get_args, get_origin, get_type_hints
 from unittest.mock import AsyncMock, patch
@@ -21,15 +24,15 @@ import pytest
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
-from polylogue.mcp.server_cutover import mcp_get_projection_names, mcp_query_projection_names
-from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
-from polylogue.operations.session_projections import (
-    SESSION_LIST_PROJECTION_NAMES,
+from polylogue.core.session_projections import (
     SESSION_LIST_PROJECTIONS,
     SessionListProjection,
     mcp_get_session_projection_names,
     mcp_read_view_names,
+    session_list_projection_names,
 )
+from polylogue.mcp.server_cutover import mcp_get_projection_names, mcp_query_projection_names
+from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
 
@@ -60,7 +63,7 @@ def test_cli_and_mcp_projection_vocabulary_has_one_source() -> None:
     """
     from polylogue.cli.read_view_handlers import session_list_read_view_handlers
 
-    assert tuple(session_list_read_view_handlers()) == SESSION_LIST_PROJECTION_NAMES
+    assert tuple(session_list_read_view_handlers()) == session_list_projection_names()
     assert set(mcp_read_view_names()) - {"summary", "topology", "messages"} == set(SESSION_LIST_PROJECTIONS)
     assert set(mcp_get_session_projection_names()) - {"orchestration"} == set(SESSION_LIST_PROJECTIONS)
 
@@ -105,8 +108,21 @@ async def test_projection_table_drives_cli_and_mcp_name_vocabulary(
     assert fixture.name in mcp_get_session_projection_names()
 
     poly = make_polylogue_mock()
-    method = AsyncMock(return_value=[{"kind": "fixture-event"}])
+    method = AsyncMock(side_effect=AssertionError("windowed projection answered whole"))
     setattr(poly, fixture.method, method)
+    window = AsyncMock(
+        return_value={
+            "rows": [{"kind": "fixture-event"}],
+            "total": 1,
+            "returned": 1,
+            "limit": 1,
+            "offset": 0,
+            "next_offset": None,
+            "continuation": None,
+            "complete": True,
+        }
+    )
+    poly.read_session_evidence_window = window
     with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
         read = json.loads(
             await invoke_surface_async(
@@ -124,7 +140,9 @@ async def test_projection_table_drives_cli_and_mcp_name_vocabulary(
         )
 
     assert read[fixture.payload_key] == get[fixture.payload_key] == [{"kind": "fixture-event"}]
-    assert method.await_count == 2
+    assert method.await_count == 0
+    assert window.await_count == 2
+    assert [call.args[1] for call in window.await_args_list] == [fixture.cli_handler] * 2
 
 
 @pytest.mark.asyncio
@@ -417,3 +435,20 @@ async def test_evidence_fragment_survives_both_mcp_projection_routes(mcp_server:
             assert payload["complete"] is False
     for call in poly.read_session_evidence_window.await_args_list:
         assert call.kwargs["max_bytes"] == MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES
+
+
+@pytest.mark.uses_real_clock("waits for a fresh interpreter to import and dispatch the registered projection")
+def test_one_row_registration_reaches_cold_cli_and_mcp(tmp_path: Path) -> None:
+    """Mutating a loaded dictionary misses import-time CLI choices and MCP Literals."""
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.infra.session_projection_registration", str(tmp_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["name"] == "fixture-projection"
+    assert payload["mcp_schema"] is True
+    assert (
+        payload["cli"]["events"] == payload["read"]["events"] == payload["get"]["events"] == [{"kind": "fixture-event"}]
+    )

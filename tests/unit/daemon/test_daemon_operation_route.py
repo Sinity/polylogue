@@ -1996,3 +1996,31 @@ def test_shutdown_waits_for_a_cancelled_staged_operation_to_finish_its_cleanup(
             release.set()
             releaser.cancel()
             caller.join(timeout=10)
+
+
+def test_grammar_completion_keeps_authority_checks_without_opening_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old canonical executor opened the index before its grammar-only handler."""
+    from polylogue.operations import daemon_execution
+
+    def forbid_index(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("grammar completion must not acquire an index snapshot")
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        monkeypatch.setattr(daemon_execution, "open_operation_read", forbid_index)
+        envelope = stack.client.operation(
+            "completion", {"kind": "field", "incomplete": "orig"}, archive_root=str(stack.archive_root)
+        )
+        assert envelope is not None
+        assert envelope["outcome"] == "completed"
+        assert envelope["result"]["query_completions"]
+        rejected = stack.client.operation(
+            "completion",
+            {"kind": "field", "incomplete": "orig"},
+            archive_root=str(stack.archive_root),
+            expected_archive_identity="not-this-archive",
+        )
+        assert rejected is not None
+        assert rejected["outcome"] == "rejected"
+        assert rejected["error"]["code"] == "archive_identity_stale"

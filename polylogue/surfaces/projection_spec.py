@@ -13,6 +13,8 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import Self
 
+from polylogue.core.session_projections import bind_session_list_projections
+
 
 class ProjectionContractModel(BaseModel):
     """Immutable projection contract base without response-payload imports."""
@@ -173,7 +175,7 @@ class QueryProjectionSpec(ProjectionContractModel):
     render: RenderSpec = Field(default_factory=RenderSpec)
 
 
-READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
+_READ_VIEW_FAMILY_PROJECTIONS: dict[str, tuple[EvidenceFamily, ...]] = {
     "summary": (EvidenceFamily.SESSIONS,),
     "transcript": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "dialogue": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
@@ -197,6 +199,10 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "temporal": (EvidenceFamily.TEMPORAL, EvidenceFamily.SESSIONS),
     "compact": (EvidenceFamily.CHRONICLE, EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS, EvidenceFamily.ACTIONS),
 }
+
+READ_VIEW_PROJECTION_FAMILIES = bind_session_list_projections(
+    _READ_VIEW_FAMILY_PROJECTIONS, rename=lambda _name, families: families
+)
 """Projection mapping for executable read views.
 
 Additional named projections may exist outside this map, but every executable

@@ -7,10 +7,11 @@ handlers, the archive API bridge, or storage/query stacks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from polylogue.archive.viewport import read_view_choices
+from polylogue.core.session_projections import SessionListProjection, bind_session_list_projections
 
 ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
 ReadViewOptionName = str
@@ -214,7 +215,7 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset()
 # continuation family.
 #
 # Distinct read operations serve the query-set, graph, and evidence views.
-READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
+_READ_VIEW_FAMILY_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
         "optional",
@@ -387,6 +388,16 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         example="polylogue find repo:polylogue then read --view compact --max-tokens 4000",
     ),
 }
+
+
+READ_VIEW_HANDLER_METADATA = bind_session_list_projections(
+    _READ_VIEW_FAMILY_METADATA, rename=lambda name, metadata: replace(metadata, view_id=name)
+)
+
+
+def session_list_projection_metadata(projection: SessionListProjection) -> ReadViewHandlerMetadata:
+    """Read the same renderer-family contract used to advertise this projection."""
+    return replace(_READ_VIEW_FAMILY_METADATA[projection.cli_handler], view_id=projection.name)
 
 
 def _view_option_names(view: str) -> frozenset[str]:

@@ -1613,6 +1613,26 @@ def _archive_derived_counts(
         ),
         "thread_count": _readiness_count(conn, "threads", exact=exact_counts),
         "thread_session_count": _readiness_count(conn, "thread_sessions", exact=exact_counts),
+        "thread_counts_exact": exact_counts,
+        "latency_profile_count": count(_scalar_int(conn, "SELECT COUNT(*) FROM session_latency_profiles")),
+        "missing_latency_profile_count": count(
+            _scalar_int(
+                conn,
+                """
+            SELECT COUNT(*) FROM sessions s
+            WHERE NOT EXISTS (SELECT 1 FROM session_latency_profiles l WHERE l.session_id = s.session_id)
+        """,
+            )
+        ),
+        "orphan_latency_profile_count": count(
+            _scalar_int(
+                conn,
+                """
+            SELECT COUNT(*) FROM session_latency_profiles l
+            WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = l.session_id)
+        """,
+            )
+        ),
         "session_tag_count": _readiness_count(conn, "session_tags", exact=exact_counts),
         "action_count": count(_scalar_int(conn, "SELECT COUNT(*) FROM actions"))
         if exact_counts
@@ -1724,9 +1744,23 @@ def _archive_surface_readiness(
     if counts["orphan_profile_row_count"]:
         profile_blockers.append("orphan_profile_rows")
     thread_blockers: list[str] = []
+    thread_ready: bool | None = None
+    if not counts["thread_counts_exact"] or counts["thread_count"] < 0 or counts["thread_session_count"] < 0:
+        thread_blockers.append("thread_readiness_unmeasured")
+    else:
+        if counts["thread_session_count"] != counts["session_count"]:
+            thread_blockers.append("thread_session_row_mismatch")
+        if counts["session_count"] > 0 and counts["thread_count"] == 0:
+            thread_blockers.append("missing_thread_rows")
+        if counts["session_count"] == 0 and counts["thread_count"] != 0:
+            thread_blockers.append("orphan_thread_rows")
+        thread_ready = not thread_blockers
     latency_blockers: list[str] = []
-    thread_ready = True
-    latency_ready = True
+    if counts["missing_latency_profile_count"]:
+        latency_blockers.append("missing_latency_profile_rows")
+    if counts["orphan_latency_profile_count"]:
+        latency_blockers.append("orphan_latency_profile_rows")
+    latency_ready = not latency_blockers
 
     return {
         "archive_sessions": surface(
@@ -1776,6 +1810,7 @@ def _archive_surface_readiness(
             evidence={
                 "thread_count": counts["thread_count"],
                 "thread_session_count": counts["thread_session_count"],
+                "counts_exact": counts["thread_counts_exact"],
             },
         ),
         "tag_rollups": surface(
@@ -1799,7 +1834,11 @@ def _archive_surface_readiness(
         "latency_profiles": surface(
             ready=latency_ready,
             blockers=latency_blockers,
-            evidence={},
+            evidence={
+                "latency_profile_count": counts["latency_profile_count"],
+                "missing_latency_profile_count": counts["missing_latency_profile_count"],
+                "orphan_latency_profile_count": counts["orphan_latency_profile_count"],
+            },
         ),
     }
 

@@ -7,9 +7,9 @@ vocabularies from these rows instead of maintaining parallel name branches.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, TypeVar, cast
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,16 +69,42 @@ def is_mcp_get_session_projection(value: object) -> bool:
 def validate_session_list_projection_cli_contract(cli_handler_ids: Collection[str]) -> None:
     """Reject a projection that MCP can serve but CLI cannot dispatch."""
 
-    missing = sorted(set(SESSION_LIST_PROJECTIONS) - set(cli_handler_ids))
+    missing = sorted(
+        {projection.cli_handler for projection in SESSION_LIST_PROJECTIONS.values()} - set(cli_handler_ids)
+    )
     if missing:
         raise RuntimeError(f"session projections without CLI read handlers: {', '.join(missing)}")
 
 
-# Compatibility aliases hold the import-time snapshot. Production dispatchers
-# call the functions above so the table remains the live vocabulary source.
-SESSION_LIST_PROJECTION_NAMES = session_list_projection_names()
-MCP_READ_VIEW_NAMES = mcp_read_view_names()
-MCP_GET_SESSION_PROJECTION_NAMES = mcp_get_session_projection_names()
+_Declaration = TypeVar("_Declaration")
+
+
+def bind_session_list_projections(
+    declarations: Mapping[str, _Declaration],
+    *,
+    rename: Callable[[str, _Declaration], _Declaration],
+) -> dict[str, _Declaration]:
+    """Bind public projection names to each surface's renderer-family contract."""
+    by_handler: dict[str, list[SessionListProjection]] = {}
+    for name, projection in SESSION_LIST_PROJECTIONS.items():
+        if name != projection.name:
+            raise RuntimeError(f"session projection key {name!r} differs from its declared name")
+        by_handler.setdefault(projection.cli_handler, []).append(projection)
+    validate_session_list_projection_cli_contract(declarations.keys())
+    result: dict[str, _Declaration] = {}
+    for family, declaration in declarations.items():
+        projections = by_handler.get(family)
+        bindings = (
+            [(family, declaration)]
+            if projections is None
+            else [(projection.name, rename(projection.name, declaration)) for projection in projections]
+        )
+        for name, binding in bindings:
+            if name in result:
+                raise RuntimeError(f"session projection {name!r} collides with another read view")
+            result[name] = binding
+    return result
+
 
 # These aliases are evaluated when the module loads, after the table above is
 # declared.  A table addition therefore reaches MCP's public Literal schema
@@ -88,13 +114,11 @@ MCPReadView: TypeAlias = cast(Any, Literal.__getitem__(mcp_read_view_names())) |
 MCPGetSessionProjection: TypeAlias = cast(Any, Literal.__getitem__(mcp_get_session_projection_names())) | None  # type: ignore[valid-type]
 
 __all__ = [
-    "MCP_GET_SESSION_PROJECTION_NAMES",
-    "MCP_READ_VIEW_NAMES",
     "MCPGetSessionProjection",
     "MCPReadView",
-    "SESSION_LIST_PROJECTION_NAMES",
     "SESSION_LIST_PROJECTIONS",
     "SessionListProjection",
+    "bind_session_list_projections",
     "is_mcp_get_session_projection",
     "is_mcp_read_view",
     "mcp_get_session_projection_names",

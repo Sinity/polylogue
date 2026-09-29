@@ -138,30 +138,17 @@ def test_an_executable_binding_without_a_declaration_is_refused() -> None:
         build_read_view_handler("view-that-was-never-declared", ReadViewExecution(_never_runs))
 
 
-def test_a_borrowed_declaration_carries_the_lenders_contract_under_the_borrowers_id() -> None:
-    """A session-list projection dispatches under its own name, on a declared contract.
+def test_a_projection_gets_its_contract_from_its_declared_renderer_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The row alone binds a public view to the renderer family's metadata."""
+    from polylogue.core.session_projections import SESSION_LIST_PROJECTIONS, SessionListProjection
 
-    ``SESSION_LIST_PROJECTIONS`` names the declared CLI handler that serves a
-    projection, so the projection's own name is not required to be a declared
-    read view -- but the contract it runs under still has to come from one.
-
-    Anti-vacuity: EXECUTED -- reading the declaration for the borrower's id
-    instead of the lender's makes this raise ``RuntimeError: ... has an
-    executable handler but no declaration`` for a projection whose name is not
-    itself a declared view, which is how the MCP projection-table contract
-    (``tests/unit/mcp/test_session_projection_table.py``) breaks.
-    """
-
-    lender = READ_VIEW_HANDLER_METADATA["events"]
-    handler = build_read_view_handler(
-        "borrowed-projection",
-        ReadViewExecution(_never_runs),
-        declared_as="events",
-    )
-
-    assert handler.view_id == "borrowed-projection"
-    assert handler.session_policy == lender.session_policy
-    assert handler.accepted_options == lender.accepted_options | {option.name for option in lender.declared_options}
+    projection = SessionListProjection("fixture-projection", "get_session_events", "events", "events")
+    monkeypatch.setitem(SESSION_LIST_PROJECTIONS, projection.name, projection)
+    declared = READ_VIEW_HANDLER_METADATA["events"]
+    handler = build_read_view_handler(projection.name, ReadViewExecution(_never_runs))
+    assert handler.view_id == projection.name
+    assert handler.session_policy == declared.session_policy
+    assert handler.accepted_options == declared.accepted_options | {option.name for option in declared.declared_options}
 
 
 def test_every_executable_binding_names_a_declared_view() -> None:

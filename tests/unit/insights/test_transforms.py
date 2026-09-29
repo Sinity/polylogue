@@ -814,6 +814,11 @@ def test_stored_work_events_feed_digest_and_run_projection() -> None:
         "recorded decision",
         "recorded artifact_change",
     ]
+    # Stored session evidence has no message coordinate; do not invent one.
+    assert [(event.subject_ref.kind, event.subject_ref.object_id) for event in observed] == [
+        ("session", str(session.id))
+    ] * 4
+    assert compile_session_run_projection(session) == digest.run_projection
 
 
 def test_structured_outcomes_use_is_error_when_no_exit_code() -> None:
@@ -1024,3 +1029,14 @@ def test_run_projection_refs_round_trip() -> None:
     assert refs
     for ref in refs:
         assert ObjectRef.parse(ref.format()) == ref
+
+
+def test_message_backed_outcomes_keep_message_subjects() -> None:
+    """Session-level fallback must not change a real tool-call message reference."""
+    session = _outcome_session(command="pytest tests/unit", exit_code=1)
+    events = [event for event in compile_session_run_projection(session).events if event.kind != "session_started"]
+    assert events
+    for event in events:
+        assert event.evidence_refs[0].message_id is not None
+        assert event.subject_ref.kind == "message"
+        assert event.subject_ref.object_id == event.evidence_refs[0].message_id

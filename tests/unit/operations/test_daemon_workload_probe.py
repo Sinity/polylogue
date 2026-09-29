@@ -1539,3 +1539,57 @@ def test_two_available_debt_ledgers_still_diff() -> None:
         "delta": 3,
         "measured": True,
     }
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_thread_and_latency_readiness_uses_observed_rows(tmp_path: Path, exact: bool) -> None:
+    """Hardcoded readiness hid both an unmeasured view and a missing latency row."""
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    empty = probe(db, exact_derived_counts=exact)["archive_tiers"]["derived_readiness"]
+    assert empty["checked"] is True
+    assert empty["surface_readiness"]["threads"]["ready"] is (True if exact else None)
+    assert empty["surface_readiness"]["latency_profiles"]["ready"] is True
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('fixture', 'codex-session', ?)",
+            (b"f" * 32,),
+        )
+    populated = probe(db, exact_derived_counts=exact)["archive_tiers"]["derived_readiness"]
+    latency = populated["surface_readiness"]["latency_profiles"]
+    assert latency["ready"] is False
+    assert latency["blockers"] == ["missing_latency_profile_rows"]
+    assert latency["evidence"] == {
+        "latency_profile_count": 0,
+        "missing_latency_profile_count": 1,
+        "orphan_latency_profile_count": 0,
+    }
+    threads = populated["surface_readiness"]["threads"]
+    assert threads["ready"] is (True if exact else None)
+    if exact:
+        assert threads["evidence"]["thread_count"] == threads["evidence"]["thread_session_count"] == 1
+    else:
+        assert threads["blockers"] == ["thread_readiness_unmeasured"]
+
+
+def test_broken_thread_membership_is_not_reported_ready(tmp_path: Path) -> None:
+    """A readable but empty relation is not evidence for existing session membership."""
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('fixture', 'codex-session', ?)",
+            (b"f" * 32,),
+        )
+        conn.execute("DROP VIEW thread_sessions")
+        conn.execute(
+            "CREATE VIEW thread_sessions AS SELECT session_id AS thread_id, session_id, 0 AS position FROM sessions WHERE 0"
+        )
+    report = probe(db, exact_derived_counts=True)["archive_tiers"]["derived_readiness"]
+    assert report["checked"] is True
+    threads = report["surface_readiness"]["threads"]
+    assert threads["ready"] is False
+    assert threads["blockers"] == ["thread_session_row_mismatch"]
+    assert threads["evidence"]["thread_session_count"] == 0
