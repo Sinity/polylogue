@@ -123,6 +123,7 @@ class BlockRecord(BaseModel):
     tool_id: str | None = None
     tool_input: str | None = None
     metadata: str | None = None
+    name: str | None = None
     semantic_type: SemanticBlockType | None = None
     # Legacy structural fields retained for compatibility. The canonical
     # outcome is tool_outcome, which is always resolved for admitted tool

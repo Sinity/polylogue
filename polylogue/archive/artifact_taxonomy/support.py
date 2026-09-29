@@ -103,6 +103,16 @@ def looks_like_session_document(payload: JSONDocument) -> bool:
     ):
         return True
 
+    # A claude.ai project (``projects/<uuid>.json``) and account-memory record
+    # carry no message list, yet each is a session the claude.ai parser
+    # admits. Deciding them here with the parser's own detectors keeps the
+    # classifier from turning them away before any parser runs. Deferred for
+    # the same artifact-taxonomy/sources import cycle ``runtime.py`` notes.
+    from polylogue.sources.parsers.claude import looks_like_claude_memories, looks_like_claude_project
+
+    if looks_like_claude_project(payload) or looks_like_claude_memories(payload):
+        return True
+
     messages = payload.get("messages")
     return isinstance(messages, list) and any(looks_like_message_entry(item) for item in messages[:12])
 

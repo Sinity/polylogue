@@ -704,6 +704,25 @@ def _event_payload_row(row: Mapping[str, object]) -> dict[str, object]:
     return payload
 
 
+def _step_tool_id(payload: Mapping[str, object]) -> str | None:
+    """Return the call id a step declares on the wire, if any."""
+    tool_id = payload.get("tool_id") or payload.get("toolId") or payload.get("call_id") or payload.get("callId")
+    return str(tool_id) if tool_id is not None else None
+
+
+def _answered_call_id(answerable_call: tuple[str, str] | None, result_tool_name: object) -> str | None:
+    """Pair an ID-less result with the call it directly answers, or with none.
+
+    A declared tool name that differs from the call's refutes the pairing.
+    """
+    if answerable_call is None:
+        return None
+    call_id, call_name = answerable_call
+    if result_tool_name is not None and str(result_tool_name) != call_name:
+        return None
+    return call_id
+
+
 def _trajectory_message(
     *,
     row: Mapping[str, object],
@@ -712,7 +731,14 @@ def _trajectory_message(
     step_ordinal: int,
     step_type: str,
     step_format: str,
+    answerable_call: tuple[str, str] | None = None,
 ) -> ParsedMessage | None:
+    """Materialize one supported step.
+
+    ``answerable_call`` is the ``(tool_id, tool_name)`` of the ID-less call
+    an ID-less result step may report: the caller passes it only when that
+    call is the sole unanswered call immediately before this step.
+    """
     if not _trajectory_step_supported(step_type, step_format):
         return None
     normalized_type = step_type.strip().lower().replace("-", "_")
@@ -752,7 +778,7 @@ def _trajectory_message(
     }
     blocks: list[ParsedContentBlock] = []
     tool_name = payload.get("tool_name") or payload.get("toolName") or payload.get("name")
-    tool_id = payload.get("tool_id") or payload.get("toolId") or payload.get("call_id") or payload.get("callId")
+    tool_id = _step_tool_id(payload)
     if toolish and normalized_type in {"tool_result", "tool_output", "command_result"}:
         is_error, exit_code, outcome_unknown = _tool_outcome(payload, row)
         blocks.append(
@@ -760,7 +786,7 @@ def _trajectory_message(
                 type=BlockType.TOOL_RESULT,
                 text=text,
                 tool_name=str(tool_name) if tool_name is not None else None,
-                tool_id=str(tool_id) if tool_id is not None else None,
+                tool_id=tool_id if tool_id is not None else _answered_call_id(answerable_call, tool_name),
                 is_error=is_error,
                 exit_code=exit_code,
                 outcome_unknown_reason=outcome_unknown,
@@ -776,7 +802,10 @@ def _trajectory_message(
                 type=BlockType.TOOL_USE,
                 text=text,
                 tool_name=str(tool_name),
-                tool_id=str(tool_id) if tool_id is not None else None,
+                # An ID-less call still needs a block key: file_edits and the
+                # use/result pairing are keyed by tool_id. The step's own
+                # identity makes it deterministic across re-imports.
+                tool_id=tool_id if tool_id is not None else f"{provider_message_id}:tool",
                 tool_input=_tool_input(payload),
                 file_edit=_file_edit(payload) if normalized_type in {"file_edit", "edit"} else None,
             )
@@ -978,6 +1007,11 @@ def parse_trajectory_db(
             messages: list[ParsedMessage] = []
             outcomes: list[AdmissionOutcome] = []
             events: list[ParsedSessionEvent] = []
+            # Tool calls since the last non-call step, as (tool_id, tool_name,
+            # id_less). An ID-less result answers the run only when the run is
+            # exactly one ID-less call: with several calls in flight, or any
+            # other step in between, nothing says which call it reports.
+            call_run: list[tuple[str, str, bool]] = []
             if not has_step_identity and len(meta_rows) > 1:
                 unassigned_count = int(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
                 if unassigned_count:
@@ -991,6 +1025,13 @@ def parse_trajectory_db(
                 row_columns = row.keys()
                 row_map = {str(key): row[key] for key in row_columns}
                 payload = _normalized_step_payload(row_map)
+                # Every step, materialized or refused, ends the current run;
+                # only a materialized call starts or extends the next one.
+                previous_run = call_run
+                call_run = []
+                answerable_call = (
+                    (previous_run[0][0], previous_run[0][1]) if len(previous_run) == 1 and previous_run[0][2] else None
+                )
                 idx = row_map.get("idx", ordinal)
                 try:
                     step_ordinal = int(idx)
@@ -1053,6 +1094,7 @@ def parse_trajectory_db(
                         step_ordinal=step_ordinal,
                         step_type=step_type,
                         step_format=step_format,
+                        answerable_call=answerable_call,
                     )
                 except ValidationError:
                     # A malformed known step must not discard valid siblings.
@@ -1101,6 +1143,9 @@ def parse_trajectory_db(
                     )
                     continue
                 messages.append(message)
+                call = message.blocks[0] if message.blocks and message.blocks[0].type is BlockType.TOOL_USE else None
+                if call is not None and call.tool_id is not None:
+                    call_run = [*previous_run, (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)]
                 outcomes.append(
                     AdmissionOutcome(
                         unit=AdmissionUnit.PART, ordinal=ordinal, key=key, disposition=AdmissionDisposition.MATERIALIZED

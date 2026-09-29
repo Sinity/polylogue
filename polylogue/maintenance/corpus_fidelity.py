@@ -273,14 +273,33 @@ def audit_revision_fidelity(
         str(row[0]): int(row[1]) for row in index.execute("SELECT session_id, COUNT(*) FROM messages GROUP BY 1")
     }
     indexed_sessions = {str(row[0]) for row in index.execute("SELECT session_id FROM sessions")}
-    events = {
+    # An event stands in for a source message only when that message is not
+    # itself retained. The writer links an event to its retained message
+    # (``source_message_id``), except where the native id is ambiguous, so an
+    # event is a replacement only when neither the link nor a same-session
+    # message with its native id exists. One source message counts once, however
+    # many events it produced; otherwise an event beside its own message
+    # (a Codex ``event_msg`` user_message and the message with the same
+    # client id) could make up for a different message that is missing.
+    replacement_events = {
         str(row[0]): int(row[1])
         for row in index.execute(
             """
-            SELECT session_id, COUNT(*)
-            FROM session_events
-            WHERE source_message_id IS NOT NULL
-               OR NULLIF(TRIM(COALESCE(source_message_provider_id, '')), '') IS NOT NULL
+            WITH attributed AS (
+                SELECT DISTINCT session_id, TRIM(source_message_provider_id) AS provider_id
+                FROM session_events
+                WHERE source_message_id IS NULL
+                  AND NULLIF(TRIM(COALESCE(source_message_provider_id, '')), '') IS NOT NULL
+            ),
+            retained AS (
+                SELECT DISTINCT session_id, native_id FROM messages WHERE native_id IS NOT NULL
+            )
+            SELECT attributed.session_id, COUNT(*)
+            FROM attributed
+            LEFT JOIN retained
+              ON retained.session_id = attributed.session_id
+             AND retained.native_id = attributed.provider_id
+            WHERE retained.native_id IS NULL
             GROUP BY 1
             """
         )
@@ -296,7 +315,7 @@ def audit_revision_fidelity(
         # An indexed session with no message rows has zero messages; it is
         # compared like any other rather than left unresolved.
         have_messages = messages.get(session_id, 0 if session_id in indexed_sessions else None)
-        have_events = events.get(session_id, 0)
+        have_events = replacement_events.get(session_id, 0)
         state = "unresolved_shortfall"
         reasons: list[str] = []
         composed_count: int | None = None
@@ -362,7 +381,7 @@ def audit_revision_fidelity(
             "state": state,
             "reasons": reasons,
             "indexed_messages": have_messages,
-            "indexed_events": have_events,
+            "replacement_events": have_events,
             "composed_messages": composed_count,
             "inheritance": inheritance,
             "best_recorded_messages": best_count,

@@ -209,6 +209,7 @@ ARCHIVE_BLOCK_DISPOSITIONS: Dispositions = {
     "tool_input": exposed("tool_input", _json_object),
     "metadata": exposed("metadata", _json_object),
     "language": exposed("language"),
+    "name": exposed("name"),
     "tool_result_is_error": exposed("tool_result_is_error"),
     "tool_result_exit_code": exposed("tool_result_exit_code"),
     "tool_outcome": exposed("tool_outcome", _optional_str),
