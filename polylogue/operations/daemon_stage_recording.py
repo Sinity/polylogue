@@ -30,7 +30,7 @@ def record_daemon_stage_event_for_archive(
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     archive_root.mkdir(parents=True, exist_ok=True)
-    with open_initialized_tier_connection(archive_root / "ops.db", ArchiveTier.OPS) as conn:
+    with open_initialized_tier_connection(archive_root / "ops.db", ArchiveTier.OPS, archive_root=archive_root) as conn:
         return record_daemon_stage_event(
             conn,
             stage=stage,

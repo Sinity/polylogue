@@ -70,10 +70,20 @@ class DaemonLifecycle:
     received_signal_name: str | None = None
 
     @classmethod
-    def start(cls, *, details: dict[str, object] | None = None) -> DaemonLifecycle:
-        """Create and activate a lifecycle row for the current process."""
+    def start(
+        cls,
+        *,
+        archive_root_path: Path,
+        details: dict[str, object] | None = None,
+    ) -> DaemonLifecycle:
+        """Create and activate a lifecycle row for the current process.
+
+        ``polylogued`` names the archive its writer lease is bound to, so the
+        row lands in that archive's ``ops.db`` rather than one re-resolved here.
+        """
         global _active_lifecycle
-        lifecycle = cls(run_id=str(uuid.uuid4()), ops_db_path=_ops_db_path())
+        ops_db_path = archive_root_path / "ops.db"
+        lifecycle = cls(run_id=str(uuid.uuid4()), ops_db_path=ops_db_path)
         _write_lifecycle(
             lifecycle.ops_db_path,
             record_daemon_lifecycle_start,
@@ -153,7 +163,7 @@ def _write_lifecycle(
 ) -> None:
     """Run one short ops-tier lifecycle write with fresh-process recovery."""
     initialize_archive_database(ops_db_path, ArchiveTier.OPS)
-    conn = open_daemon_connection(ops_db_path)
+    conn = open_daemon_connection(ops_db_path, archive_root=ops_db_path.parent)
     try:
         writer(conn, **kwargs)
     finally:
@@ -196,6 +206,7 @@ def _write_existing_lifecycle(
             ops_db_path,
             timeout=_SIGNAL_WRITE_TIMEOUT_SECONDS,
             busy_timeout_ms=int(_SIGNAL_WRITE_TIMEOUT_SECONDS * 1000),
+            archive_root=ops_db_path.parent,
         )
         try:
             writer(conn, **kwargs)

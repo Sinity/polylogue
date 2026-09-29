@@ -5288,7 +5288,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         with self._write_authorization():
             if not ops_db.exists():
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
-            with open_daemon_connection(ops_db) as conn:
+            with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
                 table_count = int(
                     conn.execute(
                         """
@@ -5301,7 +5301,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if table_count != 2:
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
             try:
-                with open_daemon_connection(ops_db) as conn:
+                with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
                     record_mcp_call(
                         conn,
                         call_id=call_id,

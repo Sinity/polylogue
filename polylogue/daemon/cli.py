@@ -40,7 +40,7 @@ from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV, api_command
 from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
 from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
-from polylogue.daemon.execution import publish_daemon_compute_adapter
+from polylogue.daemon.execution import publish_daemon_compute_adapter, reset_daemon_compute_adapter
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -203,6 +203,9 @@ def _lineage_startup_lifecycle_phase(census: LineageStartupCensus) -> str:
 
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
+#: How long shutdown waits for compute workers to exit before naming them.
+#: It bounds reporting only: a worker still running is not interrupted.
+_COMPUTE_JOIN_TIMEOUT_S = 5.0
 #: Cadences that used to be bare literals inside their own ``while True``.
 #: They live here so the runner, the service registry and a reader of this
 #: module see one value per loop (polylogue-74wvj).
@@ -2315,6 +2318,7 @@ async def _run_daemon_services_under_active_writer_lease(
         _daemon_lifecycle = await write_coordinator.run_sync(
             "daemon.lifecycle.start",
             DaemonLifecycle.start,
+            archive_root_path=archive_root_path,
             details={"archive_root": str(archive_root_path)},
         )
         # Interrupted effects are classified once under the real daemon writer
@@ -3258,7 +3262,16 @@ async def _run_daemon_services_under_active_writer_lease(
                         on_pass_complete=refresh_cold_build_progress if cold_build is not None else None,
                     )
                     supervisor.start("fair_intake", intake_service.run)
-                    if enable_watch:
+                    if enable_watch and not watcher.prepare_watch_roots():
+                        # A watcher with nothing to watch is unavailable, not
+                        # a watch that completed. Fair intake's idle pass
+                        # still discovers files once a root appears.
+                        supervisor.mark_unavailable("watcher", reason="no configured source root exists")
+                        if supervisor.is_schedulable("watcher_registered_bridge"):
+                            supervisor.mark_unavailable("watcher_registered_bridge", reason="watcher is unavailable")
+                        if watcher_registered_gate_event is not None:
+                            watcher_registered_gate_event.set()
+                    elif enable_watch:
                         watcher_registered = getattr(watcher, "watcher_ready", None)
                         supervisor.start("watcher", watcher.run)
                         if watcher_registered_gate_event is not None and watcher_registered is not None:
@@ -3474,6 +3487,25 @@ async def _run_daemon_services_under_active_writer_lease(
             if uds_server is not None:
                 with contextlib.suppress(Exception):
                     uds_server.server_close()
+            # The process compute capacity is the API server's kernel or the
+            # shared fallback; either way this run published it, so this run
+            # joins its workers. Every service and the writer have stopped, so
+            # nothing new is admitted; a worker still running is named.
+            surviving_compute = reset_daemon_compute_adapter(join_timeout_s=_COMPUTE_JOIN_TIMEOUT_S)
+            if surviving_compute:
+                emit(
+                    "daemon.shutdown.compute_threads_orphaned",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="outlived_shutdown_deadline",
+                    orphaned=len(surviving_compute),
+                    error_detail=", ".join(surviving_compute),
+                    timeout_ms=round(_COMPUTE_JOIN_TIMEOUT_S * 1000),
+                )
+                # A live compute worker is an incomplete shutdown: keep archive
+                # ownership and report the stop as degraded, never clean.
+                writer_drained = False
+                ownership_retained_reason = "compute_threads_orphaned"
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()

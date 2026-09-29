@@ -12,6 +12,7 @@ from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
 
 def _declared_profile(name: str) -> connection_profile.SQLiteConnectionProfile:
@@ -323,8 +324,12 @@ def test_index_write_profiles_refuse_stale_sibling_before_attach(
 ) -> None:
     root = tmp_path
     index_path = root / "index.db"
-    with sqlite3.connect(index_path) as connection:
+    with closing(sqlite3.connect(index_path)) as connection:
         connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        # The index itself must be current, identity included, or its own
+        # derived-identity check refuses first and no sibling is consulted.
+        stamp_derived_schema_identity(connection, ArchiveTier.INDEX.value)
+        connection.commit()
     sibling_path = root / f"{sibling_tier.value}.db"
     # A version this runtime cannot serve in either direction. Stepping one
     # below the expected version collapses onto 0 for a version-1 tier, which
