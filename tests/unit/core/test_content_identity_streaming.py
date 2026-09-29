@@ -536,13 +536,13 @@ def test_keys_too_long_for_a_row_are_spooled_not_held(monkeypatch: pytest.Monkey
     from polylogue.core import content_identity
 
     spooled: list[int] = []
-    real_init = content_identity._SpooledKey.__init__
+    real_of = content_identity._SpooledKey.of
 
-    def counting(self: object, normalized: bytes) -> None:
+    def counting(normalized: bytes) -> content_identity._SpooledKey:
         spooled.append(len(normalized))
-        real_init(self, normalized)  # type: ignore[arg-type]
+        return real_of(normalized)
 
-    monkeypatch.setattr(content_identity._SpooledKey, "__init__", counting)
+    monkeypatch.setattr(content_identity._SpooledKey, "of", counting)
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 300)
     monkeypatch.setattr(content_identity, "_ENTRY_MEMORY_BYTES", 4 * (content_identity._ENTRY_OVERHEAD_BYTES + 4))
     value: dict[str, object] = {f"k{index}": index for index in range(12)}
@@ -589,3 +589,129 @@ def test_spooled_equivalent_keys_order_by_value_digest(monkeypatch: pytest.Monke
     first = json.dumps({**filler, composed: "one", decomposed: "two"}, ensure_ascii=False).encode()
     second = json.dumps({**filler, composed: "two", decomposed: "one"}, ensure_ascii=False).encode()
     assert payload_content_identity(first) == payload_content_identity(second)
+
+
+def test_an_encoded_lone_surrogate_shares_the_identity_of_its_escape() -> None:
+    """``json.loads`` decodes bytes with ``surrogatepass``, so an encoded lone
+    surrogate is the same value as its ``\\ud800`` escape.
+
+    Anti-vacuity: decode the member strictly and the encoded form falls back
+    to its byte digest while the escaped form keeps its structural identity.
+    """
+    encoded = b'{"x":"a\xed\xa0\x80b"}'
+    assert json.loads(encoded) == json.loads(b'{"x":"a\\ud800b"}')
+    assert payload_content_identity(encoded) == payload_content_identity(b'{"x":"a\\ud800b"}')
+    assert payload_content_identity(encoded) == structural_content_identity({"x": "a\ud800b"})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # An encoded surrogate pair decodes to two characters no escape spells.
+        b'["\xed\xa0\xbd\xed\xb8\x80"]',
+        # After an escape of the other half, re-spelling it would pair them.
+        b'["\\ud83d\xed\xb8\x80"]',
+        # After a backslash, the escape it would become changes the value.
+        b'["\\\xed\xa0\x80"]',
+    ],
+)
+def test_an_encoded_surrogate_that_cannot_be_re_spelled_keeps_the_byte_identity(payload: bytes) -> None:
+    """Anti-vacuity: re-spell these as escapes and they take the identity of a
+    different value than the decoder reads."""
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        b"0." + b"1" * 300,
+        b"-1234567890123456789012345678901234567890.5e-3",
+        b"0." + b"0" * 300 + b"5e290",
+        b"1e" + b"0" * 300 + b"5",
+        b"1" + b"0" * 400 + b".5",
+        b"1." + b"0" * 300 + b"e999",
+        b"1" + b"0" * 350 + b".5",
+    ],
+)
+def test_a_long_number_is_canonicalized_as_it_streams(token: bytes, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A number longer than the hold bound never reaches the tokenizer whole.
+
+    Anti-vacuity: forward the run until the physical value limit and the
+    tokenizer receives the whole token; canonicalize it wrongly and the
+    identity differs from the decoder's float.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_HOLD_NUMBER_BYTES", 32)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 16)
+    payload = b'{"n": [' + token + b"]}"
+    assert payload_content_identity(payload) == _decoded_identity(payload)
+    spills = content_identity._SpilledStrings()
+    reader = content_identity._TokenReader(io.BytesIO(payload), spills, scan=False)
+    handed_on = b"".join(iter(lambda: reader.read(16), b""))
+    assert max(len(run) for run in content_identity._BARE_TOKEN.findall(handed_on)) <= 32
+
+
+def test_a_long_integer_is_exact_or_not_json_as_the_decoder_reads_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: canonicalize a long integer as a float and it loses digits;
+    accept one past the runtime's digit limit and a member the decoder
+    refuses gets a structural identity."""
+    import sys
+
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_HOLD_NUMBER_BYTES", 32)
+    digits = b"9" * 5000
+    payload = b"[-" + digits + b"]"
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(0)
+    try:
+        assert payload_content_identity(payload) == structural_content_identity([-int(digits)])
+    finally:
+        sys.set_int_max_str_digits(previous)
+
+
+def test_a_long_key_is_never_held_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A key decoded past the spill bound keeps only its hash and NFC scratch.
+
+    Anti-vacuity: join the decoded windows into one string and the key comes
+    back whole; compare long keys by anything but the decoded text and the
+    escaped repeat does not replace the first member.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    key = "\u1100\u1161\u11a8" * 12
+    escaped = "".join(f"\\u{ord(char):04x}" for char in key)
+    payload = f'{{"{key}": 1, "a": 2, "{escaped}": 3}}'.encode()
+    assert payload_content_identity(payload) == structural_content_identity({key: 3, "a": 2})
+
+    spills = content_identity._SpilledStrings()
+    reader = content_identity._TokenReader(io.BytesIO(b""), spills, scan=False)
+    spill = io.BytesIO(escaped.encode())
+    decoded = reader._decode_key(spill)
+    assert isinstance(decoded, content_identity._LongKey)
+    decoded.close()
+
+
+def test_the_identity_pass_calls_the_checkpoint_per_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: call the checkpoint only while the caller spools the member
+    and a cancellation cannot stop the identity scan."""
+    from polylogue.core import content_identity
+
+    class StopError(Exception):
+        pass
+
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    calls = 0
+
+    def checkpoint() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise StopError
+
+    with pytest.raises(StopError):
+        stream_payload_content_identity(io.BytesIO(json.dumps({"a": "x" * 64}).encode()), checkpoint=checkpoint)

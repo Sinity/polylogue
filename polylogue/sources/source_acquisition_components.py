@@ -764,7 +764,7 @@ def _stream_member_revision(
                 spool.write(chunk)
                 size += len(chunk)
         spool.seek(0)
-        stream_payload_content_identity(spool)
+        stream_payload_content_identity(spool, checkpoint=checkpoint)
     return ReplayedZipRevision(None, digest.hexdigest(), size)
 
 

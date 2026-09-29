@@ -18,9 +18,10 @@ import json
 import re
 import secrets
 import sqlite3
+import sys
 import tempfile
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from decimal import Decimal
 from functools import lru_cache
@@ -265,10 +266,12 @@ def _number_step(state: int, data: bytes) -> int:
 class _SpilledStrings:
     """String values streamed to scratch files, addressed by a unique marker."""
 
-    def __init__(self) -> None:
+    def __init__(self, checkpoint: Callable[[], None] | None = None) -> None:
+        #: Called before each scratch window is read.
+        self.checkpoint = checkpoint
         self._nonce = secrets.token_hex(16)
         self._files: dict[str, IO[bytes]] = {}
-        self._keys: dict[str, str] = {}
+        self._keys: dict[str, str | _LongKey] = {}
         self._placeholders = 0
         #: Tokens past the physical value limit. Raised only once the whole
         #: document has parsed: until then the bytes may not be JSON at all,
@@ -286,19 +289,29 @@ class _SpilledStrings:
         #: event, so the identity stream can tell which value was refused.
         self.number_tokens = 0
         self.refused_numbers: dict[int, ContentIdentityRefusal] = {}
+        #: Integer tokens too long to hand the tokenizer, by ordinal: their
+        #: digits in a scratch file, streamed into the identity in place of
+        #: the ``0`` the tokenizer was given.
+        self.long_integers: dict[int, IO[bytes]] = {}
 
     def add(self, handle: IO[bytes]) -> bytes:
         marker = f"polylogue-spilled-string-{self._nonce}-{len(self._files)}"
         self._files[marker] = handle
         return marker.encode("ascii")
 
-    def add_key(self, key: str) -> bytes:
+    def add_key(self, key: str | _LongKey) -> bytes:
         """A unique marker standing in for a long key held decoded, never re-escaped."""
         marker = f"polylogue-spilled-key-{self._nonce}-{len(self._keys)}"
         self._keys[marker] = key
         return marker.encode("ascii")
 
-    def take_key(self, marker: str) -> str:
+    def add_key_or_refusal(self, key: str | _LongKey | int) -> bytes:
+        """The marker of a decoded key, or of a refusal when ``key`` is its size."""
+        if isinstance(key, int):
+            return self.refuse_key(key)
+        return self.add_key(key)
+
+    def take_key(self, marker: str) -> str | _LongKey:
         return self._keys.pop(marker, marker) if self._keys else marker
 
     def refuse_key(self, size: int) -> bytes:
@@ -308,8 +321,8 @@ class _SpilledStrings:
         self._refused_keys[marker] = ContentIdentityRefusal("object key", size)
         return marker.encode("ascii")
 
-    def refused_key(self, key: str) -> ContentIdentityRefusal | None:
-        return self._refused_keys.get(key) if self._refused_keys else None
+    def refused_key(self, key: str | _LongKey) -> ContentIdentityRefusal | None:
+        return self._refused_keys.get(key) if self._refused_keys and isinstance(key, str) else None
 
     def refuse_value(self, token: str, size: int) -> ContentIdentityRefusal:
         self.value_refusals += 1
@@ -325,13 +338,148 @@ class _SpilledStrings:
         for handle in self._files.values():
             handle.close()
         self._files.clear()
+        for key in self._keys.values():
+            if isinstance(key, _LongKey):
+                key.close()
         self._keys.clear()
+        for digits in self.long_integers.values():
+            digits.close()
+        self.long_integers.clear()
         self._refused_keys.clear()
         self.value_refusals = 0
         self.last_value_refusal = None
         self.surviving_refusal = None
         self.number_tokens = 0
         self.refused_numbers.clear()
+
+
+#: A number or literal run longer than this is not handed to the tokenizer,
+#: which would hold the whole token: it is canonicalized as it streams
+#: (:class:`_LongNumber`). A pacing bound only -- the digest is the same
+#: whichever side of it a token falls.
+_HOLD_NUMBER_BYTES = 64 * 1024
+
+_DIGITS = re.compile(rb"[0-9]+")
+
+
+class _LongNumber:
+    """A number token too long to hold, reduced to what decides its value.
+
+    The decoder contract reads a token with a fraction or exponent as the
+    nearest binary64 float. That float is decided by the token's leading 800
+    significant digits, whether any later digit is nonzero, and its decimal
+    exponent: every halfway point between two floats has at most 767
+    significant digits. So those are kept, and the rest is only counted. An
+    integer token is exact; its digits go to a scratch file when the runtime
+    admits an integer that long, and are only counted otherwise.
+    """
+
+    _SIGNIFICANT = 800
+    #: Exponent digits kept; past this the magnitude is far outside any float.
+    _EXPONENT_DIGITS = 20
+
+    def __init__(self, *, spool_integer: bool) -> None:
+        self.negative = False
+        self._section = 0  # 0 integer part, 1 fraction, 2 exponent
+        self._significant = bytearray()
+        self._sticky = False
+        #: Decimal exponent of the last kept significant digit.
+        self._scale = 0
+        self.integer_digits = 0
+        self._exponent = bytearray()
+        self._exponent_negative = False
+        self._exponent_saturated = False
+        self._spool: IO[bytes] | None = tempfile.TemporaryFile() if spool_integer else None  # noqa: SIM115
+
+    @property
+    def is_integer(self) -> bool:
+        return self._section == 0
+
+    def feed(self, piece: bytes) -> None:
+        if self._spool is not None and self._section == 0:
+            cut = len(piece)
+            for mark in (b".", b"e", b"E"):
+                found = piece.find(mark)
+                if found >= 0:
+                    cut = min(cut, found)
+            self._spool.write(piece[:cut])
+        position = 0
+        while position < len(piece):
+            byte = piece[position]
+            if 0x30 <= byte <= 0x39:
+                match = _DIGITS.match(piece, position)
+                assert match is not None
+                self._digits(match.group())
+                position = match.end()
+                continue
+            if byte == 0x2D:
+                if self._section == 2:
+                    self._exponent_negative = True
+                else:
+                    self.negative = True
+            elif byte == 0x2E:
+                self._section = 1
+            elif byte in (0x45, 0x65):
+                self._section = 2
+            position += 1
+
+    def _digits(self, run: bytes) -> None:
+        if self._section == 2:
+            if not self._exponent:
+                run = run.lstrip(b"0")
+            room = self._EXPONENT_DIGITS - len(self._exponent)
+            self._exponent += run[:room]
+            self._exponent_saturated = self._exponent_saturated or len(run) > room
+            return
+        if self._section == 0:
+            self.integer_digits += len(run)
+        if not self._significant:
+            stripped = run.lstrip(b"0")
+            if self._section == 1:
+                self._scale -= len(run) - len(stripped)
+            run = stripped
+        take = min(self._SIGNIFICANT - len(self._significant), len(run))
+        self._significant += run[:take]
+        rest = run[take:]
+        if self._section == 1:
+            self._scale -= take
+        else:
+            self._scale += len(rest)
+        if rest and rest.count(b"0") != len(rest):
+            self._sticky = True
+
+    def float_token(self) -> bytes:
+        """A short token the tokenizer reads as the same float."""
+        sign = "-" if self.negative else ""
+        if not self._significant:
+            return f"{sign}0.0".encode("ascii")
+        digits = self._significant.decode("ascii") + ("1" if self._sticky else "")
+        exponent = int(self._exponent or b"0") * (-1 if self._exponent_negative else 1)
+        if self._exponent_saturated:
+            exponent = -(10**self._EXPONENT_DIGITS) if self._exponent_negative else 10**self._EXPONENT_DIGITS
+        scale = self._scale - (1 if self._sticky else 0) + exponent
+        leading = scale + len(digits) - 1
+        if leading > 400:
+            # Past the largest float: the decoder reads infinity.
+            return f"{sign}1e999".encode("ascii")
+        if leading < -400:
+            return f"{sign}0.0".encode("ascii")
+        value = float(f"{sign}{digits}e{scale}")
+        if not isfinite(value):
+            return f"{sign}1e999".encode("ascii")
+        return repr(value).encode("ascii")
+
+    def take_digits(self) -> IO[bytes]:
+        spool = self._spool
+        assert spool is not None
+        self._spool = None
+        spool.seek(0)
+        return spool
+
+    def close(self) -> None:
+        if self._spool is not None:
+            self._spool.close()
+            self._spool = None
 
 
 class _TokenReader:
@@ -369,7 +517,8 @@ class _TokenReader:
         self._bare_open = False
         self._bare_len = 0
         self._bare_state = _NUM_START
-        self._bare_suppressed = False
+        self._bare_held = bytearray()
+        self._bare_long: _LongNumber | None = None
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -440,13 +589,13 @@ class _TokenReader:
                 self._awaiting_role = True
 
     def _emit_outside(self, segment: bytes, out: bytearray, *, open_end: bool) -> None:
-        """Forward bytes outside strings, tracking number and literal runs.
+        """Forward bytes outside strings, holding number and literal runs.
 
-        A run longer than the physical value limit is forwarded only up to a
-        point where it is still a complete number; the rest is validated here
-        and not handed on. A valid overlong number records a refusal that is
-        raised once the document has parsed; an invalid run ends in a byte
-        the tokenizer rejects, so the member takes its byte identity.
+        A run is handed on whole when it ends, if it stayed within
+        :data:`_HOLD_NUMBER_BYTES`. A longer valid number is canonicalized as
+        it streams and handed on as a short token of the same value; a longer
+        invalid run is handed on as a byte the tokenizer rejects, so the
+        member takes its byte identity.
         """
         position = 0
         for match in _BARE_TOKEN.finditer(segment):
@@ -455,7 +604,7 @@ class _TokenReader:
                 self._end_bare_run(out)
                 out += segment[position:start]
             self._bare_open = True
-            self._feed_bare(segment[start:end], out)
+            self._feed_bare(segment[start:end])
             position = end
         if position < len(segment):
             self._end_bare_run(out)
@@ -463,51 +612,59 @@ class _TokenReader:
         elif not open_end:
             self._end_bare_run(out)
 
-    def _feed_bare(self, piece: bytes, out: bytearray) -> None:
-        if self._bare_suppressed:
-            self._bare_state = _number_step(self._bare_state, piece)
-            self._bare_len += len(piece)
-            return
-        room = physical_value_limit() - self._bare_len
-        head = piece[: max(room, 0)]
-        self._bare_state = _number_step(self._bare_state, head)
-        self._bare_len += len(head)
-        out += head
-        rest = piece[len(head) :]
-        if not rest:
-            return
-        index = 0
-        while index < len(rest) and self._bare_state not in _NUM_COMPLETE and self._bare_state != _NUM_INVALID:
-            self._bare_state = _number_step(self._bare_state, rest[index : index + 1])
-            out += rest[index : index + 1]
-            index += 1
-        self._bare_len += index
-        if self._bare_state == _NUM_INVALID:
-            # Not a number: the tokenizer rejects it at once.
-            out += rest[index:]
-            self._bare_len += len(rest) - index
-            return
-        if self._bare_state in _NUM_COMPLETE:
-            self._bare_suppressed = True
-            self._bare_state = _number_step(self._bare_state, rest[index:])
-            self._bare_len += len(rest) - index
+    def _feed_bare(self, piece: bytes) -> None:
+        self._bare_state = _number_step(self._bare_state, piece)
+        self._bare_len += len(piece)
+        if self._bare_long is None:
+            self._bare_held += piece
+            if len(self._bare_held) <= _HOLD_NUMBER_BYTES:
+                return
+            digit_limit = sys.get_int_max_str_digits()
+            self._bare_long = _LongNumber(spool_integer=digit_limit == 0 or digit_limit > _HOLD_NUMBER_BYTES)
+            piece, self._bare_held = bytes(self._bare_held), bytearray()
+        if self._bare_state != _NUM_INVALID:
+            self._bare_long.feed(piece)
 
     def _end_bare_run(self, out: bytearray) -> None:
         if not self._bare_open:
             return
-        if self._bare_state in _NUM_COMPLETE:
+        complete = self._bare_state in _NUM_COMPLETE
+        if complete:
             self._spills.number_tokens += 1
-        if self._bare_suppressed:
-            if self._bare_state in _NUM_COMPLETE:
-                self._spills.refused_numbers[self._spills.number_tokens] = self._spills.refuse_value(
-                    "number token", self._bare_len
-                )
-            else:
-                out += b"x"
+        long = self._bare_long
+        if complete and self._bare_len > physical_value_limit():
+            # Refused where it stands; raised only if the document parses
+            # and no later duplicate key replaces it.
+            if long is not None:
+                long.close()
+            ordinal = self._spills.number_tokens
+            self._spills.refused_numbers[ordinal] = self._spills.refuse_value("number token", self._bare_len)
+            out += b"0"
+        elif long is None:
+            out += self._bare_held
+        elif not complete:
+            long.close()
+            out += b"x"
+        else:
+            out += self._settle_long_number(long)
         self._bare_open = False
         self._bare_len = 0
         self._bare_state = _NUM_START
-        self._bare_suppressed = False
+        self._bare_held = bytearray()
+        self._bare_long = None
+
+    def _settle_long_number(self, long: _LongNumber) -> bytes:
+        """The short token standing in for a complete long number."""
+        if not long.is_integer:
+            long.close()
+            return long.float_token()
+        digit_limit = sys.get_int_max_str_digits()
+        if digit_limit and long.integer_digits > digit_limit:
+            # The decoder refuses to convert it, so the member is not JSON.
+            long.close()
+            return b"x"
+        self._spills.long_integers[self._spills.number_tokens] = long.take_digits()
+        return b"0"
 
     def _string_end(self, data: bytes, start: int) -> int:
         """Index of the closing quote of the open string in ``data``, or -1."""
@@ -553,42 +710,70 @@ class _TokenReader:
         self._spill = None
         self._awaiting_role = False
         if is_key:
-            # A key decides member order, so it is held whole -- but it is
-            # measured as stored: decoded and NFC-normalized, not by its
-            # escaped or decomposed spelling. The raw key is what identifies
-            # the member (two spellings are two keys), so it is kept, up to
-            # the most its NFC form can shrink.
+            # A key decides member order, so it is measured as stored:
+            # decoded and NFC-normalized, not by its escaped or decomposed
+            # spelling. Two spellings are two keys, so the decoded key also
+            # identifies the member; past :data:`_SPILL_STRING_BYTES` it is
+            # kept only as its hash beside the normalized key in scratch.
             spill.seek(0)
-            limit = physical_value_limit()
-            pieces: list[str] = []
-            raw_size = 0
-            size = 0
-            over = False
-            stream = _StreamingNfc()
-            for piece in _iter_decoded_windows(spill):
-                if over:
-                    continue
-                raw_size += len(piece.encode("utf-8", "surrogatepass"))
-                pieces.append(piece)
-                size += len(stream.feed(piece).encode("utf-8", "surrogatepass"))
-                over = raw_size > _NFC_MAX_SHRINK * limit or size + stream.pending_bytes > limit
-            spill.close()
-            if not over:
-                size += len(stream.finish().encode("utf-8", "surrogatepass"))
-            else:
-                size = max(size + stream.pending_bytes, raw_size // _NFC_MAX_SHRINK)
-                pieces.clear()
-            if over or size > limit:
-                out += self._spills.refuse_key(size)
-            else:
-                # Held decoded and handed on as a marker: re-escaping it for
-                # the tokenizer could multiply its size (a control character
-                # is six escaped bytes).
-                out += self._spills.add_key("".join(pieces))
+            out += self._spills.add_key_or_refusal(self._decode_key(spill))
         else:
             spill.seek(0)
             out += self._spills.add(spill)
         out += b'"'
+
+    def _decode_key(self, spill: IO[bytes]) -> str | _LongKey | int:
+        """A spilled key, decoded: whole, as a long key, or its refused size."""
+        limit = physical_value_limit()
+        pieces: list[str] = []
+        normalized_parts: list[bytes] = []
+        held = 0
+        raw_hash: _Digester | None = None
+        normalized: IO[bytes] | None = None
+        size = 0
+        over = False
+        stream = _StreamingNfc()
+        try:
+            for piece in _iter_decoded_windows(spill, self._spills.checkpoint):
+                if over:
+                    continue
+                encoded = piece.encode("utf-8", "surrogatepass")
+                part = stream.feed(piece).encode("utf-8", "surrogatepass")
+                size += len(part)
+                over = size + stream.pending_bytes > limit
+                if raw_hash is None:
+                    pieces.append(piece)
+                    normalized_parts.append(part)
+                    held += len(encoded)
+                    if held > _SPILL_STRING_BYTES:
+                        raw_hash = sha256()
+                        for kept in pieces:
+                            raw_hash.update(kept.encode("utf-8", "surrogatepass"))
+                        pieces.clear()
+                        normalized = tempfile.TemporaryFile()  # noqa: SIM115 -- owned by the long key
+                        normalized.writelines(normalized_parts)
+                        normalized_parts.clear()
+                else:
+                    raw_hash.update(encoded)
+                    assert normalized is not None
+                    normalized.write(part)
+            if over:
+                return size + stream.pending_bytes
+            tail = stream.finish().encode("utf-8", "surrogatepass")
+            size += len(tail)
+            if size > limit:
+                return size
+            if raw_hash is None:
+                return "".join(pieces)
+            assert normalized is not None
+            normalized.write(tail)
+            key = _LongKey(raw_hash.digest(), _SpooledKey.from_file(normalized, size))
+            normalized = None
+            return key
+        finally:
+            spill.close()
+            if normalized is not None:
+                normalized.close()
 
     def _scan(self, chunk: bytes, *, final: bool) -> None:
         window = self._carry + chunk
@@ -633,12 +818,6 @@ class _TokenReader:
 
 
 _ESCAPE_TOKEN = re.compile(rb'\\(?:u([0-9a-fA-F]{4})|["\\/bfnrt])')
-
-
-#: At most how many times longer a text's UTF-8 is than its NFC form: one
-#: canonical composition joins at most three characters (a Hangul L+V+T
-#: jamo run, nine bytes) into one (three bytes).
-_NFC_MAX_SHRINK = 3
 
 
 class _StreamingNfc:
@@ -687,7 +866,7 @@ def _utf8_boundary(data: bytes, cut: int) -> int:
     return index if index + width > cut else cut
 
 
-def _iter_decoded_windows(raw: IO[bytes]) -> Iterator[str]:
+def _iter_decoded_windows(raw: IO[bytes], checkpoint: Callable[[], None] | None = None) -> Iterator[str]:
     """JSON-unescape one spilled string's raw content in windows.
 
     Windows are cut outside any escape, never between the two escapes of a
@@ -696,6 +875,8 @@ def _iter_decoded_windows(raw: IO[bytes]) -> Iterator[str]:
     """
     pending_raw = b""
     while True:
+        if checkpoint is not None:
+            checkpoint()
         block = raw.read(_STREAM_READ_BYTES)
         final = not block
         data = pending_raw + block
@@ -743,7 +924,7 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -
         length = 0
         stream = _StreamingNfc()
         draining = False
-        windows = _iter_decoded_windows(raw)
+        windows = _iter_decoded_windows(raw, spills.checkpoint)
         for piece in windows:
             if draining:
                 continue
@@ -762,6 +943,8 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -
         sink.update(b"s%d:" % length)
         normalized.seek(0)
         while chunk := normalized.read(_STREAM_READ_BYTES):
+            if spills.checkpoint is not None:
+                spills.checkpoint()
             sink.update(chunk)
         sink.update(b";")
 
@@ -833,11 +1016,22 @@ class _SpooledKey:
 
     _PREFIX_BYTES = 4096
 
-    def __init__(self, normalized: bytes) -> None:
-        self._file = tempfile.TemporaryFile()  # noqa: SIM115 -- owned by the key, closed with its object
-        self._file.write(normalized)
-        self.length = len(normalized)
-        self._prefix = normalized[: self._PREFIX_BYTES]
+    def __init__(self, handle: IO[bytes], length: int, prefix: bytes) -> None:
+        self._file = handle
+        self.length = length
+        self._prefix = prefix
+
+    @classmethod
+    def of(cls, normalized: bytes) -> _SpooledKey:
+        handle = tempfile.TemporaryFile()  # noqa: SIM115 -- owned by the key, closed with its object
+        handle.write(normalized)
+        return cls(handle, len(normalized), normalized[: cls._PREFIX_BYTES])
+
+    @classmethod
+    def from_file(cls, handle: IO[bytes], length: int) -> _SpooledKey:
+        """Take ownership of a scratch file holding a normalized key."""
+        handle.seek(0)
+        return cls(handle, length, handle.read(cls._PREFIX_BYTES))
 
     def chunks(self) -> Iterator[bytes]:
         self._file.seek(0)
@@ -882,6 +1076,30 @@ class _SpooledKey:
         self._file.close()
 
 
+class _LongKey:
+    """A key decoded past :data:`_SPILL_STRING_BYTES`: never held whole.
+
+    Its decoded text is known by its hash, which decides replacement by a
+    repeated key, and its NFC form lives in scratch, which decides order. A
+    key held as ``str`` is never this long, so the two never name one key.
+    """
+
+    __slots__ = ("normalized", "raw_hash")
+
+    def __init__(self, raw_hash: bytes, normalized: _SpooledKey) -> None:
+        self.raw_hash = raw_hash
+        self.normalized = normalized
+
+    def __hash__(self) -> int:
+        return hash(self.raw_hash)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _LongKey) and other.raw_hash == self.raw_hash
+
+    def close(self) -> None:
+        self.normalized.close()
+
+
 class _Entries:
     """One object's members: raw key -> value digest, ``None`` for no identity,
     :data:`_REFUSED_DIGEST` for a refused value.
@@ -902,14 +1120,21 @@ class _Entries:
         self._id: int | None = None
         #: Refused members by key; a later duplicate key removes its entry.
         #: Each refused token is past the value limit, so these are few.
-        self._refusals: dict[str, ContentIdentityRefusal] = {}
+        self._refusals: dict[str | _LongKey, ContentIdentityRefusal] = {}
         #: Keys too long for a scratch row after a spill, by raw-key hash:
         #: the normalized key in a scratch file and its digest.
         self._spooled: dict[bytes, tuple[_SpooledKey, bytes | None]] = {}
 
-    def __setitem__(self, key: str, digest: bytes | None) -> None:
+    def __setitem__(self, key: str | _LongKey, digest: bytes | None) -> None:
         if self._refusals:
             self._refusals.pop(key, None)
+        if isinstance(key, _LongKey):
+            # Held in scratch already: only its hash and digest stay here.
+            previous = self._spooled.pop(key.raw_hash, None)
+            if previous is not None and previous[0] is not key.normalized:
+                previous[0].close()
+            self._spooled[key.raw_hash] = (key.normalized, digest)
+            return
         if self._id is not None:
             self._put(key, digest)
             return
@@ -941,13 +1166,13 @@ class _Entries:
             previous = self._spooled.pop(key_hash, None)
             if previous is not None:
                 previous[0].close()
-            self._spooled[key_hash] = (_SpooledKey(normalized), digest)
+            self._spooled[key_hash] = (_SpooledKey.of(normalized), digest)
             return
         self._budget.connection().execute(
             "INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (self._id, key_hash, normalized, digest)
         )
 
-    def refuse(self, key: str, refusal: ContentIdentityRefusal) -> None:
+    def refuse(self, key: str | _LongKey, refusal: ContentIdentityRefusal) -> None:
         self[key] = _REFUSED_DIGEST
         self._refusals[key] = refusal
 
@@ -970,11 +1195,15 @@ class _Entries:
         )
 
     def encode(self, sink: _Sink) -> None:
-        if self._id is None:
+        if self._id is None and not self._spooled:
             _encode_object_entries([(nfc(key), digest) for key, digest in self._memory.items() if digest], sink)
             return
-        connection = self._budget.connection()
-        count = connection.execute("SELECT COUNT(*) FROM entries WHERE obj = ?", (self._id,)).fetchone()[0]
+        connection = self._budget.connection() if self._id is not None else None
+        count = (
+            connection.execute("SELECT COUNT(*) FROM entries WHERE obj = ?", (self._id,)).fetchone()[0]
+            if connection is not None
+            else 0
+        )
         sink.update(b"o%d;" % (count + len(self._memory) + len(self._spooled)))
         # Keys are compared as UTF-8 (surrogates passed through), whose byte
         # order is code-point order, so this matches the in-memory sort.
@@ -985,10 +1214,14 @@ class _Entries:
             ((key, digest) for key, digest in self._spooled.values() if digest), key=lambda item: (item[0], item[1])
         )
         rows = (
-            (bytes(normalized), bytes(digest))
-            for normalized, digest in connection.execute(
-                "SELECT normalized, digest FROM entries WHERE obj = ? ORDER BY normalized, digest", (self._id,)
+            (
+                (bytes(normalized), bytes(digest))
+                for normalized, digest in connection.execute(
+                    "SELECT normalized, digest FROM entries WHERE obj = ? ORDER BY normalized, digest", (self._id,)
+                )
             )
+            if connection is not None
+            else iter(())
         )
         for normalized, digest in heapq.merge(rows, held, spooled, key=lambda item: (item[0], item[1])):
             if isinstance(normalized, _SpooledKey):
@@ -1036,7 +1269,7 @@ class _Frame:
         #: Where an array's encoding goes; a map resolves its sink on close.
         self.outer = outer
         self.entries: _Entries | None = None
-        self.key: str | None = None
+        self.key: str | _LongKey | None = None
         #: The hasher of the member value being read (objects only), made on
         #: the first write: a member whose value is an object only needs one
         #: once that object closes.
@@ -1165,10 +1398,22 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
             sink = current()
             spilled = spills.take(value) if event == "string" else None
             refusals_before = spills.value_refusals
+            digits = None
             if event == "number":
                 number_ordinal += 1
+                digits = spills.long_integers.pop(number_ordinal, None)
             try:
-                if spilled is not None:
+                if digits is not None:
+                    # An integer is its own canonical digits (JSON has no
+                    # leading zeros), streamed from scratch.
+                    with digits:
+                        sink.update(b"i")
+                        while chunk := digits.read(_STREAM_READ_BYTES):
+                            if spills.checkpoint is not None:
+                                spills.checkpoint()
+                            sink.update(chunk)
+                        sink.update(b";")
+                elif spilled is not None:
                     with spilled:
                         _encode_spilled_text(spilled, sink, spills)
                 elif event == "number" and isinstance(value, Decimal):
@@ -1202,25 +1447,51 @@ class _EncodingMismatchError(Exception):
     """The payload does not decode under the encoding being tried."""
 
 
+_RAW_SURROGATE = re.compile("[\ud800-\udfff]")
+_ESCAPE_BEHIND = re.compile(r"\\u[0-9a-fA-F]{4}\Z")
+
+
 class _DecodedText:
     """A member's bytes as the source decoder reads them, re-encoded as UTF-8.
 
     Decodes with the encoding the record parser's ``json.load`` detects
-    (``json.detect_encoding``: its codec consumes a byte-order mark) one
-    window at a time, keeping every character, a NUL included, so bytes the
-    parser rejects are rejected here too. Raises :class:`_EncodingMismatchError`
-    when a byte does not decode or nothing is left.
+    (``json.detect_encoding``: its codec consumes a byte-order mark) and with
+    its ``surrogatepass`` error handler, one window at a time, keeping every
+    character, a NUL included, so bytes the parser rejects are rejected here
+    too. Raises :class:`_EncodingMismatchError` when a byte does not decode or
+    nothing is left.
+
+    An encoded lone surrogate decodes to the same character its ``\\uD800``
+    escape does, so it is handed on as that escape and the two spellings
+    share an identity. Where re-spelling could change the value -- a raw
+    surrogate next to another surrogate or an escape, or after a backslash --
+    the member keeps its byte identity instead (:class:`_NotJsonError`).
     """
 
-    def __init__(self, handle: IO[bytes], start: int, encoding: str, errors: str = "strict") -> None:
+    def __init__(
+        self,
+        handle: IO[bytes],
+        start: int,
+        encoding: str,
+        errors: str = "strict",
+        checkpoint: Callable[[], None] | None = None,
+    ) -> None:
         handle.seek(start)
         self._handle = handle
         self._decoder = codecs.getincrementaldecoder(encoding)(errors)
+        self._checkpoint = checkpoint
         self._at_start = True
         self._eof = False
+        #: Decoded characters held back as lookahead for a raw surrogate.
+        self._held = ""
+        #: The last characters handed on, as lookbehind for a raw surrogate.
+        self._behind = ""
+        self._opaque = False
 
     def read(self, size: int = -1) -> bytes:
         while not self._eof:
+            if self._checkpoint is not None:
+                self._checkpoint()
             chunk = self._handle.read(_STREAM_READ_BYTES)
             self._eof = not chunk
             try:
@@ -1233,23 +1504,58 @@ class _DecodedText:
                         raise _EncodingMismatchError
                     continue
                 self._at_start = False
+            if not self._opaque:
+                text = self._escape_raw_surrogates(text)
             if text:
                 return text.encode("utf-8", "surrogatepass")
         return b""
 
+    def _escape_raw_surrogates(self, text: str) -> str:
+        text = self._held + text
+        self._held = ""
+        if not self._eof and _RAW_SURROGATE.search(text, max(0, len(text) - 2)):
+            # Two characters of lookahead decide whether it stands alone.
+            text, self._held = text[:-2], text[-2:]
+        if not _RAW_SURROGATE.search(text):
+            self._behind = (self._behind + text[-6:])[-6:]
+            return text
+        parts: list[str] = []
+        last = 0
+        for match in _RAW_SURROGATE.finditer(text):
+            index = match.start()
+            behind = (self._behind + text[max(0, index - 6) : index])[-6:]
+            ahead = text[index + 1 : index + 3]
+            if (
+                behind.endswith("\\")
+                or _ESCAPE_BEHIND.search(behind)
+                or _RAW_SURROGATE.match(ahead)
+                or ahead.startswith("\\u")
+            ):
+                self._opaque = True
+                raise _NotJsonError
+            parts.append(text[last:index])
+            parts.append(f"\\u{ord(match.group()):04x}")
+            last = index + 1
+        parts.append(text[last:])
+        self._behind = (self._behind + text[-6:])[-6:]
+        return "".join(parts)
+
     def drain(self) -> None:
         """Decode the rest, raising :class:`_EncodingMismatchError` if it does not."""
+        self._opaque = True
         while self.read():
             pass
 
 
-def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> str:
+def _identity_as(
+    handle: IO[bytes], start: int, encoding: str, errors: str, checkpoint: Callable[[], None] | None
+) -> str:
     """The structural identity of the member read as ``encoding`` text."""
     import ijson
     from ijson.backends import python as exact_backend
 
-    spills = _SpilledStrings()
-    text = _DecodedText(handle, start, encoding, errors)
+    spills = _SpilledStrings(checkpoint)
+    text = _DecodedText(handle, start, encoding, errors, checkpoint)
     try:
         try:
             try:
@@ -1261,7 +1567,7 @@ def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> s
                 # The C tokenizer either met a lone surrogate escape or
                 # rejected one while decoding; the exact tokenizer decides.
                 spills.close()
-                text = _DecodedText(handle, start, encoding, errors)
+                text = _DecodedText(handle, start, encoding, errors, checkpoint)
                 events = exact_backend.basic_parse(
                     _TokenReader(text, spills, scan=False), use_float=False, buf_size=_STREAM_READ_BYTES
                 )
@@ -1281,13 +1587,16 @@ def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> s
         spills.close()
 
 
-def stream_payload_content_identity(handle: IO[bytes]) -> str:
+def stream_payload_content_identity(handle: IO[bytes], *, checkpoint: Callable[[], None] | None = None) -> str:
     """Return :func:`payload_content_identity` of a seekable handle's bytes.
 
     The member is read as the record parser's ``json.load`` reads it,
     tokenized in fixed windows and hashed as it streams, so memory holds each
     open object's (key, digest) entries and at most one window of any scalar,
     never the whole document. Every size takes this one route.
+
+    ``checkpoint`` is called before each window is read, from the member and
+    from scratch files alike, so a caller can stop a multi-gigabyte pass.
     """
     import json
 
@@ -1297,17 +1606,21 @@ def stream_payload_content_identity(handle: IO[bytes]) -> str:
     try:
         # The record parser (``decoder_json.iter_json_stream_with``) falls
         # back to ``json.load`` on the member's bytes, whose encoding comes
-        # from ``json.detect_encoding``; bytes that do not decode under it,
-        # or that it would not parse, keep their byte identity.
+        # from ``json.detect_encoding`` and whose errors are passed through
+        # as surrogates (``surrogatepass``), as ``json.loads`` decodes bytes;
+        # bytes that do not decode under it, or that it would not parse, keep
+        # their byte identity.
         encoding = json.detect_encoding(handle.read(4))
         try:
-            return _identity_as(handle, start, encoding, "strict")
+            return _identity_as(handle, start, encoding, "surrogatepass", checkpoint)
         except _EncodingMismatchError:
             raise _NotJsonError from None
     except (_NotJsonError, ijson.JSONError, UnicodeDecodeError, TypeError, ValueError, ArithmeticError):
         handle.seek(start)
         opaque = sha256()
         while chunk := handle.read(_STREAM_READ_BYTES):
+            if checkpoint is not None:
+                checkpoint()
             opaque.update(chunk)
         return opaque.hexdigest()
 

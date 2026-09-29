@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Source
-from polylogue.core.content_identity import payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.sources import origin_provider_fiber
@@ -51,7 +51,12 @@ class MemberCandidate:
         """
         if self.precomputed_identity is not None:
             return self.precomputed_identity
-        return payload_content_identity(self.payload_bytes)
+        try:
+            return payload_content_identity(self.payload_bytes)
+        except ContentIdentityRefusal as refusal:
+            # Acquisition refuses such a unit, so no recorded identity names
+            # it; this never equals a 64-hex digest.
+            return f"refused:{refusal.token}"
 
     @property
     def byte_identity(self) -> str:
