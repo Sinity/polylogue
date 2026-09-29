@@ -14,6 +14,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import drive_chunked_prompt_envelope
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.parsers import drive
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
@@ -350,7 +351,7 @@ def test_chunked_prompt_keeps_ordering_and_branch_rows_in_scratch(
         {"id": "f", "role": "model", "text": "Neutral f", "branchParent": {"promptId": "other-prompt"}},
         {"id": "g", "role": "user", "text": "Neutral g", "branchChildren": [{"promptId": "a"}]},
     ]
-    payload = {"id": "neutral-branches", "chunkedPrompt": {"chunks": chunks}}
+    payload: dict[str, object] = {"id": "neutral-branches", "chunkedPrompt": {"chunks": chunks}}
     source = tmp_path / "prompt.json"
     source.write_text(json.dumps(payload), encoding="utf-8")
     expected = _expected(Provider.DRIVE, payload, source)
@@ -361,10 +362,14 @@ def test_chunked_prompt_keeps_ordering_and_branch_rows_in_scratch(
 
     _refuse_whole_document(monkeypatch)
 
-    def refuse_memory(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("streamed preparation opened a resident scratch database")
+    scratch_files: list[str] = []
+    original_init = drive._ChunkOrder.__init__
 
-    monkeypatch.setattr("polylogue.sources.parsers.drive.sqlite3.connect", refuse_memory)
+    def record_scratch(self: drive._ChunkOrder, conn: sqlite3.Connection) -> None:
+        scratch_files.append(conn.execute("PRAGMA database_list").fetchone()[2])
+        original_init(self, conn)
+
+    monkeypatch.setattr(drive._ChunkOrder, "__init__", record_scratch)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -374,6 +379,10 @@ def test_chunked_prompt_keeps_ordering_and_branch_rows_in_scratch(
         shard_directory=str(tmp_path / "prepared"),
     )
     assert artifact.error is None
+    # An in-memory database has no file: the chunk rows went to the
+    # artifact's scratch file, and only the chunkless admission stub that
+    # follows used memory.
+    assert scratch_files[0] and scratch_files[1:] == [""]
     [actual] = artifact.iter_sessions()
     assert artifact.shard_path is not None
     _assert_same_publication(actual, expected, artifact.shard_path, tmp_path)
