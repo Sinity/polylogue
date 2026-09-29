@@ -428,6 +428,17 @@ class TestLogicalHeadsOnly:
                 """,
                 (b"\x22" * 32,),
             )
+            # Acquisition records each raw's payload receipt as it is observed;
+            # receipt order (``raw_receipt_order_sql``) is what makes raw-new latest.
+            for raw_id, source_path, blob_hash, size, observed_ms in (
+                ("raw-old", "/x/old.json", b"\x11" * 32, 10, 100),
+                ("raw-new", "/x/new.json", b"\x22" * 32, 200, 200),
+            ):
+                conn.execute(
+                    "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+                    "VALUES (?, ?, 'raw_payload', ?, ?, ?)",
+                    (blob_hash, raw_id, source_path, size, observed_ms),
+                )
             conn.commit()
         finally:
             conn.close()

@@ -88,7 +88,8 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
     newest ``raw_payload`` receipt first -- so a reconciliation pass and a
     per-export apply never disagree about which observation is current. A live
     database that went A -> B -> A reuses A's content-derived raw id, so the
-    receipt log, not ``raw_sessions.acquired_at_ms``, is the authority.
+    receipt log, not ``raw_sessions.acquired_at_ms``, is the authority. A raw
+    with no receipt ranks oldest (order 0), as in ``raw_receipt_order_sql``.
 
     Scans the durable tier, so callers reconcile once per pass rather than
     once per session.
@@ -115,7 +116,7 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
                 lower(hex(r.blob_hash)),
                 r.source_path,
                 COALESCE(({receipt.format(column="acquired_at_ms")}), r.acquired_at_ms),
-                COALESCE(({receipt.format(column="rowid")}), r.rowid)
+                COALESCE(({receipt.format(column="rowid")}), 0)
             FROM raw_sessions AS r
             WHERE r.origin = ? AND r.parse_error IS NULL AND ({clauses})
             ORDER BY 5 DESC, r.raw_id DESC

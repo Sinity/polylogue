@@ -3346,6 +3346,12 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
                 "VALUES (?, 'claude-code-session', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (raw_id, path, bytes.fromhex(blob_hash), size, acquired, kind, start, end, predecessor),
             )
+            # Each observation records its raw_payload receipt, in observation order.
+            conn.execute(
+                "INSERT OR REPLACE INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, "
+                "acquired_at_ms) VALUES (?, ?, 'raw_payload', ?, ?, ?)",
+                (bytes.fromhex(blob_hash), raw_id, path, size, acquired),
+            )
     with sqlite3.connect(source_db) as conn:
         resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
         siblings = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
@@ -3396,23 +3402,28 @@ def test_a_historical_append_does_not_extend_a_reselected_baseline(tmp_path: Pat
     a_hash, a_size = store.write_from_bytes(tool_use("toolu_a"))
     x_hash, x_size = store.write_from_bytes(tool_use("toolu_x"))
     b_hash, b_size = store.write_from_bytes(tool_use("toolu_b") + tool_use("toolu_b2"))
-    rows = (
-        ("a", a_hash, a_size, "full", None, None, None, 4),
-        ("x", x_hash, x_size, "append", a_size, a_size + x_size, "a", 2),
-        ("b", b_hash, b_size, "full", None, None, None, 3),
-    )
+    rows = {
+        "a": (a_hash, a_size, "full", None, None, None),
+        "x": (x_hash, x_size, "append", a_size, a_size + x_size, "a"),
+        "b": (b_hash, b_size, "full", None, None, None),
+    }
     with sqlite3.connect(source_db) as conn:
-        for raw_id, blob_hash, size, kind, start, end, predecessor, receipt_ms in rows:
+        for raw_id, (blob_hash, size, kind, start, end, predecessor) in rows.items():
             conn.execute(
                 "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
                 "revision_kind, append_start_offset, append_end_offset, predecessor_raw_id) "
                 "VALUES (?, 'claude-code-session', ?, ?, ?, 1, ?, ?, ?, ?)",
                 (raw_id, sibling, bytes.fromhex(blob_hash), size, kind, start, end, predecessor),
             )
+        # Observed A, A+X, B, then A again: the returning A re-records its
+        # receipt (INSERT OR REPLACE, as ``source_write`` does), which makes it
+        # the newest observation.
+        for observed_ms, raw_id in enumerate(("a", "x", "b", "a"), start=1):
+            blob_hash, size, *_rest = rows[raw_id]
             conn.execute(
-                "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
-                "VALUES (?, ?, 'raw_payload', ?, ?, ?)",
-                (bytes.fromhex(blob_hash), raw_id, sibling, size, receipt_ms),
+                "INSERT OR REPLACE INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, "
+                "acquired_at_ms) VALUES (?, ?, 'raw_payload', ?, ?, ?)",
+                (bytes.fromhex(blob_hash), raw_id, sibling, size, observed_ms),
             )
     with sqlite3.connect(source_db) as conn:
         resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
@@ -3432,7 +3443,8 @@ def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> 
 
     Content-addressed admission reuses revision A's raw row when a sibling
     goes A -> B -> A, so ``raw_sessions.acquired_at_ms`` still orders B last;
-    the newest ``raw_payload`` receipt names A as current.
+    A's re-recorded ``raw_payload`` receipt is the newest in receipt order
+    (``raw_receipt_order_sql``) and names A as current.
 
     Anti-vacuity (Codex P1, #5643): rank full revisions by
     ``raw_sessions.acquired_at_ms`` and the baseline is B, so the sibling
@@ -3457,20 +3469,21 @@ def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> 
 
     a_hash, a_size = store.write_from_bytes(tool_use("toolu_a"))
     b_hash, b_size = store.write_from_bytes(tool_use("toolu_b"))
+    revisions = {"rev-a": (a_hash, a_size, 1), "rev-b": (b_hash, b_size, 2)}
     with sqlite3.connect(source_db) as conn:
-        for raw_id, blob_hash, size, first_seen, newest_receipt in (
-            ("rev-a", a_hash, a_size, 1, 3),
-            ("rev-b", b_hash, b_size, 2, 2),
-        ):
+        for raw_id, (blob_hash, size, first_seen) in revisions.items():
             conn.execute(
                 "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
                 "revision_kind) VALUES (?, 'claude-code-session', ?, ?, ?, ?, 'full')",
                 (raw_id, sibling, bytes.fromhex(blob_hash), size, first_seen),
             )
+        # A, B, then A again: the returning A re-records its receipt.
+        for observed_ms, raw_id in enumerate(("rev-a", "rev-b", "rev-a"), start=1):
+            blob_hash, size, _first_seen = revisions[raw_id]
             conn.execute(
-                "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
-                "VALUES (?, ?, 'raw_payload', ?, ?, ?)",
-                (bytes.fromhex(blob_hash), raw_id, sibling, size, newest_receipt),
+                "INSERT OR REPLACE INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, "
+                "acquired_at_ms) VALUES (?, ?, 'raw_payload', ?, ?, ?)",
+                (bytes.fromhex(blob_hash), raw_id, sibling, size, observed_ms),
             )
     with sqlite3.connect(source_db) as conn:
         resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)

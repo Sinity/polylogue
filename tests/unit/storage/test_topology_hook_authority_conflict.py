@@ -457,8 +457,15 @@ def _project_state_export(
         threads=(),
         spawn_edges=(codex_state.CodexSpawnEdge(parent_thread_id=parent, child_thread_id=child, status="closed"),),
     )
+    # Callers pass exports in observation order, so the stamp doubles as the
+    # durable receipt order that decides which export is current.
     write_thread_state_projection(
-        conn, snapshot, raw_id=raw_id, blob_hash=f"blob-{raw_id}", observed_at_ms=observed_at_ms
+        conn,
+        snapshot,
+        raw_id=raw_id,
+        blob_hash=f"blob-{raw_id}",
+        observed_at_ms=observed_at_ms,
+        observation_order=observed_at_ms,
     )
     conn.commit()
 
