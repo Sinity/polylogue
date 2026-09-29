@@ -1105,8 +1105,9 @@ def reacquire_candidate(
     inputs: list[CandidateInput] = []
     modes = dict(result.ownership_modes)
     # Keep each central directory open once, rather than reparsing a ZIP for
-    # every member. The manifest names member bytes, not container bytes.
-    archives: dict[Path, tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]]] = {}
+    # every member. The manifest names member bytes, not container bytes, and
+    # a member is read by name exactly as the cut read it.
+    archives: dict[Path, zipfile.ZipFile] = {}
     with ExitStack() as stack:
         for item in result.candidate_manifest.items:
             if source_id is not None and item.source_id != source_id:
@@ -1119,24 +1120,15 @@ def reacquire_candidate(
             if not path.is_relative_to(result.candidate_root):
                 raise CandidateCohortError(f"candidate path escapes published snapshot: {item.coordinate}")
             if modes[item.source_id] is SnapshotMode.ARCHIVE_MEMBER:
+                _, separator, member_name = item.coordinate.partition("!")
+                if not separator:
+                    raise CandidateCohortError(f"candidate member has no archive coordinate: {item.coordinate}")
                 try:
                     if path not in archives:
-                        archive = stack.enter_context(zipfile.ZipFile(path))
-                        members: dict[str, zipfile.ZipInfo] = {}
-                        for member in archive.infolist():
-                            if member.is_dir():
-                                continue
-                            if member.filename in members:
-                                raise SourceMutationError(f"ambiguous candidate archive member: {member.filename}")
-                            members[member.filename] = member
-                        archives[path] = archive, members
-                    archive, members = archives[path]
-                    _, separator, member_name = item.coordinate.partition("!")
-                    if not separator:
-                        raise CandidateCohortError(f"candidate member has no archive coordinate: {item.coordinate}")
+                        archives[path] = stack.enter_context(zipfile.ZipFile(path))
                     digest = hashlib.sha256()
                     size = 0
-                    with archive.open(members[member_name]) as stream:
+                    with archives[path].open(member_name) as stream:
                         while chunk := stream.read(1024 * 1024):
                             digest.update(chunk)
                             size += len(chunk)

@@ -2136,10 +2136,14 @@ def test_root_census_accounts_for_rejected_nonregular_candidates(tmp_path: Path)
     assert census.is_complete
 
 
-def test_source_walk_propagates_inspection_fault_and_census_records_it(
+def test_source_walk_keeps_uninspectable_candidate_and_census_records_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The old lstat exception handler returns an empty success and loses the candidate."""
+    """The old lstat exception handler returns an empty success and loses the candidate.
+
+    Anti-vacuity: skip the entry on an lstat fault and the walk returns no
+    path, so no per-file read can record the failure.
+    """
     from polylogue.config import Source
     from polylogue.sources.source_walk import _resolve_source_paths
 
@@ -2153,8 +2157,7 @@ def test_source_walk_propagates_inspection_fault_and_census_records_it(
         return real_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "stat", failed_stat)
-    with pytest.raises(PermissionError):
-        _resolve_source_paths(Source(name="claude-code", path=tmp_path))
+    assert _resolve_source_paths(Source(name="claude-code", path=tmp_path)) == [source]
     census = census_source_root(tmp_path, provider=Provider.CLAUDE_CODE)
     assert census.candidate_count == 1
     assert census.unexplained_candidates == (source,)

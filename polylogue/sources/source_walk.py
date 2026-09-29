@@ -167,15 +167,20 @@ def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
 def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:
     paths: list[Path] = []
     for file_path in _iter_source_entries(base):
+        if not _is_supported_source_path(file_path, provider=provider):
+            continue
         # Admission refuses symlinks, FIFOs, sockets, and other non-regular
         # entries; the census counts them as unsupported.  lstat is
         # deliberate: following a symlink here would make production admission
-        # disagree with the census denominator.  A failed inspection
-        # propagates: a candidate that cannot be inspected is not an empty
-        # successful walk.
-        if not stat.S_ISREG(os.stat(file_path, follow_symlinks=False).st_mode):
+        # disagree with the census denominator.  A candidate that cannot be
+        # inspected stays in the walk, so its per-file read records the
+        # failure on the cursor instead of the scan reporting it as absent.
+        try:
+            mode = os.stat(file_path, follow_symlinks=False).st_mode
+        except OSError:
+            paths.append(file_path)
             continue
-        if _is_supported_source_path(file_path, provider=provider):
+        if stat.S_ISREG(mode):
             paths.append(file_path)
     return sorted(paths)
 
