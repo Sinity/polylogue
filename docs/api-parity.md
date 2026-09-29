@@ -31,11 +31,11 @@ Drift check: `devtools verify api-parity --check` (also asserted by
 | `mcp.tool.record_work_event` | Record a typed live-agent work event for a session. | _absent_: agent work-event recording is an MCP/library transaction; no interactive CLI verb owns it | `record_work_event` | `await archive.record_work_event()` |
 | `mcp.tool.run` | Execute a saved query or governed recipe ref. | `polylogue select` | `run` | _absent_: `run` executes a saved query or governed recipe ref; the facade exposes the underlying query operation instead of a ref-execution wrapper |
 | `mcp.tool.status` | Report compact archive authority and readiness status. | `polylogue status` | `status` | `await archive.stats()` |
-| `mcp.tool.write` | Apply a declared mutation operation after shared authorization. Destructive operations (delete_session, remove_tag, remove_mark, delete_metadata, delete_annotation, delete_saved_view, delete_recall_pack, delete_workspace, clear_corrections) require confirm=true and fail closed without it. | `polylogue mark` | `write` | _absent_: `write` is a capability-gated transaction dispatcher; each of its operations is its own semantic operation with its own facade callable |
+| `mcp.tool.write` | Apply a declared mutation operation after shared authorization. Destructive operations (delete_session, remove_tag, remove_mark, delete_metadata, delete_annotation, delete_saved_view, delete_recall_pack, delete_workspace, clear_corrections) require confirm=true and fail closed without it. For a session delete, first call prepare_delete_session, then present its preview_ref in fields when applying delete_session; confirmation alone does not authorize a delete. | `polylogue mark` | `write` | _absent_: `write` is a capability-gated transaction dispatcher; each of its operations is its own semantic operation with its own facade callable |
 
 ## Classification of the public Python facade
 
-Every public callable on `polylogue.api.Polylogue` (170 at
+Every public callable on `polylogue.api.Polylogue` (171 at
 render time) is either bound by an operation above or listed here as an
 explicit exclusion. An unclassified callable fails the parity gate.
 

@@ -280,8 +280,16 @@ def _export_rows(
     return nodes, edges
 
 
-def _write_rows(conn: sqlite3.Connection, graph_id: str, rows: Sequence[_GraphRow], sql: str, state: str) -> None:
-    conn.executemany(sql, [(graph_id, *head, state, *tail) for _ref, head, tail in rows])
+def _bound_rows(graph_id: str, rows: Sequence[_GraphRow], state: str) -> list[tuple[object, ...]]:
+    return [(graph_id, *head, state, *tail) for _ref, head, tail in rows]
+
+
+def _write_nodes(conn: sqlite3.Connection, graph_id: str, rows: Sequence[_GraphRow], state: str) -> None:
+    conn.executemany(_NODE_SQL, _bound_rows(graph_id, rows, state))
+
+
+def _write_edges(conn: sqlite3.Connection, graph_id: str, rows: Sequence[_GraphRow], state: str) -> None:
+    conn.executemany(_EDGE_SQL, _bound_rows(graph_id, rows, state))
 
 
 def _retain_older_export_rows(
@@ -330,8 +338,8 @@ def _retain_older_export_rows(
 
     retained_nodes = retainable("work_evidence_nodes", "node_ref", nodes)
     retained_edges = retainable("work_evidence_edges", "edge_ref", edges)
-    _write_rows(conn, graph_id, retained_nodes, _NODE_SQL, "superseded")
-    _write_rows(conn, graph_id, retained_edges, _EDGE_SQL, "superseded")
+    _write_nodes(conn, graph_id, retained_nodes, "superseded")
+    _write_edges(conn, graph_id, retained_edges, "superseded")
     return bool(retained_nodes or retained_edges)
 
 
@@ -393,8 +401,8 @@ def write_thread_state_graph(
         "UPDATE work_evidence_edges SET association_state = 'superseded' WHERE graph_id = ?",
         (graph_id,),
     )
-    _write_rows(conn, graph_id, nodes, _NODE_SQL, "resolved")
-    _write_rows(conn, graph_id, edges, _EDGE_SQL, "resolved")
+    _write_nodes(conn, graph_id, nodes, "resolved")
+    _write_edges(conn, graph_id, edges, "resolved")
     return True
 
 

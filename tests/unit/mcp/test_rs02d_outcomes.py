@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,7 +28,16 @@ async def test_registered_maintenance_preserves_submitted_identity(
     monkeypatch.setattr("polylogue.cli.read_dispatch.daemon_route_disabled", lambda **_: False)
     submitted: list[str] = []
 
-    def transport(self, method, path, body=None, *, mutation=False, **kwargs):
+    def transport(
+        self: object,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        mutation: bool = False,
+        **kwargs: object,
+    ) -> dict[str, Any] | None:
+        assert body is not None
         assert method == "POST" and path == "/api/operation"
         assert mutation is True
         assert body["operation"] == "maintenance.insights.rebuild"
@@ -36,7 +46,9 @@ async def test_registered_maintenance_preserves_submitted_identity(
             return None
         raise DaemonMutationIndeterminateError(method=method, path=path, request_id=body["request_id"])
 
-    def indeterminate_operation(self, operation, payload, *, request_id, **kwargs):
+    def indeterminate_operation(
+        self: object, operation: str, payload: object, *, request_id: str, **kwargs: object
+    ) -> dict[str, Any]:
         assert operation == "maintenance.insights.rebuild"
         submitted.append(request_id)
         return {"operation": operation, "request_id": request_id, "outcome": "indeterminate"}
