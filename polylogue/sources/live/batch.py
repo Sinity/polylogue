@@ -1887,6 +1887,18 @@ class LiveBatchProcessor:
             **(summary_stage_payload or {}),
             "excluded_file_count": len(excluded_by_path) + len(settled_exclusions),
         }
+        if partial_admissions:
+            partial_reasons: dict[str, int] = {}
+            for partial in partial_admissions.values():
+                partial_reasons[partial.reason] = partial_reasons.get(partial.reason, 0) + 1
+            summary_stage_payload = {
+                **(summary_stage_payload or {}),
+                "partial_file_count": len(partial_admissions),
+                "partial_reasons": partial_reasons,
+                "partial_left_out_bytes": sum(
+                    partial.source_bytes - partial.complete_prefix_bytes for partial in partial_admissions.values()
+                ),
+            }
         # The ingest-attempt receipt has separate units for parsed raw files
         # and materialized sessions.  Count the actual session identities
         # touched by this batch; using ``succeeded_file_count`` here would
@@ -2084,7 +2096,9 @@ class LiveBatchProcessor:
                     diagnostic=f"{len(settled_exclusions)} source item(s) parsed to no session",
                 )
         elif not retry_paths:
-            final_disposition = success_disposition()
+            final_disposition = success_disposition(
+                evidence_ref="batch:partial_admission" if metrics.partial_admission_paths else None
+            )
         else:
             # Per-record failures (validation/corrupt-input/unsupported-shape)
             # are already classified where they occur -- see
@@ -2124,7 +2138,10 @@ class LiveBatchProcessor:
             "live.ingest.chunk",
             outcome=(
                 "degraded"
-                if metrics.failed_file_count or metrics.excluded_file_count or metrics.deferred_paths
+                if metrics.failed_file_count
+                or metrics.excluded_file_count
+                or metrics.deferred_paths
+                or metrics.partial_admission_paths
                 else "ok"
             ),
             files=metrics.needed_file_count,
@@ -2134,6 +2151,11 @@ class LiveBatchProcessor:
             failed=metrics.failed_file_count,
             refused=metrics.excluded_file_count,
             deferred=len(metrics.deferred_paths),
+            partial_file_count=len(metrics.partial_admission_paths),
+            partial_left_out_bytes=sum(
+                partial.source_bytes - partial.complete_prefix_bytes
+                for partial in metrics.partial_admission_paths.values()
+            ),
             stage_timings_ms=timing_map,
             stage_timings_omitted=max(0, len(timing_items) - len(timing_map)),
         )

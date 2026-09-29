@@ -579,7 +579,6 @@ class FairIntakeDispatcher:
                             outcome="degraded",
                             reason=result.partial.reason,
                             component=spec.name,
-                            source_id=item.item_id,
                             complete_record_count=result.partial.complete_record_count,
                             complete_prefix_bytes=result.partial.complete_prefix_bytes,
                             source_bytes=result.partial.source_bytes,

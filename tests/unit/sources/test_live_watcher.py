@@ -406,6 +406,8 @@ async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> N
 def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.core.raw_failure_evidence import PARTIAL_TRUNCATED_TAIL, PartialAdmission
+
     logger = MagicMock()
     monkeypatch.setattr(live_watcher, "logger", logger)
     metrics = LiveBatchMetrics(
@@ -428,6 +430,14 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         convergence_time_s=0.25,
         total_time_s=1.0,
         stage_timings_s={"full_parse": 0.45, "fts": 0.05, "derived": 0.2},
+        partial_admission_paths={
+            "/synthetic/capture.jsonl": PartialAdmission(
+                reason=PARTIAL_TRUNCATED_TAIL,
+                complete_record_count=2,
+                complete_prefix_bytes=100,
+                source_bytes=150,
+            )
+        },
     )
 
     live_watcher._log_ingest_metrics("live.watcher: changed-file batch", metrics)
@@ -436,6 +446,7 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
     assert "read=%.1f MB input=%.1f MB read_amp=%.6fx" in message
     assert "stages=%s" in message
     assert "excluded=%d" in message
+    assert "partial=%d partial_reasons=%s partial_left_out_bytes=%d" in message
     assert args[:6] == [
         "live.watcher: changed-file batch",
         0.04,
@@ -444,10 +455,11 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         2,
         0,
     ]
-    # succeeded, failed, excluded: a planned path lands in exactly one, so the
-    # three counts are reported together.
-    assert args[6:9] == [2, 0, 0]
-    assert args[11:] == ["full_parse:0.450,derived:0.200,fts:0.050", False]
+    assert args[6:11] == [2, 1, "truncated_tail x1", 50, 0]
+    # The summary reports a partial count/reason/byte offset without printing
+    # the private path that keys ``partial_admission_paths``.
+    assert args[11:14] == [0, 0.5, 0.25]
+    assert args[14:] == ["full_parse:0.450,derived:0.200,fts:0.050", False]
 
 
 def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:

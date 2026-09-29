@@ -266,6 +266,8 @@ def _fields() -> dict[str, FieldKind]:
         "complete_record_count",
         "complete_prefix_bytes",
         "source_bytes",
+        "partial_file_count",
+        "partial_left_out_bytes",
         "attempted",
         "confirmed",
         "remaining",

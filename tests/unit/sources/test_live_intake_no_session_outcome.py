@@ -17,6 +17,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
+from polylogue.logging import capture
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -248,7 +249,8 @@ async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(workspa
     source_path.write_bytes(payload)
 
     batches: list[Any] = []
-    outcomes = await _admit(archive_root, source_root, batches)
+    with capture() as events:
+        outcomes = await _admit(archive_root, source_root, batches)
 
     (result,) = outcomes.values()
     assert result.outcome is AdmissionOutcome.ADMITTED, result
@@ -265,5 +267,15 @@ async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(workspa
     assert payload_fields["partial_file_count"] == 1
     assert payload_fields["partial_reasons"] == {PARTIAL_TRUNCATED_TAIL: 1}
     assert payload_fields["partial_left_out_bytes"] == len(payload) - len(complete)
+    (chunk,) = [event for event in events if event.get("event") == "live.ingest.chunk"]
+    assert chunk["outcome"] == "degraded"
+    assert chunk["partial_file_count"] == 1
+    assert chunk["partial_left_out_bytes"] == len(payload) - len(complete)
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 2
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        (outcome_code, evidence_ref) = conn.execute(
+            "SELECT outcome_code, evidence_ref FROM ingest_attempts ORDER BY started_at_ms DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+    assert outcome_code == "success"
+    assert evidence_ref == "batch:partial_admission"

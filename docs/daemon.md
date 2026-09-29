@@ -780,8 +780,13 @@ admits its complete records and is reported as a partial admission: the item
 is `admitted` with a typed partial (reason `truncated_tail`, the complete-record
 count, and the byte offset where the left-out tail begins), counted as
 `partially_admitted` in the class report and the `daemon.intake.page` event,
-with one `daemon.intake.item_partial` event per item; the batch payload
-carries `partial_file_count`, `partial_reasons` and `partial_left_out_bytes`.
+with one `daemon.intake.item_partial` event per item. The `live.ingest.chunk`
+event is `degraded` and carries the partial file count and left-out bytes;
+the watcher summary and durable attempt stage payload retain the partial count,
+reason and left-out bytes. A completed ingest attempt carries the
+`batch:partial_admission` evidence reference rather than an unqualified
+success. The batch payload also carries `partial_file_count`,
+`partial_reasons` and `partial_left_out_bytes`.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published

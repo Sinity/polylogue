@@ -223,7 +223,10 @@ def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> N
             iter_json_stream_with(
                 logging.getLogger(__name__),
                 cast(object, FailingIjson),  # type: ignore[arg-type]
-                io.BytesIO(b"[]"),
+                # The stdlib fallback may recover a complete document after
+                # a backend failure. Keep the underlying bytes truncated so
+                # that fallback cannot erase the simulated mid-stream loss.
+                io.BytesIO(b'[{"id": 1}, {"id": 2}, {"id": 3'),
                 "sessions.json",
             )
         )

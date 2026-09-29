@@ -99,13 +99,10 @@ def test_a_partial_admission_is_counted_and_reported_apart_from_plain_success() 
     page = next(record for record in records if record["event"] == "daemon.intake.page")
     assert (page["outcome"], page["succeeded"], page["partially_admitted"]) == ("degraded", 2, 1)
     (item,) = [record for record in records if record["event"] == "daemon.intake.item_partial"]
-    assert {
-        key: item[key]
-        for key in ("reason", "source_id", "complete_record_count", "complete_prefix_bytes", "source_bytes")
-    } == {
+    assert {key: item[key] for key in ("reason", "complete_record_count", "complete_prefix_bytes", "source_bytes")} == {
         "reason": "truncated_tail",
-        "source_id": "1",
         "complete_record_count": 3,
         "complete_prefix_bytes": 120,
         "source_bytes": 150,
     }
+    assert "source_id" not in item
