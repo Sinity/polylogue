@@ -86,7 +86,7 @@ class TestDiagnoseSchemaMismatch:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "schema_mismatch"
         assert "99" in diag.headline
-        assert diag.next_action == "polylogue ops reset --index, then restart polylogued"
+        assert diag.next_action == "polylogue ops reset --index && systemctl --user restart polylogued"
         assert observed == [db]
 
         # The diagnostic names two executable recovery routes.  Verify their
