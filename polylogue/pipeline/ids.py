@@ -1582,17 +1582,21 @@ def event_canonical_identity_hash(*, base_identity: bytes, content_hash: bytes) 
     return bytes.fromhex(hash_item_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()}))
 
 
-def _attachment_sort_key(payload: Mapping[str, JSONValue]) -> tuple[str, str, str]:
-    """Order attachments by owner, native id and name, as canonical JSON text.
+def _attachment_sort_key(payload: Mapping[str, JSONValue]) -> tuple[str, str, str, str]:
+    """Order attachments by owner, native id and name, then the whole payload.
 
-    JSON text keeps an absent value (``null``) apart from an empty one
-    (``""``), so neither can tie with the other and let input order leak into
-    the session hash. Every route sorts by this key.
+    Each part is canonical JSON text, so an absent value (``null``) never ties
+    with an empty one (``""``). The final part breaks every remaining tie, so
+    two attachments that share owner, id and name but differ in any other
+    field sort the same way whatever their input order. Only byte-identical
+    payloads can tie, and their order cannot change the hash. Every route
+    sorts by this key.
     """
     return (
         json.dumps(payload.get("message_id")),
         json.dumps(payload.get("id")),
         json.dumps(payload.get("name")),
+        json.dumps(payload, sort_keys=True),
     )
 
 
@@ -1723,7 +1727,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
             ):
                 conn.execute(
                     "CREATE TABLE attachment_hash (ordinal INTEGER PRIMARY KEY, owner TEXT NOT NULL, "
-                    "native_id TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL)"
+                    "native_id TEXT NOT NULL, name TEXT NOT NULL, canonical TEXT NOT NULL, payload TEXT NOT NULL)"
                 )
                 with disk_message_owner_resolution(convo.messages) as resolution:
                     for ordinal, attachment in enumerate(convo.attachments):
@@ -1733,7 +1737,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                             owner_anchor = None
                         payload = _attachment_hash_payload(attachment, message_owner_anchor=owner_anchor)
                         conn.execute(
-                            "INSERT INTO attachment_hash VALUES (?, ?, ?, ?, ?)",
+                            "INSERT INTO attachment_hash VALUES (?, ?, ?, ?, ?, ?)",
                             (
                                 ordinal,
                                 *_attachment_sort_key(payload),
@@ -1741,7 +1745,9 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                             ),
                         )
                 for index, (encoded,) in enumerate(
-                    conn.execute("SELECT payload FROM attachment_hash ORDER BY owner, native_id, name, ordinal")
+                    conn.execute(
+                        "SELECT payload FROM attachment_hash ORDER BY owner, native_id, name, canonical, ordinal"
+                    )
                 ):
                     if index:
                         literal(",")

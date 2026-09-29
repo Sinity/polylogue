@@ -185,19 +185,30 @@ def test_null_and_empty_stay_distinct_from_each_other() -> None:
     _assert_distinct(_session(tool_input={"value": None}), _session(tool_input={"value": "null"}))
 
 
-def test_attachment_order_is_not_content_when_only_absence_distinguishes_them() -> None:
-    """A null name and an empty name sort apart, so input order cannot leak in."""
+def _attachment(mime_type: str | None, size: int) -> ParsedAttachment:
+    return ParsedAttachment(
+        provider_attachment_id="a", message_provider_id="m1", name="same.txt", mime_type=mime_type, size_bytes=size
+    )
 
-    def attachment(name: str | None, size: int) -> ParsedAttachment:
-        return ParsedAttachment(
-            provider_attachment_id="a", message_provider_id="m1", name=name, mime_type="text/plain", size_bytes=size
-        )
 
-    forward = _session(attachments=[attachment(None, 1), attachment("", 2)])
-    backward = _session(attachments=[attachment("", 2), attachment(None, 1)])
+def test_attachment_order_is_not_content_when_sort_fields_tie() -> None:
+    """Attachments that share owner, id and name hash alike in either input order.
+
+    Anti-vacuity: drop the whole-payload tiebreak from ``_attachment_sort_key``
+    and the tie falls back to input order, so the two hashes differ.
+    """
+    forward = _session(attachments=[_attachment("text/plain", 1), _attachment("text/plain", 2)])
+    backward = _session(attachments=[_attachment("text/plain", 2), _attachment("text/plain", 1)])
     assert session_content_hash(forward) == session_content_hash(backward)
-    swapped = _session(attachments=[attachment(None, 2), attachment("", 1)])
-    assert session_content_hash(forward) != session_content_hash(swapped)
+    assert session_revision_projection(forward).session_hash == session_revision_projection(backward).session_hash
+    changed = _session(attachments=[_attachment("text/plain", 1), _attachment("text/plain", 3)])
+    assert session_content_hash(forward) != session_content_hash(changed)
+
+
+def test_absent_attachment_field_is_not_an_empty_one() -> None:
+    _assert_distinct(
+        _session(attachments=[_attachment(None, 1)]), _session(attachments=[_attachment("", 1)]), axis="session"
+    )
 
 
 # -- colliding keys keep every field (polylogue-sf7ii) -------------------------
