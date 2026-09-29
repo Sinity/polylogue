@@ -1490,9 +1490,10 @@ def main(argv: list[str] | None = None) -> int:
             ),
         },
     )
-    append_verify_history(payload)
+    history_path = verify_history_path(root=ROOT)
+    append_verify_history(payload, path=history_path)
     append_verification_evidence(payload)
-    prune_successful_verify_runs(root=ROOT)
+    prune_successful_verify_runs(root=ROOT, history_path=history_path)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     # The verdict is the last thing written, on every run. A pipeline exits with

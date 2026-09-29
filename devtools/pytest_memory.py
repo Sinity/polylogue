@@ -5,9 +5,9 @@ controller, one worker or their sum exceeded the budget the width was chosen
 against, and therefore whether the next run should be narrower or the workload
 lighter.
 
-The unit of attribution is the managed pytest cgroup. This includes xdist
-workers and children that detach from the controller's process group while
-remaining charged to the same memory ceiling. ``smaps_rollup`` is read rather
+Attribution follows the pytest process group and its observed descendants,
+including children that detach. An ambient cgroup may hold unrelated jobs and
+is not proof of run ownership. ``smaps_rollup`` is read rather
 than ``statm`` because workers share the controller's pages: RSS counts every
 copy, and only PSS sums across processes to something the ceiling can be
 compared against.
@@ -51,58 +51,43 @@ _ROLLUP_FIELDS: Final[dict[str, str]] = {
 _MEASURES: Final[tuple[str, ...]] = ("rss_kib", "pss_kib", "private_kib", "swap_kib")
 
 
-def _cgroup_members(pgid: int, *, proc: Path, cgroup_root: Path) -> list[int]:
-    """Every live pid in the process's cgroup, including detached children."""
+def _run_members(pgid: int, *, proc: Path, known: Mapping[int, int]) -> dict[int, int]:
+    """Live run members, retaining detached descendants by PID and start time."""
+    processes: dict[int, tuple[int, int]] = {}
+    children: dict[int, list[int]] = {}
     try:
-        cgroup_text = (proc / "self" / "cgroup").read_text(encoding="utf-8")
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                fields = (entry / "stat").read_text(encoding="utf-8", errors="replace").rpartition(")")[2].split()
+                parent, group, start = int(fields[1]), int(fields[2]), int(fields[19])
+            except (OSError, IndexError, ValueError):
+                continue
+            pid = int(entry.name)
+            processes[pid] = (group, start)
+            children.setdefault(parent, []).append(pid)
     except OSError:
-        cgroup_text = ""
-    v2_path = next((line.rpartition(":")[2] for line in cgroup_text.splitlines() if line.startswith("0::")), None)
-    if v2_path is not None:
-        procs = cgroup_root / v2_path.lstrip("/") / "cgroup.procs"
-        try:
-            return [int(pid) for pid in procs.read_text().split() if pid.isdigit()]
-        except (OSError, ValueError):
-            return []
-    memory_path = next(
-        (
-            fields[2]
-            for line in cgroup_text.splitlines()
-            if len(fields := line.split(":", 2)) == 3 and "memory" in fields[1].split(",")
-        ),
-        None,
-    )
-    if memory_path is not None:
-        procs = cgroup_root / "memory" / memory_path.lstrip("/") / "cgroup.procs"
-        try:
-            return [int(pid) for pid in procs.read_text().split() if pid.isdigit()]
-        except (OSError, ValueError):
-            return []
-    # Synthetic procfs fixtures have no cgroup file; the process-group reader
-    # keeps those deterministic while real Linux procfs uses cgroup membership.
-    members: list[int] = []
-    try:
-        entries = list(proc.iterdir())
-    except OSError:
-        return members
-    for entry in entries:
-        name = entry.name
-        if not name.isdigit():
+        return {}
+    pending = [pid for pid, (group, start) in processes.items() if group == pgid or known.get(pid) == start]
+    members: dict[int, int] = {}
+    while pending:
+        pid = pending.pop()
+        if pid in members:
             continue
-        try:
-            fields = (entry / "stat").read_text(encoding="utf-8", errors="replace").rpartition(")")[2].split()
-            if int(fields[2]) == pgid:
-                members.append(int(name))
-        except (OSError, IndexError, ValueError):
-            continue
+        members[pid] = processes[pid][1]
+        pending.extend(children.get(pid, ()))
     return members
 
 
-def _rollup(pid: int, *, proc: Path) -> dict[str, int] | None:
+def _rollup(pid: int, *, proc: Path, start_time: int) -> dict[str, int] | None:
     """One process's memory totals in KiB, or None once it is gone."""
     try:
         text = (proc / str(pid) / "smaps_rollup").read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        fields = (proc / str(pid) / "stat").read_text(encoding="utf-8", errors="replace").rpartition(")")[2].split()
+        if int(fields[19]) != start_time:
+            return None
+    except (OSError, IndexError, ValueError):
         return None
     totals = dict.fromkeys(_MEASURES, 0)
     seen = False
@@ -151,7 +136,6 @@ class ProcessGroupMemorySampler:
         *,
         interval_s: float = SAMPLE_INTERVAL_S,
         proc: Path = Path("/proc"),
-        cgroup_root: Path = Path("/sys/fs/cgroup"),
         meminfo: Path = Path("/proc/meminfo"),
         snapshot_path: Path | None = None,
         snapshot_context: Callable[[], Mapping[str, Any]] | None = None,
@@ -159,7 +143,7 @@ class ProcessGroupMemorySampler:
         self._pgid = pgid
         self._interval_s = interval_s
         self._proc = proc
-        self._cgroup_root = cgroup_root
+        self._owned: dict[int, int] = {}
         self._meminfo = meminfo
         self._snapshot_path = snapshot_path
         self._snapshot_context = snapshot_context
@@ -217,9 +201,10 @@ class ProcessGroupMemorySampler:
         totals = dict.fromkeys(_MEASURES, 0)
         readings: list[tuple[int, dict[str, int]]] = []
         with self._lock:
-            pgid = self._pgid
-        for pid in _cgroup_members(pgid, proc=self._proc, cgroup_root=self._cgroup_root):
-            rollup = _rollup(pid, proc=self._proc)
+            self._owned = _run_members(self._pgid, proc=self._proc, known=self._owned)
+            members = tuple(self._owned.items())
+        for pid, start_time in members:
+            rollup = _rollup(pid, proc=self._proc, start_time=start_time)
             if rollup is None:
                 continue
             readings.append((pid, rollup))

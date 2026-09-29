@@ -119,3 +119,37 @@ def test_main_reports_violation_and_nonzero_exit(
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["violations"] == [{"tier": "source", "column": "origin", "enum": "Origin", "members": ["a", "b"]}]
+
+
+@pytest.mark.parametrize("member", ["a--b", "a/*b*/", "a(b", "a)b", "a'b", "a'--/*)b"])
+@pytest.mark.parametrize("column", ["kind", '"kind"', "`kind`", "[kind]"])
+def test_enum_membership_preserves_sql_syntax_inside_literals(member: str, column: str) -> None:
+    """Comment stripping and character balancing used to erase these real CHECKs."""
+    members = frozenset({member, "other"})
+    escaped = member.replace("'", "''")
+    ddl = f"CREATE TABLE sample ({column} TEXT CHECK ({column} IN ('{escaped}', 'other')));"
+    violations = verify_durable_enum_checks.scan_ddl_for_enum_membership_checks(
+        ddl, tier="user", enums_by_members={members: "FixtureVocabulary"}
+    )
+    assert len(violations) == 1
+    assert violations[0].column == "kind"
+    assert violations[0].enum_name == "FixtureVocabulary"
+    assert frozenset(violations[0].members) == members
+
+
+def test_quoted_check_text_and_real_comments_do_not_become_constraints() -> None:
+    """Only executable CHECK tokens own constraints, not text that quotes a check."""
+    ddl = """
+    CREATE TABLE sample (
+      note TEXT DEFAULT 'CHECK (kind IN (''a'', ''b''))',
+      kind TEXT
+    );
+    -- CHECK (kind IN ('a', 'b'))
+    /* CHECK (kind IN ('a', 'b')) */
+    """
+    assert (
+        verify_durable_enum_checks.scan_ddl_for_enum_membership_checks(
+            ddl, tier="source", enums_by_members={frozenset({"a", "b"}): "FixtureVocabulary"}
+        )
+        == []
+    )

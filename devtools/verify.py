@@ -88,6 +88,7 @@ from devtools.verify_runs import (
     prune_successful_verify_runs,
     pytest_command_worker_request,
     reconcile_and_record_abandoned_verify_runs,
+    verification_build_id,
     verify_history_path,
 )
 from devtools.verify_test_collection import count_collected
@@ -1059,18 +1060,6 @@ def _emit_affected_admission_refusal(*, graph: Any, decision: AffectedAdmission,
     )
 
 
-def _verification_build_id(*, head: str | None, dirty: bool, content_sha256: str | None) -> str | None:
-    """Name the tree a verification runs against, never a HEAD it did not test.
-
-    A clean checkout is its commit. A dirty one is only its Git-visible
-    content, so the identity is the content digest the run already records;
-    without one the tree is unidentified rather than borrowed from HEAD.
-    """
-    if dirty:
-        return f"worktree-sha256:{content_sha256}" if content_sha256 else None
-    return f"git:{head}" if head else None
-
-
 def _planned_concurrency(steps: Sequence[tuple[str, Sequence[str]]]) -> int:
     """Widest process fan-out the plan admits: the gate pool, then each pytest step's xdist width."""
     gates = sum(not label.startswith("pytest") for label, _command in steps)
@@ -1416,7 +1405,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         mirror_current=agentctl_operation is None,
         agentctl_operation=agentctl_operation,
     )
-    build_id = _verification_build_id(head=head, dirty=run.recorded_git_dirty, content_sha256=started_content)
+    build_id = verification_build_id(head=head, dirty=run.recorded_git_dirty, content_sha256=started_content)
     workload_spec = _verification_workload_spec(tier=tier, steps=planned_steps, build_id=build_id)
     run.declare_workload(workload_spec.to_payload())
     results: list[dict[str, Any]] = []

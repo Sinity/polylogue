@@ -43,13 +43,24 @@ def _proc(tmp_path: Path, name: str = "proc") -> Path:
     return directory
 
 
-def _process(proc: Path, pid: int, *, pgid: int, command: str = "pytest", pss_kib: int = 0, rss_kib: int = 0) -> Path:
+def _process(
+    proc: Path,
+    pid: int,
+    *,
+    pgid: int,
+    command: str = "pytest",
+    pss_kib: int = 0,
+    rss_kib: int = 0,
+    ppid: int = 1,
+    start_time: int = 1,
+) -> Path:
     """One process in a stub procfs, as the sampler reads it."""
     directory = proc / str(pid)
     directory.mkdir(exist_ok=True)
     # The comm field is parenthesised and may contain spaces; the fields the
     # sampler reads come after it.
-    (directory / "stat").write_text(f"{pid} ({command} worker) S 1 {pgid} 0 0 -1 0\n", encoding="utf-8")
+    fields = ["S", str(ppid), str(pgid), *(["0"] * 16), str(start_time)]
+    (directory / "stat").write_text(f"{pid} ({command} worker) {' '.join(fields)}\n", encoding="utf-8")
     (directory / "comm").write_text(f"{command}\n", encoding="utf-8")
     (directory / "smaps_rollup").write_text(
         f"00400000-7fff ---p 00000000 00:00 0 [rollup]\n"
@@ -105,20 +116,33 @@ def test_only_the_run_s_own_process_group_is_attributed(tmp_path: Path) -> None:
     assert [entry["pid"] for entry in document["processes"]] == [100]
 
 
-def test_detached_child_in_managed_cgroup_is_attributed(tmp_path: Path) -> None:
-    """A setsid child remains charged to the managed cgroup after leaving its process group."""
+@pytest.mark.parametrize("cgroup_record", ["0::/shared/pytest\n", "2:memory:/shared/pytest\n"])
+def test_ambient_cgroup_does_not_authorize_unrelated_processes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cgroup_record: str
+) -> None:
+    """The ambient cgroup includes another run; only owned descendants belong here."""
     proc = _proc(tmp_path)
     _process(proc, 100, pgid=100, pss_kib=100 * KIB)
-    _process(proc, 101, pgid=900, command="detached", pss_kib=700 * KIB)
+    _process(proc, 101, pgid=900, ppid=100, command="detached", pss_kib=700 * KIB)
+    _process(proc, 555, pgid=555, command="unrelated", pss_kib=4000 * KIB)
     (proc / "self").mkdir()
-    (proc / "self" / "cgroup").write_text("0::/managed/pytest\n")
-    cgroup_root = tmp_path / "cgroup"
-    member_dir = cgroup_root / "managed" / "pytest"
-    member_dir.mkdir(parents=True)
-    (member_dir / "cgroup.procs").write_text("100\n101\n")
-    sampler = ProcessGroupMemorySampler(100, proc=proc, cgroup_root=cgroup_root, meminfo=_meminfo(tmp_path, 8000))
+    (proc / "self" / "cgroup").write_text(cgroup_record, encoding="utf-8")
+    read_text = Path.read_text
+
+    def read_fixture_members(path: Path, *args: object, **kwargs: object) -> str:
+        if path in {
+            Path("/sys/fs/cgroup/shared/pytest/cgroup.procs"),
+            Path("/sys/fs/cgroup/memory/shared/pytest/cgroup.procs"),
+        }:
+            return "100\n101\n555\n"
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_fixture_members)
+    sampler = _sampler(tmp_path, proc)
     sampler.sample()
-    assert sampler.snapshot()["peak"]["pss_kib"] == 800 * KIB
+    result = sampler.snapshot()
+    assert result["peak"]["pss_kib"] == 800 * KIB
+    assert {row["pid"] for row in result["processes"]} == {100, 101}
 
 
 def test_the_peak_survives_a_later_quieter_sample(tmp_path: Path) -> None:
@@ -270,3 +294,42 @@ def test_a_followed_rerun_group_is_part_of_the_run_peak(tmp_path: Path) -> None:
 
     document = sampler.stop()
     assert document["peak"]["pss_kib"] == 900 * KIB
+
+
+def test_detached_descendant_remains_owned_until_its_pid_is_reused(tmp_path: Path) -> None:
+    """Start-time identity retains reparented children without charging a reused PID."""
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    _process(proc, 101, pgid=900, ppid=100, start_time=10, pss_kib=200 * KIB)
+    sampler = _sampler(tmp_path, proc)
+    sampler.sample()
+    _process(proc, 101, pgid=900, ppid=1, start_time=10, pss_kib=700 * KIB)
+    sampler.sample()
+    assert sampler.snapshot()["peak"]["pss_kib"] == 800 * KIB
+
+    _process(proc, 101, pgid=900, ppid=1, start_time=20, command="unrelated", pss_kib=4000 * KIB)
+    sampler.sample()
+    result = sampler.snapshot()
+    assert result["peak"]["pss_kib"] == 800 * KIB
+    assert next(row for row in result["processes"] if row["pid"] == 101)["peak_pss_kib"] == 700 * KIB
+
+
+def test_pid_reused_between_discovery_and_memory_read_is_not_charged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discovery-time ownership must still describe the process whose memory was read."""
+    proc = _proc(tmp_path)
+    directory = _process(proc, 100, pgid=100, start_time=10, pss_kib=100 * KIB)
+    read_text = Path.read_text
+
+    def replace_on_rollup_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == directory / "smaps_rollup":
+            _process(proc, 100, pgid=900, start_time=20, pss_kib=4000 * KIB)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", replace_on_rollup_read)
+    sampler = _sampler(tmp_path, proc)
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["peak"]["pss_kib"] == 0
+    assert document["processes"] == []

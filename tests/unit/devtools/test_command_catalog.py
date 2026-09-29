@@ -163,3 +163,14 @@ def test_tool_outcome_help_declares_required_candidate_root() -> None:
     result = CliRunner().invoke(cli, ["archive", "tool-outcome-census", "--help"])
     assert result.exit_code == 0
     assert "--archive-root PATH" in result.output
+
+
+def test_native_help_does_not_require_the_option_that_execution_requires() -> None:
+    """The wrapper used to reject --help before the native parser saw it."""
+    runner = CliRunner()
+    help_result = runner.invoke(cli, ["archive", "tool-outcome-census", "--help"])
+    execution_result = runner.invoke(cli, ["archive", "tool-outcome-census"])
+
+    assert help_result.exit_code == 0
+    assert "--archive-root" in help_result.output
+    assert execution_result.exit_code == 2

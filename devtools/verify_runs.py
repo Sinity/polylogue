@@ -219,6 +219,13 @@ def _read_only_git_env() -> dict[str, str]:
     return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
 
 
+def verification_build_id(*, head: str | None, dirty: bool, content_sha256: str | None) -> str | None:
+    """Name the observed tree, never a clean HEAD when the worktree differs."""
+    if dirty:
+        return f"worktree-sha256:{content_sha256}" if content_sha256 else None
+    return f"git:{head}" if head else None
+
+
 def git_dirty(cwd: Path | None = None) -> bool:
     try:
         result = subprocess.run(
@@ -1115,12 +1122,14 @@ def append_verification_evidence(entry: Mapping[str, Any], *, path: Path | None 
     _append_jsonl(canonical_verification_receipt(entry), path=path or verification_evidence_path())
 
 
-def read_verification_evidence(path: Path) -> list[dict[str, Any]]:
+def read_verification_evidence(path: Path, *, run_ids: set[str] | None = None) -> list[dict[str, Any]]:
     """Read only valid canonical rows for a Lynchpin-style projection."""
     return [
         row
         for row in _iter_history_pinned(_absolute_path(path))
-        if row.get("kind") == "polylogue.verification-receipt" and row.get("schema_version") == 1
+        if row.get("kind") == "polylogue.verification-receipt"
+        and row.get("schema_version") == 1
+        and (run_ids is None or row.get("run_id") in run_ids)
     ]
 
 
@@ -1590,25 +1599,28 @@ def reconcile_and_record_abandoned_verify_runs(
     turns the reconciliation into evidence rather than a local file edit.
 
     A relocated cache uses its own history unless the operator configured a
-    shared history path. The normal checkout uses the shared XDG history. Its
-    evidence path follows an explicit override or the relocated cache.
+    shared history path. The normal checkout publishes both shared XDG lanes;
+    an explicit evidence override also takes precedence for a relocated cache.
     """
     reconciled = reconcile_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
     cache = runs_root.parent
+    checkout_cache = Path(__file__).resolve().parents[1] / VERIFY_CACHE
+    default_checkout = cache.resolve() == checkout_cache
     if history_path is None:
-        if os.environ.get(VERIFY_HISTORY_PATH_ENV) or cache.parent.resolve() == Path(__file__).resolve().parents[1]:
-            history_path = verify_history_path(root=cache.parent)
+        if os.environ.get(VERIFY_HISTORY_PATH_ENV) or default_checkout:
+            history_path = verify_history_path(root=cache.parent.parent)
         else:
             history_path = cache / VERIFY_HISTORY_PATH.name
     evidence_target = evidence_path or (
-        Path(os.environ[VERIFY_EVIDENCE_PATH_ENV]).expanduser()
-        if os.environ.get(VERIFY_EVIDENCE_PATH_ENV)
+        verification_evidence_path()
+        if os.environ.get(VERIFY_EVIDENCE_PATH_ENV) or default_checkout
         else cache / VERIFY_EVIDENCE_PATH.name
     )
     if not reconciled:
         return reconciled
-    history_ids = {str(row.get("run_id")) for row in _iter_history_pinned(history_path)}
-    evidence_ids = {str(row.get("run_id")) for row in read_verification_evidence(evidence_target)}
+    run_ids = {str(row["run_id"]) for row in reconciled}
+    history_ids = {str(row["run_id"]) for row in _iter_history_pinned(history_path) if row.get("run_id") in run_ids}
+    evidence_ids = {str(row["run_id"]) for row in read_verification_evidence(evidence_target, run_ids=run_ids)}
     for payload in reconciled:
         with contextlib.suppress(OSError, ValueError):
             if str(payload.get("run_id")) not in history_ids:

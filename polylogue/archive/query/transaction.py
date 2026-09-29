@@ -398,7 +398,7 @@ class QueryContinuation:
         return "q2." + encoded
 
     @classmethod
-    def decode(cls, token: str) -> QueryContinuation:
+    def decode(cls, token: str, *, now_s: float | None = None) -> QueryContinuation:
         if not token.startswith("q2."):
             raise QueryContinuationInvalidError("unsupported query continuation version")
         try:
@@ -424,7 +424,7 @@ class QueryContinuation:
             expires_at = int(body["expires_at"])
             if issued_at < 0 or expires_at <= issued_at:
                 raise ValueError("query continuation has an invalid validity window")
-            if expires_at <= int(time()):
+            if expires_at <= int(time() if now_s is None else now_s):
                 raise QueryContinuationExpiredError("query continuation has expired; restart the query")
             request = QueryTransactionRequest(
                 operation=str(request_body["operation"]),
@@ -451,9 +451,9 @@ class QueryContinuation:
         return cls(request=request, result_ref=result_ref, cursor=cursor)
 
 
-def decode_query_units_continuation(token: str) -> QueryContinuation:
-    """Decode the sole opaque resume input for a terminal-unit transaction."""
-    continuation = QueryContinuation.decode(token)
+def decode_query_units_continuation(token: str, *, now_s: float | None = None) -> QueryContinuation:
+    """Decode a terminal-unit continuation, optionally at a trusted reference time."""
+    continuation = QueryContinuation.decode(token, now_s=now_s)
     request = continuation.request
     arguments = request.arguments
     expression = arguments.get("expression")

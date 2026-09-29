@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import pytest
+
 from polylogue.agent_integration.spec import (
     ALL_DECLARED_TOOLS,
     DEFAULT_READ_TOOLS,
@@ -18,6 +20,7 @@ from polylogue.archive.query.expression import compile_expression, explain_expre
 from polylogue.cli.query_group import _looks_like_query_expression, _split_query_mode_args
 from polylogue.core.enums import Origin
 from polylogue.mcp.declarations import PRIVILEGED_ALGEBRA, TARGET_DEFAULT_READ_ALGEBRA
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _assert_call_compiles(tool: str, arguments: Mapping[str, object]) -> None:
@@ -101,12 +104,12 @@ def test_strict_command_floor_retains_all_three_query_intent_signals() -> None:
 
 def test_generated_continuation_token_decodes_to_the_bound_result() -> None:
     """Mutation: reconstructing filters, changing offset, or losing result_ref invalidates exact recovery."""
-    from devtools.render_agent_manual import continuation_example_token
+    from devtools.render_agent_manual import _EXAMPLE_CONTINUATION_ISSUED_AT, continuation_example_token
 
     token = continuation_example_token()
     from polylogue.archive.query.transaction import decode_query_units_continuation
 
-    decoded = decode_query_units_continuation(token)
+    decoded = decode_query_units_continuation(token, now_s=_EXAMPLE_CONTINUATION_ISSUED_AT)
 
     assert token.startswith("q2.")
     assert decoded.request.operation == "query_units"
@@ -375,3 +378,25 @@ def test_non_target_tools_are_declared_tools_with_manual_contracts() -> None:
         assert name in declared_tool_names()
         assert name in TOOL_CONTRACT_BY_NAME
         assert TOOL_CONTRACT_BY_NAME[name].required_capability == "write"
+
+
+def test_generated_continuation_stays_stable_after_its_example_window(
+    frozen_clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live-time validation made committed examples fail after their fixed expiry."""
+    from devtools import render_agent_manual
+    from polylogue.archive.query import transaction
+
+    frozen_clock.set_time(render_agent_manual._EXAMPLE_CONTINUATION_ISSUED_AT)
+    monkeypatch.setattr(transaction, "time", lambda: frozen_clock.now().timestamp())
+    before = render_agent_manual.continuation_example_token()
+    frozen_clock.set_time(render_agent_manual._EXAMPLE_CONTINUATION_EXPIRES_AT + 1)
+    after = render_agent_manual.continuation_example_token()
+    assert after == before
+    with pytest.raises(transaction.QueryContinuationExpiredError):
+        transaction.decode_query_units_continuation(after)
+    decoded = transaction.decode_query_units_continuation(
+        after, now_s=render_agent_manual._EXAMPLE_CONTINUATION_ISSUED_AT
+    )
+    assert decoded.request.offset == 20
+    assert decoded.result_ref == decoded.request.result_ref

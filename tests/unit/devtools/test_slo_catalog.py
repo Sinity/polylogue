@@ -210,6 +210,8 @@ def test_skip_benchmarks_has_no_observed_phase_and_receipt_names_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Anti-vacuity: skipped assignment time must not become benchmark evidence."""
+    monkeypatch.setattr(verify_slos, "git_dirty", lambda _root: False)
+    monkeypatch.setattr(verify_slos, "git_head", lambda _root: "a" * 40)
     catalog = _write_slo_catalog(tmp_path, "surfaces: {}\n")
     buffer = io.StringIO()
     with redirect_stdout(buffer):
@@ -740,3 +742,63 @@ surfaces:
     assert measured["actual_p50_ms"] < measured["target_p50_ms"]
     assert measured["estimated_p95_ms"] < measured["target_p95_ms"]
     assert "actual_p95_ms" not in measured
+
+
+def test_slo_command_identifies_dirty_source_separately_from_clean_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unconditionally using git:HEAD aliases an edited source tree to the clean build."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    source = root / "sample.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    catalog = _write_slo_catalog(root, "surfaces: {}\n")
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_DATE": "2026-09-01T00:00:00+00:00",
+        "GIT_COMMITTER_DATE": "2026-09-01T00:00:00+00:00",
+    }
+    for argv in (
+        ["init", "--quiet"],
+        ["add", source.name, catalog.name],
+        ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--quiet", "-m", "fixture"],
+    ):
+        subprocess.run(["git", *argv], cwd=root, env=env, check=True, capture_output=True)
+    monkeypatch.setattr(verify_slos, "ROOT", root)
+    argv = ["--yaml", str(catalog), "--json", "--skip-benchmarks"]
+    assert verify_slos.main(argv) == 0
+    clean = json.loads(capsys.readouterr().out)["workload_receipt"]
+    assert clean["build_id"].startswith("git:")
+
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    assert verify_slos.main(argv) == 0
+    dirty = json.loads(capsys.readouterr().out)["workload_receipt"]
+    assert dirty["build_id"].startswith("worktree-sha256:")
+    assert dirty["build_id"] != clean["build_id"]
+    assert dirty["phases"] == clean["phases"] == []
+    assert verify_slos.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["workload_receipt"]["build_id"] == dirty["build_id"]
+
+
+@pytest.mark.parametrize("move", ["head", "dirty", "content"])
+def test_slo_receipt_does_not_attribute_a_worktree_that_moved_during_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], move: str
+) -> None:
+    """An ending-head-only observation assigns results to code that was not measured."""
+    catalog = _write_slo_catalog(tmp_path, "surfaces: {}\n")
+    values = {"head": "a" * 40, "dirty": False, "content": "before"}
+    monkeypatch.setattr(verify_slos, "git_head", lambda _root: values["head"])
+    monkeypatch.setattr(verify_slos, "git_dirty", lambda _root: values["dirty"])
+    monkeypatch.setattr(verify_slos, "git_worktree_content_sha256", lambda _root: values["content"])
+
+    def move_during_benchmark(_selection):
+        values[move] = {"head": "b" * 40, "dirty": True, "content": "after"}[move]
+        return {}
+
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", move_during_benchmark)
+    assert verify_slos.main(["--yaml", str(catalog), "--json"]) == 0
+    receipt = json.loads(capsys.readouterr().out)["workload_receipt"]
+    assert receipt["build_id"] is None
+    assert len(receipt["phases"]) == 1

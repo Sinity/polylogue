@@ -23,7 +23,6 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -31,6 +30,7 @@ from pathlib import Path
 from devtools import repo_root as _get_root
 from devtools.benchmark_results import parse_pytest_benchmark_stats
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
+from devtools.verify_runs import git_dirty, git_head, git_worktree_content_sha256, verification_build_id
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
     MeasurementScope,
@@ -71,18 +71,16 @@ _UNMEASURED_WORKLOAD_DIMENSIONS = (
 
 
 def _slo_workload_receipt(
-    *, catalog_text: str, active_tiers: frozenset[str] | None, wall_ms: float | None, blocking: bool
+    *,
+    catalog_text: str,
+    active_tiers: frozenset[str] | None,
+    wall_ms: float | None,
+    blocking: bool,
+    build_id: str | None,
 ) -> JSONDocument:
     """Adapt the SLO benchmark run into the shared workload receipt contract."""
     catalog_digest = hashlib.sha256(catalog_text.encode("utf-8")).hexdigest()
     tiers = ",".join(sorted(active_tiers)) if active_tiers is not None else "all"
-    try:
-        build = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True, timeout=2
-        )
-        build_id = f"git:{build.stdout.strip()}"
-    except (OSError, subprocess.SubprocessError):
-        build_id = None
     phases = (
         ()
         if wall_ms is None
@@ -379,7 +377,11 @@ def main(argv: list[str] | None = None) -> int:
     # 2. Collect benchmark tests filtered by active tier
     test_ids = _collect_benchmark_tests(surfaces, active_tiers=active_tiers)
 
-    # 3. Run benchmarks
+    # 3. Run benchmarks, retaining the identity observed before execution.
+    head = git_head(ROOT)
+    dirty = git_dirty(ROOT)
+    content = git_worktree_content_sha256(ROOT)
+    build_id = verification_build_id(head=head, dirty=dirty, content_sha256=content)
     benchmark_started = time.monotonic()
     benchmark_error: str | None = None
     benchmark_outcome: str | None = None
@@ -501,13 +503,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             violations.append(result)
 
-    # 5. Report
+    # 5. Report. A moving worktree has no single measured build identity.
+    if git_head(ROOT) != head or git_dirty(ROOT) != dirty or git_worktree_content_sha256(ROOT) != content:
+        build_id = None
     blocking = bool(catalog_errors or violations or missing_required or benchmark_error)
     workload_receipt = _slo_workload_receipt(
         catalog_text=catalog_text,
         active_tiers=active_tiers,
         wall_ms=benchmark_wall_ms,
         blocking=blocking,
+        build_id=build_id,
     )
     if args.json:
         json.dump(
