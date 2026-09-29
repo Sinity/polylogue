@@ -266,12 +266,14 @@ def test_cli_delete_of_a_zero_match_selection_submits_no_delete(
     """A delete whose selection matched nothing sends no delete operation at all.
 
     The query runs through the real daemon and matches no session; the verb
-    reports a zero-effect ``ok`` and the archive is unchanged. A delete request
-    for an empty selection would be a request the daemon can only refuse, and a
-    preview over it would mint an authorization for nothing.
+    refuses with its typed empty-selection usage error and the archive is
+    unchanged. A delete request for an empty selection would be a request the
+    daemon can only refuse, and a preview over it would mint an authorization
+    for nothing.
 
-    Anti-vacuity: drop the ``count == 0`` branch of ``_emit_delete`` and the
-    CLI submits ``mutation.session.delete.preview`` for an empty selection.
+    Anti-vacuity: let the ``delete`` verb pass an empty selection on to
+    ``_emit_delete`` without its ``count == 0`` branch and the CLI submits
+    ``mutation.session.delete.preview`` for nothing.
     """
     import polylogue.cli.archive_query as archive_query
     from polylogue.cli.click_app import cli
@@ -292,9 +294,9 @@ def test_cli_delete_of_a_zero_match_selection_submits_no_delete(
         monkeypatch.setattr(archive_query, "_submit_mutation_operation", recording)
         result = CliRunner().invoke(cli, ["find", "origin:chatgpt-export", "then", "delete", "--yes"])
 
-        assert result.exit_code == 0, (result.output, repr(result.exception))
-        payload = json.loads(result.output)
-        assert (payload["status"], payload["operation"], payload["affected_count"]) == ("ok", "delete", 0)
+        from polylogue.cli.contextual_errors import EmptySelectionError
+
+        assert result.exit_code == EmptySelectionError.exit_code, (result.output, repr(result.exception))
         assert submitted == []
         assert _session_ids(stack.archive_root) == before
 

@@ -218,6 +218,19 @@ def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
     return int(completed_at_ms) // 1000 if completed_at_ms is not None else None
 
 
+def _gc_control_db_path(db_path: Path) -> Path:
+    """The tier holding the GC generation ledger for a pass named by ``db_path``.
+
+    A pass named by ``index.db`` records its generations in the sibling
+    ``source.db`` when that tier carries the ledger; otherwise the named
+    database is the ledger.
+    """
+    sibling_source_db = db_path.with_name("source.db")
+    if db_path.name != "source.db" and _database_has_table(sibling_source_db, "gc_generations"):
+        return sibling_source_db
+    return db_path
+
+
 def _database_has_table(path: Path, table: str) -> bool:
     try:
         conn = _readonly(path)
@@ -1197,11 +1210,7 @@ def run_blob_gc_report(
         max_batch=int(max_batch),
     )
     sibling_source_db = db_path_obj.with_name("source.db")
-    control_db_path = (
-        sibling_source_db
-        if db_path_obj.name != "source.db" and _database_has_table(sibling_source_db, "gc_generations")
-        else db_path_obj
-    )
+    control_db_path = _gc_control_db_path(db_path_obj)
 
     from polylogue.storage.archive_identity import ArchiveLocation
 
@@ -1531,7 +1540,7 @@ def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRo
     A read: the connection is read-only, so this history view neither creates
     a missing tier nor contends with the daemon's writer.
     """
-    conn = _readonly(Path(db_path))
+    conn = _readonly(_gc_control_db_path(Path(db_path)))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

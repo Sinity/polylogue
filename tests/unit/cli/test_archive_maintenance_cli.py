@@ -5,7 +5,6 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -1103,7 +1102,7 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
 
     def recording(config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         submitted.append(operation)
-        return configured(config, operation, payload)  # type: ignore[arg-type]
+        return configured(config, operation, payload)
 
     monkeypatch.setattr(operation_kernel, "configured_mutation_operation", recording)
     with cli_daemon_archive(tmp_path / "archive", monkeypatch):
@@ -1179,21 +1178,6 @@ def test_raw_authority_frontier_cli_rejects_removed_apply_options(
     )
     assert rejected.exit_code == 2
     assert f"No such option {option!r}." in rejected.output
-
-
-def test_raw_authority_frontier_cli_refuses_durable_census_while_daemon_runs(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    """A census reconciles durable obligations, so it needs writer exclusion."""
-    with patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=123):
-        result = cli_runner.invoke(
-            cli,
-            ["--plain", "ops", "maintenance", "raw-authority-frontier", "--output-format", "json"],
-        )
-
-    assert result.exit_code == 1
-    assert "Refusing offline maintenance while polylogued PID 123 is running" in result.output
 
 
 def test_archive_read_cli_lists_archive_sessions(

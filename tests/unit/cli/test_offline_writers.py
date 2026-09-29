@@ -108,13 +108,14 @@ def _cli_offline_writer_commands() -> set[str]:
         if not isinstance(function, ast.FunctionDef):
             continue
         names = [
-            decorator.args[0].value
+            str(decorator.args[0].value)
             for decorator in function.decorator_list
             if isinstance(decorator, ast.Call)
             and isinstance(decorator.func, ast.Attribute)
             and decorator.func.attr == "command"
             and decorator.args
             and isinstance(decorator.args[0], ast.Constant)
+            and isinstance(decorator.args[0].value, str)
         ]
         calls_seeder = any(
             isinstance(node, ast.Name) and node.id == "_seed_demo_archive" for node in ast.walk(function)
