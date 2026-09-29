@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from click.testing import CliRunner
 
@@ -121,7 +121,7 @@ def test_named_postmortem_uses_inherited_json_renderer() -> None:
 
     runner = CliRunner()
     with (
-        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value={}),
+        patch("polylogue.api.archive.PolylogueArchiveMixin.postmortem_bundle", new=AsyncMock(return_value={})),
         patch("polylogue.surfaces.payloads.model_json_document", return_value={"fixture": True}),
         patch("polylogue.analysis.postmortem.postmortem_outcome", return_value=decide_outcome(matched=1)),
     ):
@@ -139,7 +139,7 @@ def test_analyze_facets_subcommand_honours_the_root_format() -> None:
     """
     runner = CliRunner()
     with (
-        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=object()),
+        patch("polylogue.api.archive.PolylogueArchiveMixin.facets", new=AsyncMock(return_value=object())),
         patch("polylogue.cli.query_verbs.emit_facets_response") as emit,
     ):
         result = runner.invoke(cli, ["--format", "json", "find", "repo:polylogue", "then", "analyze", "facets"])
@@ -152,7 +152,7 @@ def test_analyze_facets_local_format_still_wins_over_root() -> None:
     """An explicit subcommand ``--format`` is not overridden by the root."""
     runner = CliRunner()
     with (
-        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=object()),
+        patch("polylogue.api.archive.PolylogueArchiveMixin.facets", new=AsyncMock(return_value=object())),
         patch("polylogue.cli.query_verbs.emit_facets_response") as emit,
     ):
         result = runner.invoke(
