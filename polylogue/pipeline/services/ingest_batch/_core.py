@@ -382,8 +382,22 @@ def _scoped_foreign_key_sql(check: _ScopedForeignKey, placeholders: str) -> str:
         """
 
 
-def _unscoped_foreign_key_sql(check: _ScopedForeignKey) -> str:
-    """Probe one unscoped foreign key over the rows written since a rowid watermark."""
+#: Temp relations of an open ``foreign_keys=OFF`` window (``_open_unscoped_foreign_key_window``).
+_FK_WINDOW_ROWS = "polylogue_fk_window_rows"
+_FK_WINDOW_PARENT_KEYS = "polylogue_fk_window_parent_keys"
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _unscoped_foreign_key_sql(check: _ScopedForeignKey, index: int) -> str:
+    """Probe one unscoped foreign key over the child rows the open window can have orphaned.
+
+    Those are the child rows it inserted or updated, and the child rows whose
+    parent key it deleted or re-keyed (both recorded by the window's temp
+    triggers). Bound as ``(child table, check index)``.
+    """
     child = _quote_identifier(check.table)
     parent = _quote_identifier(check.parent)
     selected = ", ".join(f"c.{_quote_identifier(column)}" for column in check.child_columns)
@@ -392,12 +406,21 @@ def _unscoped_foreign_key_sql(check: _ScopedForeignKey) -> str:
         f"p.{_quote_identifier(parent_column)} = c.{_quote_identifier(child_column)}"
         for child_column, parent_column in zip(check.child_columns, check.parent_columns, strict=True)
     )
+    keyed = " AND ".join(
+        f"c.{_quote_identifier(child_column)} = k.k{position}"
+        for position, child_column in enumerate(check.child_columns)
+    )
     return f"""
+        WITH touched(rid) AS (
+            SELECT rid FROM temp.{_FK_WINDOW_ROWS} WHERE child = ?
+            UNION
+            SELECT c.rowid FROM temp.{_FK_WINDOW_PARENT_KEYS} AS k JOIN main.{child} AS c ON {keyed}
+            WHERE k.fk = ?
+        )
         SELECT c.rowid AS violation_rowid, {selected}
-        FROM {child} AS c
-        WHERE c.rowid > ?
-          AND {not_null}
-          AND NOT EXISTS (SELECT 1 FROM {parent} AS p WHERE {joined})
+        FROM touched AS t JOIN main.{child} AS c ON c.rowid = t.rid
+        WHERE {not_null}
+          AND NOT EXISTS (SELECT 1 FROM main.{parent} AS p WHERE {joined})
         """
 
 
@@ -415,6 +438,11 @@ def _unscoped_foreign_keys(conn: sqlite3.Connection, tables: Sequence[str]) -> t
             parent_columns = tuple(None if row[4] is None else str(row[4]) for row in ordered)
             if any(column is None for column in parent_columns):
                 parent_columns = _primary_key_columns(conn, parent)
+                if len(parent_columns) != len(child_columns):
+                    raise sqlite3.IntegrityError(
+                        f"cannot resolve implicit parent key for {table}.fk{fkid} -> {parent}: "
+                        f"{len(child_columns)} child columns against primary key {parent_columns}"
+                    )
             checks.append(
                 _ScopedForeignKey(
                     table=table,
@@ -428,24 +456,65 @@ def _unscoped_foreign_keys(conn: sqlite3.Connection, tables: Sequence[str]) -> t
     return tuple(checks)
 
 
-def _unscoped_foreign_key_watermarks(conn: sqlite3.Connection) -> dict[str, int]:
-    """The highest rowid of each unscoped child table when a ``foreign_keys=OFF`` window opens.
+def _close_unscoped_foreign_key_window(conn: sqlite3.Connection) -> None:
+    """Drop an open window's temp triggers and relations (a rollback drops them too)."""
+    for (name,) in conn.execute(
+        "SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name LIKE ? ESCAPE '\\'",
+        (_FK_WINDOW_ROWS.replace("_", "\\_") + "\\_%",),
+    ).fetchall():
+        conn.execute(f"DROP TRIGGER temp.{_quote_identifier(str(name))}")
+    conn.execute(f"DROP TABLE IF EXISTS temp.{_FK_WINDOW_ROWS}")
+    conn.execute(f"DROP TABLE IF EXISTS temp.{_FK_WINDOW_PARENT_KEYS}")
 
-    Taken inside that window's transaction, before any write, so every row
-    the window inserts lies above it.
+
+def _open_unscoped_foreign_key_window(conn: sqlite3.Connection) -> None:
+    """Record what a ``foreign_keys=OFF`` window can orphan in the tables no session owns.
+
+    Opened inside the window's transaction, before any write. Temp triggers
+    record every child row the window inserts or updates and every parent
+    key it deletes or re-keys, so the pre-commit probe checks exactly the
+    rows the window can have made violate, however their rowids were
+    allocated (a rowid watermark misses a deleted-then-reinserted row that
+    reuses the table's top rowid). The triggers and relations live in the
+    connection's temp schema and belong to the transaction: a rollback drops
+    them, and ``_close_unscoped_foreign_key_window`` drops them before commit.
+    No writer uses a REPLACE conflict on these parents, whose implicit delete
+    fires delete triggers only under ``recursive_triggers``.
     """
+    _close_unscoped_foreign_key_window(conn)
     _scoped, unscoped = _foreign_key_check_plan(conn)
-    return {
-        table: int(conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {_quote_identifier(table)}").fetchone()[0])
-        for table in unscoped
-    }
+    checks = _unscoped_foreign_keys(conn, unscoped)
+    width = max((len(check.parent_columns) for check in checks), default=1)
+    key_columns = ", ".join(f"k{position}" for position in range(width))
+    conn.execute(
+        f"CREATE TEMP TABLE {_FK_WINDOW_ROWS} "
+        "(child TEXT NOT NULL, rid INTEGER NOT NULL, PRIMARY KEY (child, rid)) WITHOUT ROWID"
+    )
+    conn.execute(f"CREATE TEMP TABLE {_FK_WINDOW_PARENT_KEYS} (fk INTEGER NOT NULL, {key_columns})")
+    conn.execute(f"CREATE INDEX temp.{_FK_WINDOW_PARENT_KEYS}_fk ON {_FK_WINDOW_PARENT_KEYS} (fk)")
+    for position, table in enumerate(unscoped):
+        for event in ("INSERT", "UPDATE"):
+            conn.execute(
+                f"CREATE TEMP TRIGGER {_FK_WINDOW_ROWS}_c{position}_{event.lower()} "
+                f"AFTER {event} ON main.{_quote_identifier(table)} BEGIN "
+                f"INSERT OR IGNORE INTO {_FK_WINDOW_ROWS} (child, rid) VALUES ({_sql_literal(table)}, NEW.rowid); END"
+            )
+    for index, check in enumerate(checks):
+        old_key = ", ".join(f"OLD.{_quote_identifier(column)}" for column in check.parent_columns)
+        slots = ", ".join(f"k{position}" for position in range(len(check.parent_columns)))
+        key_list = ", ".join(_quote_identifier(column) for column in check.parent_columns)
+        for event, name in (("DELETE", "delete"), (f"UPDATE OF {key_list}", "rekey")):
+            conn.execute(
+                f"CREATE TEMP TRIGGER {_FK_WINDOW_ROWS}_p{index}_{name} "
+                f"AFTER {event} ON main.{_quote_identifier(check.parent)} BEGIN "
+                f"INSERT INTO {_FK_WINDOW_PARENT_KEYS} (fk, {slots}) VALUES ({index}, {old_key}); END"
+            )
 
 
 def _foreign_key_violations_for_sessions(
     conn: sqlite3.Connection,
     session_ids: Iterable[str],
     *,
-    unscoped_since: Mapping[str, int],
     limit: int = 10,
 ) -> list[dict[str, object | None]]:
     """Return FK violations the bulk path's ``foreign_keys=OFF`` window admitted.
@@ -460,22 +529,17 @@ def _foreign_key_violations_for_sessions(
 
     A table that names an owning session is probed for the batch's sessions.
     A table no session owns (``attachment_native_ids``, ``repo_checkouts``,
-    the work-evidence graph) is probed for the rows this window inserted:
-    those above ``unscoped_since``, the per-table rowid watermark taken when
-    the window opened (``_unscoped_foreign_key_watermarks``). Re-checking the
-    whole child table on every batch made a replay of many large batches
-    quadratic in the archive. A window deletes none of those tables' parents
-    without deleting their children itself (the writer clears a session's
-    ``attachment_native_ids`` before its ``attachment_refs``), so a violation
-    they can carry is a row the window wrote.
+    the work-evidence graph) is probed for the rows the open window
+    (``_open_unscoped_foreign_key_window``) recorded: the child rows it wrote
+    and the child rows whose parent key it removed. Re-checking the whole
+    child table on every batch made a replay of many large batches quadratic
+    in the archive.
     """
     scoped_session_ids = tuple(sorted({session_id for session_id in session_ids if session_id}))
-    if not scoped_session_ids:
-        return []
     placeholders = ",".join("?" for _ in scoped_session_ids)
     scoped_checks, unscoped_tables = _foreign_key_check_plan(conn)
     violations: list[dict[str, object | None]] = []
-    for check in scoped_checks:
+    for check in scoped_checks if scoped_session_ids else ():
         sql = _scoped_foreign_key_sql(check, placeholders)
         for row in conn.execute(sql, scoped_session_ids).fetchall():
             violations.append(
@@ -490,10 +554,8 @@ def _foreign_key_violations_for_sessions(
             )
             if len(violations) >= limit:
                 return violations
-    for check in _unscoped_foreign_keys(conn, unscoped_tables):
-        # A table with no recorded watermark was empty-and-new to this window.
-        since = unscoped_since.get(check.table, 0)
-        for row in conn.execute(_unscoped_foreign_key_sql(check), (since,)).fetchall():
+    for index, check in enumerate(_unscoped_foreign_keys(conn, unscoped_tables)):
+        for row in conn.execute(_unscoped_foreign_key_sql(check, index), (check.table, index)).fetchall():
             violations.append(
                 {
                     "table": check.table,
@@ -2862,7 +2924,8 @@ def _consume_ingest_results(
         if suspend_fts_triggers:
             from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
-            summary.unscoped_foreign_key_watermarks = _unscoped_foreign_key_watermarks(conn)
+            _open_unscoped_foreign_key_window(conn)
+            summary.foreign_key_window_open = True
             suspend_fts_triggers_sync(conn, mark_stale=mark_fts_stale_on_suspend)
         transaction_started = True
 
@@ -3515,13 +3578,12 @@ def _process_ingest_batch_sync(
             conn.execute("BEGIN IMMEDIATE")
             transaction_started = True
         if transaction_started:
-            if suspend_fts_triggers:
-                fk_violations = _foreign_key_violations_for_sessions(
-                    conn, materialized_ids, unscoped_since=summary.unscoped_foreign_key_watermarks
-                )
+            if suspend_fts_triggers and summary.foreign_key_window_open:
+                fk_violations = _foreign_key_violations_for_sessions(conn, materialized_ids)
                 if fk_violations:
                     detail = _format_foreign_key_violations(fk_violations)
                     raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {detail}")
+                _close_unscoped_foreign_key_window(conn)
             fts_repair_ids = set(summary.fts_repair_session_ids)
             if marker_acceptance_enabled:
                 partial_raw_ids = sorted(
