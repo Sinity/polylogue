@@ -59,9 +59,15 @@ def prepare_retained_non_json_artifact_worker(
         )
 
 
-def make_raw_observation_derivation(archive_root: Path) -> RawObservationDerivation:
+def make_raw_observation_derivation(
+    archive_root: Path, *, index_db_path: Path | None = None
+) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
-    return RawObservationDerivation(archive_root, prepare_non_json_artifact=prepare_retained_non_json_artifact_worker)
+    return RawObservationDerivation(
+        archive_root,
+        prepare_non_json_artifact=prepare_retained_non_json_artifact_worker,
+        index_db_path=index_db_path,
+    )
 
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:
@@ -93,16 +99,20 @@ def raw_observation_frame(
     *,
     source_roots: Sequence[Path] = (),
     raw_ids: Sequence[str] = (),
+    index_db_path: Path | None = None,
 ) -> DerivationFrame:
+    index_path = index_db_path or ArchiveLocation.resolve(archive_root).active_index_path
     return DerivationFrame(
         archive_root=str(archive_root),
-        source_revision=str(ArchiveLocation.resolve(archive_root).active_index_path.resolve()),
+        source_revision=str(index_path.resolve()),
         recipe_versions={RAW_OBSERVATION_DOMAIN: _RAW_OBSERVATION_RECIPE_VERSION},
         scope=RawObservationScope(source_roots=tuple(source_roots), raw_ids=tuple(raw_ids)),
     )
 
 
-def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[str, object]:
+def raw_observation_backlog_snapshot(
+    archive_root: Path, *, limit: int, index_db_path: Path | None = None
+) -> dict[str, object]:
     """Describe one bounded canonical raw-observation page for status surfaces.
 
     Status is observational and must not reintroduce a second all-raw
@@ -128,8 +138,10 @@ def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[
             "page_complete": True,
         }
 
-    adapter = make_raw_observation_derivation(archive_root)
-    frame = raw_observation_frame(archive_root)
+    adapter = make_raw_observation_derivation(archive_root, index_db_path=index_db_path)
+    frame = raw_observation_frame(archive_root, index_db_path=index_db_path)
+    from polylogue.sources.dispatch import is_stream_record_provider
+
     try:
         raw_ids, next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
         states = adapter.inspect(frame, raw_ids)
@@ -140,6 +152,8 @@ def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[
         return {
             "available": True,
             "scan": "bounded_raw_observation_page",
+            # This page can prove zero pending rows only when the traversal is
+            # complete. An incomplete page is a lower bound, never a total.
             "candidate_count": 0,
             "total_blob_bytes": 0,
             "max_blob_bytes": 0,
@@ -151,7 +165,7 @@ def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[
         }
     with adapter._read() as conn:
         selected = conn.execute(
-            f"SELECT raw_id, origin, source_path, blob_size FROM raw_sessions "
+            f"SELECT raw_id, origin, detected_provider, source_path, blob_size FROM raw_sessions "
             f"WHERE raw_id IN ({','.join('?' for _ in pending_ids)})",
             pending_ids,
         ).fetchall()
@@ -162,8 +176,12 @@ def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[
                 "origin": str(row["origin"]),
                 "source_path": str(row["source_path"] or ""),
                 "blob_size": int(row["blob_size"] or 0),
-                "oversized": False,
-                "stream_safe": True,
+                "oversized": int(row["blob_size"] or 0) > 64 * 1024 * 1024,
+                # Stream safety is a provider-wire property: use the acquisition
+                # provider evidence, never a reversed public origin token.
+                "stream_safe": is_stream_record_provider(
+                    str(row["source_path"] or ""), str(row["detected_provider"] or "")
+                ),
             }
             for row in selected
         ),

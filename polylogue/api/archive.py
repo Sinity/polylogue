@@ -37,7 +37,7 @@ from polylogue.archive.query.spec import (
     resolve_default_root_filter,
 )
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import (
@@ -4804,6 +4804,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                         "material_origin": tuple(material_origin),
                     },
                 ),
+                content_projection=content_projection,
             )
         except ValueError as exc:
             if str(exc).startswith("session not found:"):
@@ -4818,8 +4819,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 window.lineage_truncation_reason,
             ),
         )
-        if content_projection is not None and content_projection.filters_content():
-            messages = project_message_content(messages, content_projection)
+        # message_transcript_window already applied content_projection before
+        # pagination; projecting again would reclassify projected code as prose.
         return messages, total, completeness
 
     async def read_transcript_window(

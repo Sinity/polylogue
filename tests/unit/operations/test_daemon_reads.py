@@ -12,6 +12,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.operations.daemon_reads import (
     DaemonReadDependencies,
+    _cacheable_read,
     execute_read_operation,
     requires_vector_snapshot,
     vector_binding_from_config,
@@ -19,6 +20,30 @@ from polylogue.operations.daemon_reads import (
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+
+
+def test_sampled_and_moving_date_queries_are_not_cached() -> None:
+    """Random and relative bounds change results while the index stays fixed.
+
+    Anti-vacuity: treating sample or a natural-language cutoff as an ordinary
+    stable query makes this predicate cacheable under the unchanged payload.
+    """
+    assert not _cacheable_read("cli.query", {"sample": 5})
+    assert not _cacheable_read("cli.query", {"sort": "random"})
+    assert not _cacheable_read("cli.query", {"since": "1 hour ago"})
+    assert not _cacheable_read("cli.query", {"until": "yesterday"})
+    assert _cacheable_read("cli.query", {"since": "2026-09-01"})
+
+
+def test_session_read_preserves_the_declared_2000_row_window() -> None:
+    """Generic session reads accept the full public request bound.
+
+    Anti-vacuity: routing through a narrower internal ``Bound`` rejects a
+    request accepted by ``SessionReadRequest`` before transcript paging.
+    """
+    from polylogue.operations.session_contracts import SessionRead
+
+    assert SessionRead.model_validate({"ref": "session:sample", "limit": 1500}).limit == 1500
 
 
 @dataclass
@@ -488,11 +513,40 @@ def test_transcript_total_is_the_composed_length(tmp_path: Path) -> None:
             archive=archive,
             serving_identity="test",
         )
+        filtered_page = execute_read_operation(
+            "session.read",
+            {
+                "ref": f"session:{child_id}",
+                "kind": "messages",
+                "limit": 2,
+                "projection": {"exclude_block_kinds": ["thinking"]},
+            },
+            archive=archive,
+            serving_identity="test",
+        )
+        empty_page = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{child_id}", "kind": "messages", "limit": 2, "offset": 4},
+            archive=archive,
+            serving_identity="test",
+        )
 
     assert stored == 2, "fixture must be a real prefix-sharing child storing only its tail"
     assert first["total"] == 4
     assert first["next_offset"] == 2, "pagination must reach the divergent tail"
     assert messages_kind["total"] == first["total"], "two vocabularies, one window"
+    assert cast(dict[str, Any], empty_page["outcome"])["state"] == "empty"
+    continuation = cast(str, filtered_page["continuation"])
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        with pytest.raises(QueryContinuationInvalidError):
+            execute_read_operation(
+                "session.read",
+                {"ref": f"session:{child_id}", "kind": "messages", "continuation": continuation},
+                archive=archive,
+                serving_identity="test",
+            )
 
 
 def test_search_continuation_survives_a_session_grain_total(tmp_path: Path) -> None:

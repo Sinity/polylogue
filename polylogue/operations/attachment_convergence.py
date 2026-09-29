@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
@@ -163,6 +163,7 @@ def _surviving_blob_ref(
     raw_id: str,
     source_path: str,
     blob_store: ArchiveBlobPublisher,
+    verified_hashes: dict[bytes, bool],
 ) -> tuple[bytes, int] | None:
     """Return the blob a retained source ref still names, when it survives.
 
@@ -210,7 +211,11 @@ def _surviving_blob_ref(
     size_bytes = int(rows[0][1])
     if is_blob_hash_excised(source_conn, blob_hash):
         return None
-    if not blob_store.verify(blob_hash.hex()):
+    verified = verified_hashes.get(blob_hash)
+    if verified is None:
+        verified = blob_store.verify(blob_hash.hex())
+        verified_hashes[blob_hash] = verified
+    if not verified:
         if blob_store.exists(blob_hash.hex()):
             # Durable-ledger evidence contradicted by the object it names.
             # Silently re-downloading would repair the row and erase the only
@@ -283,7 +288,7 @@ def converge_drive_attachments(
         )
     rows = _candidate_rows(index_conn, limit=limit)
     if not rows:
-        return AttachmentConvergenceResult(unresolved_identity=unresolved_identity)
+        return AttachmentConvergenceResult(unresolved_identity=unresolved_identity, deferred=unresolved_identity)
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     acquired_refs: list[ArchiveSourceBlobRef] = []
     acquired_rows: list[tuple[str, bytes, int]] = []
@@ -302,6 +307,7 @@ def converge_drive_attachments(
     # bounded pass must not spend one Drive request per ref; retain only the
     # fetch outcome (never the payload) and still emit one source ref per raw.
     fetch_outcomes: dict[str, tuple[str, bytes | None, int]] = {}
+    verified_survivors: dict[bytes, bool] = {}
     observed_at_ms = now_ms() if now_ms is not None else int(time.time() * 1000)
 
     try:
@@ -319,6 +325,7 @@ def converge_drive_attachments(
                 raw_id=raw_id,
                 source_path=source_path,
                 blob_store=publisher,
+                verified_hashes=verified_survivors,
             )
             if surviving is not None:
                 # The bytes are already in the blob store and the durable
@@ -505,7 +512,7 @@ def converge_drive_attachments(
         inspected=len(rows),
         acquired=len(acquired_rows) + len(rebound_rows),
         terminal=len(terminal_ids),
-        deferred=deferred,
+        deferred=deferred + unresolved_identity,
         excised=len(excised_ids),
         unresolved_identity=unresolved_identity,
         contradicted=len(contradicted_ids),
@@ -574,11 +581,23 @@ def make_attachment_convergence_stage(
             source.close()
             index.close()
 
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        active = tuple(paths)
+        return set(active) if active and _has_work() else set()
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        active = tuple(paths)
+        if not active:
+            return True
+        return execute(active[0])
+
     return ConvergenceStage(
         name="attachment_bytes",
         description="Backfill provider-hosted attachment bytes from canonical references",
         check=check,
         execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
         false_means_pending=True,
         whole_archive=True,
         writer_admission="bridged",

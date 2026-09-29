@@ -44,7 +44,7 @@ _TIER_UNAVAILABLE_ERRORS = (sqlite3.Error, SchemaSkewError)
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 23
+REPORT_VERSION = 24
 UNKNOWN_TABLE_COUNT = -2
 
 #: The two table-count sentinels, neither of which is a cardinality: ``-1``
@@ -1341,12 +1341,14 @@ def _archive_single_tier_state(
     # schema version. The workload report adds only its diagnostics-specific
     # integrity and table-count facts, so it cannot disagree with daemon or
     # direct-CLI status about the basic tier state.
-    tier_probe = probe_archive_tier(tier, path)
+    # Active index-generation directories symlink durable tiers back to the
+    # archive root. Probe the target so the WAL sidecar is found beside it.
+    tier_probe = probe_archive_tier(tier, path.resolve())
     if not tier_probe.exists:
         return {
             "path": tier_probe.path,
             "exists": False,
-            "size_bytes": None,
+            "size_bytes": tier_probe.size_bytes,
             "wal_size_bytes": 0,
             "user_version": tier_probe.user_version,
             "version_status": tier_probe.version_status,
@@ -2572,8 +2574,27 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         "unresolved_count": _debt_entry("unresolved_count", "failed_count"),
     }
 
-    before_backlog = _coerce_int_map((before.get("automatic_convergence_backlog") or {}).get("counts") or {})
-    after_backlog = _coerce_int_map((after.get("automatic_convergence_backlog") or {}).get("counts") or {})
+    before_backlog_raw = (before.get("automatic_convergence_backlog") or {}).get("counts") or {}
+    after_backlog_raw = (after.get("automatic_convergence_backlog") or {}).get("counts") or {}
+    before_backlog = _coerce_int_map(before_backlog_raw)
+    after_backlog = _coerce_int_map(after_backlog_raw)
+    before_backlog.pop("retry_debt_unresolved", None)
+    after_backlog.pop("retry_debt_unresolved", None)
+
+    def _retry_backlog_side(snapshot: Mapping[str, Any]) -> int | None:
+        if not bool(snapshot.get("retry_debt_available", True)):
+            return None
+        value = (snapshot.get("counts") or {}).get("retry_debt_unresolved")
+        return None if value is None else int(value)
+
+    before_retry = _retry_backlog_side(before.get("automatic_convergence_backlog") or {})
+    after_retry = _retry_backlog_side(after.get("automatic_convergence_backlog") or {})
+    retry_backlog_delta = {
+        "before": before_retry,
+        "after": after_retry,
+        "delta": after_retry - before_retry if before_retry is not None and after_retry is not None else None,
+        "measured": before_retry is not None and after_retry is not None,
+    }
 
     before_timings = before.get("convergence_stage_timings") or {}
     after_timings = after.get("convergence_stage_timings") or {}
@@ -2615,7 +2636,10 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         "automatic_convergence_backlog": {
             "state_before": (before.get("automatic_convergence_backlog") or {}).get("state"),
             "state_after": (after.get("automatic_convergence_backlog") or {}).get("state"),
-            "counts": _int_map_delta(before_backlog, after_backlog),
+            "counts": {
+                **_int_map_delta(before_backlog, after_backlog),
+                "retry_debt_unresolved": retry_backlog_delta,
+            },
         },
         "convergence_debt": debt_delta,
         "convergence_stage_timings": timing_delta,
@@ -2703,6 +2727,15 @@ def _archive_tier_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[s
             "integrity_after": after_tier.get("integrity"),
             "size_bytes_before": before_tier.get("size_bytes"),
             "size_bytes_after": after_tier.get("size_bytes"),
+            "wal_size_bytes": {
+                "before": before_tier.get("wal_size_bytes"),
+                "after": after_tier.get("wal_size_bytes"),
+                "delta": (
+                    int(after_tier["wal_size_bytes"]) - int(before_tier["wal_size_bytes"])
+                    if before_tier.get("wal_size_bytes") is not None and after_tier.get("wal_size_bytes") is not None
+                    else None
+                ),
+            },
             "table_counts": table_deltas,
         }
     return {

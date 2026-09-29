@@ -472,6 +472,24 @@ def _write_parsed_precedence_result(
     existing_hash = existing_row["content_hash"] if existing_row is not None else None
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
     content_unchanged = existing_row is not None and existing_hash_hex == content_hash
+    if content_unchanged:
+        incoming_aliases = {
+            str(value).strip()
+            for value in (session.provider_session_id, *session.provider_session_aliases)
+            if str(value).strip()
+        }
+        stored_aliases = {
+            str(row[0])
+            for row in store._conn.execute(
+                "SELECT provider_value FROM session_identity_claims "
+                "WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'",
+                (session_id,),
+            ).fetchall()
+        }
+        # Alias claims are excluded from content identity but still drive
+        # lineage resolution. Force the normal writer when their set changes
+        # so it refreshes claims and invalidates affected child links.
+        content_unchanged = incoming_aliases == stored_aliases
     existing_is_dom_fallback = False
     incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
     existing_has_native_browser_payload = False

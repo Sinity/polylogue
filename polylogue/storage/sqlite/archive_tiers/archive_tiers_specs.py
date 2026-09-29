@@ -513,7 +513,7 @@ MESSAGES_SPEC = _make_table_spec(
             "content_hash",
             f"content_hash BLOB NOT NULL {CONTENT_HASH_CHECK}",
             record_name="content_hash",
-            select_expression="lower(hex({alias}.content_hash))",
+            select_expression="CASE WHEN {alias}.content_hash IS NULL THEN NULL ELSE lower(hex({alias}.content_hash)) END",
         ),
         _raw_column(
             "occurred_at_ms",
@@ -631,7 +631,12 @@ BLOCKS_SPEC = _make_table_spec(
             domain_name="tool_result_outcome_unknown_reason",
         ),
         _raw_column("signature", "signature TEXT", record_name="signature", domain_name="signature"),
-        _raw_column("content_hash", "content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)"),
+        _raw_column(
+            "content_hash",
+            "content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)",
+            record_name="content_hash",
+            select_expression="CASE WHEN {alias}.content_hash IS NULL THEN NULL ELSE lower(hex({alias}.content_hash)) END",
+        ),
         # polylogue-7k3n0: the generated columns and the FTS projection read
         # the one declared key vocabulary, so the stored authority can never
         # again be narrower than the Python readers of the same fact.
@@ -1001,7 +1006,7 @@ SESSIONS_SPEC = _make_table_spec(
             "content_hash",
             f"""content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK}""",
             record_name="content_hash",
-            select_expression="lower(hex({alias}.content_hash))",
+            select_expression="CASE WHEN {alias}.content_hash IS NULL THEN NULL ELSE lower(hex({alias}.content_hash)) END",
             conflict_update="excluded.content_hash",
         ),
         _raw_column(

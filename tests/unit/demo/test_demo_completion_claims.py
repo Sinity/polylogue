@@ -381,6 +381,26 @@ def test_demo_receipts_returns_a_failed_result_for_an_unreadable_archive(tmp_pat
     assert any(problem.startswith("completion-claim evidence unreadable:") for problem in result.problems)
 
 
+@pytest.mark.parametrize("tier", ["index", "source"])
+def test_demo_receipts_returns_failed_result_on_schema_refusal(tmp_path: Path, tier: str) -> None:
+    """Database schema refusals become a result instead of escaping.
+
+    Anti-vacuity: if either evidence tier's catch omits DatabaseError, changing
+    its user_version makes this call raise instead of returning the failed proof.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    db_path = archive_root / f"{tier}.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA user_version = 999")
+
+    result = inspect_demo_receipts(archive_root)
+
+    assert result.ok is False
+    assert any(problem.startswith("archive evidence unreadable:") for problem in result.problems)
+    assert any(problem.startswith("source evidence unreadable:") for problem in result.problems)
+
+
 @pytest.mark.asyncio
 async def test_completion_claims_only_cli_runs_without_fixture_receipts(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"

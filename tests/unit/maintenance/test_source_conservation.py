@@ -264,11 +264,11 @@ def test_configured_but_unacquired_member_blocks_even_with_other_rows(tmp_path: 
     assert _count(check, "frontier_unacquired") == 1
 
 
-def test_archive_member_frontier_matches_the_canonical_member_coordinate(tmp_path: Path) -> None:
-    """An acquired ``archive!member`` address must not become an orphan.
+def test_archive_member_frontier_matches_the_production_zip_address(tmp_path: Path) -> None:
+    """A production ``archive:member`` address must not become an orphan.
 
-    Anti-vacuity: building the expected address from the already archive-prefixed
-    frontier coordinate produces ``archive!archive!member``.  Falling back to
+    Anti-vacuity: adding a second separator to the already archive-prefixed
+    frontier coordinate produces ``archive:archive!member``. Falling back to
     the archive root then loses member-level ownership and cannot distinguish
     equal-byte sibling members.
     """
@@ -277,7 +277,7 @@ def test_archive_member_frontier_matches_the_canonical_member_coordinate(tmp_pat
     with zipfile.ZipFile(archive, "w") as output:
         output.writestr("sessions/one.json", "session payload")
     blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"session payload")[0]
-    source_path = Path(f"{archive}!sessions/one.json")
+    source_path = Path(f"{archive}:sessions/one.json")
     source_conn = sqlite3.connect(tmp_path / "source.db")
     try:
         _insert_raw(

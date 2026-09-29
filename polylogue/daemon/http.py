@@ -5607,7 +5607,9 @@ class _StandaloneWriteRuntime:
             asyncio.set_event_loop(self.loop)
             self.coordinator = DaemonWriteCoordinator(archive_root=archive_root)
             register_write_coordinator(self.loop, self.coordinator)
-            ready.set()
+            # Signal readiness from inside the running loop, so a caller that
+            # passes the wait can never see is_running() still false.
+            self.loop.call_soon(ready.set)
             self.loop.run_forever()
             self.loop.close()
 

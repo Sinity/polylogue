@@ -636,6 +636,7 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
                 """
                 SELECT rowid, attempt_id, observed_at_ms, stage, status, payload_json
                 FROM daemon_stage_events
+                WHERE attempt_id IS NOT NULL
                 ORDER BY observed_at_ms DESC, rowid DESC
                 LIMIT 10
                 """

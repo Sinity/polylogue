@@ -2010,6 +2010,16 @@ def render_compare_page(
         f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     data = payload or {}
+    if payload is None:
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>Workspace · compare · Polylogue</title>{styles}</head>
+<body><a class="skip-link" href="#main">Skip to workspace compare</a>
+{_render_site_header("/")}
+<main id="main" class="page-shell"><h1>Workspace compare</h1>
+<p class="lede">A bounded side-by-side projection over the served message window.</p>
+<section class="activity-panel" aria-labelledby="compare-title"><h2 id="compare-title">Workspace compare</h2>
+<p class="lede">{html.escape(empty)}</p></section></main></body></html>"""
     left_side = data.get("left")
     right_side = data.get("right")
     left_label = _compare_side_label(left_side if isinstance(left_side, Mapping) else None, "left")

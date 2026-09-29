@@ -104,6 +104,7 @@ def build_topology_envelope(
     topology: SessionTopology,
     *,
     node_limit: int = DEFAULT_NODE_LIMIT,
+    node_offset: int = 0,
 ) -> dict[str, object]:
     """Frame the canonical topology envelope for the HTTP reader.
 
@@ -122,7 +123,7 @@ def build_topology_envelope(
     """
 
     effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
-    bounded = topology_public_envelope(topology, node_limit=effective_limit)
+    bounded = topology_public_envelope(topology, node_limit=effective_limit, node_offset=node_offset)
 
     kept_nodes = cast("list[dict[str, object]]", bounded["nodes"])
     kept_edges = cast("list[dict[str, object]]", bounded["edges"])

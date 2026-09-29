@@ -293,7 +293,9 @@ def audit_revision_fidelity(
     worst: list[dict[str, Any]] = []
     for (origin, provider_session_id), best_count in best.items():
         session_id = f"{origin}:{provider_session_id}"
-        have_messages = messages.get(session_id)
+        # An indexed session with no message rows has zero messages; it is
+        # compared like any other rather than left unresolved.
+        have_messages = messages.get(session_id, 0 if session_id in indexed_sessions else None)
         have_events = events.get(session_id, 0)
         state = "unresolved_shortfall"
         reasons: list[str] = []
@@ -365,9 +367,17 @@ def audit_revision_fidelity(
             "inheritance": inheritance,
             "best_recorded_messages": best_count,
         }
-        states.append(record)
+        if len(states) < sample_limit:
+            states.append(record)
         if state == "unresolved_shortfall":
             worst.append(record)
+            worst.sort(
+                key=lambda item: (
+                    item["indexed_messages"] is not None,
+                    (item["indexed_messages"] or 0) - item["best_recorded_messages"],
+                )
+            )
+            del worst[sample_limit:]
     worst.sort(
         key=lambda item: (
             item["indexed_messages"] is not None,
@@ -515,14 +525,22 @@ def audit_chatgpt_content_conservation(
         artifact_classes["raw_session"] += 1
         try:
             blob = read_blob(bytes(blob_hash).hex())
-            payload = json.loads(blob)
-        except (OSError, ValueError, TypeError):
+        except OSError:
             blobs_missing += 1
             if len(unreadable_raws) < sample_limit:
                 unreadable_raws.append(str(raw_id))
             continue
+        # The blob was read: count it as readable before classifying its
+        # contents, so malformed JSON is reported as such, not as unreadable.
         blobs_readable += 1
         bytes_scanned += len(blob)
+        try:
+            payload = json.loads(blob)
+        except (ValueError, TypeError):
+            unsupported_envelope_classes["malformed_json"] += 1
+            if len(unreadable_raws) < sample_limit:
+                unreadable_raws.append(str(raw_id))
+            continue
         documents = lower_chatgpt_documents(payload, str(raw_id))
         if not documents:
             unsupported_envelope_classes["unsupported_or_malformed"] += 1
