@@ -684,6 +684,14 @@ Verbs determine the action applied to the matched session set.
 | `select` | Select and print a single field |
 | `delete` | Delete matched sessions (requires `--dry-run` confirmation) |
 
+`delete` and `mark` act on the complete matched set, resolved once to full
+session ids; the daemon's preview records those ids, and execution and crash
+recovery act on exactly them, never on a re-run query or a prefix match. A
+selector that would name a different set is refused before anything is read:
+`--limit`, `--offset`, `--cursor`, and `--sample` (and a `limit`/`offset` in
+the query expression) window a page the verb would ignore, and `--latest`
+with `--all` is contradictory. `--latest` alone selects one session.
+
 ## Retrieval Lanes
 
 Lane selection lives on the query as `retrieval_lane`. The resolved value

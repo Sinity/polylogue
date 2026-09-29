@@ -34,18 +34,23 @@ from polylogue.sources.decoder_json import (
     drive_chunked_prompt_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
+    grok_taxonomy_witness,
     hermes_snapshot_envelope,
+    iter_container_member_files,
     iter_grok_export_events,
     iter_json_container_records,
+    iter_root_array_items,
     json_record_container,
     normalize_ijson_stdlib_numbers,
+    scan_container_members,
     spill_member_arrays,
     spill_otlp_spans,
 )
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
-    iter_bundle_record_sessions,
+    BundleCandidateDrift,
+    bundle_member_sessions,
     parse_generic_messages_stream,
     parse_payload,
     parse_stream_payload,
@@ -85,6 +90,7 @@ from polylogue.sources.prepared_message_sink import (
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
+from polylogue.sources.value_bounds import ValueBoundRefusedError
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWrite,
     append_session_to_shard,
@@ -396,6 +402,155 @@ def _index_otlp_spans(
     for table in ("otlp_resource", "otlp_scope", "otlp_span", "otlp_unknown_kind"):
         conn.execute(f"DROP TABLE {table}")
     return result
+
+
+#: The member fields ``browser_capture.looks_like`` reads.
+_BROWSER_CAPTURE_SHAPE_KEYS = frozenset({"polylogue_capture_kind", "schema_version", "session", "provenance"})
+
+#: Parser-only ChatGPT scratch, which never reaches a sealed artifact.
+_CHATGPT_PARSER_SCRATCH_TABLES = (
+    "chatgpt_node",
+    "chatgpt_child",
+    "chatgpt_sibling",
+    "chatgpt_entry",
+    "scratch_string_set",
+    "scratch_string_map",
+)
+
+
+def _streamed_bundle_member(
+    provider: Provider,
+    member_path: Path,
+    store: SqliteMessageStore,
+    fallback_id: str,
+    *,
+    all_browser_captures: bool,
+) -> tuple[bool, list[ParsedSession]]:
+    """Parse one bundle member through its single-object streaming route.
+
+    ``member_path`` holds one object member of a record container. When the
+    single-object probe proves the member is a conversation the bundle
+    lowering hands to that provider's parser -- a ChatGPT mapping, a
+    claude.ai ``chat_messages`` chat, or a Claude Design ``messages`` chat --
+    its messages, events and attachments go to ``store`` from the first
+    record, and ``(True, sessions)`` is returned. Otherwise, or when the
+    probe meets a value SQLite cannot store (the collecting lowering stores
+    only the fields it reads, so it decides that refusal), every scratch
+    write is rolled back and ``(False, [])`` asks for the collecting route.
+    """
+    if all_browser_captures or provider not in BUNDLE_PROVIDERS:
+        return False, []
+    conn = store.conn
+    conn.execute("SAVEPOINT bundle_member")
+    try:
+        session = _stream_member_session(provider, member_path, store, fallback_id)
+    except ValueBoundRefusedError:
+        session = None
+        streamed = False
+    except BaseException:
+        conn.execute("ROLLBACK TO bundle_member")
+        conn.execute("RELEASE bundle_member")
+        raise
+    else:
+        streamed = session is not None
+    if not streamed:
+        conn.execute("ROLLBACK TO bundle_member")
+    conn.execute("RELEASE bundle_member")
+    return streamed, [session] if session is not None else []
+
+
+def _stream_member_session(
+    provider: Provider, member_path: Path, store: SqliteMessageStore, fallback_id: str
+) -> ParsedSession | None:
+    if provider is Provider.CHATGPT:
+        with member_path.open("rb") as handle:
+            read_result = read_chatgpt_mapping_object(handle, store.conn)
+        if read_result is None:
+            return None
+        envelope, mapping = read_result
+        shallow = mapping.shallow_view()
+        if (
+            # A mapping-carrying capture envelope keeps its own lowering, and
+            # the fragment shape is what the bundle lowering admits.
+            browser_capture.looks_like({**envelope, "mapping": {}})
+            or not mapping.children_are_all_strings()
+            or not chatgpt._mapping_nodes_are_valid(shallow)
+            or not chatgpt._mapping_node_shape_is_plausible(shallow)
+        ):
+            return None
+        session = chatgpt.parse({**envelope, "mapping": shallow}, fallback_id, spill=ScratchSessionSpill(store))
+        source_attachments: object = session.attachments
+        if not isinstance(source_attachments, SqliteAttachmentSink):
+            attachments = store.new_attachment_sink()
+            attachments.extend(session.attachments)
+            session = session.model_copy(update={"attachments": attachments})
+        source_events: object = session.session_events
+        if not isinstance(source_events, SqliteSessionEventSink):
+            events = store.new_event_sink()
+            events.extend(session.session_events)
+            session = session.model_copy(update={"session_events": events})
+        for table in _CHATGPT_PARSER_SCRATCH_TABLES:
+            store.conn.execute(f"DROP TABLE IF EXISTS {table}")
+        return session
+    if provider is Provider.CLAUDE_AI:
+        with member_path.open("rb") as handle:
+            claude_object = claude_ai_object_envelope(handle)
+        if claude_object is None:
+            return None
+        return _stream_claude_ai_object(member_path, *claude_object, store, fallback_id)
+    with member_path.open("rb") as handle:
+        design_envelope = claude_design_object_envelope(handle)
+    if design_envelope is None:
+        return None
+    with member_path.open("rb") as handle:
+        return parse_design_stream(
+            design_envelope,
+            (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "messages.item")),
+            fallback_id,
+            message_sink=store.new_sink(),
+            event_sink=store.new_event_sink(),
+            attachment_sink=store.new_attachment_sink(),
+        )
+
+
+def _stream_claude_ai_object(
+    path: Path,
+    envelope: dict[str, JSONValue],
+    attachment_arrays: tuple[str, ...],
+    store: SqliteMessageStore,
+    fallback_id: str,
+) -> ParsedSession:
+    """Lower a proved claude.ai conversation with its evidence, graph and attachments in scratch."""
+
+    def conversation_attachments() -> Iterator[JSONValue]:
+        for key in attachment_arrays:
+            with path.open("rb") as handle:
+                yield from iter_root_array_items(handle, key)
+
+    evidence_store = ClaudeChatEvidence(store.conn)
+    attachment_rows = ClaudeAttachmentScratch(store.conn)
+    with path.open("rb") as handle:
+        session = parse_ai_stream(
+            envelope,
+            (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "chat_messages.item")),
+            fallback_id,
+            conversation_attachments=conversation_attachments(),
+            evidence_store=evidence_store,
+            graph_connection=store.conn,
+            messages=store.new_sink(),
+            session_events=store.new_event_sink(),
+            attachment_rows=attachment_rows,
+            attachments=store.new_attachment_sink(),
+        )
+    evidence_store.close()
+    attachment_rows.close()
+    return session
+
+
+def _classify_grok_witness(source: Path, classify: Callable[[JSONValue], bool]) -> bool:
+    with source.open("rb") as handle:
+        witness = grok_taxonomy_witness(handle)
+    return classify(witness)
 
 
 def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -826,7 +981,7 @@ def prepare_jsonl_blob(
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
-    classify_grok_export: Callable[[int, bool], bool] | None = None,
+    classify_grok_export: Callable[[JSONValue], bool] | None = None,
     classify_generic_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
@@ -836,6 +991,7 @@ def prepare_jsonl_blob(
     classify_hermes_atif_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_otel_object: Callable[[dict[str, JSONValue]], bool] | None = None,
+    classify_bundle_members: Callable[[Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -847,6 +1003,7 @@ def prepare_jsonl_blob(
         if artifact_directory.parent != directory:
             raise ValueError("prepared attempt directory must be a direct child of the shard directory")
     sessions_path = artifact_directory / f"prepared-{uuid.uuid4().hex}.db"
+    member_path = artifact_directory / f"member-{uuid.uuid4().hex}.json"
     shard_path: Path | None = None
     store: SqliteMessageStore | None = None
     shard_builder: SessionShardBuilder | None = None
@@ -857,11 +1014,16 @@ def prepare_jsonl_blob(
         provider = Provider.from_string(provider_value)
         store = SqliteMessageStore(sessions_path)
         before_hash = _source_digest(source)
+        record_container: str | None = None
         stream_prefix: str | None = None
+        bundle_count = 0
+        bundle_browser_captures = True
+        bundle_witnesses: list[JSONValue] = []
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
         design_envelope: dict[str, JSONValue] | None = None
         claude_ai_envelope: dict[str, JSONValue] | None = None
+        claude_ai_arrays: tuple[str, ...] = ()
         drive_chunked: tuple[dict[str, JSONValue], str] | None = None
         atif: tuple[dict[str, JSONValue], bool] | None = None
         otel: tuple[dict[str, JSONValue], str, tuple[otel_genai.OtelSpanIndex, str | None]] | None = None
@@ -870,7 +1032,6 @@ def prepare_jsonl_blob(
         gemini_envelope: dict[str, JSONValue] | None = None
         gemini_sidecar_scope: RetainedSidecarScope | None = None
         grok_count: int | None = None
-        grok_positive_marker = False
         if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
             with source.open("rb") as handle:
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
@@ -884,8 +1045,8 @@ def prepare_jsonl_blob(
             ):
                 chatgpt_envelope, chatgpt_mapping = read_result
             else:
-                store.conn.execute("DROP TABLE chatgpt_node")
-                store.conn.execute("DROP TABLE chatgpt_child")
+                for table in _CHATGPT_PARSER_SCRATCH_TABLES:
+                    store.conn.execute(f"DROP TABLE IF EXISTS {table}")
         if (
             not is_stream
             and provider is Provider.GEMINI_CLI
@@ -950,26 +1111,38 @@ def prepare_jsonl_blob(
                     "INSERT INTO grok_member_valid VALUES (?, ?, ?)", (index, int(valid), future_type)
                 )
 
-            def record_grok_marker(found: bool) -> None:
-                nonlocal grok_positive_marker
-                grok_positive_marker = found
-
             with source.open("rb") as handle:
-                grok_count = grok_export_item_count(
-                    handle,
-                    on_item=record_grok_member,
-                    on_positive_marker=record_grok_marker if classify_grok_export is not None else None,
-                )
+                grok_count = grok_export_item_count(handle, on_item=record_grok_member, detect=False)
             if grok_count is None:
                 store.conn.execute("DROP TABLE grok_member_valid")
         if (
             not is_stream
             and provider in BUNDLE_PROVIDERS
             and prepare_sessions is None
+            and (prepare_records is None or classify_bundle_members is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
             with source.open("rb") as handle:
-                stream_prefix = json_record_container(handle)
+                record_container = json_record_container(handle)
+            if record_container is not None:
+
+                def observe_bundle_member(index: int, shape: JSONValue, witness: JSONValue | None) -> None:
+                    nonlocal bundle_browser_captures
+                    bundle_browser_captures = bundle_browser_captures and browser_capture.looks_like(shape)
+                    if witness is not None:
+                        bundle_witnesses.append(witness)
+
+                with source.open("rb") as handle:
+                    scanned = scan_container_members(
+                        handle,
+                        record_container,
+                        shape_keys=_BROWSER_CAPTURE_SHAPE_KEYS,
+                        witnesses=64 if classify_bundle_members is not None else 0,
+                        on_member=observe_bundle_member,
+                    )
+                if scanned is not None:
+                    stream_prefix = record_container
+                    bundle_count = scanned
         if (
             not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}
@@ -988,7 +1161,7 @@ def prepare_jsonl_blob(
             and (prepare_sessions is None or classify_claude_design_object is not None)
             and (prepare_records is None or classify_claude_design_object is not None)
             and Path(source_path).name.lower().endswith(".json")
-            and stream_prefix is None
+            and record_container is None
         ):
             with source.open("rb") as handle:
                 design_envelope = claude_design_object_envelope(handle)
@@ -998,10 +1171,12 @@ def prepare_jsonl_blob(
             and (prepare_sessions is None or classify_claude_ai_object is not None)
             and (prepare_records is None or classify_claude_ai_object is not None)
             and Path(source_path).name.lower().endswith(".json")
-            and stream_prefix is None
+            and record_container is None
         ):
             with source.open("rb") as handle:
-                claude_ai_envelope = claude_ai_object_envelope(handle)
+                claude_ai_object = claude_ai_object_envelope(handle)
+            if claude_ai_object is not None:
+                claude_ai_envelope, claude_ai_arrays = claude_ai_object
         if (
             not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI}
@@ -1196,14 +1371,7 @@ def prepare_jsonl_blob(
                     "(SELECT attachment_ordinal FROM prepared_session)"
                 )
             # Parser-only scratch never reaches the sealed artifact.
-            for table in (
-                "chatgpt_node",
-                "chatgpt_child",
-                "chatgpt_sibling",
-                "chatgpt_entry",
-                "scratch_string_set",
-                "scratch_string_map",
-            ):
+            for table in _CHATGPT_PARSER_SCRATCH_TABLES:
                 store.conn.execute(f"DROP TABLE IF EXISTS {table}")
             after_hash = _source_digest(source)
             if before_hash != after_hash:
@@ -1349,6 +1517,7 @@ def prepare_jsonl_blob(
                         fallback_id,
                         message_sink=store.new_sink(),
                         event_sink=store.new_event_sink(),
+                        attachment_sink=store.new_attachment_sink(),
                     )
             session_count = 0
             if session is not None and require_positive_conversational_evidence(
@@ -1393,26 +1562,18 @@ def prepare_jsonl_blob(
                             64,
                         )
                     )
-                claude_ai_admitted = classify_claude_ai_object(claude_ai_envelope, sample)
-            session = None
-            if claude_ai_admitted:
-                evidence_store = ClaudeChatEvidence(store.conn)
-                attachment_rows = ClaudeAttachmentScratch(store.conn)
-                with source.open("rb") as handle:
-                    # The collecting route parses this document as a one-item
-                    # bundle, so its fallback identity carries that suffix.
-                    session = parse_ai_stream(
-                        claude_ai_envelope,
-                        (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "chat_messages.item")),
-                        f"{fallback_id}-0",
-                        evidence_store=evidence_store,
-                        messages=store.new_sink(),
-                        session_events=store.new_event_sink(),
-                        attachment_rows=attachment_rows,
-                        attachments=store.new_attachment_sink(),
-                    )
-                evidence_store.close()
-                attachment_rows.close()
+                witness = dict(claude_ai_envelope)
+                for key in claude_ai_arrays:
+                    with source.open("rb") as handle:
+                        witness[key] = list(islice(iter_root_array_items(handle, key), 64))
+                claude_ai_admitted = classify_claude_ai_object(witness, sample)
+            # The collecting route parses this document as a one-item bundle,
+            # so its fallback identity carries that suffix.
+            session = (
+                _stream_claude_ai_object(source, claude_ai_envelope, claude_ai_arrays, store, f"{fallback_id}-0")
+                if claude_ai_admitted
+                else None
+            )
             session_count = 0
             if session is not None and require_positive_conversational_evidence(
                 [session], provider=provider, source_path=source_path
@@ -1663,7 +1824,7 @@ def prepare_jsonl_blob(
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
             grok_admitted = (
-                classify_grok_export(grok_count, grok_positive_marker) if classify_grok_export is not None else True
+                _classify_grok_witness(source, classify_grok_export) if classify_grok_export is not None else True
             )
             grok_member_conn = store.conn
 
@@ -1749,41 +1910,67 @@ def prepare_jsonl_blob(
             shard_path = shard_builder.seal().path
             shard_builder = None
         elif stream_prefix is not None:
-
-            def bundle_records() -> Iterator[JSONValue]:
-                with source.open("rb") as handle:
-                    records: Iterable[JSONValue] = iter_json_container_records(handle, stream_prefix)
-                    if prepare_records is not None:
-                        records = prepare_records(records)
-                    yield from records
-
-            count = 0
-            all_browser_captures = True
-            for record in bundle_records():
-                count += 1
-                all_browser_captures = all_browser_captures and (
-                    isinstance(record, dict) and browser_capture.looks_like(record)
-                )
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            bundle_admitted = classify_bundle_members(bundle_witnesses) if classify_bundle_members is not None else True
+            drift = BundleCandidateDrift()
             session_count = 0
-            for session in iter_bundle_record_sessions(
-                provider,
-                bundle_records(),
-                fallback_id,
-                count=count,
-                all_browser_captures=all_browser_captures,
-                source_path=source_path,
-                sidecar_resolver=sidecar_resolver,
+            member_count = 0
+            with source.open("rb") as handle:
+                for bundle_index in (
+                    iter_container_member_files(handle, stream_prefix, member_path) if bundle_admitted else ()
+                ):
+                    member_count += 1
+                    if bundle_index is None:
+                        # No bundle lowering reads a non-object member.
+                        continue
+                    streamed, member_sessions = _streamed_bundle_member(
+                        provider,
+                        member_path,
+                        store,
+                        f"{fallback_id}-{bundle_index}",
+                        all_browser_captures=bundle_browser_captures,
+                    )
+                    if streamed:
+                        if provider is Provider.CHATGPT:
+                            drift.observe_streamed_conversation()
+                    else:
+                        with member_path.open("rb") as member_handle:
+                            (record,) = iter_json_container_records(member_handle, "")
+                        member_sessions = bundle_member_sessions(
+                            provider,
+                            record,
+                            fallback_id,
+                            bundle_index,
+                            count=bundle_count,
+                            all_browser_captures=bundle_browser_captures,
+                            drift=drift,
+                            source_path=source_path,
+                            sidecar_resolver=sidecar_resolver,
+                        )
+                        del record
+                    for session in member_sessions:
+                        if not require_positive_conversational_evidence(
+                            [session], provider=provider, source_path=source_path
+                        ):
+                            continue
+                        if prepare_session is not None:
+                            session = prepare_session(session)
+                        session.content_hash = session_content_hash(session)
+                        append_session_to_shard(shard_builder, session)
+                        _append_artifact_session(store, session_count, session)
+                        session_count += 1
+            if bundle_admitted and member_count != bundle_count:
+                raise _SourceChangedDuringPreparationError("bundle member count changed during preparation")
+            drift.emit(provider, fallback_id)
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
             ):
-                if not require_positive_conversational_evidence([session], provider=provider, source_path=source_path):
-                    continue
-                if prepare_session is not None:
-                    session = prepare_session(session)
-                session.content_hash = session_content_hash(session)
-                append_session_to_shard(shard_builder, session)
-                _append_artifact_session(store, session_count, session)
-                session_count += 1
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
             after_hash = _source_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
@@ -1895,5 +2082,6 @@ def prepare_jsonl_blob(
     finally:
         if store is not None:
             store.close()
+        member_path.unlink(missing_ok=True)
         if not sealed:
             sessions_path.unlink(missing_ok=True)

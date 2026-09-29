@@ -211,8 +211,8 @@ SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "attachment_id": "join key whose attachments row is projected above",
     "session_id": "the partition key: the projection selects on it and orders by it",
     "position": "ordering coordinate the projection already orders by",
-    "direction": "not read by sync_attachment_batch",
-    "producer_ref": "not read by sync_attachment_batch",
+    "direction": "hydrated attachment provenance; no profile relation reads it",
+    "producer_ref": "hydrated attachment provenance; no profile relation reads it",
 }
 
 SESSION_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {

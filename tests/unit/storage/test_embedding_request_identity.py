@@ -48,7 +48,6 @@ def test_only_request_shaping_fields_change_address() -> None:
         {"chunking_version": "v2"},
         {"normalization": "unit"},
         {"tool_implementation": "tool-v2"},
-        {"element_type": "float16"},
         {"input_schema_version": "schema-v2"},
     )
     for change in request_changes:

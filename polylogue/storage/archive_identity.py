@@ -44,6 +44,8 @@ TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
     ("ops", "ops.db"),
     ("audit", "audit.db"),
 )
+#: Tiers whose loss is unrecoverable; a symlink farm links these out.
+_DURABLE_TIER_NAMES: frozenset[ArchiveTierName] = frozenset({"source", "user", "audit"})
 
 
 class ArchiveLocationError(RuntimeError):
@@ -92,14 +94,24 @@ def is_index_generation_member(path: Path) -> bool:
     so the canonical pointer would classify itself as a member.
     """
 
-    parts = path.absolute().parts
-    try:
-        depth = parts.index(GENERATIONS_DIRNAME)
-    except ValueError:
-        return False
-    # A direct child is `.index-generations/<name>` (one part after the root);
-    # anything deeper is inside a generation.
-    return len(parts) - depth > 2
+    return _generations_marker_depth(path.absolute()) is not None
+
+
+def _generations_marker_depth(absolute: Path) -> int | None:
+    """Index of the generations directory that owns ``absolute``, if any.
+
+    The innermost marker owns the path: an archive root may itself be named
+    ``.index-generations``, so ``/srv/.index-generations/.index-generations/
+    gen/index.db`` belongs to the root ``/srv/.index-generations``. A direct
+    child (``.index-generations/<name>``) sits beside generations; anything
+    deeper is inside one.
+    """
+
+    parts = absolute.parts
+    markers = [depth for depth, part in enumerate(parts) if part == GENERATIONS_DIRNAME]
+    if not markers or len(parts) - markers[-1] <= 2:
+        return None
+    return markers[-1]
 
 
 def archive_root_for_index_path(index_path: Path) -> Path:
@@ -116,9 +128,10 @@ def archive_root_for_index_path(index_path: Path) -> Path:
     """
 
     absolute = index_path.absolute()
-    if not is_index_generation_member(absolute):
+    depth = _generations_marker_depth(absolute)
+    if depth is None:
         return absolute.parent
-    return Path(*absolute.parts[: absolute.parts.index(GENERATIONS_DIRNAME)])
+    return Path(*absolute.parts[:depth])
 
 
 def archive_file_set_root(*, archive_root: Path, db_path: Path) -> Path:
@@ -207,7 +220,7 @@ class ArchiveLocation:
             durable_tiers_are_links = [
                 tier.configured_path.is_symlink()
                 for tier in configured
-                if tier.name != "index" and tier.configured_path.exists()
+                if tier.name in _DURABLE_TIER_NAMES and tier.configured_path.exists()
             ]
             root_is_symlink_farm = bool(durable_tiers_are_links) and all(durable_tiers_are_links)
             pointer_is_configured_symlink_target = (

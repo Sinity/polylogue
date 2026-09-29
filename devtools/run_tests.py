@@ -6,8 +6,13 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 
 - the repository's managed environment (``POLYLOGUE_ROOT`` and friends, a
   repo-local pycache prefix);
-- a single-process default; parallelism is an explicit ``-n``
-  request and is narrowed at the admitted pytest pool when necessary;
+- one process for a small selection; a selection naming
+  :data:`LARGE_SELECTION_MODULES` or more test modules runs under xdist
+  unless it passes its own ``-n`` or ``-p no:xdist``, and a worker count is
+  narrowed at the admitted pytest pool when necessary;
+- receipt reuse: a selection with a fixed test order (``-p no:randomly`` or
+  ``--randomly-seed=N``) that already passed on the identical tree, and that
+  measures no real clock, is answered from its receipt (``--rerun`` runs it);
 - the same pytest progress ledger, JSON report, and typed outcome receipt used
   by ``devtools verify``.
 
@@ -21,16 +26,23 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
+import ast
+import functools
+import itertools
 import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
+
+import tomllib
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
@@ -52,7 +64,14 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_rerun import rerun_failed_once
+from devtools.pytest_options import (
+    caller_plugins,
+    expand_short_clusters,
+    operand_count,
+    short_options_with_value,
+    split_short_cluster,
+)
+from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once, semantic_rerun_options
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
@@ -82,7 +101,9 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     prune_successful_verify_runs,
     pytest_command_worker_request,
+    verify_history_path,
 )
+from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
 
 ROOT = Path(__file__).resolve().parent.parent
 PYTEST_REPORT_DIR = Path(".cache/verify")
@@ -263,6 +284,372 @@ def _parse_outliers(selection: list[str]) -> tuple[int | None, list[str]]:
     return limit, remaining
 
 
+#: Set to ``0`` to always run, even when an identical green run exists.
+REUSE_ENV = "POLYLOGUE_TEST_REUSE"
+
+
+#: Held for the rest of the process once taken; the kernel releases it on exit.
+#: Keyed by selection digest: a second ``flock`` from this same process on a
+#: new descriptor would wait on its own lock forever.
+_SELECTION_LOCKS: dict[str, int] = {}
+
+
+def _hold_selection_lock(selection: list[str]) -> None:
+    """Serialize identical selections within this checkout for this process's life."""
+    import fcntl
+    import hashlib
+
+    lock_dir = ROOT / ".cache" / "verify" / "inflight"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
+        if digest in _SELECTION_LOCKS:
+            return
+        handle = os.open(lock_dir / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.stderr.write("devtools test: the same selection is already running in this checkout; waiting for it.\n")
+        sys.stderr.flush()
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    _SELECTION_LOCKS[digest] = handle
+
+
+def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
+    """Consume ``--rerun`` (always run) without forwarding it to pytest.
+
+    Only before ``--``: after the separator every argument is pytest's path
+    operand, a file literally named ``--rerun`` included.
+    """
+    head, separator, tail = (
+        (selection[: selection.index("--")], ["--"], selection[selection.index("--") + 1 :])
+        if "--" in selection
+        else (selection, [], [])
+    )
+    return "--rerun" in head, [argument for argument in head if argument != "--rerun"] + separator + tail
+
+
+#: Caller environment that can change what a selection executes or how
+#: (Hypothesis profiles, pytest options, Polylogue test switches). Its values
+#: are part of the reuse key, so a run under a different profile never answers
+#: from a weaker one's receipt.
+_EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_", "PYTHON", "LC_")
+#: Individual switches the suite reads outside those prefixes: golden-file
+#: regeneration, fuzz depth, colour, time zone and the XDG roots.
+_EXECUTION_ENV_NAMES = frozenset(
+    {
+        # Tests reach tools (git, bash, compilers) through the search path,
+        # and HOME is inherited into every job (.agentctl/project.toml).
+        "PATH",
+        "HOME",
+        # The interpreter's hash seed, warnings and optimization, and the
+        # locale, change what a run observes.
+        "LANG",
+        "UPDATE_GOLDEN",
+        "FUZZ_ITERATIONS",
+        "NO_COLOR",
+        "TZ",
+        "TZDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    }
+)
+#: The Hypothesis example database ``tests/conftest.py`` declares. A run can
+#: save a new counterexample there, which the next run of the same selection
+#: replays; its contents are therefore an input of every property test.
+_HYPOTHESIS_DATABASE = Path(".cache/hypothesis/examples")
+
+
+#: The only options a reusable selection may carry: ones that change neither
+#: which tests run nor what the run leaves behind. Anything else -- report
+#: files, cache-dependent selection (``--lf``), cache clearing, external
+#: configuration -- has an effect a receipt cannot supply, so it always runs.
+# Verbosity flags are excluded: they ask for output a receipt cannot replay.
+_REUSABLE_FLAGS = frozenset({"-x", "--exitfirst", "-q", "--quiet", "--no-header"})
+_REUSABLE_VALUE_OPTIONS = frozenset({"-k", "-m"})
+_REUSABLE_PREFIXES = ("--tb=", "--maxfail=", "-k=", "-m=")
+
+
+def _real_clock_module(path: Path) -> bool:
+    """Whether a test module declares a ``uses_real_clock`` measurement anywhere.
+
+    The same predicate the clock guard reads: the marker as a module
+    ``pytestmark`` or on any test. Such a test measures the host's current
+    timing, an input no receipt key carries.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return True
+    return any(isinstance(node, ast.Attribute) and node.attr == "uses_real_clock" for node in ast.walk(tree))
+
+
+def _explicit_order(argument: str, following: str | None) -> tuple[bool, int] | None:
+    """``(fixed, consumed)`` when ``argument`` fixes the test order, else ``None``.
+
+    pytest-randomly draws a new seed on every invocation unless one is given
+    (``--randomly-seed=<int>``) or it is disabled (``-p no:randomly``); only
+    such a run's order is an input the selection itself carries.
+    """
+    if argument in {"-pno:randomly", "-p=no:randomly"}:
+        return True, 1
+    if argument == "-p" and following == "no:randomly":
+        return True, 2
+    if argument.startswith("--randomly-seed="):
+        return argument.removeprefix("--randomly-seed=").isdigit(), 1
+    if argument == "--randomly-seed":
+        return following is not None and following.isdigit(), 2
+    return None
+
+
+def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
+    """Whether every argument is a checkout-local selection or an inert option.
+
+    The digest a receipt is keyed on covers the checkout's Git-visible tree,
+    so a path outside it (``/tmp/test_x.py``) could change without changing
+    the key; it is never reused. A reused run must also name at least one
+    test file, have fixed its test order (see :func:`_explicit_order`) and
+    measure no real clock.
+    """
+    if _selection_targets_benchmarks(selection):
+        # Benchmarks measure current wall-clock timing, an input no receipt
+        # key carries: a stale pass must never answer for a new one.
+        return False
+    resolved_root = root.resolve()
+
+    def reusable_file(argument: str) -> bool:
+        target = Path(argument.split("::", 1)[0])
+        target = (target if target.is_absolute() else root / target).resolve()
+        # A directory can hold ignored, collectable modules the tree digest
+        # omits; only named files are reusable.
+        if not target.is_relative_to(resolved_root) or not target.is_file() or _git_ignored(target, root=resolved_root):
+            return False
+        return not _real_clock_module(target)
+
+    head, tail = _split_separator(selection)
+    order_fixed = False
+    named = 0
+    index = 0
+    while index < len(head):
+        argument = head[index]
+        order = _explicit_order(argument, head[index + 1] if index + 1 < len(head) else None)
+        if order is not None:
+            fixed, consumed = order
+            if not fixed:
+                return False
+            order_fixed = True
+            index += consumed
+            continue
+        if argument in _REUSABLE_VALUE_OPTIONS:
+            index += 2
+            continue
+        if argument in _REUSABLE_FLAGS or argument.startswith(_REUSABLE_PREFIXES):
+            index += 1
+            continue
+        if argument.startswith("-") or not reusable_file(argument):
+            return False
+        named += 1
+        index += 1
+    # After ``--`` every argument is a path operand, a leading dash included.
+    for argument in tail:
+        if not reusable_file(argument):
+            return False
+        named += 1
+    # A pathless ``-m``/``-k`` selection collects from the whole suite, whose
+    # modules this check cannot inspect (a ``-m uses_real_clock`` run, say).
+    return order_fixed and named > 0
+
+
+def _ignored_python_sources(root: Path) -> bool:
+    """Whether any test input under the source trees is ignored by Git.
+
+    The tree digest omits ignored files, and a named test still loads its
+    ancestors' ``conftest.py`` and whatever it imports; an ignored one could
+    change the run without changing the key. Such a checkout never reuses.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--",
+                "tests",
+                "polylogue",
+                "devtools",
+                # Root files pytest reads as configuration or plugins.
+                "conftest.py",
+                "pytest.ini",
+                ".pytest.ini",
+                "pyproject.toml",
+                "tox.ini",
+                "setup.cfg",
+            ],
+            cwd=root,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if result.returncode != 0:
+        return True
+    # Any ignored file a test may read (a module, a conftest, a JSON fixture a
+    # parametrization globs) is outside the digest; bytecode caches are not inputs.
+    return any(
+        line and "__pycache__/" not in line and not line.endswith((".pyc", ".pyo"))
+        for line in result.stdout.decode("utf-8", "replace").splitlines()
+    )
+
+
+def _git_ignored(path: Path, *, root: Path) -> bool:
+    """Whether Git ignores ``path``, so the tree digest does not cover it."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(path)], cwd=root, capture_output=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    # 0: ignored; 1: not ignored; anything else: cannot tell, so do not reuse.
+    return result.returncode != 1
+
+
+def execution_environment_key(environ: Mapping[str, str]) -> str:
+    """A digest of the caller's execution-affecting environment."""
+    import hashlib
+
+    relevant = sorted(
+        (key, value)
+        for key, value in environ.items()
+        if key.startswith(_EXECUTION_ENV_PREFIXES) or key in _EXECUTION_ENV_NAMES
+    )
+    return hashlib.sha256(json.dumps(relevant).encode("utf-8")).hexdigest()
+
+
+def _reuse_environment_key() -> str:
+    """The caller environment plus the example database this run starts from."""
+    return f"{execution_environment_key(os.environ)}:{hypothesis_database_revision(ROOT)}"
+
+
+def hypothesis_database_revision(root: Path) -> str:
+    """The example database's declared revision marker, read without a walk.
+
+    ``tests/conftest.py`` writes through ``RevisionedExampleDatabase``, which
+    replaces the marker on every save, delete or move.
+    """
+    from devtools.hypothesis_database import read_revision
+
+    return read_revision(root / _HYPOTHESIS_DATABASE)
+
+
+def reusable_green_receipt(
+    selection: list[str], *, root: Path, content_sha256: str | None, environment_key: str | None = None
+) -> Path | None:
+    """A green focused run of exactly this selection over exactly this tree.
+
+    Keyed on the declared inputs only: the normalized selection, the
+    worktree content digest the run was bound to at slot start, and the
+    interpreter identity. A match means rerunning would execute the same
+    tests over the same bytes with the same interpreter, so its receipt
+    answers the question and the pool admission is skipped.
+    """
+    if content_sha256 is None or not _reuse_eligible(selection, root=root) or _ignored_python_sources(root):
+        return None
+    runs_root = root / ".cache" / "verify" / "runs"
+    try:
+        names = sorted((entry.name for entry in runs_root.iterdir() if "-focused-test-" in entry.name), reverse=True)
+    except OSError:
+        return None
+    interpreter = (sys.executable, platform.python_version())
+    # Run ids carry time to the second only: runs are read one second at a
+    # time, newest first, and ordered within the second by their recorded
+    # start. The newest run of these exact inputs decides, however many runs
+    # share its second; there is no count cap that could skip a later red.
+    for _second, group in itertools.groupby(names, key=lambda name: name[:16]):
+        loaded: list[tuple[str, Path, dict[str, Any]]] = []
+        for name in group:
+            entry = runs_root / name
+            try:
+                payload = json.loads((entry / "run.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                loaded.append((_run_order(entry.name, payload), entry, payload))
+        loaded.sort(key=lambda item: item[0], reverse=True)
+        for order, entry, payload in loaded:
+            fingerprint = payload.get("environment_fingerprint") or {}
+            same_inputs = (
+                payload.get("argv") == selection
+                and payload.get("execution_environment_key") == environment_key
+                and payload.get("git_worktree_content_sha256") == content_sha256
+                and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
+                == (str(Path(interpreter[0]).resolve()), interpreter[1])
+            )
+            if not same_inputs:
+                continue
+            # An older green never outranks a later red of the same
+            # selection on the same tree.
+            green = (
+                payload.get("status") == "success"
+                and payload.get("exit_code") == 0
+                and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
+            )
+            if not green or _later_failure_pruned(root, after=order):
+                return None
+            return entry / "run.json"
+    return None
+
+
+def _run_order(run_id: str, payload: Mapping[str, Any]) -> str:
+    """Chronological sort key: run ids carry the second, ``started_at`` the rest."""
+    return f"{run_id[:16]}|{payload.get('started_at') or ''}"
+
+
+def _later_failure_pruned(root: Path, *, after: str) -> bool:
+    """Whether a focused run later than ``after`` failed and lost its detail.
+
+    ``after`` is the green run's :func:`_run_order` key.
+
+    Retention keeps fewer failed details than green ones, so a later red of
+    the same inputs can be pruned while the older green survives. The
+    append-only history still names every run; a failed one without its
+    detail directory has unknown inputs and may be that red. Unreadable
+    history answers the same way: reuse is refused, never assumed. Without
+    a history file nothing was pruned, since retention prunes only runs the
+    history records.
+    """
+    runs_root = root / ".cache" / "verify" / "runs"
+    try:
+        with verify_history_path(root=root).open(encoding="utf-8") as handle:
+            for line in handle:
+                if "-focused-test-" not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                run_id = row.get("run_id") if isinstance(row, dict) else None
+                if (
+                    isinstance(run_id, str)
+                    and "-focused-test-" in run_id
+                    and _run_order(run_id, row) > after
+                    and row.get("status") != "success"
+                    and not (runs_root / run_id).exists()
+                ):
+                    return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False
+
+
 def _parse_runner(selection: list[str]) -> tuple[str, list[str]]:
     """Consume the runner mode without forwarding it to pytest."""
     runner = "managed"
@@ -388,19 +775,137 @@ def _anchor_test_paths() -> None:
 
 
 def _has_worker_flag(selection: list[str]) -> bool:
-    """True when the caller already chose an xdist worker count."""
-    return any(arg.startswith(("-n", "--numprocesses")) for arg in selection)
+    """True when the caller already chose an xdist worker count.
+
+    A short-option cluster is walked as argparse walks it: ``-vn2`` is ``-v``
+    plus ``-n2``, while in ``-kn`` the ``n`` is ``-k``'s attached value.
+    """
+    value_short: frozenset[str] | None = None
+    for argument in selection:
+        if argument.startswith("--"):
+            if argument.split("=", 1)[0] == "--numprocesses":
+                return True
+            continue
+        if not argument.startswith("-") or len(argument) < 2:
+            continue
+        if argument.startswith("-n"):
+            return True
+        if value_short is None:
+            value_short = short_options_with_value(caller_plugins(selection))
+        for letter in argument[1:]:
+            if letter == "n":
+                return True
+            if f"-{letter}" in value_short:
+                break
+    return False
+
+
+#: A selection naming at least this many test modules runs under xdist.
+#: Measured 2026-09-27 over 212 focused receipts: runs above 300 tests were
+#: 13% of runs and 60% of pool time; their median selection named 16 modules.
+#: A handful of modules runs faster in one process than xdist can start.
+LARGE_SELECTION_MODULES = 8
+#: From this many modules a selection is sized as corpus work: the focused
+#: profile's per-worker bound was measured on selections far below it.
+BROAD_SELECTION_MODULES = 100
+
+
+@functools.cache
+def _configured_test_module_globs() -> tuple[str, ...]:
+    """The suite's ``python_files`` collection globs, from ``pyproject.toml``.
+
+    A directory expansion must match every pattern pytest is configured to
+    collect (``fuzz_*.py`` alongside ``test_*.py``), or modules that pattern
+    alone would collect are missing from the module count and the large- or
+    broad-selection thresholds under-fire.
+    """
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    patterns = data.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("python_files")
+    if not patterns:
+        return ("test_*.py",)
+    return tuple(patterns) if isinstance(patterns, list) else (str(patterns),)
+
+
+def _split_separator(selection: list[str]) -> tuple[list[str], list[str]]:
+    """The arguments before ``--`` and the path operands after it."""
+    if "--" not in selection:
+        return selection, []
+    index = selection.index("--")
+    return selection[:index], selection[index + 1 :]
+
+
+def _selected_test_modules(selection: list[str]) -> int:
+    """How many test modules the selection names, directories expanded."""
+    modules: set[Path] = set()
+    head, tail = _split_separator(selection)
+    # An option's value is skipped exactly as pytest's parser consumes it:
+    # standalone flags (``-x``, ``--strict-markers``, ...) take none, and the
+    # path after them is still a selection. After ``--`` every argument is a
+    # path, a leading dash included.
+    certain: list[str] = []
+    index = 0
+    while index < len(head):
+        if not head[index].startswith("-"):
+            certain.append(head[index])
+        index += 1 + operand_count(head, index)
+    certain += tail
+    if not certain:
+        # No path operand: pytest collects its configured ``testpaths``, the
+        # whole test tree, so the selection is counted as that tree.
+        certain = ["tests"]
+    for argument in certain:
+        target = Path(argument.split("::", 1)[0])
+        target = target if target.is_absolute() else ROOT / target
+        if target.is_dir():
+            for glob in _configured_test_module_globs():
+                modules.update(path.resolve() for path in target.rglob(glob) if path.is_file())
+        elif target.is_file():
+            # Node ids of one file are one module, not several.
+            modules.add(target.resolve())
+    return len(modules)
+
+
+def _xdist_disabled(selection: list[str]) -> bool:
+    """Whether the caller disabled xdist or asked for output it cannot carry.
+
+    ``-p no:xdist`` disables it outright; ``-s``/``--capture=no`` asks for
+    live output, and ``--pdb``/``--trace`` for an interactive debugger, neither
+    of which xdist workers can provide.
+    """
+    if any(
+        argument in {"-pno:xdist", "-p=no:xdist", "-s", "--capture=no", "--pdb", "--trace"}
+        or (argument == "no:xdist" and index and selection[index - 1] == "-p")
+        or (argument == "no" and index and selection[index - 1] == "--capture")
+        for index, argument in enumerate(selection)
+    ):
+        return True
+    # ``-sv`` is ``-s -v``: a clustered ``-s`` asks for live output too.
+    value_short: frozenset[str] | None = None
+    for argument in selection:
+        if argument.startswith("--") or not argument.startswith("-") or len(argument) <= 2:
+            continue
+        if value_short is None:
+            value_short = short_options_with_value(caller_plugins(selection))
+        flags, _option, _value = split_short_cluster(argument, value_short)
+        if "-s" in flags:
+            return True
+    return False
 
 
 def _worker_args(selection: list[str]) -> list[str]:
-    """Default focused runs to a single process; honor an explicit override.
+    """Run a large selection under xdist; keep a small one in one process.
 
-    An ambient worker setting belongs to broad verification, not an inner-loop
-    selection. The runner that owns the requested pool narrows an explicit
-    request using its live cgroup budget.
+    An explicit ``-n`` is the caller's and is honored. An ambient worker
+    setting belongs to broad verification, not an inner-loop selection. The
+    slot narrows the width to its live cgroup budget under the focused charge
+    profile, so a busy pool runs a large selection narrower, never over its
+    ceiling.
     """
-    if _has_worker_flag(selection):
+    if _has_worker_flag(selection) or _selection_targets_benchmarks(selection) or _xdist_disabled(selection):
+        # Benchmarks run in one process by contract (``-p no:xdist``).
         return []
+    if _selected_test_modules(selection) >= LARGE_SELECTION_MODULES:
+        return ["-n", str(FOCUSED_MAX_WORKERS)]
     return []
 
 
@@ -417,6 +922,9 @@ def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> li
 
 def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_PATH) -> list[str]:
     """Compose the pytest command for a focused selection."""
+    # ``-vn8`` is ``-v -n 8``: the worker resizer, the xdist policy and the
+    # disable checks read separate options.
+    selection = expand_short_clusters(selection)
     worker_args = _worker_args(selection)
     collection_args = () if _selection_targets_benchmarks(selection) else IGNORED_COLLECTION_ARGS
     return [
@@ -426,15 +934,25 @@ def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_
         *devtools_plugin_args(testmon=False),
         "-p",
         SUITE_COST_PLUGIN_NAME,
-        *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection)),
+        *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection) or bool(worker_args)),
         CLEAR_CONFIGURED_ADDOPTS,
         ASSERT_PLAIN_ARGS,
         report_file_argument(report_path),
         *collection_args,
-        *selection,
-        *worker_args,
-        *_xdist_distribution_args(selection, worker_args),
+        *_before_separator(selection, [*worker_args, *_xdist_distribution_args(selection, worker_args)]),
     ]
+
+
+def _before_separator(selection: list[str], options: list[str]) -> list[str]:
+    """``selection`` with ``options`` placed before any ``--``.
+
+    After ``--`` pytest reads every argument as a path, so generated options
+    appended there would be looked up as files.
+    """
+    if "--" not in selection:
+        return [*selection, *options]
+    index = selection.index("--")
+    return [*selection[:index], *options, *selection[index:]]
 
 
 def focused_pytest_env(*, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
@@ -443,7 +961,10 @@ def focused_pytest_env(*, run: VerifyRun, artifacts: PytestStepArtifacts) -> dic
     Focused runs deliberately do not load testmon. They must not create a
     scratch graph, mutate the corpus graph, or load testmon's retention hook.
     """
-    return env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts, testmon=False)
+    env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts, testmon=False)
+    # Sized as a focused selection, not as a share of the whole corpus.
+    env[CHARGE_PROFILE_ENV] = "focused"
+    return env
 
 
 def _selection_targets_benchmarks(selection: list[str]) -> bool:
@@ -483,6 +1004,20 @@ def _run(
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
         env[WORKTREE_PROVENANCE_ENV] = "1"
+        # A queued job reruns its own failures before releasing the slot, so a
+        # red run is adjudicated without a second queue wait.
+        if artifacts is not None:
+            env[RERUN_IN_SLOT_ENV] = json.dumps(
+                {
+                    "report_path": str(report_path),
+                    "step_dir": str(artifacts.step_dir),
+                    "root": str(ROOT),
+                    # The slot derives the rerun's options inside its admitted
+                    # job: reading pytest's option table configures pytest and
+                    # imports the suite's conftests, which is test work.
+                    "command": command,
+                }
+            )
         output_option = {"stdout": stdout} if stdout is not None else {}
         outcome = executor(command, cwd=cwd, env=env, root=ROOT, **output_option)
     except PytestSlotUnavailableError as exc:
@@ -545,6 +1080,7 @@ def _run(
             first_provenance=(
                 outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
             ),
+            options=semantic_rerun_options(command),
         )
         if returncode == 1
         else None
@@ -655,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         outlier_count, selection = _parse_outliers(selection)
         runner, selection = _parse_runner(selection)
+        force_rerun, selection = _parse_rerun(selection)
     except ValueError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
         return 2
@@ -711,12 +1248,69 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 4
 
+    if runner == "managed":
+        # Two callers in one checkout asking for the same selection share one
+        # run: the second waits here, then finds the first's receipt below. A
+        # forced or non-reusing run takes the lock too, so its new receipt can
+        # never land while another caller is answering from an older one.
+        _hold_selection_lock(selection)
+    # An isolated run exists to execute outside the managed slot; a managed
+    # receipt cannot stand in for it.
+    if not force_rerun and runner == "managed" and os.environ.get(REUSE_ENV, "1") != "0":
+        # The wait for the lock can be long: the checkout may have changed
+        # branch meanwhile, so admission is decided again before any reuse.
+        identity = checkout_identity(ROOT)
+        refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+        if refusal is not None:
+            sys.stderr.write(refusal + "\n")
+            return REFUSAL_EXIT
+        digest = git_worktree_content_sha256(ROOT)
+        environment_key = _reuse_environment_key()
+        reused = reusable_green_receipt(
+            selection,
+            root=ROOT,
+            content_sha256=digest,
+            environment_key=environment_key,
+        )
+        if reused is not None and (
+            git_worktree_content_sha256(ROOT) != digest or _reuse_environment_key() != environment_key
+        ):
+            # A save landed during the lookup: the receipt no longer describes
+            # this tree, so the selection runs.
+            reused = None
+        if reused is not None:
+            # And the branch may have moved under an unchanged tree: admission
+            # is decided on the checkout as it is at the moment of reuse.
+            identity = checkout_identity(ROOT)
+            refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+            if refusal is not None:
+                sys.stderr.write(refusal + "\n")
+                return REFUSAL_EXIT
+        reused_payload: object = None
+        if reused is not None:
+            # Read now: retention pruning may remove the run directory at any
+            # moment, and a receipt that cannot be read answers nothing.
+            try:
+                reused_payload = json.loads(reused.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                reused = None
+        if reused is not None:
+            if use_json:
+                print(json.dumps(reused_payload, indent=2, ensure_ascii=False))
+            sys.stderr.write(
+                "devtools test: this selection already passed on this exact tree; not queueing again "
+                "(--rerun to force).\n"
+                f"\ndevtools test: PASSED exit=0 diagnosis=pytest_passed_reused receipt={reused} {identity.describe()}\n"
+            )
+            return 0
+
     run = VerifyRun(
         tier="focused-test",
         argv=selection,
         git_head=git_head(ROOT),
         root=ROOT,
     )
+    run.record_execution_environment_key(_reuse_environment_key())
     # The report and its PID-named spool must live with this receipt.  A
     # checkout-global spool lets a later focused run delete an earlier run's
     # completed tests between teardown and controller-side assembly.
@@ -747,6 +1341,10 @@ def main(argv: list[str] | None = None) -> int:
     previous_sigterm = signal.signal(signal.SIGTERM, _interrupt_focused_test)
     try:
         pytest_env = focused_pytest_env(run=run, artifacts=artifacts)
+        if _selected_test_modules(selection) >= BROAD_SELECTION_MODULES:
+            # A selection this broad accumulates like the corpus does, so it
+            # is sized by the corpus model, not the focused profile.
+            pytest_env.pop(CHARGE_PROFILE_ENV, None)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
         # A named selection builds only what it asked for: the shared-archive
         # warm-up in tests/conftest.py's pytest_sessionstart is the broad
@@ -889,8 +1487,9 @@ def main(argv: list[str] | None = None) -> int:
     # whatever the run found; carrying the outcome in the stream keeps it out of
     # reach of that mistake. The receipt is this run's own file, never a
     # `current-*` name a concurrent run in the same checkout would overwrite.
-    # Absolute, because main() moved to ROOT and the caller's shell did not.
-    receipt = (run.run_dir / "run.json").resolve()
+    # Absolute, so the line names the checkout that ran: main() moved to ROOT
+    # and the caller's shell did not.
+    receipt = (ROOT / run.relative_run_dir / "run.json").resolve()
     # The rest of the artifacts are reference material, not a result. Printing
     # them after every green run trains the reader to skip the tail of the
     # output, which is exactly where a failure summary appears. `devtools why`

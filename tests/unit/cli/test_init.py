@@ -205,8 +205,9 @@ def test_status_reports_absent_daemon_on_a_fresh_install(isolated_home: Path) ->
     result = runner.invoke(
         cli, ["--plain", "--no-daemon", "ops", "status"], catch_exceptions=False, env={"POLYLOGUE_DAEMON": "off"}
     )
+    assert result.exit_code == 1, result.output
     assert "Daemon: running" not in result.output
-    assert "Daemon: not running" in result.output
+    assert "Daemon: not running" in result.output, result.output
     assert "No archive found." in result.output
 
 
@@ -219,4 +220,33 @@ def test_status_reports_absent_daemon_after_init(isolated_home: Path) -> None:
         cli, ["--plain", "--no-daemon", "ops", "status"], catch_exceptions=False, env={"POLYLOGUE_DAEMON": "off"}
     )
     assert "Daemon: running" not in result.output
-    assert "Daemon: not running" in result.output
+    assert "Daemon: not running" in result.output, result.output
+
+
+def test_status_reports_absent_daemon_over_an_existing_archive(isolated_home: Path, tmp_path: Path) -> None:
+    """An archive with no serving daemon reports the daemon absent, not unreachable.
+
+    ``ops status`` is daemon-only: with an index present there is no first-run
+    hint, so the absent daemon is the whole answer, in both formats.
+    Anti-vacuity: routing ``OperationUnavailableError`` through the generic
+    kernel-error branch renders "Daemon: unreachable" with reason
+    ``status_read_failed`` and turns both assertions red.
+    """
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    (archive / "index.db").write_bytes(b"")
+    runner = CliRunner()
+    env = {"POLYLOGUE_DAEMON": "off"}
+
+    plain = runner.invoke(cli, ["--plain", "--no-daemon", "ops", "status"], catch_exceptions=False, env=env)
+    assert plain.exit_code == 1, plain.output
+    assert "Daemon: not running" in plain.output, plain.output
+    assert "No archive found." not in plain.output
+
+    as_json = runner.invoke(
+        cli, ["--plain", "--no-daemon", "ops", "status", "--format", "json"], catch_exceptions=False, env=env
+    )
+    assert as_json.exit_code == 1, as_json.output
+    payload = json.loads(as_json.output)
+    assert payload["daemon_liveness"] is False
+    assert payload["status_snapshot"]["reason"] == "daemon_absent"

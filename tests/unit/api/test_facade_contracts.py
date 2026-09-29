@@ -136,6 +136,7 @@ READ_BY_ID_EMPTY_METHODS: frozenset[str] = frozenset(
         "get_session_tree",
         "get_raw_artifacts_for_session",
         "bulk_get_messages",
+        "get_session_summaries",  # keyed by requested id; unresolved ids omitted
     }
 )
 
@@ -285,6 +286,8 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "get_context_delivery",
         "list_context_deliveries",
         "record_context_delivery",
+        # Writer-route submission covered in tests/unit/api/test_writer_boundary.py.
+        "record_context_ledger",
         "compile_and_record_context",
         "correlate_hermes_context_deliveries",
         "reconcile_hermes_session_lifecycle",
@@ -333,7 +336,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_command_shape_usage",
         "list_context_injection_ledger",
         "list_tool_episode_insights",
-        "record_context_ledger",
         "record_manual_continuation",
         "record_work_event",
     }
@@ -1000,6 +1002,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
     from types import SimpleNamespace
 
     from polylogue.api.archive import _archive_facet_buckets
+    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 
     summary = ArchiveSessionSummary(
@@ -1014,12 +1017,16 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         word_count=4,
         tags=("work",),
     )
+    # A search scope yields one hit per matching block (#5703 moved the
+    # deduplication into the scope walk), so two hits name the same session.
+    hit = SimpleNamespace(session_id=summary.session_id)
     archive = SimpleNamespace(
-        iter_summaries=lambda limit=None, offset=0: iter([summary, summary]),
+        iter_search_summaries=lambda _query, **_kwargs: iter([hit, hit]),
+        read_summary=lambda _session_id: summary,
         _conn=None,
     )
 
-    result = _archive_facet_buckets(archive, None, include_deferred=False)
+    result = _archive_facet_buckets(archive, SessionQuerySpec(query_terms=("alpha",)), include_deferred=False)
 
     assert result.total_sessions == 1
     assert result.total_messages == 2
@@ -4884,6 +4891,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             offset=0,
         )
         bulk_messages = await archive.bulk_get_messages(("codex-session:api-v1", "missing-session"))
+        summaries = await archive.get_session_summaries(("codex-session:api-v1", "missing-session"))
 
         assert count == 1
         assert isinstance(envelope, ArchiveSessionEnvelope)
@@ -4939,6 +4947,9 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert [message.id for message in paged_messages] == [expected_message_id]
         assert list(bulk_messages) == [session_id]
         assert [message.id for message in bulk_messages[session_id]] == [expected_message_id]
+        # Requested ids key the result; an id that does not resolve is omitted.
+        assert list(summaries) == ["codex-session:api-v1"]
+        assert str(summaries["codex-session:api-v1"].id) == session_id
 
     finally:
         await archive.close()

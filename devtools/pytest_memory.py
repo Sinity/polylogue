@@ -185,6 +185,19 @@ class ProcessGroupMemorySampler:
         self._thread = threading.Thread(target=self._loop, name="pytest-memory-sampler", daemon=True)
         self._thread.start()
 
+    def follow(self, pgid: int) -> None:
+        """Sample a later process group of the same run from now on.
+
+        A slot job that reruns its failures starts the rerun in a new session;
+        following it keeps that attempt's memory in the run's peaks and
+        per-process attribution rather than leaving it unmeasured.
+        """
+        with self._lock:
+            self._pgid = pgid
+        # Observed at once: a rerun that ends within one interval would
+        # otherwise never be sampled.
+        self.sample()
+
     def stop(self) -> dict[str, Any]:
         """End sampling and return the run's attribution."""
         self._stop.set()
@@ -203,7 +216,9 @@ class ProcessGroupMemorySampler:
         elapsed = time.monotonic() - self._started
         totals = dict.fromkeys(_MEASURES, 0)
         readings: list[tuple[int, dict[str, int]]] = []
-        for pid in _cgroup_members(self._pgid, proc=self._proc, cgroup_root=self._cgroup_root):
+        with self._lock:
+            pgid = self._pgid
+        for pid in _cgroup_members(pgid, proc=self._proc, cgroup_root=self._cgroup_root):
             rollup = _rollup(pid, proc=self._proc)
             if rollup is None:
                 continue

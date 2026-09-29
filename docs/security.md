@@ -253,6 +253,14 @@ preview, `--yes` to apply) removes a session across every local tier:
    across `ref_type IN ('raw_payload', 'attachment', 'sidecar')`, so a
    session's inline attachments (whose content hash can differ from the raw
    payload's) each get their own non-resurrection marker too.
+
+   Excision forgets the excised session, not every session that shares a
+   content-addressed blob with it. A hash that another session still
+   references (the same tool output, the same attachment) gets no marker and
+   stays readable for that session; the receipt names it in
+   `shared_blob_hashes`, and excising the last session that references it
+   marks it. Forgetting content wherever it appears is the secret-scanning
+   route's job.
 3. `user.db` — content-bearing assertions targeting the excised
    session/messages/blocks are removed, and one durable
    `AssertionKind.EXCISION_RECORD` audit receipt is written (reason, actor,

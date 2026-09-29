@@ -1024,7 +1024,7 @@ SESSIONS_SPEC = _make_table_spec(
             record_name="created_at",
             domain_name="created_at",
             domain_transform=_domain_timestamp,
-            select_expression="datetime({alias}.created_at_ms / 1000, 'unixepoch')",
+            select_expression="strftime('%Y-%m-%dT%H:%M:%fZ', {alias}.created_at_ms / 1000.0, 'unixepoch')",
             # A durable observed fact, so it ratchets: a valid producer
             # timestamp outranks a previously-derived value, and a derived
             # observation never overwrites stored producer authority.
@@ -1041,7 +1041,7 @@ SESSIONS_SPEC = _make_table_spec(
             record_name="updated_at",
             domain_name="updated_at",
             domain_transform=_domain_timestamp,
-            select_expression="datetime({alias}.updated_at_ms / 1000, 'unixepoch')",
+            select_expression="strftime('%Y-%m-%dT%H:%M:%fZ', {alias}.updated_at_ms / 1000.0, 'unixepoch')",
             # Force replacement may replace known evidence with a newer producer
             # value, but an incoming NULL is omission, never a command to erase
             # an established timestamp. The interval stays closed even when only

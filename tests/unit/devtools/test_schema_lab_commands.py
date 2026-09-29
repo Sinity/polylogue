@@ -542,3 +542,56 @@ def test_promotion_audits_the_tree_promotion_writes(monkeypatch: pytest.MonkeyPa
 
     assert observed == tmp_path / "share" / "polylogue" / "schemas"
     assert observed == SchemaRegistry().storage_root
+
+
+def test_schema_generate_handles_missing_archive_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A RuntimeError escapes this production command instead of producing exit code 1."""
+    from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError
+
+    monkeypatch.setattr(
+        schema_generate, "get_config", lambda: _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    )
+
+    def refuse(request: SchemaInferRequest) -> SchemaInferResult:
+        raise SchemaArchiveEvidenceError("synthetic missing source tier")
+
+    monkeypatch.setattr(schema_generate, "infer_schema", refuse)
+    assert schema_generate.main(["--provider", "chatgpt"]) == 1
+    assert "synthetic missing source tier" in capsys.readouterr().err
+
+
+def test_schema_module_cli_preserves_configured_archive_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The module CLI binds evidence to the configured root, not the generation directory.
+
+    Anti-vacuity: drop the ``archive_location`` argument and the real binder
+    resolves the generation directory as the archive root and refuses.
+    """
+    from polylogue.schemas.operator import schema_inference
+    from polylogue.schemas.sampling_db import _schema_archive_location
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    external_index = root / ".index-generations" / "generation-1" / "index.db"
+    external_index.parent.mkdir(parents=True)
+    external_index.write_bytes((root / "index.db").read_bytes())
+    (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+    selected = ArchiveLocation.resolve(root)
+    monkeypatch.setattr(
+        schema_inference, "get_config", lambda: _ConfigStub(archive_root=root, db_path=selected.active_index_path)
+    )
+    observed: list[ArchiveLocation] = []
+
+    def generate(
+        *, db_path: Path, archive_location: ArchiveLocation | None = None, **kwargs: object
+    ) -> list[GenerationResult]:
+        observed.append(_schema_archive_location(db_path=db_path, archive_location=archive_location))
+        return []
+
+    monkeypatch.setattr(schema_inference, "generate_all_schemas", generate)
+    assert schema_inference.cli_main(["--provider", "chatgpt", "--output-dir", str(tmp_path / "output")]) == 0
+    assert observed == [selected]

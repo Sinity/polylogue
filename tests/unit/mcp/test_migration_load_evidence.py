@@ -39,7 +39,7 @@ from polylogue.archive.query.execution_control import (
     default_admission_controller,
     reset_default_admission_controller_for_tests,
 )
-from polylogue.archive.query.transaction import QueryTransaction
+from polylogue.archive.query.transaction import QueryContinuation, QueryTransaction
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPArchiveStatsPayload
 from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
@@ -321,6 +321,11 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
         response_text = await invoke_large_query()
         response = json.loads(response_text)
         continuation = cast(dict[str, Any], response["continuation"])
+        # A merely disjoint second page can silently skip rows. The first call
+        # starts at offset 0, so the registered route must resume exactly
+        # after the rows it actually returned.
+        arguments = cast(dict[str, Any], continuation["arguments"])
+        assert QueryContinuation.decode(arguments["continuation"]).request.offset == response["returned_items"]
         resumed = json.loads(await invoke_surface_async(query_fn, **cast(dict[str, Any], continuation["arguments"])))
         _, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -463,8 +468,10 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         assert archive_status.total_sessions == request_count
         assert archive_status.total_messages == request_count
         status_serialized = json.dumps(status, sort_keys=True)
-        assert not any(marker in status_serialized for marker in markers), (
-            f"status exposed request-specific data for {marker}: {status}"
+        # Status is archive-scoped: even this request's own session ID is
+        # forbidden here, unlike the per-session read/get envelopes above.
+        assert not any(identity in status_serialized for identity in (*markers, *session_ids)), (
+            f"status exposed a request marker or session ID: {status}"
         )
 
     controller = default_admission_controller()

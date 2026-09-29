@@ -132,16 +132,8 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
                 add_clause(" OR ".join(handler_clauses), handler_params, is_selective=True)
                 return True
             if field == "status":
-                status_expr = (
-                    "CASE "
-                    "WHEN r.tool_outcome = 'ok' THEN 'ok' "
-                    "WHEN r.tool_outcome = 'error' THEN 'failed' "
-                    "WHEN r.tool_result_exit_code IS NOT NULL "
-                    "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
-                    "WHEN r.tool_result_is_error = 1 THEN 'failed' "
-                    "WHEN r.tool_result_is_error = 0 THEN 'ok' "
-                    "ELSE 'unknown' END"
-                )
+                # Same mapping as the projected ``status`` column below.
+                status_expr = "CASE r.tool_outcome WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
                 clause, clause_params = _in_or_equals_clause(status_expr, current.values, lower=True)
                 add_clause(clause, clause_params, is_selective=True)
                 return True
@@ -341,13 +333,9 @@ tool_finished_base AS (
             WHEN COALESCE(u.tool_command, '') <> '' THEN 'shell'
             ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use')
         END AS handler_kind,
-        CASE
-            WHEN r.tool_outcome = 'ok' THEN 'ok'
-            WHEN r.tool_outcome = 'error' THEN 'failed'
-            WHEN r.tool_result_exit_code IS NOT NULL
-                THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END
-            WHEN r.tool_result_is_error = 1 THEN 'failed'
-            WHEN r.tool_result_is_error = 0 THEN 'ok'
+        CASE r.tool_outcome
+            WHEN 'ok' THEN 'ok'
+            WHEN 'error' THEN 'failed'
             ELSE 'unknown'
         END AS status,
         CASE

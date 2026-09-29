@@ -116,25 +116,19 @@ def test_the_route_validates_the_epoch_on_every_resume(monkeypatch: pytest.Monke
 
 
 def test_continuation_can_narrow_final_window_without_losing_snapshot_binding() -> None:
-    from polylogue.archive.query.transaction import (
-        QueryContinuation,
-        QueryContinuationInvalidError,
-        QueryTransactionRequest,
-    )
+    from polylogue.archive.query.transaction import QueryContinuation, QueryContinuationInvalidError
     from polylogue.operations.session_contracts import SessionRead
     from polylogue.operations.transcript_window import frame_request
 
-    original = QueryTransactionRequest(
-        operation="sessions.read",
-        arguments={"ref": "session:x", "message_role": [], "message_type": None, "material_origin": []},
-        page_size=200,
-        offset=200,
-        projection="session-owner-v1",
-        stable_order="position",
-    ).with_archive_epoch("archive:v1:pinned")
-    token = QueryContinuation(original, "result:abc123").encode()
+    # Mint the token the way the route does: frame the original window, then
+    # bind it to a snapshot. A hand-built request would have to restate the
+    # route's argument projection and result identity to be accepted.
+    _request, framed = frame_request(SessionRead(ref="session:x", limit=200, offset=200))
+    original = framed.with_archive_epoch("archive:v1:pinned")
+    token = QueryContinuation(original, original.result_ref).encode()
     narrowed, transaction = frame_request(SessionRead(ref="session:x", limit=20, continuation=token))
     assert narrowed.limit == 20
+    assert narrowed.offset == 200
     assert transaction.page_size == 20
     assert transaction.offset == 200
     assert transaction.archive_epoch == "archive:v1:pinned"

@@ -2065,7 +2065,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 thread_name_prefix="test-daemon-api",
             )
             self.operation_runtime = SimpleNamespace(
-                shutdown=self._shutdown_operation_runtime, embedding_convergence=None
+                shutdown=self._shutdown_operation_runtime,
+                embedding_convergence=None,
+                accepted_ingest_redrive_claimed=_no_redrive_claims,
             )
 
         async def _shutdown_operation_runtime(self) -> None:
@@ -2950,7 +2952,11 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     async def shutdown_operation_runtime() -> None:
         return None
 
-    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime, embedding_convergence=None)
+    api_server.operation_runtime = SimpleNamespace(
+        shutdown=shutdown_operation_runtime,
+        accepted_ingest_redrive_claimed=_no_redrive_claims,
+        embedding_convergence=None,
+    )
     interrupted_cleanup_calls = 0
 
     def mark_interrupted_cleanup() -> None:
@@ -4168,11 +4174,16 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
 #: has to be declared in :mod:`polylogue.daemon.services` instead of being
 #: added here. An anonymous ``Task-N`` matches nothing and fails the
 #: inventory, which is why every one of these carries a name.
+async def _no_redrive_claims() -> None:
+    """A fake ingest owner with no interrupted accepted ingest to claim."""
+
+
 _DECLARED_UNSUPERVISED_TASK_PREFIXES: dict[str, str] = {
     "polylogue-writer:": "DaemonWriteCoordinator: one admitted mutation",
     "polylogue-writer-staged:": "DaemonWriteThreadBridge: one staged publication",
     "polylogue-managed:": "DaemonWriteCoordinator: one tracked post-write effect",
     "polylogue-drive-catchup:": "DriveCatchupExecution: one settled catch-up step",
+    "polylogue-ingest-redrive:": "DaemonOperationRuntime: the ingest owner's accepted-ingest re-drive",
 }
 
 
@@ -4328,6 +4339,25 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         supervisors = _capture_supervisor(stack, daemon_cli)
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
+        from polylogue.daemon import embedding_owner
+
+        ingest_owners: list[Any] = []
+        embedding_owners: list[object] = []
+        compose_owner = daemon_cli.compose_ingest_owner
+        compose_embedding = embedding_owner.compose_embedding_convergence
+
+        def capture_ingest_owner(*args: Any, **kwargs: Any) -> Any:
+            runtime, profiles = compose_owner(*args, **kwargs)
+            ingest_owners.append(runtime)
+            return runtime, profiles
+
+        def capture_embedding_owner(*args: Any, **kwargs: Any) -> Any:
+            owner = compose_embedding(*args, **kwargs)
+            embedding_owners.append(owner)
+            return owner
+
+        stack.enter_context(patch.object(daemon_cli, "compose_ingest_owner", capture_ingest_owner))
+        stack.enter_context(patch.object(embedding_owner, "compose_embedding_convergence", capture_embedding_owner))
         for attribute in (
             "_periodic_lifecycle_heartbeat",
             "_periodic_health_check",
@@ -4364,6 +4394,12 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
             thread_orphans=thread_orphans,
         )
     assert created, "the task factory recorded nothing; the inventory never observed the route"
+    # A daemon serving no API still composes its ingest owner (Codex P1, #5717).
+    assert any(entry.name.startswith("polylogue-ingest-redrive:") for entry in created)
+    # ...and that owner shares the daemon's one embedding owner rather than
+    # composing a second one lazily on its first embedding operation.
+    assert len(ingest_owners) == 1 and len(embedding_owners) == 1
+    assert ingest_owners[0].embedding_convergence is embedding_owners[0]
     assert orphans == [], f"the composition route returned with live children: {orphans}"
     assert thread_orphans == [], f"the composition route returned with live threads: {thread_orphans}"
 

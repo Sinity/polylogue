@@ -1746,6 +1746,7 @@ def delete_verb(
     from polylogue.cli.verb_cardinality import (
         check_cardinality,
         probe_session_ids_for_verb,
+        require_exact_mutation_selection,
         resolve_session_ids_for_verb,
     )
 
@@ -1770,6 +1771,10 @@ def delete_verb(
         return
 
     from polylogue.cli.archive_query import execute_delete_by_session_ids
+
+    # Decided before any read: a contradictory or windowed selection is refused
+    # rather than resolved to some wider set than the operator chose.
+    require_exact_mutation_selection(request, allow_all=all_flag, operation="delete")
 
     # dry-run: require explicit multi-target scope before materializing a broad
     # preview. Once --all is supplied, resolve the SAME full ID set the real
@@ -1879,7 +1884,11 @@ def mark_verb(
     import hashlib
 
     from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, ContextualCliError, NextAction
-    from polylogue.cli.verb_cardinality import check_cardinality, resolve_session_ids_for_verb
+    from polylogue.cli.verb_cardinality import (
+        check_cardinality,
+        require_exact_mutation_selection,
+        resolve_session_ids_for_verb,
+    )
 
     if ctx.invoked_subcommand is not None:
         return
@@ -1918,6 +1927,7 @@ def mark_verb(
         )
 
     # Resolve matched sessions and enforce cardinality.
+    require_exact_mutation_selection(request, allow_all=apply_all, operation="mark")
     session_ids = resolve_session_ids_for_verb(env, request)
     check_cardinality(
         len(session_ids),

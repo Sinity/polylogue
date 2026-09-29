@@ -617,8 +617,10 @@ def _assert_additional_blob_refs_admissible(
 ) -> None:
     """Gate every sibling attachment/sidecar reference on the excision ledger.
 
-    Session excision deliberately records every sibling attachment and sidecar
-    hash, not just the session payload's. Checking only the primary hash left
+    Session excision records every sibling attachment and sidecar hash that
+    no other session still references, not just the session payload's (a
+    hash another session shares is never marked, so this gate does not
+    refuse that session's own re-ingest). Checking only the primary hash left
     ``additional_blob_refs`` as the one unguarded way back in: a parsed-session
     ingest carrying an excised attachment inserted its ``blob_refs`` row and
     consumed its publication receipt, making bytes the operator durably excised

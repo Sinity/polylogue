@@ -55,6 +55,7 @@ from polylogue.archive.session_revision_membership import (
 )
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
+from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -1276,14 +1277,14 @@ def prepare_retained_jsonl_artifact(
                     return iter(())
                 return chain(sample, source)
 
-            def classify_grok_export(count: int, record_marker: bool) -> bool:
-                # The stream probe has already proved the complete Grok
-                # wrapper. This bounded witness gives taxonomy the same
-                # shape, while its path rules still outrank session content.
-                witness: JSONValue = {"conversations": [] if count == 0 else [{"conversation": {}, "responses": []}]}
-                if record_marker:
-                    assert isinstance(witness, dict)
-                    witness["record_type"] = "grok_export"
+            def classify_bundle_members(witnesses: Sequence[JSONValue]) -> bool:
+                # The member scan keeps the first 64 members, each container
+                # field cut to 64 entries, as the bounded record sample.
+                return _declared_non_session_artifact_classification(provider, source_path, sample=witnesses) is None
+
+            def classify_grok_export(witness: JSONValue) -> bool:
+                # The root fields, with containers cut to their first 64
+                # entries, are the bounded record sample.
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
             def classify_generic_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
@@ -1355,6 +1356,7 @@ def prepare_retained_jsonl_artifact(
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
                 classify_otel_object=classify_otel_object,
+                classify_bundle_members=classify_bundle_members,
                 # The publisher recomputes this digest from the retained
                 # evidence for every artifact, so a pass that enriched nothing
                 # (no assembly spec, or no admitted session) must bind the
@@ -3491,7 +3493,7 @@ def _required_shard_prepared_rows(
     bindings: Mapping[str, PreparedRows],
 ) -> dict[str, PreparedRows]:
     """Bind exactly the session the frozen replay is about to full-replace."""
-    session_id = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+    session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
     try:
         return {raw_id: bindings[session_id]}
     except KeyError as exc:
@@ -3652,6 +3654,7 @@ def _owned_generation_is_empty(archive_root: Path, *, generation: tuple[str, str
         initialize=False,
         read_only=True,
         owned_inactive_generation=generation,
+        validate_index_layout=False,
     ) as probe:
         return probe._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is None
 

@@ -232,7 +232,11 @@ class SessionReadRequest(_ReadRequest):
 
     ref: str = Field(min_length=1)
     kind: SessionReadKind = "transcript"
-    limit: int = Field(default=200, ge=1, le=2000)
+    #: Omitted, a fresh window is the handler's declared 200 rows and a resumed
+    #: one keeps its continuation's page. A stated limit beside a continuation
+    #: narrows that page; the transport serializes every field, so a concrete
+    #: default here would read as the caller asking to widen it.
+    limit: int | None = Field(default=None, ge=1, le=2000)
     offset: int = Field(default=0, ge=0)
     #: A message reference whose window is wanted.  Declared here rather than
     #: only on the HTTP route so the CLI, the MCP ``read`` tool and the Python

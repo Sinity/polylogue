@@ -316,3 +316,31 @@ def test_plain_output_uses_requested_provider_input_manifest(
     output = capsys.readouterr().out
     assert f"input_manifest_digest={digest or 'input_manifest_unavailable'}" in output
     assert "b" * 64 not in output
+
+
+@pytest.mark.parametrize("refusal", ["privacy", "archive_evidence"])
+def test_schema_commit_renders_typed_refusals_as_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refusal: str
+) -> None:
+    """The previous exception bases bypass the command's attributable JSON failure boundary."""
+    from polylogue.schemas.operator.commit import SchemaCommitPrivacyError
+    from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError
+
+    monkeypatch.setattr(
+        schema_commit, "get_config", lambda: _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    )
+    error = (
+        SchemaCommitPrivacyError("chatgpt", ("synthetic privacy refusal",))
+        if refusal == "privacy"
+        else SchemaArchiveEvidenceError("synthetic missing source tier")
+    )
+
+    def refuse(request: SchemaCommitRequest) -> SchemaCommitResult:
+        raise error
+
+    monkeypatch.setattr(schema_commit, "commit_provider_schema", refuse)
+    assert schema_commit.main(["--provider", "chatgpt", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is False
+    assert payload["provider"] == "chatgpt"
+    assert payload["error"] == str(error)

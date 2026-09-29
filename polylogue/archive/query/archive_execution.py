@@ -352,12 +352,6 @@ def _summaries_from_hits(archive: ArchiveStore, hits: list[ArchiveSessionSearchH
     return summaries
 
 
-def _open_archive_for_write(archive_root: Path) -> ArchiveStore:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    return ArchiveStore.open_existing(archive_root, read_only=False)
-
-
 def _attach_units_to_domain(
     items: builtins.list[_AttachableT],
     archive: ArchiveStore,
@@ -900,33 +894,8 @@ def _pair_hits(
     return paired
 
 
-async def delete_archive(
-    plan: SessionQueryPlan,
-    *,
-    archive_root: Path,
-    config: Config | None,
-) -> int:
-    # A composed count order ranks recomposed sessions, which the tail-only
-    # summaries cannot: the targets are chosen exactly as ``list`` chooses them.
-    if plan.can_use_summaries() and plan.sort not in _COMPOSED_COUNT_SORTS:
-        summaries = await list_summaries_archive(
-            plan,
-            archive_root=archive_root,
-            config=config,
-        )
-        session_ids = tuple(str(summary.id) for summary in summaries)
-    else:
-        sessions = await list_archive(plan, archive_root=archive_root, config=config)
-        session_ids = tuple(str(session.id) for session in sessions)
-    if not session_ids:
-        return 0
-    with _open_archive_for_write(archive_root) as archive:
-        return archive.delete_sessions(session_ids)
-
-
 __all__ = [
     "count_archive",
-    "delete_archive",
     "first_archive",
     "list_archive",
     "list_summaries_archive",

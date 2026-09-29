@@ -394,7 +394,11 @@ def apply_primary_invalidation_if_confirmed(
     if row.state != "confirmed":
         return LifecycleInvalidationOutcome(success=False, reason="pending_confirmation")
 
-    from polylogue.security.excision import LineageDependentsError, apply_session_excision
+    from polylogue.security.excision import (
+        ExcisionBlobReferenceUnknownError,
+        LineageDependentsError,
+        apply_session_excision,
+    )
 
     session_id = row.target_ref.removeprefix("session:")
     try:
@@ -406,6 +410,10 @@ def apply_primary_invalidation_if_confirmed(
         # this as a clean failure outcome rather than letting the exception
         # propagate out of a lifecycle-drive call site.
         return LifecycleInvalidationOutcome(success=False, reason="lineage_dependents_unresolved")
+    except ExcisionBlobReferenceUnknownError:
+        # Whether another session still references a blob could not be
+        # decided; the excision rolled back and the request stays confirmed.
+        return LifecycleInvalidationOutcome(success=False, reason="blob_references_undecided")
     if not receipt.found:
         return LifecycleInvalidationOutcome(success=False, reason="target_not_found", receipt=receipt)
     return LifecycleInvalidationOutcome(success=True, receipt=receipt)

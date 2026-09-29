@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import random
 import threading
 from collections import OrderedDict
@@ -52,9 +54,9 @@ class _StringLengthAnnotation:
     stddev: float
 
 
-# Retain four annotation kinds for the ordinary and coverage schemas.
-# Strong references prevent object-id reuse until an entry is evicted.
-_PARSED_ANNOTATIONS: OrderedDict[tuple[int, str], tuple[object, tuple[Any, ...]]] = OrderedDict()
+# Retain four annotation kinds for the ordinary and coverage schemas. The
+# content digest changes for both list edits and nested annotation mutations.
+_PARSED_ANNOTATIONS: OrderedDict[tuple[str, str], tuple[Any, ...]] = OrderedDict()
 _PARSED_ANNOTATIONS_LIMIT = 8
 _PARSED_ANNOTATIONS_LOCK = threading.Lock()
 
@@ -65,15 +67,18 @@ def _parsed_annotations(
     value = schema.get(key)
     if not isinstance(value, list | tuple):
         return ()
-    cache_key = (id(value), key)
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    cache_key = (key, hashlib.sha256(serialized.encode("utf-8")).hexdigest())
     with _PARSED_ANNOTATIONS_LOCK:
         cached = _PARSED_ANNOTATIONS.get(cache_key)
-        if cached is not None and cached[0] is value:
+        if cached is not None:
             _PARSED_ANNOTATIONS.move_to_end(cache_key)
-            return cast(tuple[_T, ...], cached[1])
-    parsed = parse(tuple(item for item in value if isinstance(item, dict)))
+            return cast(tuple[_T, ...], cached)
+    # Parse the same snapshot that supplied the key, not the caller's live list.
+    snapshot = json.loads(serialized)
+    parsed = parse(tuple(item for item in snapshot if isinstance(item, dict)))
     with _PARSED_ANNOTATIONS_LOCK:
-        _PARSED_ANNOTATIONS[cache_key] = (value, parsed)
+        _PARSED_ANNOTATIONS[cache_key] = parsed
         _PARSED_ANNOTATIONS.move_to_end(cache_key)
         while len(_PARSED_ANNOTATIONS) > _PARSED_ANNOTATIONS_LIMIT:
             _PARSED_ANNOTATIONS.popitem(last=False)

@@ -393,6 +393,9 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     overwrite existing content.
     """
     spec = archive_tier_spec(tier)
+    # Foreign-key enforcement is connection state, not schema: every branch
+    # below, including the OPS same-digest shortcut, must leave it enabled.
+    conn.execute("PRAGMA foreign_keys = ON")
     if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
         digest = _tier_prototype_key(conn, tier, spec.version)[2]
         state = conn.execute(
@@ -795,8 +798,14 @@ def _initialize_active_archive_root(root: Path) -> None:
         # with respect to continuity, including their steady-state path.
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
+            # Keep the pending intent until both completed markers exist.
+            # Publication may have succeeded just before a crash: validate that
+            # same fresh bootstrap's marker instead of attempting to replace it.
+            if format_marker.exists():
+                assert_archive_format_lineage(root)
+            else:
+                record_fresh_archive_format(root)
             _record_fresh_durable_bootstrap(root)
-            record_fresh_archive_format(root)
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the

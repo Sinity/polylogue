@@ -371,37 +371,6 @@ async def test_a_sampled_composed_sort_samples_every_candidate(tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-async def test_a_composed_delete_targets_what_the_list_selects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A composed count sort deletes the session its list page shows.
-
-    Anti-vacuity (Codex P1, #5695): select delete targets from the tail-only
-    summaries and the order differs from the composed list's.
-    """
-    from polylogue.archive.query import archive_execution
-
-    for index in range(3):
-        _seed(tmp_path, f"x{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
-    plan = SessionQueryPlan(sort="messages", limit=1)
-    listed = await list_archive(plan, archive_root=tmp_path, config=None)
-    chosen: list[str] = []
-
-    async def fake_list(plan_arg: SessionQueryPlan, **kwargs: object) -> list[Session]:
-        sessions = await list_archive(plan_arg, archive_root=tmp_path, config=None)
-        chosen.extend(str(session.id) for session in sessions)
-        return sessions
-
-    monkeypatch.setattr(archive_execution, "list_archive", fake_list)
-    monkeypatch.setattr(
-        archive_execution,
-        "list_summaries_archive",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("composed delete used summaries")),
-    )
-    await archive_execution.delete_archive(plan, archive_root=tmp_path, config=None)
-
-    assert chosen == [str(session.id) for session in listed]
-
-
-@pytest.mark.asyncio
 async def test_units_of_a_default_composed_page_get_the_default_page_allowance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -16,7 +16,6 @@ from polylogue.archive.filter.builder import SessionFilterBuilderMixin
 from polylogue.archive.filter.types import SortField
 from polylogue.archive.query.archive_execution import (
     count_archive,
-    delete_archive,
     first_archive,
     list_archive,
     list_summaries_archive,
@@ -159,9 +158,6 @@ class SessionFilter(SessionFilterBuilderMixin):
 
     async def count(self) -> int:
         return await count_archive(self._plan, archive_root=self._archive_root, config=self._config)
-
-    async def delete(self) -> int:
-        return await delete_archive(self._plan, archive_root=self._archive_root, config=self._config)
 
 
 __all__ = ["SessionFilter", "SortField"]

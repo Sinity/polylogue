@@ -495,6 +495,9 @@ def test_dispatcher_retention_authority_is_scoped_to_its_admitted_page(
     assert observed_scopes == [expected_paths]
 
 
+# Nine full dispatcher ingests across three archives: the 120 s default hang
+# guard fired under host load before any assertion ran.
+@pytest.mark.timeout(600)
 def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -563,6 +566,12 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
             for statement in statements
             if statement.lstrip().upper().startswith("SELECT")
         )
+        # Every validated read-only open checks the derived schema identity
+        # (#5727).  That is a per-connection cost: exactly one here means the
+        # page's authority reads share one connection.
+        identity_checks = tuple(statement for statement in selects if "from schema_identity" in statement)
+        assert len(identity_checks) == 1
+        selects = tuple(statement for statement in selects if statement not in identity_checks)
         # One current page receives exactly its three authority reads: session
         # references, accepted heads, and eligible receipts.  A per-file/chunk
         # recurrence grows this count even when the archive's final content is

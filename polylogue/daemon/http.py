@@ -5740,6 +5740,10 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
                 status_config=operation_settings,
             ),
         )
+        # Startup recovery has run under this writer (``polylogued`` before
+        # constructing the server, a standalone server in its owned runtime),
+        # so accepted ingests it left to their owner are re-driven now.
+        self.operation_runtime.start_accepted_ingest_redrive()
         # A server that owns its writer still originates no derivation of its
         # own. Session-profile convergence is the daemon's service
         # (``_periodic_convergence_check`` and the watcher drive this same

@@ -254,8 +254,8 @@ class SessionMarkerDerivation:
             conn.close()
 
     def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
-        """Expose the next source batch only; the durable cursor owns resumption."""
-        del frame, cursor
+        """Page committed source batches without overtaking an unconsumed head."""
+        del frame
         applied = self._cursor()
         after_sequence = 0 if applied is None else applied[1]
         # The orchestration protocol commits one source batch with its cursor.
@@ -269,11 +269,19 @@ class SessionMarkerDerivation:
                 if not page:
                     return (), None
                 raise AcceptedMarkerInputRefusedError("accepted marker stream has a missing unconsumed sequence")
-            return (_key(tombstone[0], next_sequence),), None
-        first = page[0]
-        if applied is not None and first.stream_id != applied[0]:
-            raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
-        return (_key(first.stream_id, first.sequence),), None
+            head = _key(tombstone[0], next_sequence)
+        else:
+            first = page[0]
+            if applied is not None and first.stream_id != applied[0]:
+                raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
+            head = _key(first.stream_id, first.sequence)
+        # The kernel consumes this page before asking for the next one. A
+        # successful publication moves the durable cursor and exposes a new
+        # head. A held or failed publication must stop this sweep instead of
+        # repeating its key forever or delivering a later sequence out of order.
+        if head == cursor:
+            return (), None
+        return (head,), head
 
     def _tombstone_at(self, sequence: int, *, stream_id: str | None) -> tuple[str, str] | None:
         conn = self._source_read_connection()
