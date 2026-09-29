@@ -149,22 +149,33 @@ def _archive_tier_session_count(root: Path) -> int:
     return result if isinstance(result, int) else 0
 
 
-def _current_index_session_ids(root: Path) -> frozenset[str] | None:
-    """Return the session ids currently in *root*'s index tier.
+#: The row ids a completed demo-only seed records per tier, and that
+#: :func:`_archive_root_is_demo_owned` revalidates: the rebuildable index's
+#: sessions and the durable tiers' own rows. The index alone cannot vouch for
+#: the durable tiers: after an index reset it is absent or empty while
+#: ``source.db`` and ``user.db`` keep whatever real content arrived.
+_DEMO_OWNED_ROW_IDS: tuple[tuple[str, str, str, str], ...] = (
+    ("demo_session_ids", "index.db", "sessions", "session_id"),
+    ("demo_raw_ids", "source.db", "raw_sessions", "raw_id"),
+    ("demo_assertion_ids", "user.db", "assertions", "assertion_id"),
+)
+
+
+def _current_tier_row_ids(db_path: Path, table: str, column: str) -> frozenset[str] | None:
+    """Return the ids currently in one tier table.
 
     Returns ``None`` -- not an empty set -- when the tier can't be read, so
     callers treat "unreadable" as unknown rather than as proof there is
     nothing there (mirrors :func:`_archive_root_has_real_content`'s
     unknown-is-unsafe rule). Returns the empty set when the tier genuinely
-    does not exist, since a nonexistent index has definitionally no ids.
+    does not exist, since a nonexistent tier has definitionally no rows.
     """
 
-    index_db = root / "index.db"
-    if not index_db.exists():
+    if not db_path.exists():
         return frozenset()
     try:
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
-            rows = conn.execute("SELECT session_id FROM sessions").fetchall()
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+            rows = conn.execute(f"SELECT {column} FROM {table}").fetchall()
     except sqlite3.Error:
         return None
     return frozenset(str(row[0]) for row in rows)
@@ -308,13 +319,16 @@ def _archive_root_is_demo_owned(root: Path) -> bool:
     forever, and a later schema mismatch would self-heal by moving aside the
     now-real ``source.db``/``user.db`` (polylogue-dl6af gap 1).
 
-    So beyond the historical bit, this revalidates against the manifest's
-    ``demo_session_ids`` -- the exact session id set recorded the last time
-    a confirmed demo-only seed completed (:func:`_refresh_demo_ownership_session_ids`)
-    -- and only authorizes self-heal when the root's *current* session ids
-    are a subset of that recorded set. Any session id outside it means real
-    content arrived since the last seed, so self-heal must refuse exactly
-    like a root that held real content from the start.
+    So beyond the historical bit, this revalidates against the id sets the
+    manifest recorded the last time a confirmed demo-only seed completed
+    (:func:`_refresh_demo_ownership_session_ids`): index sessions, durable
+    ``source.db`` raws and ``user.db`` assertions (``_DEMO_OWNED_ROW_IDS``).
+    Self-heal is authorized only when every tier's *current* ids are a
+    subset of its recorded set. Any id outside one means real content
+    arrived since the last seed, so self-heal must refuse exactly like a
+    root that held real content from the start. The durable tiers are
+    checked in their own right: an index that was reset holds no ids at
+    all, and trusting it would move real durable content aside.
 
     Never trusts ``DEMO_SOURCE_DIRNAME``'s presence alone, either: that
     fixture-source-directory marker only proves "a demo seed touched this
@@ -325,21 +339,26 @@ def _archive_root_is_demo_owned(root: Path) -> bool:
     manifest = _read_demo_ownership_manifest(root)
     if manifest is None or manifest.get("demo_only") is not True:
         return False
-    recorded_ids = manifest.get("demo_session_ids")
-    if not isinstance(recorded_ids, list):
-        # No completed demo-only seed has recorded a session-id baseline yet
-        # (a brand-new manifest this same call, or a legacy manifest written
-        # before this revalidation existed): fall back to the first-touch
+    if not any(key in manifest for key, *_ in _DEMO_OWNED_ROW_IDS):
+        # No completed demo-only seed has recorded a baseline yet (a
+        # brand-new manifest this same call): fall back to the first-touch
         # signal alone for this one grace run. The next successful demo-only
         # seed calls :func:`_refresh_demo_ownership_session_ids`, and every
-        # subsequent call is protected by the stricter subset check above.
+        # subsequent call is protected by the stricter subset check below.
         return not _archive_root_has_real_content(root)
-    current_ids = _current_index_session_ids(root)
-    if current_ids is None:
-        # Index unreadable: can't prove current content is still
-        # demo-exclusive. Unknown is unsafe (mirrors gap 2's rule).
-        return False
-    return current_ids <= frozenset(str(item) for item in recorded_ids)
+    for key, filename, table, column in _DEMO_OWNED_ROW_IDS:
+        recorded_ids = manifest.get(key)
+        if not isinstance(recorded_ids, list):
+            # A partial baseline cannot vouch for the tier it lacks.
+            return False
+        current_ids = _current_tier_row_ids(root / filename, table, column)
+        if current_ids is None:
+            # Tier unreadable: can't prove current content is still
+            # demo-exclusive. Unknown is unsafe (mirrors gap 2's rule).
+            return False
+        if not current_ids <= frozenset(str(item) for item in recorded_ids):
+            return False
+    return True
 
 
 def _refresh_demo_ownership_session_ids(root: Path) -> None:
@@ -362,7 +381,11 @@ def _refresh_demo_ownership_session_ids(root: Path) -> None:
         return
     manifest_path = root / DEMO_OWNERSHIP_MANIFEST_FILENAME
     updated = dict(manifest)
-    updated["demo_session_ids"] = _all_demo_session_ids(root)
+    for key, filename, table, column in _DEMO_OWNED_ROW_IDS:
+        current_ids = _current_tier_row_ids(root / filename, table, column)
+        if current_ids is None:
+            raise sqlite3.OperationalError(f"cannot record the demo ownership baseline: {filename} is unreadable")
+        updated[key] = sorted(current_ids)
     manifest_path.write_text(json.dumps(updated, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -1697,9 +1720,11 @@ async def _seed_demo_archive_owned(
         result = await ingest_sources_archive(archive_root, demo_source_specs(source_root), parse_workers=1)
 
     apply_demo_post_ingest_augmentation(archive_root)
+    overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
+    # After every demo write, overlays included: the baseline names each
+    # durable row this seed is responsible for.
     _refresh_demo_ownership_session_ids(archive_root)
 
-    overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
     construct_coverage = evaluate_demo_constructs(archive_root)
     return DemoSeedResult(
         archive_root=archive_root,

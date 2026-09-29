@@ -867,6 +867,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             _emit_session_result(session, output_format=output_format, fields=fields, view=read_view)
             return
+        if tags_to_add or metadata_to_set or delete_matched:
+            # The token looked like one session's id and no such session
+            # exists. A read may fall through to a text search for it; a
+            # mutation may not, because that search can match every session
+            # whose text mentions the id and the write would reach all of them.
+            _fail(f"Session not found: {transcript_ref}")
 
     # --- Ordinary page: one declared session query, rendered as list or search.
     try:

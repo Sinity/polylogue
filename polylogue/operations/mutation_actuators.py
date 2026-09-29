@@ -56,14 +56,6 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _session_exists(archive: ArchiveStore, session_id: str) -> bool:
-    try:
-        archive.resolve_session_id(session_id)
-    except KeyError:
-        return False
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Session delete (mutate-delete-session)
 # ---------------------------------------------------------------------------
@@ -97,8 +89,10 @@ class SessionDeleteActuator(ConvergentReplay):
         # Re-resolve existence against live state: a session id the caller
         # already matched via a query result set may have been deleted (by
         # a concurrent actor) between query and delete -- prepare only
-        # plans the subset that still exists right now.
-        existing = tuple(sid for sid in dict.fromkeys(args.session_ids) if _session_exists(args.archive, sid))
+        # plans the subset that still exists right now. Every caller hands
+        # full ids it resolved once, so existence is exact: a vanished id
+        # never widens to another session sharing its prefix.
+        existing = args.archive.stored_session_ids(args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="delete",
@@ -113,8 +107,11 @@ class SessionDeleteActuator(ConvergentReplay):
             raise ValueError("session delete plan contains a non-session target")
         planned = tuple(target_ref.removeprefix("session:") for target_ref in plan.target_refs)
         # A re-applied plan converges: a target an interrupted apply already
-        # removed is satisfied, and ``delete_sessions`` refuses an unknown id.
-        session_ids = tuple(sid for sid in planned if _session_exists(args.archive, sid))
+        # removed is satisfied. Only ids still stored exactly reach
+        # ``delete_sessions``, whose own resolver would widen a missing id to a
+        # prefix match and delete a different session (crash-recovery replay
+        # runs exactly this after the first apply removed the target).
+        session_ids = args.archive.stored_session_ids(planned)
         deleted = args.archive.delete_sessions(session_ids) if session_ids else 0
         status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
         return MutationReceipt(
@@ -1027,6 +1024,9 @@ class BulkTagActuator(ConvergentReplay):
         session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         tags: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("tags") or ()))
         requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        # Every planned id is stored exactly or the apply stops before its
+        # first write; none is re-resolved to a prefix sibling.
+        args.archive.require_stored_session_ids(session_ids)
         affected = 0
         assertions = 0
         for session_id in session_ids:
@@ -1186,6 +1186,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
         planned_pairs = cast("list[list[object]]", plan.context.get("pairs") or [])
         pairs: tuple[tuple[str, object], ...] = tuple((str(pair[0]), pair[1]) for pair in planned_pairs)
         requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        args.archive.require_stored_session_ids(session_ids)
         affected = 0
         assertions = 0
         for session_id in session_ids:
@@ -3031,16 +3032,17 @@ def _partition_requested_session_ids(
     asked for. The declared plan context is a closed model
     (``machine_plan_context``), so the gap is carried on the receipt, which is
     where the terminal outcome is decided anyway.
+
+    A multi-target selection is a set of full session ids its caller already
+    resolved once (the CLI from its query, a facade caller from its own
+    reads), so membership is exact. An abbreviated or vanished id is named in
+    the gap; it is never widened to whichever session shares its prefix.
     """
 
-    resolved: list[str] = []
-    unresolved: list[str] = []
-    for session_id in dict.fromkeys(session_ids):
-        try:
-            resolved.append(archive.resolve_session_id(session_id))
-        except KeyError:
-            unresolved.append(session_id)
-    return tuple(resolved), tuple(unresolved)
+    requested = tuple(dict.fromkeys(session_ids))
+    resolved = archive.stored_session_ids(requested)
+    present = set(resolved)
+    return resolved, tuple(sid for sid in requested if sid not in present)
 
 
 def _narrowed_plan_outcome(*, matched: int, unresolved: Sequence[str]) -> OutcomeEnvelope:

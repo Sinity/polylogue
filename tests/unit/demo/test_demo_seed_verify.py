@@ -625,6 +625,44 @@ async def test_seed_demo_archive_revokes_self_heal_once_a_demo_only_root_gains_r
 
 
 @pytest.mark.asyncio
+async def test_seed_demo_archive_does_not_trust_a_reset_index_over_durable_content(tmp_path: Path) -> None:
+    """A demo-owned root whose index was reset keeps its durable content protected.
+
+    The ownership revalidation once compared only the index's session ids
+    with the recorded baseline. An index reset leaves no ids, the empty set
+    is a subset of anything, and a real raw that arrived in ``source.db``
+    since the last seed was then treated as demo-owned: the seed wrote into
+    it, and a schema mismatch would move the real ``source.db`` aside. The
+    durable tiers are now revalidated on their own ids, so this refuses.
+    """
+
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True)
+    manifest = json.loads((archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text())
+    assert manifest["demo_only"] is True
+    assert manifest["demo_raw_ids"]
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("real-raw-after-seed", "claude-code-session", "real-session", "/real/source/path", 0, b"\x01" * 32, 1, 0),
+        )
+        conn.commit()
+    for suffix in ("", "-wal", "-shm"):
+        (archive_root / f"index.db{suffix}").unlink(missing_ok=True)
+
+    with pytest.raises(DemoSeedTargetUnsafeError, match="real archive content"):
+        await seed_demo_archive(archive_root, force=True)
+    assert not list(archive_root.glob("*.stale-*"))
+    assert not (archive_root / "index.db").exists()
+
+
+@pytest.mark.asyncio
 async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tmp_path: Path) -> None:
     """A missing/unreadable index.db must never authorize moving aside real durable content.
 

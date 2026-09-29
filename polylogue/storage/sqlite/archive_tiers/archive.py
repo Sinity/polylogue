@@ -4222,6 +4222,31 @@ class ArchiveStore:
             resolved.update({str(row["session_id"]): str(row["session_id"]) for row in rows})
         return resolved
 
+    def stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
+        """The given full session ids that are stored exactly, deduplicated, in order.
+
+        Mutations act on ids their caller already resolved once, at preview.
+        They must never resolve again through ``resolve_session_id``: its
+        prefix and suffix fallbacks re-point an id that has since gone at
+        whichever session shares its prefix, and the write lands on that
+        session instead. Existence of a recorded id is an exact-key question.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+        stored = self.resolve_exact_session_ids(requested)
+        return tuple(session_id for session_id in requested if session_id in stored)
+
+    def require_stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
+        """Return ``session_ids`` deduplicated, or raise ``KeyError`` for one not stored exactly.
+
+        The durable writers' guard: see :meth:`stored_session_ids`.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+        stored = set(self.stored_session_ids(requested))
+        for session_id in requested:
+            if session_id not in stored:
+                raise KeyError(session_id)
+        return requested
+
     def search_blocks(self, query: str) -> list[str]:
         """Search indexed block text and return block ids."""
         return search_archive_blocks(self._conn, query)
@@ -4252,9 +4277,7 @@ class ArchiveStore:
         try:
             user_conn.execute("BEGIN IMMEDIATE")
             try:
-                for session_id in tuple(
-                    dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
-                ):
+                for session_id in self.require_stored_session_ids(session_ids):
                     for tag in tags:
                         normalized_tag = tag.strip().lower()
                         if not normalized_tag:
@@ -4295,7 +4318,7 @@ class ArchiveStore:
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
         """Mark user tag assertions deleted and return deleted row count."""
         self._require_writable("delete user.db tags")
-        resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
+        resolved_session_ids = self.require_stored_session_ids(session_ids)
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
         removed = 0
@@ -4863,9 +4886,7 @@ class ArchiveStore:
             changed = 0
             user_conn.execute("BEGIN IMMEDIATE")
             try:
-                for session_id in tuple(
-                    dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
-                ):
+                for session_id in self.require_stored_session_ids(session_ids):
                     for key, value in pairs:
                         normalized_key = key.strip()
                         if not normalized_key:
@@ -4921,7 +4942,7 @@ class ArchiveStore:
 
     def delete_user_metadata(self, session_id: str, key: str) -> int:
         """Mark one user metadata assertion deleted."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         normalized_key = key.strip()
         if not normalized_key:
             raise ValueError("metadata key cannot be empty")
@@ -5516,7 +5537,7 @@ class ArchiveStore:
         author_kind: str | None = None,
     ) -> LearningCorrection:
         """Record one learning correction in archive user.db."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         correction_kind = parse_correction_kind(kind)
         stored_payload: dict[str, object] = {"payload": dict(payload), "note": note}
         user_conn = self._open_user_write_connection(initialize=True)
@@ -5568,7 +5589,7 @@ class ArchiveStore:
 
     def delete_correction(self, session_id: str, kind: str) -> bool:
         """Delete one learning correction from archive user.db."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         correction_kind = parse_correction_kind(kind)
         if not self.user_db_path.exists():
             return False
@@ -5582,7 +5603,7 @@ class ArchiveStore:
 
     def clear_corrections(self, session_id: str) -> int:
         """Delete all learning corrections for one archive session."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         if not self.user_db_path.exists():
             return 0
         user_conn = self._open_user_write_connection()
@@ -5655,7 +5676,11 @@ class ArchiveStore:
         *,
         write_operation: WriteOperation = WriteOperation.DELETE,
     ) -> int:
-        """Delete rebuildable archive sessions by id.
+        """Delete rebuildable archive sessions by exact stored id.
+
+        Every id must be stored exactly; an absent one raises ``KeyError``
+        before anything is deleted. The caller resolved its selection once, at
+        preview, and a re-resolution here could only widen it.
 
         User-tier overlays are intentionally left in ``user.db``; the user
         overlay orphan checker owns follow-up visibility for those durable rows.
@@ -5709,7 +5734,7 @@ class ArchiveStore:
             f"ArchiveStore.delete_sessions(index={self.index_db_path})",
             archive_root=self._write_lease_archive_root,
         )
-        resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
+        resolved_session_ids = self.require_stored_session_ids(session_ids)
         if not resolved_session_ids:
             return 0
         conn = connect_measured(self.index_db_path)

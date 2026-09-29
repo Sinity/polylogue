@@ -2555,3 +2555,88 @@ class TestFilesystemResetActuator:
 
         assert receipt.affected_count == 2
         assert receipt.domain_receipt["absent_at_apply"] == ["ops database"]
+
+
+class TestReplayActsOnTheRecordedIdsExactly:
+    """Crash-recovery replay writes only the full ids its plan recorded.
+
+    Each case prepares a plan on ``codex-session:prefix``, lets that session
+    vanish (as an interrupted apply or a concurrent delete leaves it), and
+    replays the plan while ``codex-session:prefix-sibling`` survives.
+    Anti-vacuity: resolve a recorded id through ``resolve_session_id`` at
+    apply and its prefix fallback re-points the vanished id at the sibling --
+    the replay then deletes, tags or annotates the sibling, and each case is
+    red on the sibling assertion.
+    """
+
+    @staticmethod
+    def _sibling_state(archive_root: Path, sibling: str) -> tuple[bool, int]:
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sibling,)).fetchone() is not None
+        # Every overlay the families write names its session inside
+        # ``target_ref`` (``session:<id>``, ``insight:<id>``), and only the
+        # sibling's own id contains ``-sibling``.
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            assertions = conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE instr(target_ref, ?) > 0 AND status != 'deleted'",
+                (sibling,),
+            ).fetchone()[0]
+        return exists, int(assertions)
+
+    @pytest.mark.parametrize(
+        "family",
+        ["delete", "tag", "bulk-tag", "metadata", "bulk-metadata", "correction"],
+    )
+    def test_replay_after_the_target_vanished_never_reaches_a_prefix_sibling(self, tmp_path: Path, family: str) -> None:
+        from polylogue.operations.mutation_transaction import ReplayHandles
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        target = _seed_archive_session(archive_root, native_id="prefix")
+        sibling = _seed_archive_session(archive_root, native_id="prefix-sibling")
+        assert sibling.startswith(target)
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator: Any
+            args: Any
+            if family == "delete":
+                actuator, args = SessionDeleteActuator(), SessionDeleteArgs(archive=archive, session_ids=(target,))
+            elif family == "tag":
+                actuator, args = TagAddActuator(), TagAddArgs(archive=archive, session_id=target, tag="replayed")
+            elif family == "bulk-tag":
+                actuator, args = BulkTagActuator(), BulkTagArgs(archive=archive, session_ids=(target,), tags=("t",))
+            elif family == "metadata":
+                actuator, args = (
+                    MetadataSetActuator(),
+                    MetadataSetArgs(archive=archive, session_id=target, key="k", value="v"),
+                )
+            elif family == "bulk-metadata":
+                actuator, args = (
+                    BulkMetadataSetActuator(),
+                    BulkMetadataSetArgs(archive=archive, session_ids=(target,), pairs=(("k", "v"),)),
+                )
+            else:
+                actuator, args = (
+                    CorrectionRecordActuator(),
+                    CorrectionRecordArgs(archive=archive, session_id=target, kind="tag_reject", payload={"tag": "x"}),
+                )
+            plan = actuator.prepare(args)
+            assert target in plan.target_refs[0]
+            assert archive.delete_sessions((target,)) == 1
+
+        handles = ReplayHandles(archive_root)
+        try:
+            if family == "delete":
+                resolution = actuator.recover(handles, plan)
+                assert resolution.outcome == "complete"
+                assert resolution.receipt is not None
+                assert resolution.receipt.affected_count == 0
+            else:
+                # The recorded session is not stored: the write waits for
+                # convergence rather than landing on the sibling.
+                with pytest.raises(RecoveryDeferredError):
+                    actuator.recover(handles, plan)
+        finally:
+            handles.close()
+
+        assert self._sibling_state(archive_root, sibling) == (True, 0)

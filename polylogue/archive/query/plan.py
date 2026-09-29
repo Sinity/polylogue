@@ -218,10 +218,5 @@ class SessionQueryPlan:
 
         return await count_archive(self, archive_root=_archive_root_for_config(config), config=config)
 
-    async def delete(self, config: Config) -> int:
-        from polylogue.archive.query.archive_execution import delete_archive
-
-        return await delete_archive(self, archive_root=_archive_root_for_config(config), config=config)
-
 
 __all__ = ["SessionQueryPlan", "session_has_branches", "plan_record_query", "plan_sql_pushdown_params"]
