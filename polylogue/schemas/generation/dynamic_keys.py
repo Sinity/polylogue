@@ -187,7 +187,20 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
     already_high_cardinality = (
         left.get("x-polylogue-high-cardinality-keys") is True or right.get("x-polylogue-high-cardinality-keys") is True
     )
-    if properties and not already_high_cardinality and should_collapse_observed_keys(properties.keys()):
+    if already_high_cardinality:
+        # A collapsed object stays collapsed: a key first seen in a later
+        # sample joins the value schema. Only the names a marked side already
+        # retained as finite siblings of an explicit map remain properties.
+        retained_names: set[str] = set()
+        for side in (left, right):
+            if side.get("x-polylogue-high-cardinality-keys") is True:
+                retained_names.update(_schema_object(side.get("properties")))
+        fresh = [schema for name, schema in properties.items() if name not in retained_names]
+        if fresh:
+            additional = merge_observed_structure_schemas([additional, *map(_schema_object, fresh)])
+            properties = {name: schema for name, schema in properties.items() if name in retained_names}
+            required = [name for name in required if name in retained_names]
+    elif properties and should_collapse_observed_keys(properties.keys()):
         if not additional:
             additional = merge_observed_structure_schemas([additional, *map(_schema_object, properties.values())])
             properties = {}

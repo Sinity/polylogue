@@ -1053,6 +1053,7 @@ def mutation_assertion_candidate_capture(
             kind=AssertionKind.from_string(str(payload["kind"])),
             refs=tuple(str(ref) for ref in cast(list[str], payload.get("refs") or [])),
             scope_refs=tuple(str(ref) for ref in cast(list[str], payload.get("scope_refs") or [])),
+            evidence_refs=tuple(str(ref) for ref in cast(list[str], payload.get("evidence_refs") or [])),
             cwd=None if raw_cwd is None else Path(str(raw_cwd)),
             author_ref=author_ref,
             author_kind=str(payload.get("author_kind") or "user"),
