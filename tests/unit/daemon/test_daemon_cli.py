@@ -4010,17 +4010,17 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
 ) -> None:
     """``--cold-build-index`` never promotes a candidate that drops a served session.
 
-    The first daemon run builds the active index from two roots. The second
-    runs ``--cold-build-index`` over only the first root, so the imported
-    session's raw is retained in ``source.db`` but outside the build's source
-    baseline. When the imported file is gone the candidate never sees it and
-    promotion refuses as ``active_coverage_incomplete``, leaving the active
-    index serving both sessions. When the file is back under the watched root
-    the candidate covers it and promotes.
+    The active index serves two sessions ingested from two roots. When the
+    imported file is deleted and the daemon runs ``--cold-build-index`` over
+    only the first root, the imported session's raw is retained in
+    ``source.db`` but outside the build's source baseline, so the candidate
+    never sees it: promotion refuses as ``active_coverage_incomplete`` and the
+    active index keeps serving both sessions. When the daemon watches both
+    roots the candidate covers every served session and promotes.
 
     Anti-vacuity: deleting the ``require_active_coverage`` call from
     ``ColdBuildGeneration.promote`` promotes the one-session candidate, and
-    the active index loses ``codex:cold-imported``.
+    the active index loses ``codex-session:cold-imported``.
     """
     from polylogue import Polylogue as RealPolylogue
     from polylogue.daemon import cli as daemon_cli
@@ -4028,7 +4028,9 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
-    from polylogue.sources.live.cold_build import active_cold_build_generation
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cold_build import active_cold_build_generation, active_index_generation_is_empty
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
     from polylogue.storage.archive_identity import resolve_active_index_path
 
     def codex_session(native_id: str) -> str:
@@ -4043,6 +4045,7 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
             return {str(row[0]) for row in db.execute("SELECT session_id FROM sessions")}
 
     archive_root = tmp_path / "archive"
+    archive_root.mkdir()
     source_root = tmp_path / "source"
     source_root.mkdir()
     imports_root = tmp_path / "imports"
@@ -4053,97 +4056,92 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     imported_file = imports_root / "imported.jsonl"
     imported_file.write_text(codex_session("cold-imported"), encoding="utf-8")
     os.utime(imported_file, (1.0, 1.0))
-    served = {"codex:cold-watched", "codex:cold-imported"}
+    served = {"codex-session:cold-watched", "codex-session:cold-imported"}
 
-    async def run_daemon_until(
-        sources: tuple[WatchSource, ...],
-        *,
-        cold_build_index: bool,
-        settled: Callable[[dict[str, object]], bool],
-    ) -> dict[str, object]:
-        reset_daemon_compute_adapter()
-        try:
-            with contextlib.ExitStack() as stack:
-                _daemon_startup_stubs(stack, daemon_cli, archive_root)
-                stack.enter_context(
-                    patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root))
+    assert active_index_generation_is_empty(archive_root)
+    for root, path in ((source_root, watched_file), (imports_root, imported_file)):
+        processor = LiveBatchProcessor(
+            cast(
+                Any,
+                SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
+            ),
+            (WatchSource("codex", root, suffixes=(".jsonl",)),),
+            cursor=CursorStore(archive_root / "index.db"),
+            parser_fingerprint=_PARSER_FINGERPRINT,
+        )
+        metrics = await processor.ingest_files([path], emit_event=False)
+        assert metrics.succeeded_file_count == 1, metrics
+    assert session_ids(resolve_active_index_path(archive_root)) == served
+
+    daemon_sources = (WatchSource("codex", source_root, suffixes=(".jsonl",)),)
+    if imported_source_kept:
+        daemon_sources += (WatchSource("imports", imports_root, suffixes=(".jsonl",)),)
+    else:
+        imported_file.unlink()
+
+    reset_daemon_compute_adapter()
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(
+                patch(
+                    "polylogue.daemon.intake_adapters.DaemonIntakeService",
+                    lambda dispatcher, **kwargs: DaemonIntakeService(dispatcher, idle_delay_s=0.05, **kwargs),
                 )
-                stack.enter_context(
-                    patch(
-                        "polylogue.daemon.intake_adapters.DaemonIntakeService",
-                        lambda dispatcher, **kwargs: DaemonIntakeService(dispatcher, idle_delay_s=0.05, **kwargs),
-                    )
+            )
+            task = asyncio.create_task(
+                daemon_cli.run_daemon_services(
+                    sources=daemon_sources,
+                    enable_watch=True,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                    enable_api=False,
+                    enable_source_catchup=False,
+                    service_profile=ServiceProfile.INTAKE,
+                    cold_build_index=True,
                 )
-                task = asyncio.create_task(
-                    daemon_cli.run_daemon_services(
-                        sources=sources,
-                        enable_watch=True,
-                        enable_browser_capture=False,
-                        browser_capture_host="127.0.0.1",
-                        browser_capture_port=8765,
-                        browser_capture_spool_path=None,
-                        enable_api=False,
-                        enable_source_catchup=False,
-                        service_profile=ServiceProfile.INTAKE,
-                        cold_build_index=cold_build_index,
-                    )
-                )
+            )
+            try:
                 try:
                     async with asyncio.timeout(45):
-                        while not settled(_cold_build_settlement()):
+                        while _cold_build_settlement().get("cold_build_settlement_state") not in (
+                            "complete",
+                            "blocked",
+                        ):
                             if task.done():
                                 await task
                             await asyncio.sleep(0.05)
-                    status = _cold_build_settlement()
-                    candidate = active_cold_build_generation(archive_root)
-                    if candidate is not None:
-                        status["candidate_sessions"] = session_ids(Path(candidate.generation.index_path))
-                    return status
-                finally:
-                    task.cancel()
-                    with pytest.raises(asyncio.CancelledError):
-                        await asyncio.wait_for(task, timeout=10)
-        finally:
-            reset_daemon_compute_adapter()
-
-    first = await run_daemon_until(
-        (
-            WatchSource("codex", source_root, suffixes=(".jsonl",)),
-            WatchSource("imports", imports_root, suffixes=(".jsonl",)),
-        ),
-        cold_build_index=False,
-        settled=lambda status: status.get("cold_build_settlement_state") == "complete",
-    )
-    assert session_ids(resolve_active_index_path(archive_root)) == served
-    first_candidate = first["cold_build_candidate_id"]
-
-    imported_file.unlink()
-    if imported_source_kept:
-        moved = source_root / "imported.jsonl"
-        moved.write_text(codex_session("cold-imported"), encoding="utf-8")
-        os.utime(moved, (1.0, 1.0))
-    expected_state = "complete" if imported_source_kept else "blocked"
-    second = await run_daemon_until(
-        (WatchSource("codex", source_root, suffixes=(".jsonl",)),),
-        cold_build_index=True,
-        settled=lambda status: (
-            status.get("cold_build_candidate_id") not in (None, first_candidate)
-            and status.get("cold_build_settlement_state") in ("complete", "blocked")
-        ),
-    )
-
-    assert second["cold_build_settlement_state"] == expected_state
-    active_ids = session_ids(resolve_active_index_path(archive_root))
-    assert active_ids == served
-    if imported_source_kept:
-        assert second["cold_build_settlement_reason"] is None
-        assert "candidate_sessions" not in second
-        assert Path(resolve_active_index_path(archive_root)).parent.name == second["cold_build_candidate_id"]
-    else:
-        assert second["cold_build_settlement_reason"] == "active_coverage_incomplete"
-        assert second["cold_build_settlement_retry_due_in_s"] is None
-        assert second["candidate_sessions"] == {"codex:cold-watched"}
-        assert Path(resolve_active_index_path(archive_root)).parent.name != second["cold_build_candidate_id"]
+                except TimeoutError as exc:
+                    raise AssertionError(f"settlement={_cold_build_settlement()}") from exc
+                status = _cold_build_settlement()
+                candidate = active_cold_build_generation(archive_root)
+                assert session_ids(resolve_active_index_path(archive_root)) == served
+                if imported_source_kept:
+                    assert status["cold_build_settlement_state"] == "complete"
+                    assert status["cold_build_settlement_reason"] is None
+                    assert candidate is None
+                    assert (
+                        resolve_active_index_path(archive_root).resolve().parent.name
+                        == status["cold_build_candidate_id"]
+                    )
+                else:
+                    assert status["cold_build_settlement_state"] == "blocked"
+                    assert status["cold_build_settlement_reason"] == "active_coverage_incomplete"
+                    assert status["cold_build_settlement_retry_due_in_s"] is None
+                    assert candidate is not None
+                    assert candidate.generation_id == status["cold_build_candidate_id"]
+                    assert not candidate.promoted
+                    assert session_ids(Path(candidate.generation.index_path)) == {"codex-session:cold-watched"}
+                    assert resolve_active_index_path(archive_root).resolve().parent.name != candidate.generation_id
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=10)
+    finally:
+        reset_daemon_compute_adapter()
 
 
 @pytest.mark.asyncio
