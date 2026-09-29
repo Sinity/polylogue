@@ -13,6 +13,7 @@ import pytest
 import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.decoder_json import spill_otlp_spans
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers import otel_genai
 from polylogue.sources.parsers.base import ParsedSession
@@ -200,7 +201,7 @@ def test_otlp_export_streams_spans_to_scratch_before_eof_with_parser_parity(
     _refuse_whole_document(monkeypatch)
     source_size = source.stat().st_size
     first_span_offset: int | None = None
-    original_walk = prepared_jsonl.spill_otlp_spans
+    original_walk = spill_otlp_spans
 
     def tracked_walk(handle: Any, root_key: str, *, on_resource: Any, on_scope: Any, on_span: Any) -> bool:
         def record_span(*args: Any) -> None:
@@ -229,6 +230,7 @@ def test_otlp_export_streams_spans_to_scratch_before_eof_with_parser_parity(
     assert all(isinstance(session.session_events, SqliteSessionEventSink) for session in actual)
     assert artifact.shard_path is not None
     _assert_same_publication(actual, expected, artifact.shard_path, tmp_path)
+    assert artifact.sessions_path is not None
     with sqlite3.connect(artifact.sessions_path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert not {table for table in tables if table.startswith(("otel_", "otlp_"))}
