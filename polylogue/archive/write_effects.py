@@ -73,6 +73,11 @@ class WriteEffectContext:
     run_archive_effects: bool
     deferred_scheduler: Callable[[WriteEffect, WriteEffectContext], None] | None = None
 
+    @property
+    def fts_session_ids(self) -> tuple[str, ...]:
+        """Index work includes unchanged-content rows, unlike insight inputs."""
+        return tuple(sorted(set(self.changed_session_ids) | set(self.payload.get("fts_repair_session_ids", ()))))
+
 
 def _always_run(_ctx: WriteEffectContext) -> bool:
     return True
@@ -200,17 +205,17 @@ def _ensure_fts_triggers_effect(ctx: WriteEffectContext) -> None:
 
 
 def _repair_message_fts_should_run(ctx: WriteEffectContext) -> bool:
-    return bool(ctx.changed_session_ids) and bool(ctx.payload.get("repair_message_fts", True))
+    return bool(ctx.fts_session_ids) and bool(ctx.payload.get("repair_message_fts", True))
 
 
 def _repair_message_fts_effect(ctx: WriteEffectContext) -> None:
     from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 
-    repair_message_fts_index_sync(ctx.conn, ctx.changed_session_ids, record_exact_snapshot=False)
+    repair_message_fts_index_sync(ctx.conn, ctx.fts_session_ids, record_exact_snapshot=False)
 
 
 def _invalidate_search_cache_should_run(ctx: WriteEffectContext) -> bool:
-    return bool(ctx.changed_session_ids)
+    return bool(ctx.fts_session_ids)
 
 
 def _invalidate_search_cache_effect(_ctx: WriteEffectContext) -> None:
@@ -387,8 +392,10 @@ def commit_archive_write_effects(
             Write operation type (ingest, delete, tag_update, etc.).
         payload:
             Operation payload. Expected keys:
-            - ``changed_session_ids``: sequence of session IDs whose
-              FTS rows should be repaired.
+            - ``changed_session_ids``: session IDs whose content changed;
+              drives insight invalidation, announcements and FTS work.
+            - ``fts_repair_session_ids``: additional index work, including
+              unchanged content; does not invalidate insight inputs.
             - ``effect_scope``: ``"archive-index"`` (the default) runs
               registered index effects; ``"user-overlay"`` commits a
               declared user.db writer without index effects.

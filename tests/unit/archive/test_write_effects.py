@@ -291,3 +291,33 @@ def test_insight_invalidation_rides_the_admitted_transaction(tmp_path: Path) -> 
     finally:
         conn.close()
     assert stored_key() is None
+
+
+def test_fts_only_work_has_search_effects_but_no_content_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FTS-only work must not vanish, and must not announce an invented content change."""
+    repaired: list[tuple[str, ...]] = []
+    invalidated: list[bool] = []
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
+        lambda _conn, ids, **_kwargs: repaired.append(tuple(ids)),
+    )
+    monkeypatch.setattr("polylogue.storage.search.cache.invalidate_search_cache", lambda: invalidated.append(True))
+    with open_connection(tmp_path / "archive.db") as conn:
+        result = commit_archive_write_effects(
+            conn,
+            WriteOperation.INGEST,
+            {
+                "changed_session_ids": (),
+                "fts_repair_session_ids": ("repair-only", "repair-only"),
+            },
+        )
+    receipts = {receipt.name: receipt.disposition for receipt in result.effect_receipts}
+    assert repaired == [("repair-only",)]
+    assert invalidated == [True]
+    assert result.rows_affected == 0
+    assert receipts["repair_message_fts"] == "applied"
+    assert receipts["invalidate_session_insights"] == "skipped"
+    assert receipts["announce_ingest_committed"] == "skipped"

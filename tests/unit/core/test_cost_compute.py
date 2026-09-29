@@ -527,3 +527,44 @@ def test_runtime_protocol_input_is_still_estimated(role: str) -> None:
     per_model = _per_model_from_messages(session)
 
     assert sum(breakdown.input_tokens for breakdown in per_model.values()) > 0
+
+
+@pytest.mark.parametrize("cache_write", [None, 50])
+def test_mixed_message_estimates_keep_reported_lanes_and_provenance_in_either_order(cache_write: int | None) -> None:
+    """Reconstructing the heuristic bucket drops cache lanes; reverse order also lost mixed provenance."""
+    reported = make_msg(
+        id="reported",
+        role="assistant",
+        model_name="claude-sonnet-4-5",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=200,
+        cache_write_tokens=cache_write,
+    )
+    estimated = make_msg(
+        id="estimated", role="user", text="a human prompt with several words", model_name="claude-sonnet-4-5"
+    )
+    summaries = [
+        compute_session_cost(
+            make_conv(id="mixed-order", provider="claude-code", messages=messages), estimate_if_missing=False
+        )
+        for messages in ([reported, estimated], [estimated, reported])
+    ]
+    assert len(summaries) == 2
+    assert summaries[0] == summaries[1]
+    for summary in summaries:
+        assert len(summary.per_model) == 1
+        breakdown = summary.per_model[0]
+        assert breakdown.confidence == "partial"
+        assert breakdown.provenance == "mixed"
+        assert breakdown.cache_read_tokens == 200
+        assert breakdown.cache_write_tokens == (cache_write or 0)
+        assert breakdown.input_tokens > 1000
+        assert breakdown.output_tokens == 500
+        assert breakdown.total_tokens == (
+            breakdown.input_tokens
+            + breakdown.output_tokens
+            + breakdown.cache_read_tokens
+            + breakdown.cache_write_tokens
+        )
+        assert summary.total_cache_read_tokens == 200

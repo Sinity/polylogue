@@ -16,10 +16,13 @@ from tests.unit.pipeline.test_ingest_batch import _message_tuple, _session_data
 _write_session = ingest_batch_core._write_session
 
 
-def test_process_ingest_batch_repairs_fts_for_unchanged_session(
+@pytest.mark.parametrize("content_changed", [False, True])
+def test_process_ingest_batch_repairs_fts_without_invalidating_unchanged_insights(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    content_changed: bool,
 ) -> None:
+    """Passing repair IDs as content changes nulls the unchanged row's fresh insight stamp."""
     db_path = tmp_path / "index.db"
     archive_root = tmp_path / "archive"
     blob_root = tmp_path / "blob"
@@ -55,6 +58,10 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_session(
         from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
 
         repair_fts_index_sync(conn, [session_id])
+        conn.execute(
+            "INSERT INTO session_profiles (session_id, source_sort_key, source_updated_at) VALUES (?, ?, ?)",
+            (session_id, 17.0, "2026-04-02T00:00:00Z"),
+        )
         conn.commit()
 
         block_rowid = conn.execute(
@@ -69,6 +76,23 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_session(
         conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (block_rowid,))
         conn.commit()
 
+    incoming_session = session
+    if content_changed:
+        incoming_session = _session_data(
+            session_id,
+            content_hash="changed-content-hash",
+            message_tuples=[
+                _message_tuple(
+                    message_id,
+                    session_id,
+                    role="user",
+                    text="changed content requires new insights",
+                    content_hash="changed-message-hash",
+                    sort_key=0.0,
+                )
+            ],
+        )
+
     def fake_ingest_record(
         record: RawSessionRecord,
         archive_root_str: str,
@@ -79,7 +103,7 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_session(
     ) -> IngestRecordResult:
         del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
         assert record.raw_id == raw_record.raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
+        return IngestRecordResult(raw_id=record.raw_id, sessions=[incoming_session])
 
     monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
 
@@ -93,10 +117,15 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_session(
         measure_ingest_result_size=False,
     )
 
-    assert summary.changed_session_ids == []
+    assert summary.changed_session_ids == ([session_id] if content_changed else [])
     assert summary.fts_repair_session_ids == [session_id]
 
     with open_connection(db_path) as conn:
+        stamp = conn.execute(
+            "SELECT source_sort_key, source_updated_at FROM session_profiles WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert stamp is not None
+        assert tuple(stamp) == ((None, None) if content_changed else (17.0, "2026-04-02T00:00:00Z"))
         message_fts_count = conn.execute(
             """
             SELECT COUNT(*)

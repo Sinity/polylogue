@@ -655,39 +655,30 @@ def classify_membership_revisions(
             tuple(sorted(equivalents)),
             (),
         )
-    dom_authority = _dom_authority_when_native_is_unordered(representatives)
-    if dom_authority is not None:
-        accepted, ambiguous = dom_authority
+    browser_authority = _browser_authority_with_unordered_native(representatives)
+    if browser_authority is not None:
+        accepted, ambiguous = browser_authority
         ambiguous_ids = {item.raw_id for item in ambiguous}
-        if existing_accepted_raw_id == accepted.raw_id:
-            ambiguous_ids.add(accepted.raw_id)
-            accepted_ids: tuple[str, ...] = ()
-        else:
-            accepted_ids = (accepted.raw_id,)
-        equivalent_by_owner: dict[str, list[str]] = {}
+        accepted_ids = tuple(item.raw_id for item in accepted)
+        if existing_accepted_raw_id == accepted[-1].raw_id:
+            # Re-affirming an unchanged head through membership can downgrade
+            # its byte-governed frontier. Preserve that authority as before.
+            ambiguous_ids.update(accepted_ids)
+            accepted_ids = ()
         revision_by_id = {item.raw_id: item for item in revisions}
+        accepted_equivalents: list[str] = []
         for equivalent_id in equivalents:
             equivalent = revision_by_id[equivalent_id]
             owner = next(
-                (
-                    item.raw_id
-                    for item in representatives
-                    if _relation(item.projection, equivalent.projection) == "equal"
-                ),
-                None,
+                item.raw_id for item in representatives if _relation(item.projection, equivalent.projection) == "equal"
             )
-            if owner is not None:
-                equivalent_by_owner.setdefault(owner, []).append(equivalent_id)
-        for owner in tuple(ambiguous_ids):
-            ambiguous_ids.update(equivalent_by_owner.get(owner, ()))
-        accepted_equivalents = equivalent_by_owner.get(accepted.raw_id, []) if accepted_ids else []
-        accounted_equivalents = set(accepted_equivalents) | (ambiguous_ids & set(equivalents))
-        unassigned_equivalents = set(equivalents) - accounted_equivalents
-        if existing_accepted_raw_id == accepted.raw_id:
-            return MembershipClassification((), (), tuple(sorted(ambiguous_ids | unassigned_equivalents)))
+            if owner in ambiguous_ids:
+                ambiguous_ids.add(equivalent_id)
+            else:
+                accepted_equivalents.append(equivalent_id)
         return MembershipClassification(
             accepted_ids,
-            tuple(sorted((*accepted_equivalents, *unassigned_equivalents))),
+            tuple(sorted(accepted_equivalents)),
             tuple(sorted(ambiguous_ids)),
         )
     direct_export = _direct_export_precedence(representatives)
@@ -829,44 +820,42 @@ def _direct_export_precedence(
     return direct[0], tuple(item.raw_id for item in browser_sourced)
 
 
-def _dom_authority_when_native_is_unordered(
+def _browser_authority_with_unordered_native(
     revisions: list[MembershipRevision],
-) -> tuple[MembershipRevision, tuple[MembershipRevision, ...]] | None:
-    """Keep an equal-frontier DOM head when native evidence is not time-ordered.
+) -> tuple[list[MembershipRevision], tuple[MembershipRevision, ...]] | None:
+    """Retain a proven browser chain without letting stale native siblings choose its head.
 
-    A browser-native capture is a fidelity upgrade only when its provider
-    timestamp proves that it follows the DOM capture. Without that proof, a
-    changed native snapshot must remain retained evidence rather than winning
-    the generic frontier fallback (whose stable raw-id tie-break is unrelated
-    to source authority). Mixed-frontier conflicts continue through the
-    existing fallback, preserving its established fork rules.
-
-    Scoped to groups whose every member is browser-captured. This rule ranks
-    DOM against native only; it has nothing to say about a direct export
-    (``browser_snapshot_fidelity is None``), which outranks both. Because it
-    is consulted before ``_direct_export_precedence``, answering for a group
-    that contains a direct export would accept the DOM head and quarantine
-    the natives, dropping the direct export from accepted, equivalents AND
-    ambiguous alike -- silent disappearance of the authoritative revision.
-    Declining here hands such a group to the direct-export rule, or (when
-    that rule also declines, e.g. two direct exports) to the fallback, which
-    at least quarantines every representative rather than losing one.
+    DOM revisions must form their own identity-preserving provider order.
+    Native upgrades must follow the newest DOM and form a proven native
+    chain. Unordered equal-frontier natives remain ambiguous evidence;
+    genuine mixed-frontier conflicts and direct exports keep their existing
+    arbitration routes.
     """
     if any(item.browser_snapshot_fidelity is None for item in revisions):
         return None
     dom = [item for item in revisions if item.browser_snapshot_fidelity == "dom"]
     native = [item for item in revisions if item.browser_snapshot_fidelity == "native"]
-    if len(dom) != 1 or not native:
+    if not dom or not native:
         return None
-    dom_revision = dom[0]
-    dom_frontier = _frontier(dom_revision.projection)
-    if any(_frontier(item.projection) != dom_frontier for item in native):
+    dom_chain = dom if len(dom) == 1 else _provider_ordered_browser_snapshots(dom)
+    if dom_chain is None:
         return None
-    # A provably newer native snapshot is handled by the ordered-browser path;
-    # this guard is only for stale or incomparable native evidence.
-    if any(_browser_snapshot_dominates(dom_revision, item) for item in native):
+    dom_head = dom_chain[-1]
+    upgrades: list[MembershipRevision] = []
+    ambiguous: list[MembershipRevision] = []
+    for item in native:
+        if _browser_snapshot_dominates(dom_head, item):
+            upgrades.append(item)
+        elif _frontier(item.projection) == _frontier(dom_head.projection):
+            ambiguous.append(item)
+        else:
+            return None
+    if not upgrades:
+        return dom_chain, tuple(ambiguous)
+    native_chain = _provider_ordered_browser_snapshots(upgrades)
+    if native_chain is None:
         return None
-    return dom_revision, tuple(native)
+    return [*dom_chain, *native_chain], tuple(ambiguous)
 
 
 def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevision) -> bool:

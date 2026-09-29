@@ -1159,7 +1159,7 @@ def test_direct_export_outranks_browser_capture_siblings_regardless_of_growth() 
 def test_direct_export_survives_equal_frontier_dom_native_conflict() -> None:
     """The DOM-authority guard must not silently drop a direct export.
 
-    `_dom_authority_when_native_is_unordered` partitions the group only into
+    `_browser_authority_with_unordered_native` partitions the group only into
     `dom` and `native` members; a member with `browser_snapshot_fidelity is
     None` is invisible to it. Consulted BEFORE `_direct_export_precedence`,
     it therefore accepts the DOM head and quarantines the natives for a
@@ -1579,3 +1579,60 @@ def test_message_axis_relation_matches_reference_over_shared_identities() -> Non
         seen.add(expected)
         assert _message_axis_relation(a, b, mutable_identities=mutable) == expected
     assert seen == {"equal", "a_contains_b", "b_contains_a", "conflict"}
+
+
+def test_ordered_dom_chain_survives_a_stale_native_with_a_larger_raw_id() -> None:
+    """The former exactly-one-DOM condition sent this provable chain to raw-ID fallback."""
+    revisions = [
+        _browser_revision("raw-dom-old", "old DOM", "2026-01-01T00:00:00Z", "dom"),
+        _browser_revision("raw-dom-new", "new DOM", "2026-01-03T00:00:00Z", "dom"),
+        _browser_revision("raw-z-stale", "stale native", "2026-01-02T00:00:00Z", "native"),
+    ]
+    for order in permutations(revisions):
+        result = classify_membership_revisions(list(order))
+        assert result.accepted_raw_ids == ("raw-dom-old", "raw-dom-new")
+        assert result.equivalent_raw_ids == ()
+        assert result.ambiguous_raw_ids == ("raw-z-stale",)
+
+
+@pytest.mark.parametrize("existing_head", [None, "raw-dom"])
+def test_valid_native_upgrade_survives_stale_native_siblings(existing_head: str | None) -> None:
+    """The former any-upgrade early return lets the stale native win the raw-ID fallback."""
+    revisions = [
+        _browser_revision("raw-dom", "DOM", "2026-01-02T00:00:00Z", "dom"),
+        _browser_revision("raw-native-new", "new native", "2026-01-03T00:00:00Z", "native"),
+        _browser_revision("raw-z-stale", "stale native", "2026-01-01T00:00:00Z", "native"),
+        _browser_revision("raw-z-stale-copy", "stale native", "2026-01-01T00:00:00Z", "native"),
+    ]
+    for order in permutations(revisions):
+        result = classify_membership_revisions(list(order), existing_accepted_raw_id=existing_head)
+        assert result.accepted_raw_ids == ("raw-dom", "raw-native-new")
+        assert result.equivalent_raw_ids == ()
+        assert result.ambiguous_raw_ids == ("raw-z-stale", "raw-z-stale-copy")
+        assert set(result.accepted_raw_ids + result.ambiguous_raw_ids) == {item.raw_id for item in revisions}
+
+
+def test_browser_chain_does_not_reaffirm_an_unchanged_established_head() -> None:
+    revisions = [
+        _browser_revision("raw-dom-old", "old DOM", "2026-01-01T00:00:00Z", "dom"),
+        _browser_revision("raw-dom-new", "new DOM", "2026-01-03T00:00:00Z", "dom"),
+        _browser_revision("raw-z-stale", "stale native", "2026-01-02T00:00:00Z", "native"),
+    ]
+    result = classify_membership_revisions(revisions, existing_accepted_raw_id="raw-dom-new")
+    assert result.accepted_raw_ids == ()
+    assert set(result.ambiguous_raw_ids) == {item.raw_id for item in revisions}
+
+
+def test_unproven_dom_identity_chain_is_not_accepted_by_timestamp_alone() -> None:
+    revisions = [
+        _browser_revision(
+            "raw-dom-old", "old DOM", "2026-01-01T00:00:00Z", "dom", provider_message_ids=frozenset({"old"})
+        ),
+        _browser_revision(
+            "raw-dom-new", "new DOM", "2026-01-03T00:00:00Z", "dom", provider_message_ids=frozenset({"new"})
+        ),
+        _browser_revision("raw-z-stale", "stale native", "2026-01-02T00:00:00Z", "native"),
+    ]
+    result = classify_membership_revisions(revisions, existing_accepted_raw_id="raw-dom-old")
+    assert result.accepted_raw_ids == ()
+    assert set(result.ambiguous_raw_ids) == {item.raw_id for item in revisions}

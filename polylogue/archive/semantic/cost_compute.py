@@ -417,14 +417,16 @@ def _per_model_from_messages(
                 input_words=0 if is_assistant_turn else word_count,
                 output_words=word_count if is_assistant_turn else 0,
             )
-            per_model[key] = SessionCostBreakdown(
-                normalized_model=per_model[key].normalized_model,
-                provider_model_name=per_model[key].provider_model_name,
-                input_tokens=per_model[key].input_tokens + est.input_tokens,
-                output_tokens=per_model[key].output_tokens + est.output_tokens,
-                total_tokens=per_model[key].total_tokens + est.total_tokens,
-                confidence="partial" if per_model[key].confidence == "partial" else "estimated",
-                provenance="mixed" if per_model[key].confidence == "partial" else "heuristic_estimated",
+            current = per_model[key]
+            mixed = current.provenance in {"provider_reported", "mixed"}
+            per_model[key] = current.model_copy(
+                update={
+                    "input_tokens": current.input_tokens + est.input_tokens,
+                    "output_tokens": current.output_tokens + est.output_tokens,
+                    "total_tokens": current.total_tokens + est.total_tokens,
+                    "confidence": "partial" if mixed or current.confidence == "partial" else "estimated",
+                    "provenance": "mixed" if mixed else "heuristic_estimated",
+                }
             )
     return per_model
 
@@ -491,9 +493,9 @@ def _add_provider_reported_tokens(
         # real evidence and part is unaccounted for -- which is what "partial"
         # already means for a mixed session two functions down.
         confidence="partial"
-        if getattr(tokens, "unmeasured_lanes", ()) or breakdown.confidence == "partial"
+        if getattr(tokens, "unmeasured_lanes", ()) or breakdown.confidence in {"partial", "estimated"}
         else "reported",
-        provenance="provider_reported",
+        provenance="mixed" if breakdown.provenance in {"heuristic_estimated", "mixed"} else "provider_reported",
     )
 
 

@@ -3027,6 +3027,7 @@ def _commit_sync_ingest_side_effects(
     *,
     db_path: Path,
     changed_session_ids: Sequence[str],
+    fts_repair_session_ids: Sequence[str],
     repair_message_fts: bool = True,
     settle_deferred_effects: bool = False,
 ) -> None:
@@ -3040,6 +3041,7 @@ def _commit_sync_ingest_side_effects(
         {
             "_connection": conn,
             "changed_session_ids": tuple(changed_session_ids),
+            "fts_repair_session_ids": tuple(fts_repair_session_ids),
             "repair_message_fts": repair_message_fts,
             **({"deferred_scheduler": settle_effect} if settle_deferred_effects else {}),
         },
@@ -3657,7 +3659,8 @@ def _process_ingest_batch_sync(
             _commit_sync_ingest_side_effects(
                 conn,
                 db_path=db_path,
-                changed_session_ids=tuple(fts_repair_ids),
+                changed_session_ids=tuple(summary.changed_session_ids),
+                fts_repair_session_ids=tuple(fts_repair_ids),
                 repair_message_fts=repair_message_fts,
                 **({"settle_deferred_effects": True} if prepared_unit is not None else {}),
             )
