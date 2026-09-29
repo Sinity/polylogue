@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Origin, Provider
@@ -215,3 +217,80 @@ def test_public_message_model_defaults_usage_to_unknown() -> None:
     envelope = message_render_envelope_from_domain(message, session_id="s")
     assert envelope.input_tokens is None
     assert envelope.cache_write_tokens is None
+
+
+def _usage(message: object) -> tuple[object, ...]:
+    return (
+        getattr(message, "model_name", None),
+        getattr(message, "input_tokens", None),
+        getattr(message, "output_tokens", None),
+        getattr(message, "cache_read_tokens", None),
+        getattr(message, "cache_write_tokens", None),
+    )
+
+
+@pytest.mark.asyncio
+async def test_composed_and_bounded_message_reads_carry_stored_usage(workspace_env: dict[str, Path]) -> None:
+    """``get_session`` and the bounded message page report the stored counters.
+
+    The storage tier keeps ``NULL`` apart from a measured zero, but both
+    production read projections used to omit the usage columns, so every
+    hydrated message reported unknown usage and no model even when the
+    provider measured it. Anti-vacuity: drop the usage fields from
+    ``ArchiveMessageRow`` or ``ArchiveMessageQueryRow`` (or their hydration
+    dispositions) and the ``known`` and ``zero`` rows read back as
+    ``(None, None, None, None, None)``.
+    """
+    from polylogue.api import Polylogue
+    from polylogue.archive.hydration import archive_message_query_row_to_domain
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_session_sync
+    from tests.infra.storage_records import db_setup
+
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="usage-through-reads",
+        messages=[
+            ParsedMessage(provider_message_id="unknown", role=Role.ASSISTANT, text="unknown", position=0),
+            ParsedMessage(
+                provider_message_id="zero",
+                role=Role.ASSISTANT,
+                text="zero",
+                position=1,
+                model_name="claude-opus-5",
+                input_tokens=0,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            ),
+            ParsedMessage(
+                provider_message_id="known",
+                role=Role.ASSISTANT,
+                text="known",
+                position=2,
+                model_name="claude-opus-5",
+                input_tokens=10,
+                output_tokens=20,
+                cache_read_tokens=3,
+                cache_write_tokens=None,
+            ),
+        ],
+    )
+    archive_root = workspace_env["archive_root"]
+    session_id = write_session_sync(db_setup(workspace_env), session)
+    expected = [
+        (None, None, None, None, None),
+        ("claude-opus-5", 0, 0, 0, 0),
+        ("claude-opus-5", 10, 20, 3, None),
+    ]
+
+    api = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    composed = await api.get_session(session_id)
+    assert composed is not None
+    assert [_usage(message) for message in composed.messages.to_list()] == expected
+    envelopes = [message_render_envelope_from_domain(m, session_id=session_id) for m in composed.messages.to_list()]
+    assert [_usage(envelope) for envelope in envelopes] == expected
+
+    with ArchiveStore(archive_root, initialize=False, read_only=True) as archive:
+        page_rows = archive.query_session_messages((session_id,), limit=50, offset=0)
+    assert [_usage(archive_message_query_row_to_domain(row)) for row in page_rows] == expected

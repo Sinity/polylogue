@@ -244,6 +244,11 @@ ARCHIVE_MESSAGE_DISPOSITIONS: Dispositions = {
         "source_session_id/inherited_prefix beside the message, not as a Message field"
     ),
     "stop_reason": exposed("stop_reason"),
+    "model_name": exposed("model_name"),
+    "input_tokens": exposed("input_tokens"),
+    "output_tokens": exposed("output_tokens"),
+    "cache_read_tokens": exposed("cache_read_tokens"),
+    "cache_write_tokens": exposed("cache_write_tokens"),
 }
 
 ARCHIVE_ATTACHMENT_DISPOSITIONS: Dispositions = {
@@ -381,6 +386,11 @@ ARCHIVE_MESSAGE_QUERY_ROW_DISPOSITIONS: Dispositions = {
         "full joined-text length for a SQL-cut prefix; attached-unit bounding reads it to report "
         "truncation and it has no Message field"
     ),
+    "model_name": exposed("model_name"),
+    "input_tokens": exposed("input_tokens"),
+    "output_tokens": exposed("output_tokens"),
+    "cache_read_tokens": exposed("cache_read_tokens"),
+    "cache_write_tokens": exposed("cache_write_tokens"),
 }
 
 # Message fields the bounded page projection does not select. They keep their
