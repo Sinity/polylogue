@@ -74,6 +74,7 @@ def test_scoped_foreign_key_check_ignores_preexisting_orphans(tmp_path: Path) ->
         conn.commit()
         conn.execute("PRAGMA foreign_keys = ON")
 
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
         violations = ingest_batch_core._foreign_key_violations_for_sessions(conn, ("codex-session:new",))
 
     assert violations == []
@@ -96,6 +97,7 @@ def test_scoped_foreign_key_check_reports_current_session_orphans(tmp_path: Path
         conn.commit()
         conn.execute("PRAGMA foreign_keys = ON")
 
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
         violations = ingest_batch_core._foreign_key_violations_for_sessions(conn, ("codex-session:new",))
 
     assert violations == [
@@ -191,6 +193,7 @@ def test_bulk_precommit_check_reports_a_compound_owner_disagreement(tmp_path: Pa
 
         conn.execute("PRAGMA foreign_keys = OFF")
         assert int(conn.execute("PRAGMA foreign_keys").fetchone()[0]) == 0
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
         conn.execute(_CONTRADICTORY_ROWS[table], parameters)
 
         violations = ingest_batch_core._foreign_key_violations_for_sessions(
@@ -203,6 +206,118 @@ def test_bulk_precommit_check_reports_a_compound_owner_disagreement(tmp_path: Pa
     assert [(item["table"], item["parent"]) for item in violations] == [(table, "messages")]
     assert violations[0]["session_id"] == "codex-session:b"
     assert violations[0]["child_key"] == {"message_id": message_id, "session_id": "codex-session:b"}
+
+
+def _unscoped_violations(conn: sqlite3.Connection) -> list[tuple[object, object]]:
+    violations = ingest_batch_core._foreign_key_violations_for_sessions(conn, ("codex-session:new",))
+    return [(item["table"], item["child_key"]) for item in violations]
+
+
+def test_unscoped_foreign_key_check_probes_only_rows_the_window_wrote(tmp_path: Path) -> None:
+    """A child table no session owns is checked for this window's rows, not whole.
+
+    An orphan committed before the window opened is not this batch's to
+    refuse; one the window inserts is. Anti-vacuity: running
+    ``PRAGMA foreign_key_check(attachment_native_ids)`` over the whole table
+    reports the pre-window orphan too, and a whole-table scan grows with the
+    archive on every batch.
+    """
+    db_path = tmp_path / "unscoped-fk.db"
+    with open_connection(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES ('old:attachment:0', 'file', 'old')"
+        )
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
+        conn.execute(
+            "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES ('new:attachment:0', 'file', 'new')"
+        )
+
+        violations = _unscoped_violations(conn)
+        conn.rollback()
+
+    assert violations == [("attachment_native_ids", {"ref_id": "new:attachment:0"})]
+
+
+def test_unscoped_foreign_key_check_sees_a_row_that_reuses_the_top_rowid(tmp_path: Path) -> None:
+    """A window that deletes the table's newest row and inserts another reuses its rowid.
+
+    SQLite allocates one past the current maximum rowid, so the replacement
+    lands at or below the maximum the window opened with. Anti-vacuity: a
+    rowid watermark taken when the window opened (2 here) probes only rows
+    above it and returns ``[]`` for this orphan.
+    """
+    db_path = tmp_path / "unscoped-fk-reuse.db"
+    with open_connection(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        for ref_id in ("first:attachment:0", "newest:attachment:0"):
+            conn.execute(
+                "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES (?, 'file', 'id')", (ref_id,)
+            )
+        conn.commit()
+        top_rowid = conn.execute("SELECT MAX(rowid) FROM attachment_native_ids").fetchone()[0]
+        conn.execute("BEGIN IMMEDIATE")
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
+        conn.execute("DELETE FROM attachment_native_ids WHERE ref_id = 'newest:attachment:0'")
+        conn.execute(
+            "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES ('orphan:attachment:0', 'file', 'id')"
+        )
+        reused = conn.execute(
+            "SELECT rowid FROM attachment_native_ids WHERE ref_id = 'orphan:attachment:0'"
+        ).fetchone()[0]
+
+        violations = _unscoped_violations(conn)
+        conn.rollback()
+
+    assert reused <= top_rowid
+    assert violations == [("attachment_native_ids", {"ref_id": "orphan:attachment:0"})]
+
+
+def test_unscoped_foreign_key_check_sees_a_child_orphaned_by_a_parent_delete(tmp_path: Path) -> None:
+    """With ``foreign_keys=OFF`` a parent delete does not cascade, so it orphans older children.
+
+    Anti-vacuity: probing only the child rows the window wrote returns ``[]``,
+    because the orphaned ``repo_checkouts`` row was committed before the window.
+    """
+    db_path = tmp_path / "unscoped-fk-parent.db"
+    with open_connection(db_path) as conn:
+        conn.execute("INSERT INTO repos (repo_id, first_seen_at_ms, last_seen_at_ms) VALUES ('repo:one', 1, 1)")
+        conn.execute(
+            "INSERT INTO repo_checkouts (repo_id, root_path, first_seen_at_ms, last_seen_at_ms)"
+            " VALUES ('repo:one', '/checkout', 1, 1)"
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
+        conn.execute("DELETE FROM repos WHERE repo_id = 'repo:one'")
+
+        violations = _unscoped_violations(conn)
+        conn.rollback()
+
+    assert violations == [("repo_checkouts", {"repo_id": "repo:one"})]
+
+
+def test_foreign_key_window_belongs_to_its_transaction(tmp_path: Path) -> None:
+    """Closing the window, or rolling its transaction back, leaves no temp trigger behind."""
+    db_path = tmp_path / "unscoped-fk-lifecycle.db"
+    with open_connection(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
+        opened = conn.execute("SELECT COUNT(*) FROM sqlite_temp_master").fetchone()[0]
+        conn.rollback()
+        after_rollback = conn.execute("SELECT COUNT(*) FROM sqlite_temp_master").fetchone()[0]
+        conn.execute("BEGIN IMMEDIATE")
+        ingest_batch_core._open_unscoped_foreign_key_window(conn)
+        ingest_batch_core._close_unscoped_foreign_key_window(conn)
+        conn.commit()
+        after_close = conn.execute("SELECT COUNT(*) FROM sqlite_temp_master").fetchone()[0]
+
+    assert opened > 0
+    assert (after_rollback, after_close) == (0, 0)
 
 
 def test_foreign_key_check_plan_is_total_over_the_schema(tmp_path: Path) -> None:

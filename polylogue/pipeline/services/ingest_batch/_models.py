@@ -117,6 +117,9 @@ class _IngestBatchSummary:
     # boundary.  This is deliberately per attachment rather than a single
     # lossy counter: callers can account for every non-linked attachment.
     attachment_owner_resolutions: list[dict[str, str]] = field(default_factory=list)
+    # Whether this batch opened a ``foreign_keys=OFF`` window, whose temp
+    # triggers record the rows the pre-commit foreign-key check must probe.
+    foreign_key_window_open: bool = False
     counts: dict[str, int] = field(
         default_factory=lambda: {
             "sessions": 0,

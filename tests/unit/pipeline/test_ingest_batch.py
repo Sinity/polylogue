@@ -1705,6 +1705,57 @@ def test_write_session_freshness_tie_with_distinct_messages_is_not_skipped(tmp_p
         assert native_ids == {"m-1", "m-2"}
 
 
+def test_write_session_freshness_tie_with_a_revised_semantic_field_is_not_skipped(tmp_path: Path) -> None:
+    """A tied revision that changes only a message's model is a semantic revision.
+
+    Same shape as the negative control -- tied freshness, fewer acquired
+    attachments, the same message text -- except that ``model_name`` differs.
+    Anti-vacuity: comparing the coarse lineage signature (role and blocks)
+    reads the incoming message as already held, skips the replacement, and
+    leaves the old model on the stored message.
+    """
+    with open_connection(tmp_path / "index.db") as conn:
+        blob_publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        session_id = "aistudio-drive:tie-revised-model"
+        tied_timestamp = "2026-07-18T17:46:10Z"
+        message = _message_tuple(
+            "m-1", session_id, role="assistant", text="hi", content_hash="unused", sort_key=1777636800.0
+        )
+        first_session = _session_data(
+            session_id,
+            content_hash="hash-tie-revised-first",
+            raw_id="raw-revised-first",
+            message_tuples=[message.model_copy(update={"model_name": "model-a"})],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=b"acquired bytes")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "m-1")],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher)
+        conn.commit()
+        assert changed_first is True
+
+        second_session = _session_data(
+            session_id,
+            content_hash="hash-tie-revised-second",
+            raw_id="raw-revised-second",
+            message_tuples=[message.model_copy(update={"model_name": "model-b"})],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_second, counts_second = _write_session(conn, second_session, blob_publisher=blob_publisher)
+        conn.commit()
+
+        assert changed_second is True
+        assert counts_second["skipped_sessions"] == 0
+        [model] = [
+            row[0] for row in conn.execute("SELECT model_name FROM messages WHERE session_id = ?", (session_id,))
+        ]
+        assert model == "model-b"
+
+
 def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path: Path) -> None:
     """bd polylogue-8ac0: bytes already streamed into the blob store during
     sidecar discovery (ChatGPT ``.dat`` asset acquisition) are recorded
@@ -5146,3 +5197,26 @@ def test_a_grouped_raw_with_one_excised_session_still_records_its_written_siblin
     assert summary.excised_skips == 1
     assert raw_record.raw_id not in summary.skipped_raw_ids
     assert summary.outcomes[raw_record.raw_id].outcome_code != IngestOutcome.VALIDATION_REJECTED.value
+
+
+def test_drive_cohort_snapshot_copies_every_row_of_a_large_cohort() -> None:
+    """A cohort beyond the old 1,000-row cap is snapshotted whole, not marked stale.
+
+    Anti-vacuity: the ``LIMIT 1001`` snapshot plus the ``> 1000 rows`` stale
+    predicate marked every preparation of such a cohort stale, so its raw was
+    retried forever without converging.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE raw_session_memberships (raw_id TEXT, logical_source_key TEXT)")
+        conn.executemany(
+            "INSERT INTO raw_session_memberships VALUES (?, 'drive:key')",
+            [(f"raw-{index:05d}",) for index in range(1_500)],
+        )
+        snapshot = ingest_batch_core._source_snapshot(
+            conn, "raw_session_memberships", "logical_source_key = ?", ("drive:key",)
+        )
+    finally:
+        conn.close()
+
+    assert len(snapshot.rows) == 1_500
