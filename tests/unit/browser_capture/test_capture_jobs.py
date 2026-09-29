@@ -1119,16 +1119,16 @@ def test_a_job_cannot_accumulate_unbounded_events(tmp_path: Path) -> None:
         assert stored == 2
 
 
-def test_capture_job_routes_do_not_inherit_the_capture_envelope_body_cap(tmp_path: Path) -> None:
-    """Anti-vacuity: the 128 MiB cap is sized for capture envelopes carrying
-    conversation content; control messages must not inherit it, or the
-    receiver reads and json.loads-es up to 128 MiB per request before any
-    registry validation runs. Restoring the shared cap in ``_capture_job_body``
-    makes this red: the oversized control message is parsed instead of refused
-    on size."""
-    from polylogue.browser_capture.server import MAX_BROWSER_CAPTURE_BODY_BYTES, MAX_CAPTURE_JOB_BODY_BYTES
+def test_capture_job_routes_do_not_inherit_the_general_control_body_bound(tmp_path: Path) -> None:
+    """Anti-vacuity: capture-job requests carry job control, never content, so
+    they must not inherit the general control-message bound, or the receiver
+    reads and json.loads-es up to that bound per request before any registry
+    validation runs. Restoring the shared bound in ``_capture_job_body`` makes
+    this red: the oversized control message is parsed instead of refused on
+    size."""
+    from polylogue.browser_capture.server import MAX_CAPTURE_JOB_BODY_BYTES, MAX_CONTROL_BODY_BYTES
 
-    assert MAX_CAPTURE_JOB_BODY_BYTES < MAX_BROWSER_CAPTURE_BODY_BYTES
+    assert MAX_CAPTURE_JOB_BODY_BYTES < MAX_CONTROL_BODY_BYTES
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)

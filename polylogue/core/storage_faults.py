@@ -32,6 +32,10 @@ class StorageFaultKind(StrEnum):
     IO = "io"
     CORRUPT = "corrupt"
     READ_ONLY = "read_only"
+    #: Bytes published before the writer reserved them were reclaimed by blob
+    #: GC in between. The retained source still holds them; a retry
+    #: republishes them.
+    EVICTED = "evicted"
 
 
 _SQLITE_FAULTS: dict[int, StorageFaultKind] = {

@@ -9,6 +9,7 @@ boundary that consumes them.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import multiprocessing
 import resource
@@ -19,6 +20,7 @@ from typing import cast
 
 import pytest
 
+from polylogue.browser_capture.capture_stream import CaptureSummary, summarize_capture_stream
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
     BrowserCaptureSpoolConflictError,
@@ -62,6 +64,11 @@ def _payload(*, session_id: str = "conversation-1", fidelity: str = "native") ->
 
 def _raw(payload: dict[str, object], *, indent: int | None = None) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=indent).encode("utf-8")
+
+
+def _summary(payload: dict[str, object]) -> CaptureSummary:
+    """Summarize exact envelope bytes through the production streamed reader."""
+    return summarize_capture_stream(io.BytesIO(_raw(payload)))
 
 
 def _rss_write_worker(raw: bytes, spool_path: str, result_queue: object) -> None:
@@ -119,8 +126,8 @@ def test_attachment_content_enrichment_publishes_and_preserves_exact_bytes(tmp_p
     assert second.path.read_bytes() == enriched_raw
     assert (
         capture_convergence(
-            BrowserCaptureEnvelope.model_validate(enriched),
-            BrowserCaptureEnvelope.model_validate(resident),
+            _summary(enriched),
+            _summary(resident),
         )
         is CaptureConvergence.PUBLISH
     )
@@ -153,29 +160,12 @@ def test_attachment_enrichment_is_rejected_for_stale_changed_or_invalid_input() 
     changed_identity = json.loads(json.dumps(enriched))
     changed_identity["session"]["turns"][0]["attachments"][0]["provider_attachment_id"] = "other-upload"
 
-    resident_model = BrowserCaptureEnvelope.model_validate(resident)
-    assert (
-        capture_convergence(BrowserCaptureEnvelope.model_validate(changed), resident_model)
-        is CaptureConvergence.SUPERSEDED
-    )
-    assert (
-        capture_convergence(BrowserCaptureEnvelope.model_validate(invalid), resident_model)
-        is CaptureConvergence.SUPERSEDED
-    )
-    assert (
-        capture_convergence(
-            BrowserCaptureEnvelope.model_validate(conflicting), BrowserCaptureEnvelope.model_validate(enriched)
-        )
-        is CaptureConvergence.SUPERSEDED
-    )
-    assert (
-        capture_convergence(BrowserCaptureEnvelope.model_validate(changed_observation), resident_model)
-        is CaptureConvergence.SUPERSEDED
-    )
-    assert (
-        capture_convergence(BrowserCaptureEnvelope.model_validate(changed_identity), resident_model)
-        is CaptureConvergence.SUPERSEDED
-    )
+    resident_model = _summary(resident)
+    assert capture_convergence(_summary(changed), resident_model) is CaptureConvergence.SUPERSEDED
+    assert capture_convergence(_summary(invalid), resident_model) is CaptureConvergence.SUPERSEDED
+    assert capture_convergence(_summary(conflicting), _summary(enriched)) is CaptureConvergence.SUPERSEDED
+    assert capture_convergence(_summary(changed_observation), resident_model) is CaptureConvergence.SUPERSEDED
+    assert capture_convergence(_summary(changed_identity), resident_model) is CaptureConvergence.SUPERSEDED
 
 
 def test_newer_capture_with_attachment_carrier_keeps_normal_freshness_admission() -> None:
@@ -196,8 +186,8 @@ def test_newer_capture_with_attachment_carrier_keeps_normal_freshness_admission(
     )
     assert (
         capture_convergence(
-            BrowserCaptureEnvelope.model_validate(incoming),
-            BrowserCaptureEnvelope.model_validate(resident),
+            _summary(incoming),
+            _summary(resident),
         )
         is CaptureConvergence.PUBLISH
     )
@@ -427,3 +417,32 @@ def test_interruption_between_publication_and_receipt_resumes_without_double_adm
     assert outcomes[entries[0][0]] == "deduplicated"
     assert {path.name: path.read_bytes() for path in published.glob("*.json")} == before
     assert ledger.read_text().split()[1] == "deduplicated"
+
+
+def test_raw_provider_payload_fingerprint_is_structural_and_complete() -> None:
+    """The provider payload is digested without being held, by value not layout.
+
+    Anti-vacuity: digesting members in stream order makes the reordered
+    payload a new revision, and digesting only its root shape makes the
+    deep change a duplicate.
+    """
+    base = _payload()
+    base["raw_provider_payload"] = {
+        "mapping": {"n1": {"message": {"parts": ["a", 1, 2.5, None, True]}}, "n2": {"children": []}},
+        "title": "t",
+    }
+    reordered = json.loads(json.dumps(base))
+    reordered["raw_provider_payload"] = {
+        "title": "t",
+        "mapping": {"n2": {"children": []}, "n1": {"message": {"parts": ["a", 1, 2.5, None, True]}}},
+    }
+    deep_change = json.loads(json.dumps(base))
+    deep_change["raw_provider_payload"]["mapping"]["n1"]["message"]["parts"][0] = "b"
+
+    def in_stream_order(payload: dict[str, object]) -> CaptureSummary:
+        return summarize_capture_stream(io.BytesIO(json.dumps(payload).encode("utf-8")))
+
+    base_summary = in_stream_order(base)
+    assert capture_convergence(in_stream_order(reordered), base_summary) is CaptureConvergence.DUPLICATE
+    assert in_stream_order(deep_change).dedup_content_hash != base_summary.dedup_content_hash
+    assert base_summary.has_native_provider_payload is True
