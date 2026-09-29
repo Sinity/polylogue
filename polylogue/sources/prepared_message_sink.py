@@ -12,7 +12,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
-from dataclasses import asdict, fields, is_dataclass, replace
+from dataclasses import asdict
 from pathlib import Path
 from typing import BinaryIO, TypeVar, overload
 from urllib.parse import quote
@@ -30,6 +30,7 @@ from polylogue.sources.live.tool_result_sidecars import (
     SidecarMatch,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.base_models import SINK_JSON_CONTEXT
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
@@ -61,50 +62,17 @@ _ModelT = TypeVar("_ModelT", ParsedMessage, ParsedSessionEvent)
 
 
 def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
-    """Decode sink JSON; an escaped lone surrogate needs the stdlib decoder."""
+    """Decode sink JSON; an escaped lone surrogate needs the stdlib decoder.
+
+    pydantic's JSON parser rejects a surrogate escape, and the stdlib parser
+    reads it exactly, so such a row is parsed once by the stdlib and validated
+    in Python mode: no marked copy, dump or restore pass. The fields rendered
+    differently in JSON mode (a paste digest's hex) read the
+    :data:`SINK_JSON_CONTEXT` flag and parse as JSON mode would.
+    """
     if _ESCAPED_SURROGATE.search(encoded) is None:
         return model.model_validate_json(encoded)
-    # pydantic's JSON parser rejects a surrogate escape. Validate in JSON mode
-    # (so JSON-serialized fields such as hex digests convert as usual) with
-    # each surrogate escape replaced by a unique marker, then put the
-    # surrogates back into the validated values.
-    nonce = uuid.uuid4().hex
-    marked = _ESCAPED_SURROGATE.sub(
-        lambda match: match.group()[:-6] + f"<surrogate-{nonce}-{match.group()[-4:].lower()}>", encoded
-    )
-    restore = re.compile(f"<surrogate-{nonce}-([0-9a-f]{{4}})>")
-    validated_model = model.model_validate_json(marked)
-    validated = validated_model.model_dump(mode="python")
-    # model_dump omits parser-only coordinates declared ``exclude=True``
-    # (parent/boundary message positions, owner coordinates) even though the
-    # sink stored them; carry them over so the writer can still resolve them.
-    for name, field in model.model_fields.items():
-        if field.exclude:
-            validated[name] = getattr(validated_model, name)
-    return model.model_validate(_restore_surrogates(validated, restore))
-
-
-def _restore_surrogates(value: object, marker: re.Pattern[str]) -> object:
-    if isinstance(value, str):
-        return marker.sub(lambda match: chr(int(match.group(1), 16)), value)
-    if isinstance(value, dict):
-        return {_restore_surrogates(key, marker): _restore_surrogates(item, marker) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_restore_surrogates(item, marker) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_restore_surrogates(item, marker) for item in value)
-    if is_dataclass(value) and not isinstance(value, type):
-        # Excluded parser-only coordinates (the owner coordinate) are carried
-        # over as dataclasses; their strings hold markers too.
-        return replace(
-            value,
-            **{
-                field.name: _restore_surrogates(getattr(value, field.name), marker)
-                for field in fields(value)
-                if field.init
-            },
-        )
-    return value
+    return model.model_validate(json.loads(encoded), context=SINK_JSON_CONTEXT)
 
 
 def _read_uri(path: Path) -> str:

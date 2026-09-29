@@ -487,6 +487,14 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
         try:
             return _loaded_json_value(_stdlib_json.loads(second, parse_constant=_reject_non_finite_token))
         except (_stdlib_json.JSONDecodeError, ValueError):
+            if second is obj:
+                raise exc from None
+        # The provider decode accepted bytes that are not UTF-8 after all (a
+        # BOM-less UTF-16 document can hold an ``ED A0 80`` triple): the
+        # stdlib's own encoding detection reads the original bytes.
+        try:
+            return _loaded_json_value(_stdlib_json.loads(obj, parse_constant=_reject_non_finite_token))
+        except (_stdlib_json.JSONDecodeError, ValueError):
             raise exc from None
 
 
@@ -534,10 +542,13 @@ def decode_provider_utf8(raw: bytes) -> str:
 
     Strict UTF-8 first; bytes that only decode with ``surrogatepass`` keep
     their lone code units, and any encoded pair becomes its character.
-    Arbitrary malformed bytes still raise. Every reader of retained provider
-    bytes decodes through this, so one artifact is readable to all of them or
-    to none.
+    Arbitrary malformed bytes still raise. A leading UTF-8 byte-order mark
+    is consumed, as a JSON reader of bytes consumes it, on both paths. Every
+    reader of retained provider bytes decodes through this, so one artifact is
+    readable to all of them or to none.
     """
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as error:

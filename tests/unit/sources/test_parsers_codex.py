@@ -3635,3 +3635,24 @@ def test_core_loads_still_reads_bomless_utf16_and_utf32() -> None:
 
     for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
         assert loads('{"a": 1}'.encode(encoding)) == {"a": 1}
+
+
+def test_core_loads_reads_utf16_bytes_the_provider_decode_also_accepts() -> None:
+    """Anti-vacuity: trust the provider decode once it succeeds and a BOM-less
+    UTF-16LE document holding an ``ED A0 80`` triple is refused."""
+    from polylogue.core.json import loads
+
+    document = '{"a":"ꃭ\u0080"}'
+    raw = document.encode("utf-16-le")
+    assert b"\xed\xa0\x80" in raw
+    assert loads(raw) == {"a": "ꃭ\u0080"}
+
+
+def test_provider_decode_consumes_a_bom_before_a_surrogate() -> None:
+    """Anti-vacuity: keep U+FEFF on the surrogatepass path and the document
+    fails every later ``json.loads``."""
+    from polylogue.core.json import decode_provider_utf8, loads
+
+    raw = b'\xef\xbb\xbf{"a":"\xed\xa0\x80"}'
+    assert decode_provider_utf8(raw) == '{"a":"\ud800"}'
+    assert loads(raw) == {"a": "\ud800"}

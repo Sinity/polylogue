@@ -2939,3 +2939,22 @@ def test_removing_a_scratch_tree_releases_its_decodes(tmp_path: Path, monkeypatc
     prepared_message_sink.discard_decoded_sessions_under(tmp_path)
     list(session.messages)
     assert decodes[0] == 2
+
+
+def test_sink_surrogate_decode_parses_once_without_a_dump_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A surrogate-bearing row is parsed once and validated, with no marked
+    copy, dump or restore pass over a possibly near-limit value.
+
+    Anti-vacuity: validate a marked copy and dump it to restore surrogates,
+    and the patched ``model_dump`` fails the decode.
+    """
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
+
+    message = ParsedMessage(provider_message_id="m3", role=Role.USER, text="x" * 4096 + "\ud800")
+    encoded = _message_json(message)
+
+    def no_dump(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("dumped the validated row to restore surrogates")
+
+    monkeypatch.setattr(ParsedMessage, "model_dump", no_dump)
+    assert _from_text_json(ParsedMessage, encoded).text == message.text
