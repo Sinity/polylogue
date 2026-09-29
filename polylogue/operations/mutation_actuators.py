@@ -1432,6 +1432,9 @@ class CaptureAssertionCandidateArgs:
     idempotency_key: str | None
     assertion_id: str
     ttl_seconds: int | None
+    #: Source evidence that is neither a target nor a scope, such as the
+    #: capture artifact a browser selection was taken from.
+    evidence_refs: tuple[str, ...] = ()
 
 
 def resolve_assertion_candidate_refs(archive: ArchiveStore, refs: Sequence[str], *, cwd: Path | None) -> list[str]:
@@ -1499,6 +1502,8 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
     resolved_refs = resolve_assertion_candidate_refs(args.archive, args.refs, cwd=args.cwd)
 
     normalized_scope_refs = [parse_public_ref(ref).format() for ref in args.scope_refs]
+    supplied_evidence_refs = [parse_public_ref(ref).format() for ref in args.evidence_refs]
+    evidence_refs = list(dict.fromkeys((*resolved_refs, *normalized_scope_refs, *supplied_evidence_refs)))
     if normalized_idempotency_key is None:
         assertion_id = args.assertion_id
     else:
@@ -1514,7 +1519,7 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
         "author_kind": normalized_author_kind,
         "author_ref": normalized_author_ref,
         "body_text": normalized_body,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "evidence_refs": evidence_refs,
         "kind": args.kind.value,
         "scope_refs": normalized_scope_refs,
         "target_ref": target_ref,
@@ -1533,10 +1538,11 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
         "author_ref": normalized_author_ref,
         "body_text": normalized_body,
         "capture_fingerprint": capture_fingerprint,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "evidence_refs": evidence_refs,
         "kind": args.kind.value,
         "resolved_refs": resolved_refs,
         "scope_refs": normalized_scope_refs,
+        "supplied_evidence_refs": supplied_evidence_refs,
         "target_ref": target_ref,
         "ttl_seconds": args.ttl_seconds,
     }
@@ -1658,6 +1664,7 @@ class CaptureAssertionCandidateActuator(ConvergentReplay):
             idempotency_key=None,
             assertion_id=str(context["assertion_id"]),
             ttl_seconds=cast("int | None", context["ttl_seconds"]),
+            evidence_refs=tuple(cast("list[str]", context.get("supplied_evidence_refs") or [])),
         )
 
 

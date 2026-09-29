@@ -86,6 +86,28 @@ def test_every_duplicate_asset_rendition_becomes_its_own_attachment() -> None:
     assert members == sorted(key.split("#", 1)[1] for key in _RENDITION_BLOBS)
 
 
+def test_renditions_keep_a_provider_file_id_the_pointer_already_carried() -> None:
+    """A provider-native file id on the pointer survives rendition expansion.
+
+    Anti-vacuity: overwrite ``provider_file_id`` with the member's normalized
+    asset id and every rendition reports ``file_000...cc4c...`` instead.
+    """
+    pointer = ParsedAttachment(
+        provider_attachment_id=f"sediment://{_RENDITION_ID}",
+        provider_file_id="file-provider-native",
+        message_provider_id="m1",
+    )
+    session = ParsedSession(
+        source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[], attachments=[pointer]
+    )
+    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": _RENDITION_BLOBS}
+
+    returned = ChatGPTAssemblySpec().enrich_session(session, sidecars)
+
+    assert len(returned.attachments) == 2
+    assert {attachment.provider_file_id for attachment in returned.attachments} == {"file-provider-native"}
+
+
 def test_prepared_carrier_appends_renditions_and_rolls_them_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

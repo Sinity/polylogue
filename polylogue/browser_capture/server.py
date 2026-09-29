@@ -685,6 +685,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             or not isinstance(observation, dict)
             or observation.get("fidelity") != "native"
             or not observation.get("provider_message_id")
+            or not isinstance(observation.get("origin"), str)
+            or not str(observation.get("origin")).strip()
+            or not isinstance(observation.get("provider_conversation_id"), str)
+            or not str(observation.get("provider_conversation_id")).strip()
             or not payload.get("target_ref")
         ):
             self._safe_error(HTTPStatus.BAD_REQUEST, "exact_message_evidence_required")
@@ -697,9 +701,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
             root = self.server.config.archive_root or default_archive_root()
             provider_message_id = str(observation["provider_message_id"])
-            expected_message_ref = (
-                f"{observation.get('origin')}:{observation.get('provider_conversation_id')}:n:{provider_message_id}"
-            )
+            origin = str(observation["origin"])
+            conversation_id = str(observation["provider_conversation_id"])
+            expected_message_ref = f"{origin}:{conversation_id}:n:{provider_message_id}"
             if payload["target_ref"] != expected_message_ref:
                 raise ValueError("selected message target does not match its native observation")
             config = self.server.config
@@ -717,12 +721,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     "body_text": payload["body_text"],
                     "kind": candidate_capture_kind(payload["kind"]).value,
                     "refs": [f"message:{expected_message_ref}"],
-                    # An assertion's scope is an object ref. The capture
-                    # artifact's evidence ref is not one, so scope the
-                    # candidate to the selected message's session.
-                    "scope_refs": [
-                        f"session:{observation.get('origin')}:{observation.get('provider_conversation_id')}"
-                    ],
+                    # An assertion's scope is an object ref, so the candidate is
+                    # scoped to the selected message's session; the capture
+                    # artifact travels as source evidence.
+                    "scope_refs": [f"session:{origin}:{conversation_id}"],
+                    "evidence_refs": [evidence_refs[0]],
                     "author_ref": str(payload.get("author_ref") or "user:browser-extension"),
                     "author_kind": str(payload.get("author_kind") or "user"),
                     "idempotency_key": payload.get("idempotency_key"),

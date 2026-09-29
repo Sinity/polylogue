@@ -30,7 +30,7 @@ import mimetypes
 import os
 import re
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from polylogue.core.enums import Provider
@@ -339,6 +339,7 @@ class ChatGPTAssemblySpec:
             return conv
         if index is None:
             index = ChatGPTAssetIndex.empty()
+        member_keys_by_asset = _member_keys_by_asset(asset_blobs)
 
         if isinstance(conv.attachments, SqliteAttachmentSink):
             attachments = conv.attachments
@@ -360,7 +361,11 @@ class ChatGPTAssemblySpec:
                 for position in range(attachment_count):
                     attachment = attachments[position]
                     resolved_items, resolved_events = _resolve_attachment_renditions(
-                        attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
+                        attachment,
+                        index,
+                        thread_id=conv.provider_session_id,
+                        asset_blobs=asset_blobs,
+                        member_keys_by_asset=member_keys_by_asset,
                     )
                     first, *extra = resolved_items
                     if first is not attachment:
@@ -381,7 +386,11 @@ class ChatGPTAssemblySpec:
         changed = False
         for attachment in conv.attachments:
             resolved_items, resolved_events = _resolve_attachment_renditions(
-                attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
+                attachment,
+                index,
+                thread_id=conv.provider_session_id,
+                asset_blobs=asset_blobs,
+                member_keys_by_asset=member_keys_by_asset,
             )
             new_attachments.extend(resolved_items)
             if resolved_items != [attachment] or resolved_items[0] is not attachment:
@@ -397,12 +406,23 @@ class ChatGPTAssemblySpec:
         )
 
 
+def _member_keys_by_asset(asset_blobs: Mapping[str, tuple[str, int]]) -> dict[str, list[str]]:
+    """Index ambiguous ``asset_id#member`` blob keys once per sidecar set."""
+    index: dict[str, list[str]] = {}
+    for key in sorted(asset_blobs):
+        asset_id, separator, _member = key.partition("#")
+        if separator:
+            index.setdefault(asset_id, []).append(key)
+    return index
+
+
 def _resolve_attachment_renditions(
     attachment: ParsedAttachment,
     index: ChatGPTAssetIndex,
     *,
     thread_id: str,
     asset_blobs: Mapping[str, tuple[str, int]],
+    member_keys_by_asset: Mapping[str, Sequence[str]],
 ) -> tuple[list[ParsedAttachment], list[ParsedSessionEvent]]:
     """Resolve one attachment into every physical member it names.
 
@@ -415,9 +435,9 @@ def _resolve_attachment_renditions(
     asset_id = _normalize_file_id(attachment.provider_attachment_id)
     prefix = f"{asset_id}#"
     member_keys = (
-        sorted(key for key in asset_blobs if key.startswith(prefix))
-        if attachment.attachment_kind != "sandbox_file"
-        else []
+        member_keys_by_asset.get(asset_id, ())
+        if attachment.attachment_kind != "sandbox_file" and asset_id not in asset_blobs
+        else ()
     )
     if not member_keys:
         resolved, event = _resolve_attachment(attachment, index, thread_id=thread_id, asset_blobs=asset_blobs)
@@ -435,7 +455,9 @@ def _resolve_attachment_renditions(
         rendition = base.model_copy(
             update={
                 "provider_attachment_id": rendition_id,
-                "provider_file_id": asset_id,
+                # A provider file id the pointer or library already carried
+                # is the provider's identity; the member's id is the fallback.
+                "provider_file_id": base.provider_file_id or asset_id,
                 "name": name,
                 "mime_type": mimetypes.guess_type(name or "")[0],
                 "size_bytes": blob_size,
@@ -452,7 +474,9 @@ def _resolve_attachment_renditions(
                 source_message_provider_id=attachment.message_provider_id,
                 payload={
                     "attachment_id": rendition_id,
-                    "provider_file_id": asset_id,
+                    # A provider file id the pointer or library already carried
+                    # is the provider's identity; the member's id is the fallback.
+                    "provider_file_id": base.provider_file_id or asset_id,
                     "member_name": member,
                     "resolved_name": name,
                     "resolved_mime_type": rendition.mime_type,

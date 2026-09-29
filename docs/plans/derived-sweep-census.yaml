@@ -156,6 +156,13 @@ sites:
     scope: "state_predicate"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
+  - file: "polylogue/sources/assembly_chatgpt.py"
+    function: "_resolve_attachment_renditions"
+    subject: "provider_file_id"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: unclassified
+    reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/sources/dispatch.py"
     function: "merge_parsed_session_chunks"
     subject: "branch_type"

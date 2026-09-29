@@ -653,6 +653,7 @@ class AssertionCandidateCaptureRequest(_OperationPayload):
     kind: str = Field(min_length=1, max_length=64)
     refs: list[str] = Field(default_factory=list, max_length=64)
     scope_refs: list[str] = Field(default_factory=list, max_length=64)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=64)
     cwd: str | None = None
     author_ref: str = Field(default="user:local", min_length=1, max_length=512)
     author_kind: str = Field(default="user", min_length=1, max_length=64)
@@ -663,7 +664,7 @@ class AssertionCandidateCaptureRequest(_OperationPayload):
     def nonblank_body_and_refs(self) -> AssertionCandidateCaptureRequest:
         if not self.body_text.strip():
             raise ValueError("note text cannot be empty")
-        if any(not value.strip() for value in (*self.refs, *self.scope_refs)):
+        if any(not value.strip() for value in (*self.refs, *self.scope_refs, *self.evidence_refs)):
             raise ValueError("refs must be nonempty")
         return self
 

@@ -3766,10 +3766,10 @@ describe("accepted message identity storage", () => {
     vi.useRealTimers();
   });
 
-  it("migrates a legacy scalar identity so a previously accepted message stays selectable", async () => {
-    // Anti-vacuity: without the startup migration the snapshot indexes the
-    // legacy scalar by message ref and reports no accepted identity for
-    // "chatgpt-export:conv-123:n:m1".
+  it("drops a version 1 identity cache instead of reading it", async () => {
+    // Anti-vacuity: without the startup replacement the snapshot indexes the
+    // stale scalar entry as if it were a keyed map and reports its fields as
+    // accepted message refs.
     const legacy = {
       message_ref: "chatgpt-export:conv-123:n:m1",
       evidence_ref: "chatgpt/conv-123.json#message:m1",
@@ -3787,7 +3787,7 @@ describe("accepted message identity storage", () => {
     );
 
     expect(stored.polylogueAcceptedMessageIdentitiesVersion).toBe(2);
-    expect(stored.polylogueAcceptedMessageIdentities["chatgpt:conv-123"]).toEqual({ [legacy.message_ref]: legacy });
-    expect(snapshot.assertions.accepted_identities).toEqual({ [legacy.message_ref]: legacy });
+    expect(stored.polylogueAcceptedMessageIdentities).toEqual({});
+    expect(snapshot.assertions.accepted_identities).toEqual({});
   });
 });
