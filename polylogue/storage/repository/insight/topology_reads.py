@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.analysis.topology import SessionTopology
-from polylogue.storage.derived.topology import derive_session_topology_async
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
@@ -37,8 +36,7 @@ class RepositoryInsightTopologyReadMixin:
         through the returned :class:`SessionTopology`.
         """
 
-        return await derive_session_topology_async(
-            self.queries,
+        return await self.queries.get_session_topology(
             session_id,
             node_offset=node_offset,
             node_limit=node_limit,
