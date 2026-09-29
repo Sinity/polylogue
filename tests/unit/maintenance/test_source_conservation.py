@@ -735,7 +735,9 @@ def test_check_json_carries_every_term_with_its_rule(tmp_path: Path) -> None:
         assert isinstance(term["blocking"], bool)
 
 
-def _insert_attachment(conn: sqlite3.Connection, *, attachment_id: str, ref_count: int) -> None:
+def _insert_attachment(
+    conn: sqlite3.Connection, *, attachment_id: str, ref_count: int, owner_gap: str | None = None
+) -> None:
     conn.execute(
         """
         INSERT INTO attachments(attachment_id, display_name, media_type, byte_count, acquisition_status, ref_count)
@@ -743,6 +745,39 @@ def _insert_attachment(conn: sqlite3.Connection, *, attachment_id: str, ref_coun
         """,
         (attachment_id, ref_count),
     )
+    if owner_gap is not None:
+        session_id = conn.execute("SELECT session_id FROM sessions LIMIT 1").fetchone()[0]
+        conn.execute(
+            "INSERT INTO attachment_owner_gaps(session_id, attachment_id, reason) VALUES (?, ?, ?)",
+            (session_id, attachment_id, owner_gap),
+        )
+
+
+def test_attachment_whose_named_owner_is_missing_blocks(tmp_path: Path) -> None:
+    """A gap the writer recorded as ``message_missing`` is a lost owner and blocks.
+
+    Gaps recorded as ambiguous or never linked stay the explained term.
+    Anti-vacuity: classifying every ref_count-0 row as ``attachment_unowned``
+    verifies this archive green although an owner was lost.
+    """
+    _seed(tmp_path)
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _insert_attachment(index_conn, attachment_id="lost-1", ref_count=0, owner_gap="message_missing")
+        _insert_attachment(index_conn, attachment_id="ambiguous-1", ref_count=0, owner_gap="owner_ambiguous")
+        _insert_attachment(index_conn, attachment_id="loose-1", ref_count=0, owner_gap="provider_never_linked")
+        index_conn.commit()
+    finally:
+        index_conn.close()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR, check.summary
+    assert _count(check, "attachment_owner_missing") == 1
+    assert _terms(check)["attachment_owner_missing"]["blocking"] is True
+    assert _terms(check)["attachment_owner_missing"]["sample"] == ["lost-1"]
+    assert _count(check, "attachment_unowned") == 2
+    assert _terms(check)["attachment_unowned"]["blocking"] is False
+    assert check.evidence["blocking_count"] == 1
 
 
 def test_owner_ambiguous_attachment_types_as_unowned_and_does_not_block(tmp_path: Path) -> None:

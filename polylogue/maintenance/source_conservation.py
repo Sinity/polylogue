@@ -89,6 +89,7 @@ _TERM_BLOCK_ORPHAN = "block_orphan"
 _TERM_ATTACHMENT_REF_ORPHAN = "attachment_ref_orphan"
 _TERM_ATTACHMENT_UNREFERENCED = "attachment_unreferenced"
 _TERM_ATTACHMENT_UNOWNED = "attachment_unowned"
+_TERM_ATTACHMENT_OWNER_MISSING = "attachment_owner_missing"
 _TERM_FRONTIER_UNAVAILABLE = "frontier_unavailable"
 _TERM_FRONTIER_UNACQUIRED = "frontier_unacquired"
 _TERM_FRONTIER_DUPLICATE = "frontier_duplicate"
@@ -143,8 +144,12 @@ _RULES: dict[str, str] = {
         "without the ref-count sweep, so the row is unreachable from every read path"
     ),
     _TERM_ATTACHMENT_UNOWNED: (
-        "attachment has no ref and ref_count 0: written unreferenced because its owning message "
-        "was ambiguous; identity and bytes are retained as evidence"
+        "attachment has no ref and ref_count 0: written unreferenced because its owner was ambiguous "
+        "or the provider never linked one; identity and bytes are retained as evidence"
+    ),
+    _TERM_ATTACHMENT_OWNER_MISSING: (
+        "the session's writer recorded that an attachment's provider-named message is absent from the index "
+        "(attachment_owner_gaps reason 'message_missing'): an owner was lost, not left unexplained"
     ),
     _TERM_FRONTIER_UNAVAILABLE: "configured source root could not be observed; the denominator is incomplete",
     _TERM_FRONTIER_UNACQUIRED: "configured source member has no acquired raw membership",
@@ -168,6 +173,7 @@ _BLOCKING: frozenset[str] = frozenset(
         _TERM_BLOCK_ORPHAN,
         _TERM_ATTACHMENT_REF_ORPHAN,
         _TERM_ATTACHMENT_UNREFERENCED,
+        _TERM_ATTACHMENT_OWNER_MISSING,
         _TERM_FRONTIER_UNAVAILABLE,
         _TERM_FRONTIER_UNACQUIRED,
         _TERM_FRONTIER_DUPLICATE,
@@ -785,6 +791,8 @@ def audit_source_conservation(
     attachment_unreferenced: list[tuple[Any, ...]] = []
     attachment_unowned_count = 0
     attachment_unowned: list[tuple[Any, ...]] = []
+    attachment_owner_missing_count = 0
+    attachment_owner_missing: list[tuple[Any, ...]] = []
     attachment_missing_count = 0
     attachment_missing: list[tuple[Any, ...]] = []
     if table_exists(conn, "attachment_refs", schema="idx_tier"):
@@ -828,18 +836,40 @@ def audit_source_conservation(
             """,
             (sample_limit,),
         ).fetchall()
+        # ref_count 0 is explained by the writer's recorded owner gap, except
+        # a named owner that no written message carries: that is a lost owner.
+        owner_missing = """EXISTS (
+            SELECT 1 FROM idx_tier.attachment_owner_gaps g
+            WHERE g.attachment_id = a.attachment_id AND g.reason = 'message_missing'
+        )"""
         attachment_unowned_count = int(
             conn.execute(
                 f"""
                 SELECT COUNT(*) FROM idx_tier.attachments a
-                WHERE {unreferenced_predicate} AND a.ref_count = 0
+                WHERE {unreferenced_predicate} AND a.ref_count = 0 AND NOT {owner_missing}
                 """
             ).fetchone()[0]
         )
         attachment_unowned = conn.execute(
             f"""
             SELECT a.attachment_id FROM idx_tier.attachments a
-            WHERE {unreferenced_predicate} AND a.ref_count = 0
+            WHERE {unreferenced_predicate} AND a.ref_count = 0 AND NOT {owner_missing}
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
+        # Counted from the gap ledger, not from attachment rows: a lost owner
+        # whose bytes were never retained leaves no attachment row at all.
+        attachment_owner_missing_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM idx_tier.attachment_owner_gaps WHERE reason = 'message_missing'"
+            ).fetchone()[0]
+        )
+        attachment_owner_missing = conn.execute(
+            """
+            SELECT attachment_id FROM idx_tier.attachment_owner_gaps
+            WHERE reason = 'message_missing'
+            ORDER BY session_id, attachment_id
             LIMIT ?
             """,
             (sample_limit,),
@@ -1069,6 +1099,11 @@ def audit_source_conservation(
                 _TERM_ATTACHMENT_UNOWNED,
                 attachment_unowned_count,
                 _sample(attachment_unowned, sample_limit),
+            ),
+            _term(
+                _TERM_ATTACHMENT_OWNER_MISSING,
+                attachment_owner_missing_count,
+                _sample(attachment_owner_missing, sample_limit),
             ),
             _term(_TERM_ATTACHMENT_MISSING, attachment_missing_count, _sample(attachment_missing, sample_limit)),
         )

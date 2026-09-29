@@ -206,6 +206,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _json_dumps,
     _next_session_event_position,
     _repair_stale_session_observations,
+    recorded_attachment_owner_gaps,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -709,6 +710,9 @@ def _write_parsed_precedence_result(
             session_id=session_id,
             content_changed=False,
             counts=counts,
+            # Unchanged content leaves the same attachments unowned; report the
+            # gaps its last write recorded rather than none.
+            unresolved_attachment_owners=recorded_attachment_owner_gaps(store._conn, session_id),
         )
 
     write_with_reparse_receipt(force_replace=browser_precedence == "replace")

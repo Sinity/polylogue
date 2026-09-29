@@ -56,6 +56,7 @@ _NON_COMPARABLE_TABLES: dict[str, str] = {
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "action_pairs": frozenset(),
     "attachment_native_ids": frozenset(),
+    "attachment_owner_gaps": frozenset(),
     "attachment_refs": frozenset(),
     "attachments": frozenset(),
     "blocks": frozenset(),

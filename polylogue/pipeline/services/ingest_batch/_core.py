@@ -87,6 +87,7 @@ from polylogue.storage.accepted_marker_inputs import (
     finalize_pending_accepted_marker_input,
     prepare_accepted_marker_input,
 )
+from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     _archive_blob_publisher_slot,
@@ -127,6 +128,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _parsed_message_signature,
     _repair_stale_session_observations,
     prepare_session_write,
+    recorded_attachment_owner_gaps,
     replace_parser_ingest_flag_tags,
     report_reextracted_prefix_blocks,
     upsert_parser_ingest_flag_tags,
@@ -431,6 +433,22 @@ def _foreign_key_violations_for_sessions(
             if len(violations) >= limit:
                 return violations
     return violations
+
+
+def _append_owner_resolutions(
+    resolutions: list[dict[str, str]],
+    payload: SessionWritePayload,
+    gaps: Sequence[tuple[str, AttachmentOwnerResolutionReason]],
+) -> None:
+    for attachment_id, reason in gaps:
+        resolutions.append(
+            {
+                "raw_id": payload.raw_id or "",
+                "session_id": payload.session_id,
+                "attachment_id": attachment_id,
+                "reason": reason.value,
+            }
+        )
 
 
 def _incoming_has_ingest_flag(payload: SessionWritePayload, flag: str | Sequence[str]) -> bool:
@@ -1436,6 +1454,12 @@ def _write_session(
         if _needs_session_fts_repair(conn, payload.session_id):
             counts[_FTS_REPAIR_COUNT_KEY] = 1
         _bind_session_enrichment(conn, source_conn, payload)
+        # The unchanged content still leaves the same attachments unowned:
+        # report the gaps the session's last write recorded, as a write would.
+        if attachment_owner_resolutions is not None:
+            _append_owner_resolutions(
+                attachment_owner_resolutions, payload, recorded_attachment_owner_gaps(conn, payload.session_id)
+            )
         return False, counts
 
     if (
@@ -1586,15 +1610,9 @@ def _write_session(
     if not (writer_outcomes and writer_outcomes[0].suppression_skipped):
         _bind_session_enrichment(conn, source_conn, payload)
     if attachment_owner_resolutions is not None and writer_outcomes:
-        for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
-            attachment_owner_resolutions.append(
-                {
-                    "raw_id": payload.raw_id or "",
-                    "session_id": payload.session_id,
-                    "attachment_id": attachment_id,
-                    "reason": reason.value,
-                }
-            )
+        _append_owner_resolutions(
+            attachment_owner_resolutions, payload, writer_outcomes[0].unresolved_attachment_owners
+        )
     counts["sessions"] = 1
     counts["messages"] = len(session_to_write.messages)
     counts["attachments"] = len(session_to_write.attachments)
