@@ -363,11 +363,10 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
     query_cardinality_archive: _PreparedArchive,
     tmp_path: Path,
 ) -> None:
-    """Dropping ordinal pairing creates seven rows where the oracle requires five.
+    """Dropping one-to-one association creates seven rows where the oracle requires five.
 
-    The mutation shadows the production ``actions`` view with the historical
-    same-session/same-tool-id join, equivalent to removing
-    ``result_rank = use_rank`` from ``action_relation_select_sql``.  The two
+    The mutation shadows the production ``actions`` view with a
+    same-session/same-tool-id join instead of the shared association owner. The two
     duplicate uses and two duplicate results then form a 2x2 product (four
     rows instead of two), and the real-route membership survivor must reject it.
     """

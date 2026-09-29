@@ -1217,9 +1217,9 @@ ACTION_PAIRS_SPEC = _make_table_spec(
         ),
         _raw_column("is_error", """is_error               INTEGER CHECK(is_error IN (0, 1) OR is_error IS NULL)"""),
         _raw_column("exit_code", """exit_code              INTEGER"""),
-        # Canonical outcome, copied from the tool_use block that owns this pair.
-        # ``is_error``/``exit_code`` above stay as the legacy compatibility
-        # projection; readers take the outcome from here.
+        # The shared association owner copies an attributed result's outcome,
+        # or records unknown for an ambiguous link with no claimed result.
+        # Error and exit-code evidence never substitutes for that decision.
         _raw_column("tool_outcome", """tool_outcome           TEXT"""),
         _raw_column("outcome_unknown_reason", """outcome_unknown_reason TEXT"""),
     ),

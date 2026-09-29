@@ -301,8 +301,7 @@ class SessionLogService:
         if max_bytes < 1:
             raise SessionError("max_bytes must be positive")
         if expected_observation is not None and (
-            not isinstance(expected_observation, str)
-            or len(expected_observation) != 64
+            len(expected_observation) != 64
             or any(character not in "0123456789abcdef" for character in expected_observation)
         ):
             raise SessionError("expected_observation must be a hexadecimal observation witness")
