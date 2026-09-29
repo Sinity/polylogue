@@ -857,7 +857,7 @@ async def _reconcile_ended_daemon_runs() -> None:
     pace, and only the receipt write takes the writer. A run that cannot be
     reconciled now stays pending in status and is reconciled by the next start.
     """
-    from polylogue.daemon.termination import HostTerminationEvidence
+    from polylogue.operations.daemon_termination import HostTerminationEvidence
 
     lifecycle = _daemon_lifecycle
     if lifecycle is None:

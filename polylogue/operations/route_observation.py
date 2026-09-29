@@ -1130,16 +1130,10 @@ def read_latency_report(
 
 
 def _recorded_drops(conn: sqlite3.Connection, since_ms: int, surface: str | None) -> RouteObservationDrops:
-    """Sum the drops every process recorded for the window.
-
-    An ops tier without the drop table cannot say what was lost, and says so.
-    """
+    """Sum the drops every process recorded for the window."""
     from polylogue.storage.sqlite.archive_tiers.ops_write import route_observation_drop_counts
 
-    try:
-        rows = route_observation_drop_counts(conn, since_ms=since_ms, surface=surface)
-    except sqlite3.OperationalError:
-        return RouteObservationDrops.unaccounted()
+    rows = route_observation_drop_counts(conn, since_ms=since_ms, surface=surface)
     reasons: dict[str, int] = {}
     routes: dict[str, int] = {}
     for row in rows:

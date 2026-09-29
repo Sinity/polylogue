@@ -1081,11 +1081,10 @@ class TestDaemonEventRetention:
         Anti-vacuity: without the subscription in ``_stream_events`` the owner's
         next emit prunes the unread frames and the stream sees an aged-out resync.
         """
-        from polylogue.daemon import events_http
         from polylogue.daemon.events import EVENT_SUBSCRIBERS, emit_message_appended
+        from polylogue.daemon.events import query_events_since as real_query
 
         emitted: list[int] = []
-        real_query = events_http.query_events_since
 
         def emit_then_query(cursor: int, **kwargs: object) -> object:
             if not emitted:
@@ -1094,7 +1093,7 @@ class TestDaemonEventRetention:
                 emitted.append(1)
             return real_query(cursor, **kwargs)  # type: ignore[arg-type]
 
-        with EVENT_SUBSCRIBERS.owning(), patch.object(events_http, "query_events_since", emit_then_query):
+        with EVENT_SUBSCRIBERS.owning(), patch("polylogue.daemon.events_http.query_events_since", emit_then_query):
             handler = _make_handler("GET", "/api/events?max_seconds=1")
             handler.do_GET()
         out = cast("BytesIO", handler.wfile).getvalue()

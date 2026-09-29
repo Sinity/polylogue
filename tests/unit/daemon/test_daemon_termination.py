@@ -32,7 +32,7 @@ import pytest
 
 from polylogue.daemon import lifecycle as lifecycle_module
 from polylogue.daemon.lifecycle import DaemonLifecycle, lifecycle_status
-from polylogue.daemon.termination import (
+from polylogue.operations.daemon_termination import (
     SOURCE_BOOT,
     SOURCE_CGROUP,
     SOURCE_KERNEL_OOM,

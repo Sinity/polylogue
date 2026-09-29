@@ -20,7 +20,8 @@ from pathlib import Path
 from types import FrameType
 from typing import Any, cast
 
-from polylogue.daemon.termination import (
+from polylogue.logging import ERROR, WARNING, emit
+from polylogue.operations.daemon_termination import (
     HostRunIdentity,
     TerminationEvidence,
     TerminationReceipt,
@@ -29,7 +30,6 @@ from polylogue.daemon.termination import (
     record_termination_receipts,
     termination_status,
 )
-from polylogue.logging import ERROR, WARNING, emit
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
@@ -294,12 +294,7 @@ def lifecycle_status(*, now_ms: int | None = None) -> dict[str, object]:
         row = latest_daemon_lifecycle(conn)
         if row is None:
             return {"state": "absent", "heartbeat_age_s": None, "running": False}
-        try:
-            termination = termination_status(conn, current_run_id=row.run_id)
-        except sqlite3.Error as exc:
-            # The lifecycle row is still an honest answer; only the
-            # termination projection is unavailable, and it says so.
-            termination = {"last_termination": None, "termination_unavailable_reason": type(exc).__name__}
+        termination = termination_status(conn, current_run_id=row.run_id)
     except Exception as exc:
         emit(
             "daemon.lifecycle.status_unavailable",

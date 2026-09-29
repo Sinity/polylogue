@@ -213,13 +213,10 @@ _LEDGER_NAME = "daemon_events"
 
 
 def _pruned_through(conn: sqlite3.Connection) -> int:
-    """The highest id retention has removed (0 when nothing has been, or the tier predates it)."""
-    try:
-        row = conn.execute(
-            "SELECT pruned_through_id FROM daemon_event_retention WHERE ledger = ?", (_LEDGER_NAME,)
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return 0
+    """The highest id retention has removed, 0 when it has removed nothing."""
+    row = conn.execute(
+        "SELECT pruned_through_id FROM daemon_event_retention WHERE ledger = ?", (_LEDGER_NAME,)
+    ).fetchone()
     return 0 if row is None else int(row[0])
 
 

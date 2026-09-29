@@ -605,12 +605,12 @@ def classify_termination(
         else:
             baseline = host.memory_events or {}
             deltas = {
-                name: int(value) - int(baseline.get(name, 0))
-                for name in _MEMORY_EVENT_COUNTERS
-                if isinstance((value := current.get(name)), int)
+                counter: int(reading) - int(baseline.get(counter, 0))
+                for counter in _MEMORY_EVENT_COUNTERS
+                if isinstance((reading := current.get(counter)), int)
             }
-            for name, delta in deltas.items():
-                observed[f"{SOURCE_CGROUP}.{name}_delta"] = delta
+            for counter, delta in deltas.items():
+                observed[f"{SOURCE_CGROUP}.{counter}_delta"] = delta
             group_kill_delta = deltas.get("oom_group_kill", 0)
             refs.extend(cgroup.refs)
 
@@ -661,19 +661,16 @@ def classify_termination(
 
 def last_workload_evidence(conn: sqlite3.Connection, run_id: str) -> EvidenceSource:
     """The run's last route-observation workload receipt, joined by its run id."""
-    try:
-        row = conn.execute(
-            """
-            SELECT observation_id, surface, route, phase, started_at_ms, duration_ms, status
-            FROM route_observations
-            WHERE json_extract(attributes_json, '$.route_receipt.daemon_run_id') = ?
-            ORDER BY started_at_ms DESC, observation_id DESC
-            LIMIT 1
-            """,
-            (run_id,),
-        ).fetchone()
-    except sqlite3.Error:
-        return EvidenceSource.missing(SOURCE_WORKLOAD, "route_observations_unreadable")
+    row = conn.execute(
+        """
+        SELECT observation_id, surface, route, phase, started_at_ms, duration_ms, status
+        FROM route_observations
+        WHERE json_extract(attributes_json, '$.route_receipt.daemon_run_id') = ?
+        ORDER BY started_at_ms DESC, observation_id DESC
+        LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
     if row is None:
         return EvidenceSource.missing(SOURCE_WORKLOAD, "no_workload_receipt_carries_run_id")
     return EvidenceSource(
