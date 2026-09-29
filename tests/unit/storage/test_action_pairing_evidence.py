@@ -92,10 +92,10 @@ def test_writer_canonical_bulk_and_events_agree_on_causal_evidence(
         )
         for bounded in (False, True):
             ctes = observed_event_relation_sql(source_where="1", session_scoped=bounded)
-            parameters = (session_id,) * 2 if bounded else ()
+            event_parameters = (session_id,) * 2 if bounded else ()
             event_rows = conn.execute(
                 ctes + " SELECT event_ref, status FROM observed_events WHERE kind = 'tool_finished' ORDER BY event_ref",
-                parameters,
+                event_parameters,
             ).fetchall()
             assert [tuple(row) for row in event_rows] == expected_events
 
