@@ -80,6 +80,7 @@ from polylogue.schemas.sampling import (
     load_samples_from_sessions,
 )
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
+from polylogue.storage.archive_identity import ArchiveLocation
 
 # =============================================================================
 # CLI Entry Point
@@ -110,7 +111,7 @@ def cli_main(args: list[str] | None = None) -> int:
         "--db-path",
         type=Path,
         default=None,
-        help="Path to polylogue database (default: XDG data home)",
+        help="Active index of the configured archive (default: its selected generation)",
     )
     parser.add_argument(
         "--max-samples",
@@ -131,6 +132,7 @@ def cli_main(args: list[str] | None = None) -> int:
     results = generate_all_schemas(
         output_dir=parsed.output_dir,
         db_path=db_path,
+        archive_location=ArchiveLocation.resolve(config.archive_root),
         providers=providers,
         max_samples=parsed.max_samples,
         include_archive_workload_profile=parsed.archive_workload_profile,

@@ -14,12 +14,13 @@ carrying it would then validate as drift.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
@@ -480,3 +481,52 @@ class TestReplaceProviderPackagesCarriesForwardUnobservedElementKinds:
 
         # "message" itself is untouched and still resolvable.
         assert tmp_registry.get_element_schema("regen-kind-drop", version="v1", element_kind="message") is not None
+
+
+def test_observed_merge_rehomes_content_keys_beside_an_existing_dynamic_map() -> None:
+    """A content-bearing name folds into the existing map; static names stay.
+
+    Anti-vacuity: restore the ``if not additional`` guard and the literal
+    ``What should happen next?`` property survives the merge.
+    """
+    merged = merge_observed_structure_schemas(
+        [
+            {"type": "object", "additionalProperties": {"type": "string"}},
+            {
+                "type": "object",
+                "properties": {"What should happen next?": {"type": "integer"}, "count": {"type": "integer"}},
+            },
+        ]
+    )
+
+    assert set(json_document(merged["properties"])) == {"count"}
+    types = json_document(merged["additionalProperties"])["type"]
+    assert isinstance(types, list)
+    assert set(types) == {"integer", "string"}
+    assert "What should happen next?" not in json.dumps(merged)
+
+
+def test_collapsed_object_keeps_retained_fields_visible_to_annotation_audit() -> None:
+    """Named fields retained beside a collapsed map are still audited.
+
+    Anti-vacuity: treat every high-cardinality child as fully opaque and the
+    parent counts 1/1 annotated, reporting OK over 256 unannotated fields.
+    """
+    from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.schemas.audit.checks import check_annotation_coverage
+
+    merged = merge_observed_structure_schemas(
+        [
+            {
+                "type": "object",
+                "properties": {f"field_{index}": {"type": "string"} for index in range(256)},
+                "additionalProperties": {"type": "string"},
+            },
+            {"type": "object"},
+        ]
+    )
+
+    assert len(json_document(merged["properties"])) == 256
+    assert merged.get("x-polylogue-high-cardinality-keys") is True
+    audit = check_annotation_coverage({"type": "object", "properties": {"nested": merged}})
+    assert audit.status is not OutcomeStatus.OK

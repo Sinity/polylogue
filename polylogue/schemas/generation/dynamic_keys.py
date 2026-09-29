@@ -201,10 +201,16 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
             properties = {name: schema for name, schema in properties.items() if name in retained_names}
             required = [name for name in required if name in retained_names]
     elif properties and should_collapse_observed_keys(properties.keys()):
-        if not additional:
-            additional = merge_observed_structure_schemas([additional, *map(_schema_object, properties.values())])
-            properties = {}
-            required = []
+        # Beside an explicit map only the individually dynamic names fold
+        # into it; the static partition stays as finite sibling properties.
+        # Without a map every name folds.
+        collapsed_names = {name for name in properties if is_dynamic_key(name)} if additional else set(properties)
+        if collapsed_names:
+            additional = merge_observed_structure_schemas(
+                [additional, *(_schema_object(properties[name]) for name in sorted(collapsed_names))]
+            )
+            properties = {name: schema for name, schema in properties.items() if name not in collapsed_names}
+            required = [name for name in required if name not in collapsed_names]
         merged["x-polylogue-high-cardinality-keys"] = True
         merged["x-polylogue-dynamic-keys"] = True
 

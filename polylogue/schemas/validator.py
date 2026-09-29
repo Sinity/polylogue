@@ -108,11 +108,15 @@ def _resolve_local_ref(schema: object, root: Mapping[str, object] | None) -> obj
     not.
     """
     seen: set[str] = set()
+    siblings: list[Mapping[str, object]] = []
     while isinstance(schema, Mapping) and isinstance(schema.get("$ref"), str):
         pointer = str(schema["$ref"])
         if root is None or not pointer.startswith("#") or pointer in seen:
             return None
         seen.add(pointer)
+        sibling = {key: value for key, value in schema.items() if key != "$ref"}
+        if sibling:
+            siblings.append(sibling)
         target: object = root
         for part in pointer.lstrip("#/").split("/"):
             if not part:
@@ -123,7 +127,35 @@ def _resolve_local_ref(schema: object, root: Mapping[str, object] | None) -> obj
             else:
                 return None
         schema = target
-    return schema
+    if not siblings:
+        return schema
+    # Draft 2020-12 evaluates ``$ref`` siblings beside the target, so their
+    # declarations join the observation view instead of being discarded.
+    # The result stays one node, so item, type and union readers see the
+    # target's own keywords.
+    resolved: dict[str, object] = dict(schema) if isinstance(schema, Mapping) else {}
+    for sibling in siblings:
+        for key, value in sibling.items():
+            current = resolved.get(key)
+            if (
+                key in {"properties", "patternProperties"}
+                and isinstance(current, Mapping)
+                and isinstance(value, Mapping)
+            ):
+                combined = dict(current)
+                for name, declaration in value.items():
+                    existing = combined.get(name)
+                    combined[name] = (
+                        _merge_pattern_observation_schemas([existing, declaration])
+                        if isinstance(existing, Mapping) and isinstance(declaration, Mapping)
+                        else declaration
+                    )
+                resolved[key] = combined
+            elif key == "x-polylogue-dynamic-keys":
+                resolved[key] = current is True or value is True
+            else:
+                resolved[key] = value
+    return resolved
 
 
 def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, object] | None = None) -> object:
@@ -139,13 +171,18 @@ def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, o
         branches: list[Mapping[str, object]] = []
         base = {key: item for key, item in schema.items() if key != "allOf"}
         if base:
-            branches.append(base)
+            selected_base = _schema_branch_for_value(base, value, root)
+            if isinstance(selected_base, Mapping):
+                branches.append(selected_base)
         for branch in all_of:
             selected = _schema_branch_for_value(branch, value, root)
             if isinstance(selected, Mapping):
                 branches.append(selected)
         if branches:
-            return _merge_pattern_observation_schemas(branches)
+            merged = _merge_pattern_observation_schemas(branches)
+            if any(branch.get("x-polylogue-dynamic-keys") is True for branch in branches):
+                merged["x-polylogue-dynamic-keys"] = True
+            return merged
     for key in ("anyOf", "oneOf"):
         union_branches = schema.get(key)
         if not isinstance(union_branches, list):
