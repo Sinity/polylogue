@@ -1409,10 +1409,16 @@ def _rerun_failures_in_slot(
         command = [str(argument) for argument in spec.get("command") or []]
     except (ValueError, KeyError, TypeError):
         return
-    from devtools.pytest_rerun import semantic_rerun_options
+    from devtools.pytest_rerun import semantic_rerun_options, testmon_rerun_environment
 
     options = semantic_rerun_options(command) if command else []
-    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root, options=options)
+    plan = build_rerun(
+        report_path=report_path,
+        step_dir=step_dir,
+        root=root,
+        options=options,
+        testmon_env=testmon_rerun_environment(command),
+    )
     if plan is None:
         return
     failed, command, _rerun_report = plan

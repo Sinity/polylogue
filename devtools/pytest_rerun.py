@@ -39,6 +39,7 @@ from devtools.toolchain import venv_python
 
 __all__ = [
     "semantic_rerun_options",
+    "testmon_rerun_environment",
     "MAX_RERUN_NODEIDS",
     "RERUN_IN_SLOT_ENV",
     "RERUN_IN_SLOT_RESULT",
@@ -192,6 +193,10 @@ def semantic_rerun_options(command: list[str]) -> list[str]:
             name in _RERUN_DROPPED_WITH_VALUE
             or argument in _RERUN_DROPPED_FLAGS
             or _is_managed(argument)
+            # The rerun's testmon mode is its own (``testmon_rerun_environment``):
+            # it records the failed ids without letting the graph select them.
+            or name.startswith("--testmon")
+            or name == "--no-testmon"
             # Coverage belongs to the full first attempt: a threshold over
             # the failed subset alone would fail a rerun whose nodes passed.
             or name.startswith("--cov")
@@ -212,6 +217,40 @@ def semantic_rerun_options(command: list[str]) -> list[str]:
     return kept
 
 
+def testmon_rerun_environment(command: list[str]) -> str | None:
+    """The testmon environment a rerun must record into, or ``None``.
+
+    A first run that traced with testmon recorded its failures in the
+    checkout's graph, and testmon reselects a recorded failure on every later
+    affected run. A rerun that passes those nodes with testmon off leaves the
+    failure recorded, so every later ``devtools verify`` selects them again
+    for an unrelated change. The rerun therefore records into the same
+    environment the first run traced, and ``None`` means the first run wrote
+    no fingerprints and the rerun must not either.
+    """
+    arguments = command[command.index("pytest") + 1 :] if "pytest" in command else list(command)
+    enabled = False
+    environment = "default"
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            break
+        if argument == "--testmon":
+            enabled = True
+        elif argument in {"--no-testmon", "-pno:testmon", "-p=no:testmon"} or (
+            argument == "-p" and index + 1 < len(arguments) and arguments[index + 1] == "no:testmon"
+        ):
+            enabled = False
+        elif argument.startswith("--testmon-env="):
+            environment = argument.split("=", 1)[1]
+        elif argument == "--testmon-env" and index + 1 < len(arguments):
+            environment = arguments[index + 1]
+            index += 1
+        index += 1
+    return environment if enabled else None
+
+
 #: Plugins every managed command loads, which the rerun command loads itself.
 _REGENERATED_PLUGINS = frozenset({*MANAGED_PLUGIN_NAMES, *DEVTOOLS_PLUGIN_NAMES, SUITE_COST_PLUGIN_NAME})
 
@@ -222,12 +261,20 @@ def _is_managed(argument: str) -> bool:
 
 
 def build_rerun(
-    *, report_path: Path, step_dir: Path, root: Path, options: list[str] | None = None
+    *,
+    report_path: Path,
+    step_dir: Path,
+    root: Path,
+    options: list[str] | None = None,
+    testmon_env: str | None = None,
 ) -> tuple[list[str], list[str], Path] | None:
     """Return ``(failed, command, rerun_report)`` for a failed run, or ``None``.
 
     ``None`` means there is nothing to adjudicate: no readable report, no
-    failures, or more than :data:`MAX_RERUN_NODEIDS`.
+    failures, or more than :data:`MAX_RERUN_NODEIDS`. ``testmon_env`` is the
+    environment the first run traced (:func:`testmon_rerun_environment`): the
+    rerun records its outcomes there without selecting (``--testmon-noselect``
+    runs exactly the named ids), so a pass replaces the recorded failure.
     """
     report = read_json(report_path)
     if not isinstance(report, Mapping):
@@ -251,8 +298,11 @@ def build_rerun(
         *MANAGED_PLUGIN_ARGS,
         "-p",
         SUITE_COST_PLUGIN_NAME,
-        "-p",
-        "no:testmon",
+        *(
+            ["-p", "no:testmon"]
+            if testmon_env is None
+            else ["--testmon", f"--testmon-env={testmon_env}", "--testmon-noselect"]
+        ),
         "-p",
         "no:randomly",
         CLEAR_CONFIGURED_ADDOPTS,
@@ -384,12 +434,16 @@ def rerun_failed_once(
     runner: str = "managed",
     first_provenance: Mapping[str, Any] | None = None,
     options: list[str] | None = None,
+    testmon_env: str | None = None,
 ) -> dict[str, Any] | None:
     """Rerun exactly the failed tests once, alone and unselected.
 
     ``options`` are the first run's execution-changing pytest options
     (:func:`semantic_rerun_options`), so the rerun adjudicates the same
     semantics -- a ``-W error`` failure is not cleared under default warnings.
+    ``testmon_env`` names the testmon environment the first run traced
+    (:func:`testmon_rerun_environment`), so a passing rerun clears the failure
+    the graph recorded instead of leaving it to be reselected.
 
     ``first_provenance`` is the worktree identity the failing run executed.
     A rerun that executed different content or another branch adjudicates
@@ -416,7 +470,7 @@ def rerun_failed_once(
             rerun_exit=int(in_slot.get("rerun_exit", 3)),
             root=root,
         )
-    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root, options=options)
+    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root, options=options, testmon_env=testmon_env)
     if plan is None:
         return None
     failed, rerun_command, rerun_report = plan

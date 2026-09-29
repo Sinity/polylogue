@@ -40,7 +40,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_rerun import rerun_failed_once
+from devtools.pytest_rerun import rerun_failed_once, testmon_rerun_environment
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
@@ -882,6 +882,7 @@ def _run(
                 first_provenance=(
                     metadata_receipt.get("worktree_provenance") if isinstance(metadata_receipt, dict) else None
                 ),
+                testmon_env=testmon_rerun_environment(command),
             )
             if completed.returncode == 1
             else None

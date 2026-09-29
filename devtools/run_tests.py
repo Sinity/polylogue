@@ -71,7 +71,12 @@ from devtools.pytest_options import (
     short_options_with_value,
     split_short_cluster,
 )
-from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once, semantic_rerun_options
+from devtools.pytest_rerun import (
+    RERUN_IN_SLOT_ENV,
+    rerun_failed_once,
+    semantic_rerun_options,
+    testmon_rerun_environment,
+)
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
@@ -1081,6 +1086,7 @@ def _run(
                 outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
             ),
             options=semantic_rerun_options(command),
+            testmon_env=testmon_rerun_environment(command),
         )
         if returncode == 1
         else None
