@@ -853,7 +853,7 @@ async def test_a_slow_json_preparation_is_awaited_not_deferred(tmp_path: Path, m
         # the log field allowlist (an unregistered field is dropped with a
         # ``log.field_rejected`` record).
         stalls = [record for record in records if record["event"] == "live.parse_prefetch.preparation_stalled"]
-        assert stalls and stalls[0]["paths"] >= 1 and "wait_ms" in stalls[0] and "attempt_bytes" in stalls[0]
+        assert stalls and stalls[0]["paths"] in (1, 2) and "wait_ms" in stalls[0] and "attempt_bytes" in stalls[0]
         assert not [record for record in records if record["event"] == "log.field_rejected"]
         cursors = CursorStore(archive_root / "index.db")
         for path in (pending_path, ready_path):

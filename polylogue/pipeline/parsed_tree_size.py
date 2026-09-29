@@ -1,9 +1,9 @@
 """Cheap structural size estimation for parsed session trees.
 
-Used by the historical-backfill census spill's decoded layer: any component that retains
-``ParsedSession`` trees in RAM budgets them by ESTIMATED TREE BYTES, never by
-raw payload bytes (parsed trees inflate payload size by roughly 2-14x
-depending on text density -- see the calibration data below).
+Used by the historical-backfill census spill's decoded layer: any component
+that retains ``ParsedSession`` trees in RAM budgets them by ESTIMATED TREE
+BYTES, never by raw payload bytes (parsed trees inflate payload size by
+roughly 2-14x depending on text density -- see the calibration data below).
 """
 
 from __future__ import annotations
@@ -69,9 +69,10 @@ def estimate_parsed_tree_bytes(sessions: Sequence[ParsedSession]) -> int:
 
     Deliberately NOT a recursive ``sys.getsizeof``/pympler-style deep walk --
     that is accurate but O(object graph size) with real per-call overhead,
-    and this runs for every raw in a page (up to a couple thousand). Instead: a single linear pass sums text/content field
-    lengths and counts model-instance nodes (sessions, messages, blocks,
-    attachments, session events, web constructs), then applies two constants
+    and this runs for every raw in a page (up to a couple thousand). Instead:
+    a single linear pass sums text/content field lengths and counts
+    model-instance nodes (sessions, messages, blocks, attachments, session
+    events, web constructs), then applies two constants
     calibrated against a real deep-size measurement -- see the constants'
     docstring/comment above for the calibration data and measured ratio.
     """

@@ -1309,7 +1309,7 @@ _INT_CONFIG_KEYS = frozenset(
 _FLOAT_CONFIG_KEYS = frozenset(
     {
         "embedding_max_cost_usd",
-        "live_watcher_parse_stage_warm_timeout_seconds",
+        "live_watcher_parse_stage_stall_report_seconds",
     }
 )
 _BOOL_CONFIG_KEYS = frozenset(
