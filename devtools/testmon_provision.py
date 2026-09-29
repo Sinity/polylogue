@@ -288,6 +288,21 @@ def unrecorded_test_files(root: Path, *, datafile: Path | None = None) -> tuple[
     return tuple(sorted(declared_test_files(root) - recorded))
 
 
+def recorded_test_names(datafile: Path) -> frozenset[str] | None:
+    """The test node IDs a graph has an execution for.
+
+    ``None`` when the datafile cannot be read, which is not an empty graph.
+    """
+    if not datafile.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(datafile.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
+        with contextlib.closing(connection):
+            return frozenset(str(row[0]) for row in connection.execute("SELECT DISTINCT test_name FROM test_execution"))
+    except sqlite3.Error:
+        return None
+
+
 def primary_worktree() -> Path:
     return Path(os.environ.get(PRIMARY_WORKTREE_ENV, DEFAULT_PRIMARY_WORKTREE)).expanduser()
 
@@ -310,30 +325,34 @@ def should_seed(root: Path, seed: Path) -> bool:
     unrecorded test is unknown and runs.
 
     That over-selection is also why an environment-current local graph still
-    loses to a seed that records more of this checkout's test files: an
+    loses to a seed whose recorded test node IDs strictly contain its own: an
     interrupted corpus run leaves a usable but partial graph, and keeping it
-    re-executes every test it never reached on each later selecting run.
+    re-executes every test it never reached on each later selecting run. The
+    comparison is over node IDs, not files: a seed that touches every file
+    but misses tests the local graph recorded would turn those tests unknown.
     """
     local = inspect_testmon_graph(root)
     if not local.usable:
         return True
-    local_unrecorded: tuple[str, ...] | None = None
+    local_tests: frozenset[str] | None = None
     if local.full_rerun_cause is None:
-        local_unrecorded = unrecorded_test_files(root)
-        if not local_unrecorded:
+        local_tests = recorded_test_names(testmon_datafile(root))
+        if local_tests is None:
             return False
     with tempfile.TemporaryDirectory(prefix="testmon-seed-") as scratch:
         probe_root = Path(scratch)
         probe = testmon_datafile(probe_root)
+        # Compare against the snapshot, not the live seed: the snapshot is
+        # what would be installed, and the seed can change between reads.
         if not snapshot_testmon_graph(seed, probe):
             return False
         candidate = inspect_testmon_graph(probe_root)
         if not candidate.usable or candidate.full_rerun_cause is not None:
             return False
-        if local_unrecorded is None:
+        if local_tests is None:
             return True
-        seed_unrecorded = unrecorded_test_files(root, datafile=probe)
-    return seed_unrecorded is not None and len(seed_unrecorded) < len(local_unrecorded)
+        seed_tests = recorded_test_names(probe)
+    return seed_tests is not None and seed_tests > local_tests
 
 
 def sync_testmon_graph(root: Path, *, source: Path | None = None) -> bool:

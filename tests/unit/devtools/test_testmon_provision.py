@@ -359,62 +359,81 @@ def test_a_local_graph_that_would_rerun_everything_takes_the_primary(tmp_path: P
     assert inspect_testmon_graph(local_root).full_rerun_cause is None
 
 
-def _record_test_files(path: Path, test_files: tuple[str, ...]) -> None:
-    """Record one execution per test file, each depending on one source file."""
+def _record_tests(path: Path, node_ids: tuple[str, ...]) -> None:
+    """Record one execution per node ID, each depending on one source file."""
     connection = sqlite3.connect(path)
     connection.execute(
         "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) VALUES ('polylogue/x.py', X'00', 0, 'src')"
     )
-    for test_file in test_files:
+    for node_id in node_ids:
         cursor = connection.execute(
             "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (1, ?, 0.1, 0, 0)",
-            (f"{test_file}::test_a",),
+            (node_id,),
         )
         connection.execute("INSERT INTO test_execution_file_fp VALUES (?, 1)", (cursor.lastrowid,))
     connection.commit()
     connection.close()
 
 
+def _two_file_worktree(root: Path) -> Path:
+    (root / "tests").mkdir(parents=True)
+    for name in ("test_a.py", "test_b.py"):
+        (root / "tests" / name).write_text("def test_a():\n    pass\n", encoding="utf-8")
+    return _seed_with_testmon(root)
+
+
 def test_an_interrupted_local_graph_takes_the_complete_primary(tmp_path: Path) -> None:
-    """An environment-current graph that never reached most tests is not preferable.
+    """An environment-current graph that never reached some tests is not preferable.
 
     Anti-vacuity: returning ``False`` for every environment-current local graph
-    (the previous rule) keeps the one-file graph below, and every later
-    selecting run re-executes ``tests/test_b.py`` as unknown.
+    keeps the one-test graph below, and every later selecting run re-executes
+    ``tests/test_b.py`` as unknown.
     """
-    primary_root = tmp_path / "primary"
-    primary = _seed_with_testmon(primary_root)
-    _record_test_files(primary, ("tests/test_a.py", "tests/test_b.py"))
+    primary = _seed_with_testmon(tmp_path / "primary")
+    _record_tests(primary, ("tests/test_a.py::test_a", "tests/test_b.py::test_a"))
     local_root = tmp_path / "worktree"
-    (local_root / "tests").mkdir(parents=True)
-    for name in ("test_a.py", "test_b.py"):
-        (local_root / "tests" / name).write_text("def test_a():\n    pass\n", encoding="utf-8")
-    local = _seed_with_testmon(local_root)
-    _record_test_files(local, ("tests/test_a.py",))
+    _record_tests(_two_file_worktree(local_root), ("tests/test_a.py::test_a",))
 
-    assert testmon_provision.unrecorded_test_files(local_root) == ("tests/test_b.py",)
     assert testmon_provision.sync_testmon_graph(local_root, source=primary) is True
-    assert testmon_provision.unrecorded_test_files(local_root) == ()
+    assert testmon_provision.recorded_test_names(testmon_provision.testmon_datafile(local_root)) == {
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_a",
+    }
 
 
 def test_a_local_graph_as_complete_as_the_primary_is_kept(tmp_path: Path) -> None:
-    """Completeness only replaces a graph when the seed records strictly more.
+    """A seed that records the same tests does not replace the checkout's graph.
 
-    Anti-vacuity: seeding whenever any declared file is unrecorded, without
-    comparing the seed, discards this checkout's own graph for one that is no
-    more complete.
+    Anti-vacuity: seeding whenever any declared file is unrecorded, or on a
+    non-strict containment (``>=``), discards this checkout's own graph for
+    one that is no more complete.
     """
-    primary_root = tmp_path / "primary"
-    primary = _seed_with_testmon(primary_root)
-    _record_test_files(primary, ("tests/test_a.py",))
+    primary = _seed_with_testmon(tmp_path / "primary")
+    _record_tests(primary, ("tests/test_a.py::test_a",))
     local_root = tmp_path / "worktree"
-    (local_root / "tests").mkdir(parents=True)
-    for name in ("test_a.py", "test_b.py"):
-        (local_root / "tests" / name).write_text("def test_a():\n    pass\n", encoding="utf-8")
-    local = _seed_with_testmon(local_root)
-    _record_test_files(local, ("tests/test_a.py",))
+    _record_tests(_two_file_worktree(local_root), ("tests/test_a.py::test_a",))
 
     assert testmon_provision.sync_testmon_graph(local_root, source=primary) is False
+
+
+def test_a_seed_covering_more_files_but_fewer_tests_does_not_replace_the_local_graph(tmp_path: Path) -> None:
+    """The seed must record every test the local graph records, not just more files.
+
+    Anti-vacuity: comparing the count of unrecorded test files instead (the
+    seed below leaves none, the local graph leaves ``tests/test_b.py``)
+    replaces the local graph, and ``tests/test_a.py::test_b`` and
+    ``::test_c`` become unknown on every later selecting run.
+    """
+    primary = _seed_with_testmon(tmp_path / "primary")
+    _record_tests(primary, ("tests/test_a.py::test_a", "tests/test_b.py::test_a"))
+    local_root = tmp_path / "worktree"
+    local = _two_file_worktree(local_root)
+    local_tests = ("tests/test_a.py::test_a", "tests/test_a.py::test_b", "tests/test_a.py::test_c")
+    _record_tests(local, local_tests)
+
+    assert testmon_provision.unrecorded_test_files(local_root) == ("tests/test_b.py",)
+    assert testmon_provision.sync_testmon_graph(local_root, source=primary) is False
+    assert testmon_provision.recorded_test_names(local) == frozenset(local_tests)
 
 
 def _synthetic_corpus(root: Path) -> None:
