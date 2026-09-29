@@ -21,7 +21,7 @@ coverage share one implementation).
 
 Deliberately separate from ``promote_schema_cluster``
 (``polylogue.schemas.operator.inference``): that function promotes a single
-evidence *cluster* (from ``generate --cluster`` mode) into one registered
+evidence *cluster* (from ``generate --cluster --retain-clusters``) into one registered
 package version -- a narrow, single-version operation. This module performs
 a full-corpus, potentially multi-version *replace* across every version
 ``generate_all_schemas`` produces for a provider. Different shapes; neither

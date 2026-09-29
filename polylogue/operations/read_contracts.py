@@ -97,6 +97,7 @@ SessionReadKind = Literal[
     "web-content",
     "events",
     "raw",
+    "materials",
 ]
 
 #: Kinds that answer a bounded ``[offset, offset + limit)`` message window and
@@ -139,7 +140,7 @@ _WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks", "agent-policies"})
 #: since it refuses window coordinates.  There was no successful retry and the
 #: session was unreadable through the view.  A relation larger than one answer
 #: needs a bounded transport, not a whole-body classification.
-WINDOWED_EVIDENCE_KINDS: frozenset[str] = frozenset({"events", "raw", "file-edits", "web-content"})
+WINDOWED_EVIDENCE_KINDS: frozenset[str] = frozenset({"events", "raw", "file-edits", "web-content", "materials"})
 
 #: Kinds that issue and accept a continuation.  Two families mint tokens here
 #: and they are deliberately not interchangeable: the message window's

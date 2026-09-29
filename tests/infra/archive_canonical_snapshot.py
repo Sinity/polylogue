@@ -70,7 +70,7 @@ RUN_LOCAL_NORMALIZATION_ALLOWLIST: Mapping[str, frozenset[str]] = {
 # They are retained as archive-relative paths so a route comparison still
 # catches a wrong source file while ignoring each run's temporary root.
 RUN_LOCAL_PATH_ALLOWLIST: Mapping[str, frozenset[str]] = {
-    "source.raw_sessions": frozenset({"source_path"}),
+    "source.raw_sessions": frozenset({"source_path", "canonical_source_path"}),
     "source.raw_artifacts": frozenset({"source_path"}),
     "source.blob_refs": frozenset({"source_path"}),
 }

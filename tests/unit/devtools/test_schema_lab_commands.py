@@ -250,6 +250,74 @@ def test_schema_generate_cluster_preview_keeps_declared_source_manifest_in_memor
     assert not manifest_path.exists()
 
 
+def test_schema_generate_retained_clusters_are_promotable(
+    workspace_env: dict[str, Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``generate --cluster --retain-clusters`` is the producer ``promote`` reads.
+
+    Anti-vacuity: wiring ``--retain-clusters`` back to
+    ``persist_cluster_manifest=False`` leaves the registry without a manifest,
+    and the promotion below raises ``No cluster manifest found``.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.schemas.operator.workflow import promote_schema_cluster
+    from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from tests.infra.storage_records import db_setup
+
+    index_db = db_setup(workspace_env)
+    payload = json.dumps(
+        {
+            "id": "conversation-1",
+            "title": "Schema inference",
+            "create_time": 1_700_000_000.0,
+            "update_time": 1_700_000_060.0,
+            "mapping": {
+                "node-1": {
+                    "id": "node-1",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "id": "message-1",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["infer this schema"]},
+                        "create_time": 1_700_000_000.0,
+                    },
+                }
+            },
+        }
+    ).encode()
+    get_blob_store().write_from_bytes(payload)
+    with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+        write_source_raw_session(
+            conn,
+            origin=origin_from_provider(Provider.CHATGPT),
+            source_path="/fixtures/chatgpt-export.json",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1_700_000_000_000,
+        )
+
+    assert schema_generate.main(["--provider", "chatgpt", "--cluster", "--retain-clusters", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)["result"]
+    assert result["manifest_path"] is not None
+    cluster_id = result["manifest"]["clusters"][0]["cluster_id"]
+
+    promoted = promote_schema_cluster(SchemaPromoteRequest(provider="chatgpt", cluster_id=cluster_id, db_path=index_db))
+
+    assert promoted.cluster_id == cluster_id
+    assert promoted.package_version
+
+
+def test_schema_generate_refuses_retain_clusters_without_cluster(workspace_env: dict[str, Path]) -> None:
+    """Retaining is meaningless without clustering; the flag is refused, not ignored."""
+    with pytest.raises(SystemExit) as exit_info:
+        schema_generate.main(["--provider", "codex", "--retain-clusters"])
+    assert exit_info.value.code == 2
+
+
 def test_schema_generate_writes_aggregate_progress_receipt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -185,6 +185,9 @@ python_files = ["test_*.py", "*_test.py", "fuzz_*.py"]
 asyncio_mode = "auto"
 xfail_strict = true
 cache_dir = ".cache/pytest"
+# A passing test's tmp_path is removed at its teardown, so a long run holds only
+# failed tests' trees instead of every tree until the run ends.
+tmp_path_retention_policy = "failed"
 # Every test is bounded by default. Tests that genuinely need longer must carry
 # an explicit @pytest.mark.timeout(...) override at the test site.
 timeout = 120

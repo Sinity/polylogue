@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
@@ -20,18 +20,18 @@ from polylogue.analysis.archive import (
     ThreadInsightQuery,
 )
 from polylogue.analysis.archive_models import ArchiveInsightModel, ObjectivePosturePayload
-from polylogue.analysis.objective_posture import resolve_session_objective_posture
+from polylogue.analysis.objective_posture import ASSERTION_TIER_KINDS, derive_objective_posture
 from polylogue.analysis.work_evidence import WorkEvidenceNode
 from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 from polylogue.archive.session.domain_models import Session
-from polylogue.core.enums import TERMINAL_STATE_VALUES, TerminalState
+from polylogue.core.enums import TERMINAL_STATE_VALUES, AssertionStatus, TerminalState
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.logging import get_logger
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
-    from polylogue.core.enums import AssertionKind, AssertionStatus
+    from polylogue.core.enums import AssertionKind
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
     from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
@@ -407,9 +407,55 @@ class ResumeOperations(Protocol):
         self,
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
-        target_ref: str | None = None,
+        target_refs: Collection[str] | None = None,
         statuses: Sequence[str | AssertionStatus] | None = None,
     ) -> list[ArchiveAssertionEnvelope]: ...
+
+
+class ObjectivePostureOperations(Protocol):
+    """The assertion read ``resolve_session_objective_posture`` needs.
+
+    Satisfied structurally by the ``Polylogue`` API facade and by
+    ``ResumeOperations``.
+    """
+
+    async def list_assertion_claims(
+        self,
+        *,
+        kinds: Sequence[str | AssertionKind] | None = None,
+        target_refs: Collection[str] | None = None,
+        statuses: Sequence[str | AssertionStatus] | None = None,
+    ) -> list[ArchiveAssertionEnvelope]: ...
+
+
+async def resolve_session_objective_posture(
+    operations: ObjectivePostureOperations,
+    *,
+    session_id: str,
+    structural: ObjectivePosturePayload,
+    message_ids: Iterable[str] = (),
+) -> ObjectivePosturePayload:
+    """Read-time projection: overlay the live ``assertion`` tier on top of
+    the ``structural_inference`` tier already materialized on the session
+    profile.
+
+    An assertion counts when it targets ``session:<session_id>`` or one of
+    the supplied ``message_ids``. Authored markers (``::blocker:`` and
+    friends) lower onto the ``message:`` ref of the block that carried them,
+    and accepting the candidate keeps that target, so a session-only read
+    would never see them. The whole target set goes into one storage read,
+    so the cost follows this session's size, not the archive's assertion
+    history.
+    """
+
+    target_refs = {ObjectRef(kind="session", object_id=session_id).format()}
+    target_refs.update(ObjectRef(kind="message", object_id=message_id).format() for message_id in message_ids)
+    assertions = await operations.list_assertion_claims(
+        kinds=ASSERTION_TIER_KINDS,
+        target_refs=target_refs,
+        statuses=(AssertionStatus.ACTIVE,),
+    )
+    return derive_objective_posture(structural, assertions)
 
 
 def _iso(value: object) -> str | None:
@@ -1186,6 +1232,7 @@ async def build_resume_brief(
             operations,
             session_id=session_id,
             structural=inferences.objective_posture,
+            message_ids=(str(message.id) for message in session.messages.to_list()),
         )
         inferences = inferences.model_copy(update={"objective_posture": blended_posture})
     except Exception as exc:  # degrade, never break the brief
@@ -1428,6 +1475,7 @@ __all__ = [
     "ResumeFacts",
     "ResumeInferences",
     "ResumeLastMessage",
+    "ObjectivePostureOperations",
     "ResumeOperations",
     "ResumeOverlapBasis",
     "ResumePathOverlap",
@@ -1438,4 +1486,5 @@ __all__ = [
     "build_resume_brief",
     "classify_resume_context_evidence",
     "find_resume_candidates",
+    "resolve_session_objective_posture",
 ]

@@ -5283,7 +5283,9 @@ class ArchiveStore:
             # name without retiring the old one and the view is left watched
             # twice -- under a name it no longer has, carrying the definition
             # this save replaced. Retire the prior binding in this same
-            # transaction (PR #5375).
+            # transaction (PR #5375), after the new name is bound: a rename
+            # that keeps the definition must not leave its hash momentarily
+            # unwatched, which would retire the baseline it still owns.
             previous_name = str(assertion.key) if assertion is not None and assertion.key else None
             with user_conn:
                 previous_owner = (
@@ -5295,8 +5297,6 @@ class ArchiveStore:
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
                     mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 envelope = upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
-                if owns_previous_name and previous_name is not None and previous_name != normalized_name:
-                    clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
                 register_query_watch(
                     user_conn,
                     name=normalized_name,
@@ -5304,6 +5304,8 @@ class ArchiveStore:
                     watch=watch,
                     now_ms=envelope.updated_at_ms,
                 )
+                if owns_previous_name and previous_name is not None and previous_name != normalized_name:
+                    clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
             return not exists
         finally:
             user_conn.close()

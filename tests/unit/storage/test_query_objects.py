@@ -575,3 +575,60 @@ def test_put_query_returns_existing_promotion_contract() -> None:
         assert repeated.privacy_class == "private"
     finally:
         conn.close()
+
+
+def test_a_baseline_lives_exactly_as_long_as_a_name_watches_its_query() -> None:
+    """Retiring the last watcher of a hash retires its baseline; another watcher keeps it.
+
+    Anti-vacuity: drop ``retire_unwatched_baselines`` from
+    ``clear_query_watch`` or ``put_query_name`` and a baseline outlives every
+    watcher, so a later re-enable diffs the current archive against it.
+    Retiring unconditionally drops the baseline the alias still owns.
+    """
+    from polylogue.storage.sqlite.query_watch import clear_query_watch
+
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "codex-session"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    other = put_query(
+        conn,
+        {"field": "origin", "value": "claude-code"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+
+    def baseline(result_set_id: str) -> None:
+        put_result_set(
+            conn,
+            result_set_id=result_set_id,
+            query_hash=query.query_hash,
+            grain="session",
+            corpus_epoch="index:g1",
+            member_refs=("session:one",),
+            exactness="exact",
+            persistence_class="watch",
+            created_at_ms=2,
+        )
+        put_watched_query_baseline(conn, query_hash=query.query_hash, result_set_id=result_set_id, updated_at_ms=2)
+
+    put_query_name(conn, name="codex", query_hash=query.query_hash, watch=True, updated_at_ms=2)
+    put_query_name(conn, name="codex-alias", query_hash=query.query_hash, watch=True, updated_at_ms=2)
+    baseline("watch-first")
+
+    assert clear_query_watch(conn, name="codex-alias", now_ms=3)
+    assert get_watched_query_baseline(conn, query.query_hash) is not None
+    assert clear_query_watch(conn, name="codex", now_ms=4)
+    assert get_watched_query_baseline(conn, query.query_hash) is None
+
+    put_query_name(conn, name="codex", query_hash=query.query_hash, watch=True, updated_at_ms=5)
+    baseline("watch-second")
+    put_query_name(conn, name="codex", query_hash=other.query_hash, watch=True, updated_at_ms=6)
+    assert get_watched_query_baseline(conn, query.query_hash) is None

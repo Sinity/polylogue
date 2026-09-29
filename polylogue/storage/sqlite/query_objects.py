@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
@@ -193,7 +193,12 @@ def put_query_name(
     supersedes_query_hash: str | None = None,
     watch: bool = False,
 ) -> None:
-    """Move a mutable human query name to an immutable query hash."""
+    """Move a mutable human query name to an immutable query hash.
+
+    A name that moves off a hash, or stops watching it, may leave that hash
+    with no watcher; its baseline is retired in the same transaction.
+    """
+    previous = conn.execute("SELECT query_hash FROM query_names WHERE name = ?", (name,)).fetchone()
     conn.execute(
         """
         INSERT INTO query_names (name, query_hash, supersedes_query_hash, watch, updated_at_ms)
@@ -206,6 +211,27 @@ def put_query_name(
         """,
         (name, query_hash, supersedes_query_hash, int(watch), updated_at_ms),
     )
+    retire_unwatched_baselines(conn, (query_hash, *(() if previous is None else (str(previous[0]),))))
+
+
+def retire_unwatched_baselines(conn: sqlite3.Connection, query_hashes: Sequence[str]) -> None:
+    """Drop the baseline of every listed hash that no name watches any more.
+
+    A baseline describes the archive as of the watch's last evaluation. Kept
+    across an unwatched interval, it would make the first evaluation after a
+    re-enable report every change of that interval as a new watch delta; with
+    no baseline, re-enabling measures the current archive instead. Every write
+    that can take a hash's last watcher away calls this in its transaction.
+    """
+    for query_hash in dict.fromkeys(query_hashes):
+        conn.execute(
+            """
+            DELETE FROM watched_query_baselines
+            WHERE query_hash = ?
+              AND NOT EXISTS (SELECT 1 FROM query_names WHERE query_hash = ? AND watch = 1)
+            """,
+            (query_hash, query_hash),
+        )
 
 
 def put_result_set(
@@ -665,6 +691,7 @@ __all__ = [
     "put_result_set",
     "promote_result_set",
     "put_watched_query_baseline",
+    "retire_unwatched_baselines",
     "watched_query_baseline_updated_at_ms",
     "watched_query_activated_at_ms",
 ]
