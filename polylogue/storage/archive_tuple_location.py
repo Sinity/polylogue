@@ -24,6 +24,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
@@ -42,6 +43,24 @@ _CANDIDATE_TIERS: tuple[ArchiveTier, ...] = (
     ArchiveTier.EMBEDDINGS,
 )
 _TIER_FILENAMES = {tier: f"{tier.value}.db" for tier in ArchiveTier}
+_MANIFEST_INTEGER_KEYS = frozenset({"manifest_version", "created_at_ns"})
+_MANIFEST_OBJECT_KEYS = frozenset(
+    {"generations", "stable_identities", "schema_fingerprints", "semantic_fingerprints", "expected_seals"}
+)
+_MANIFEST_KEYS = frozenset(
+    {
+        *_MANIFEST_INTEGER_KEYS,
+        *_MANIFEST_OBJECT_KEYS,
+        "tuple_id",
+        "owner_id",
+        "archive_root",
+        "archive_identity_digest",
+        "ops_policy",
+        "state",
+        "manifest_digest",
+        "manifest_seal",
+    }
+)
 
 
 class ArchiveTupleError(RuntimeError):
@@ -256,26 +275,18 @@ class ArchiveTupleManifest:
     def from_dict(cls, payload: dict[str, object]) -> ArchiveTupleManifest:
         payload_any = cast(dict[str, Any], payload)
         try:
-            expected_keys = {
-                "manifest_version", "tuple_id", "owner_id", "archive_root", "archive_identity_digest",
-                "generations", "stable_identities", "ops_policy", "schema_fingerprints",
-                "semantic_fingerprints", "expected_seals", "state", "created_at_ns",
-                "manifest_digest", "manifest_seal",
-            }
-            if not isinstance(payload_any, dict) or set(payload_any) != expected_keys:
+            # The seal is recomputed from the dataclass, so the serialized
+            # shape is checked exactly first: an unknown, missing, or coerced
+            # field would otherwise normalize away and still match the seal.
+            if not isinstance(payload_any, dict) or set(payload_any) != _MANIFEST_KEYS:
                 raise TypeError("manifest has missing or unknown fields")
-            integer_keys = {"manifest_version", "created_at_ns"}
-            object_keys = {
-                "generations", "stable_identities", "schema_fingerprints",
-                "semantic_fingerprints", "expected_seals",
-            }
-            for key in integer_keys:
+            for key in _MANIFEST_INTEGER_KEYS:
                 if type(payload_any[key]) is not int:
                     raise TypeError(f"manifest {key} must be an integer")
-            for key in expected_keys - integer_keys - object_keys:
+            for key in _MANIFEST_KEYS - _MANIFEST_INTEGER_KEYS - _MANIFEST_OBJECT_KEYS:
                 if not isinstance(payload_any[key], str):
                     raise TypeError(f"manifest {key} must be a string")
-            for key in object_keys:
+            for key in _MANIFEST_OBJECT_KEYS:
                 value = payload_any[key]
                 if not isinstance(value, dict) or any(
                     not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()
@@ -287,8 +298,6 @@ class ArchiveTupleManifest:
                 raise TypeError("manifest stable identities have missing or unknown fields")
             generations = payload_any["generations"]
             stable = payload_any["stable_identities"]
-            if not isinstance(generations, dict) or not isinstance(stable, dict):
-                raise TypeError("manifest nested fields must be objects")
             result = cls(
                 manifest_version=int(payload_any["manifest_version"]),
                 tuple_id=str(payload_any["tuple_id"]),
@@ -401,8 +410,8 @@ class ArchiveTupleLocation:
             return self.embeddings
         raise ArchiveTupleError(f"tier {tier.value} has no inactive tuple destination")
 
-    def validate(self, location: ArchiveLocation, *, expected_tier: ArchiveTier | None = None) -> None:
-        validate_inactive_tuple(self, location, expected_tier=expected_tier)
+    def validate(self, location: ArchiveLocation) -> None:
+        validate_inactive_tuple(self, location)
 
 
 def _candidate_root_for(location: ArchiveLocation) -> Path:
@@ -503,9 +512,9 @@ def validate_inactive_destination(
         destination_stat = None
     except OSError as exc:
         raise ArchiveTuplePathError("cannot inspect inactive tier destination") from exc
-    if destination_stat is not None and (
-        not stat.S_ISREG(destination_stat.st_mode) or destination_stat.st_nlink != 1
-    ):
+    # SQLite follows a symlink and writes through a hard link, so a linked
+    # final entry would initialize or mutate a foreign database.
+    if destination_stat is not None and (not stat.S_ISREG(destination_stat.st_mode) or destination_stat.st_nlink != 1):
         raise ArchiveTuplePathError("inactive tier destination must be an unshared regular file")
     manifest_path = candidate / ARCHIVE_TUPLE_MANIFEST_FILENAME
     if manifest_path.is_symlink() or not manifest_path.is_file():
@@ -537,10 +546,12 @@ def validate_inactive_destination(
 def validate_inactive_tuple(
     tuple_location: ArchiveTupleLocation,
     location: ArchiveLocation,
-    *,
-    expected_tier: ArchiveTier | None = None,
 ) -> None:
-    """Validate the complete tuple and every candidate path before opening SQLite."""
+    """Validate the complete tuple and every candidate path before opening SQLite.
+
+    A single-tier writer validates its own destination with
+    :func:`validate_inactive_destination`; the whole tuple has no one tier.
+    """
 
     manifest = tuple_location.manifest
     _validate_manifest_shape(manifest)
@@ -550,10 +561,6 @@ def validate_inactive_tuple(
         raise ArchiveTuplePathError("tuple candidate root must be absolute")
     if tuple_location.manifest_path != tuple_location.candidate_root / ARCHIVE_TUPLE_MANIFEST_FILENAME:
         raise ArchiveTuplePathError("tuple manifest path is not canonical")
-    if expected_tier is not None:
-        # The writer must have a destination in this tuple, but the complete
-        # tuple still contains (and validates) the other candidate tiers.
-        tuple_location.destination(expected_tier)
     for destination in tuple_location.destinations:
         validate_inactive_destination(destination, location)
 
@@ -658,8 +665,7 @@ def is_archive_tuple_candidate_path(path: Path) -> bool:
 
     parts = _absolute(path).parts
     return any(
-        parent == ARCHIVE_TUPLES_DIRNAME and _TUPLE_ID.fullmatch(child) is not None
-        for parent, child in zip(parts, parts[1:])
+        parent == ARCHIVE_TUPLES_DIRNAME and _TUPLE_ID.fullmatch(child) is not None for parent, child in pairwise(parts)
     )
 
 

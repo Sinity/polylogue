@@ -87,7 +87,6 @@ class BlockAnchorResolution:
     detail: str = ""
 
 
-
 def _quarantined_edge(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
     """Return one quarantined edge incident to ``session_id``, if any."""
 
@@ -152,56 +151,22 @@ def _lineage_candidates(conn: sqlite3.Connection, session_id: str) -> Iterator[t
             queue.append(neighbour)
 
 
-def _prefix_edge(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
-    """Mirror the production composed-read path's immediate parent lookup."""
+def _hash_matches_in_session(conn: sqlite3.Connection, session_id: str, content_hash: bytes) -> list[tuple[str, int]]:
+    """Blocks carrying ``content_hash`` among one session's own physical rows."""
 
-    return cast(
-        sqlite3.Row | None,
-        conn.execute(
-            f"""
-        SELECT src_session_id, resolved_dst_session_id, link_type, inheritance,
-               branch_point_message_id, status, branch_point_content_address
-          FROM session_links
-         WHERE src_session_id = ?
-           AND inheritance = 'prefix-sharing'
-           AND resolved_dst_session_id IS NOT NULL
-           AND branch_point_message_id IS NOT NULL
-           AND {topology_status_composes_sql()}
-         ORDER BY link_type, dst_origin, dst_native_id
-         LIMIT 1
-        """,
-            (session_id,),
-        ).fetchone(),
-    )
-
-
-def _hash_matches_in_composed_session(
-    conn: sqlite3.Connection,
-    session_id: str,
-    content_hash: bytes,
-) -> list[tuple[str, int]]:
-    # The same plan serves full and paged archive reads. Do not reinterpret
-    # depth, cycles, branch-point witnesses, or inherited cuts here.
-    from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan
-
-    matches: set[tuple[str, int]] = set()
-    for segment in _composed_transcript_plan(conn, session_id).segments:
-        params: list[object] = [content_hash, segment.session_id]
-        boundary = ""
-        if segment.upto_position is not None and segment.upto_variant_index is not None:
-            boundary = " AND (m.position, m.variant_index) <= (?, ?)"
-            params.extend((segment.upto_position, segment.upto_variant_index))
-        rows = conn.execute(
-            f"""
+    return [
+        (str(row["message_id"]), int(row["position"]))
+        for row in conn.execute(
+            """
             SELECT b.message_id, b.position
-            FROM blocks b JOIN messages m ON m.message_id = b.message_id
-            WHERE b.content_hash = ? AND m.session_id = ?{boundary}
+            FROM blocks b
+            JOIN messages m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND b.content_hash = ?
             ORDER BY b.message_id, b.position
             """,
-            tuple(params),
-        )
-        matches.update((str(row["message_id"]), int(row["position"])) for row in rows)
-    return sorted(matches)
+            (session_id, content_hash),
+        ).fetchall()
+    ]
 
 
 def _lineage_detail(edge: sqlite3.Row, resolved_session_id: str) -> str:
@@ -218,17 +183,19 @@ def _resolve_relocated_lineage(
     anchor: BlockAnchor,
     content_hash: bytes,
 ) -> BlockAnchorResolution | None:
-    """Resolve only a unique physical block across all admitted lineage views."""
+    """Resolve only a unique physical block across the whole lineage neighbourhood.
+
+    Every composed view in the neighbourhood is built from the own rows of
+    sessions in that same neighbourhood, so the union of their own rows is
+    exactly the set of blocks any of those reads can expose. Matching own rows
+    cites the session whose read physically holds the block, binds two values
+    per query however long a transcript is, and sees a block inherited by many
+    views once instead of as many candidates.
+    """
 
     matches: dict[tuple[str, int], str] = {}
-    named_edge = _prefix_edge(conn, anchor.session_id)
-    if named_edge is not None:
-        for match in _hash_matches_in_composed_session(conn, anchor.session_id, content_hash):
-            matches[match] = _lineage_detail(named_edge, anchor.session_id)
     for candidate_session_id, edge in _lineage_candidates(conn, anchor.session_id):
-        for match in _hash_matches_in_composed_session(conn, candidate_session_id, content_hash):
-            # One inherited physical block can appear in many composed views;
-            # those are not distinct citation candidates.
+        for match in _hash_matches_in_session(conn, candidate_session_id, content_hash):
             matches.setdefault(match, _lineage_detail(edge, candidate_session_id))
     if not matches:
         return None
@@ -357,30 +324,24 @@ def resolve_block_anchor(
                     detail="content_hash at the hinted position differs from the anchor -- never auto-rewritten",
                 )
 
-    # Look for the hash elsewhere in the same session (message drift).
-    in_session = conn.execute(
-        """
-        SELECT b.message_id, b.position
-        FROM blocks b
-        JOIN messages m ON m.message_id = b.message_id
-        WHERE m.session_id = ? AND b.content_hash = ?
-        ORDER BY b.message_id, b.position
-        """,
-        (anchor.session_id, content_hash),
-    ).fetchall()
+    # Look for the hash elsewhere in the same session (message drift). This
+    # also covers an anchored message that no longer exists: a renumbered
+    # message whose block survives is drift, not a lineage relocation.
+    in_session = _hash_matches_in_session(conn, anchor.session_id, content_hash)
     if len(in_session) > 1:
         return BlockAnchorResolution(
             state="ambiguous",
             anchor=anchor,
-            candidates=tuple((str(row["message_id"]), int(row["position"])) for row in in_session),
+            candidates=tuple(in_session),
             detail=f"{len(in_session)} blocks across the session share the anchor's content_hash",
         )
     if len(in_session) == 1:
+        message_id, position = in_session[0]
         return BlockAnchorResolution(
             state="drifted_message",
             anchor=anchor,
-            resolved_message_id=str(in_session[0]["message_id"]),
-            resolved_position=int(in_session[0]["position"]),
+            resolved_message_id=message_id,
+            resolved_position=position,
         )
 
     relocated = _resolve_relocated_lineage(conn, anchor, content_hash)

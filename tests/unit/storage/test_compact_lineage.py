@@ -276,8 +276,8 @@ def test_compact_execution_reads_no_message_body(tmp_path: Path) -> None:
             ), sql
 
 
-def test_w5_one_node_pages_advance_past_the_seed(tmp_path: Path) -> None:
-    """99.15: a one-node budget used to return zero non-seed nodes forever."""
+def test_one_node_pages_advance_past_the_seed(tmp_path: Path) -> None:
+    """A one-node budget used to spend its slot on the seed and never advance."""
     conn = _connect(tmp_path / "index.db")
     try:
         _seed_family(conn)
@@ -294,4 +294,3 @@ def test_w5_one_node_pages_advance_past_the_seed(tmp_path: Path) -> None:
         assert not page.node_page.has_more
     finally:
         conn.close()
-

@@ -1,4 +1,4 @@
-"""Worker 5 regressions on profile inspection, hydration and public status."""
+"""Session-profile selection, discovery, hydration, and status gating."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def _built_profile(root: Path) -> tuple[Path, str, SessionProfileDerivation]:
 
 
 def test_selected_profile_facts_do_not_certify_pending_demand(tmp_path: Path) -> None:
-    """99.22: ordinary inspection was stale while selected inspection certified the same rows valid."""
+    """Ordinary inspection was stale while selected inspection certified the same rows valid."""
     index_path, session_id, adapter = _built_profile(tmp_path / "archive")
     assert adapter.selected_part_facts(object(), session_id).status == "valid"
     with write_lease("test.w5.demand"), closing(_connection(index_path)) as conn:
@@ -72,21 +72,23 @@ def test_selected_profile_facts_do_not_certify_pending_demand(tmp_path: Path) ->
 
 
 def test_required_profile_page_recovers_a_missing_latency_sibling(tmp_path: Path) -> None:
-    """99.23: no demand and an intact profile previously hid its missing mandatory sibling."""
+    """No demand and an intact profile previously hid its missing mandatory sibling."""
     index_path, session_id, adapter = _built_profile(tmp_path / "archive")
     assert adapter.required_page(object(), cursor=None, limit=10) == ((), None)
     with write_lease("test.w5.latency"), closing(_connection(index_path)) as conn:
         conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,))
         conn.commit()
-        assert conn.execute("SELECT count(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
-        assert conn.execute("SELECT count(*) FROM session_profile_demand WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+        profiles = conn.execute("SELECT count(*) FROM session_profiles WHERE session_id = ?", (session_id,))
+        assert profiles.fetchone()[0] == 1
+        demand = conn.execute("SELECT count(*) FROM session_profile_demand WHERE session_id = ?", (session_id,))
+        assert demand.fetchone()[0] == 0
     keys, _ = adapter.required_page(object(), cursor=None, limit=10)
     assert session_id in keys
     assert adapter.inspect(object(), (session_id,))[session_id] == "stale"
 
 
 def test_sync_hydration_preserves_stored_attachment_provenance(tmp_path: Path) -> None:
-    """100.05: the actual sync loader used None defaults despite non-null stored provenance."""
+    """The actual sync loader used None defaults despite non-null stored provenance."""
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     with write_lease("test.w5.hydrate"), closing(_connection(root / "index.db")) as conn:
@@ -129,7 +131,7 @@ def test_sync_hydration_preserves_stored_attachment_provenance(tmp_path: Path) -
 
 
 def test_status_counts_runs_without_unrelated_product_tables() -> None:
-    """100.10: the old shared dependency gate incorrectly returned zero for two readable runs."""
+    """The old shared dependency gate incorrectly returned zero for two readable runs."""
     with sqlite3.connect(":memory:") as conn:
         conn.executescript(
             """

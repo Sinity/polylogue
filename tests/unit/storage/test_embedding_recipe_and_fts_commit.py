@@ -1,4 +1,4 @@
-"""Worker 5 regressions at the recipe and FTS transaction entry points."""
+"""Embedding recipe identity and the FTS repair transaction boundary."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from tests.infra.storage_records import SessionBuilder
 
 
 def test_equal_provider_requests_have_equal_recipe_identities() -> None:
-    """100.17: reordering the same request map used to change recipe_hash."""
+    """Reordering the same request map used to change recipe_hash."""
     options = (("truncation", False), ("output_dtype", "float"))
     first = EmbeddingRecipe.current(model="voyage-3", dimensions=1024, request_options=options)
     second = EmbeddingRecipe.current(model="voyage-3", dimensions=1024, request_options=tuple(reversed(options)))
@@ -31,7 +31,7 @@ def test_equal_provider_requests_have_equal_recipe_identities() -> None:
 
 @pytest.mark.parametrize("element_type", ["float64", "int8", "unknown"])
 def test_embedding_recipe_refuses_unimplemented_output_encodings(element_type: str) -> None:
-    """100.18: a recipe could claim another representation while storage wrote float32."""
+    """A recipe could claim another representation while storage wrote float32."""
     with pytest.raises(ValueError, match="only float32"):
         EmbeddingRecipe.current(model="voyage-3", dimensions=1024, element_type=element_type)
     recipe = EmbeddingRecipe.current(model="voyage-3", dimensions=1024)
@@ -40,7 +40,7 @@ def test_embedding_recipe_refuses_unimplemented_output_encodings(element_type: s
 
 
 def test_fts_owned_commit_failure_rolls_back_and_allows_retry(test_conn: sqlite3.Connection, test_db: Path) -> None:
-    """100.23: COMMIT outside the try leaves a live owned transaction after rejection."""
+    """COMMIT outside the try leaves a live owned transaction after rejection."""
     builder = SessionBuilder(test_db, "w5-fts-commit")
     builder.add_message(role="user", text="FTS commit boundary evidence")
     builder.save()

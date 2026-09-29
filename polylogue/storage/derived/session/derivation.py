@@ -749,13 +749,17 @@ class SessionProfileDerivation:
             profiles = _count(
                 conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
             )
+            # The same demand-aware verdict recurring inspection reaches: a
+            # pending demand means the stored family is not certified yet.
+            demanded = (
+                conn.execute("SELECT 1 FROM session_profile_demand WHERE session_id = ?", (session_id,)).fetchone()
+                is not None
+            )
             status = _classify_partition_with_demand(
                 stored,
                 input_binding,
                 materializer_version=self._materializer_version,
-                demanded=conn.execute(
-                    "SELECT 1 FROM session_profile_demand WHERE session_id = ?", (session_id,)
-                ).fetchone() is not None,
+                demanded=demanded,
             )
         finally:
             conn.close()

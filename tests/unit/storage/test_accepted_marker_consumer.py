@@ -251,15 +251,16 @@ def test_primary_barrier_holds_a_carrier_whose_session_awaits_publication(tmp_pa
     assert released.done == 1
 
 
-def test_w5_one_convergence_sweep_delivers_all_accepted_marker_batches(tmp_path: Path) -> None:
-    """100.02: the terminal cursor on a one-item page previously delivered only the first batch."""
+def test_one_convergence_sweep_delivers_every_accepted_marker_batch(tmp_path: Path) -> None:
+    """A one-key page with no continuation used to end the sweep after the first batch."""
     from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, converge
 
     source_db, user_db = tmp_path / "source.db", tmp_path / "user.db"
     _new_user_tier(user_db)
     for ordinal in range(3):
         _append_source_batch(
-            source_db, raw_id=f"w5-{ordinal}",
+            source_db,
+            raw_id=f"w5-{ordinal}",
             candidate=_candidate_record(f"::note: batch {ordinal}", message_id=f"w5-m{ordinal}"),
         )
     adapter = _adapter(source_db, user_db)

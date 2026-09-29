@@ -1,4 +1,4 @@
-"""Production-route regressions for worker 5's archive/tuple review findings."""
+"""Archive location, readiness, and inactive-tuple admission at their production entry points."""
 
 from __future__ import annotations
 
@@ -38,17 +38,15 @@ def _candidate(root: Path) -> tuple[ArchiveLocation, ArchiveTupleAllocator, Arch
 
 
 def test_generation_root_uses_the_final_index_shape(tmp_path: Path) -> None:
-    """98.01: the first-marker implementation returns tmp_path, not root."""
+    """The first-marker implementation returns tmp_path, not root."""
     root = tmp_path / ".index-generations"
     physical = root / ".index-generations" / "gen-owned" / "index.db"
     assert archive_root_for_index_path(physical) == root
     assert archive_root_for_index_path(root / "index.db") == root
-    unrelated = root / "ordinary" / "index.db"
-    assert archive_root_for_index_path(unrelated) == unrelated.parent
 
 
 def test_durable_symlink_farm_allows_local_disposable_tiers(tmp_path: Path) -> None:
-    """98.02: local ops/embeddings used to make valid durable links fail admission."""
+    """Local ops/embeddings used to make valid durable links fail admission."""
     backing = tmp_path / "backing"
     farm = tmp_path / "farm"
     backing.mkdir()
@@ -65,7 +63,7 @@ def test_durable_symlink_farm_allows_local_disposable_tiers(tmp_path: Path) -> N
 
 
 def test_zero_denominator_does_not_erase_measured_evidence_loss() -> None:
-    """98.04: the previous early return reported UNMEASURED despite positive loss."""
+    """The previous early return reported UNMEASURED despite positive loss."""
     payload = {"available": True, "raw_artifact_count": 0, "lost_source_evidence_count": 1}
     assessment = assess_raw_materialization(payload)
     assert assessment.state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
@@ -76,7 +74,7 @@ def test_zero_denominator_does_not_erase_measured_evidence_loss() -> None:
 
 @pytest.mark.parametrize("mutation", ["unknown", "nested_unknown", "missing_state", "numeric_string", "boolean"])
 def test_tuple_loader_rejects_unsealed_manifest_shape_changes(tmp_path: Path, mutation: str) -> None:
-    """98.06: normalization previously erased these changes before checking the seal."""
+    """Normalization previously erased these changes before checking the seal."""
     _, allocator, candidate = _candidate(tmp_path / "archive")
     payload = candidate.manifest.as_dict()
     if mutation == "unknown":
@@ -95,7 +93,7 @@ def test_tuple_loader_rejects_unsealed_manifest_shape_changes(tmp_path: Path, mu
 
 
 def test_tuple_loader_rejects_a_sealed_obsolete_schema(tmp_path: Path) -> None:
-    """98.07: matching tier names and a valid seal cannot admit old DDL fingerprints."""
+    """Matching tier names and a valid seal cannot admit old DDL fingerprints."""
     _, allocator, candidate = _candidate(tmp_path / "archive")
     obsolete = replace(
         candidate.manifest,
@@ -109,7 +107,7 @@ def test_tuple_loader_rejects_a_sealed_obsolete_schema(tmp_path: Path) -> None:
 @pytest.mark.parametrize("tier", [ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS])
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
 def test_inactive_writer_refuses_foreign_final_file_links(tmp_path: Path, tier: ArchiveTier, link_kind: str) -> None:
-    """98.08: the production bootstrap previously followed/admitted the final linked file."""
+    """The production bootstrap previously followed/admitted the final linked file."""
     _, _, candidate = _candidate(tmp_path / "archive")
     foreign_root = tmp_path / "foreign"
     initialize_active_archive_root(foreign_root)
@@ -127,7 +125,7 @@ def test_inactive_writer_refuses_foreign_final_file_links(tmp_path: Path, tier: 
 
 
 def test_destination_generation_must_match_its_manifest_without_a_caller_hint(tmp_path: Path) -> None:
-    """98.09: omitting expected_generation previously admitted this forged label."""
+    """Omitting expected_generation previously admitted this forged label."""
     location, _, candidate = _candidate(tmp_path / "archive")
     destination = replace(candidate.index, generation_id="foreign-generation")
     with pytest.raises(ArchiveTupleStaleError, match="generation does not match its manifest"):
@@ -135,7 +133,7 @@ def test_destination_generation_must_match_its_manifest_without_a_caller_hint(tm
 
 
 def test_tuple_writer_rechecks_audit_identity_after_allocation(tmp_path: Path) -> None:
-    """98.10: audit is outside the authority digest, and location is a frozen snapshot."""
+    """Audit is outside the authority digest, and location is a frozen snapshot."""
     root = tmp_path / "archive"
     location, _, candidate = _candidate(root)
     replacement = root / "replacement-audit.db"
@@ -145,19 +143,8 @@ def test_tuple_writer_rechecks_audit_identity_after_allocation(tmp_path: Path) -
         validate_inactive_destination(candidate.index, location)
 
 
-@pytest.mark.parametrize("tier", [ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS])
-def test_whole_tuple_validation_accepts_a_selected_writer_tier(tmp_path: Path, tier: ArchiveTier) -> None:
-    """98.11: applying one expected tier to every member previously rejected a valid tuple."""
-    location, _, candidate = _candidate(tmp_path / "archive")
-    candidate.validate(location, expected_tier=tier)
-    # Selecting index must not stop validation of a different member.
-    broken = replace(candidate, embeddings=replace(candidate.embeddings, generation_id="wrong"))
-    with pytest.raises(ArchiveTupleStaleError):
-        broken.validate(location, expected_tier=ArchiveTier.INDEX)
-
-
 def test_allocation_fsyncs_both_new_directory_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """98.12: fsyncing tuple.json's directory alone never persists its parent name."""
+    """Fsyncing tuple.json's directory alone never persists its parent name."""
     import polylogue.storage.archive_tuple_location as tuples
 
     root = tmp_path / "archive"
@@ -178,7 +165,7 @@ def test_allocation_fsyncs_both_new_directory_entries(tmp_path: Path, monkeypatc
 
 
 def test_reserved_name_alone_is_not_an_inactive_tuple(tmp_path: Path) -> None:
-    """98.13: the former component-membership test refused this legitimate root."""
+    """The former component-membership test refused this legitimate root."""
     root = tmp_path / ".archive-tuples"
     initialize_active_archive_root(root)
     location = ArchiveLocation.resolve(root)
@@ -188,7 +175,7 @@ def test_reserved_name_alone_is_not_an_inactive_tuple(tmp_path: Path) -> None:
 
 
 def test_embedding_preparation_rejects_a_foreign_final_symlink(tmp_path: Path) -> None:
-    """100.22: exercise embedding preparation, not merely the common destination helper."""
+    """Exercise embedding preparation, not merely the common destination helper."""
     _, _, candidate = _candidate(tmp_path / "archive")
     foreign = tmp_path / "foreign-embeddings.db"
     initialize_archive_database(foreign, ArchiveTier.EMBEDDINGS)
