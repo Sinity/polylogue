@@ -745,18 +745,18 @@ def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_p
     for recorded in deleted_loose_files:
         assert blob_integrity._source_path_availability(recorded)[0] is False
         assert archive_debt._source_artifact_exists(recorded) is False
-        payload, reason = zip_reacquisition_payload(
+        unit, reason = zip_reacquired_unit(
             _row(recorded, payload=b"{}", source_index=0), source_path=recorded, zip_payload_cache={}
         )
-        assert (payload, reason) == (None, "container_coordinate_missing")
+        assert (unit, reason) == (None, "container_coordinate_missing")
 
     fake_zip = tmp_path / "fake.zip"
     fake_zip.write_text("not a ZIP archive")
     member_path = f"{fake_zip}:conversations.json"
-    payload, reason = zip_reacquisition_payload(
+    unit, reason = zip_reacquired_unit(
         _row(member_path, payload=b"{}", source_index=0), source_path=member_path, zip_payload_cache={}
     )
-    assert (payload, reason) == (None, "source_missing")
+    assert (unit, reason) == (None, "source_missing")
     assert archive_debt._source_artifact_exists(member_path) is False
 
     real_zip = tmp_path / "real.zip"
