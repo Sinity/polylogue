@@ -93,11 +93,23 @@ def test_session_masks_cover_the_domain_fields_used_by_each_surface() -> None:
         assert getattr(row, surface_name) == expected
 
 
-def test_domain_session_rows_keep_relative_time(frozen_clock) -> None:
-    """Domain summary/list must not emit None where the summary route emits age."""
+def test_domain_session_rows_keep_relative_time(frozen_clock: object) -> None:
+    """Domain-built summary and list envelopes carry the session row's relative time.
+
+    Anti-vacuity: leave ``relative_time`` at its model default and both
+    envelopes report ``None`` where the session-row route reports an age.
+    """
     from polylogue.surfaces.query_rows import session_row
 
-    session = _build_session()
+    base = _build_session()
+    session = Session(
+        id=base.id,
+        origin=base.origin,
+        title=base.title,
+        title_source=base.title_source,
+        messages=base.messages,
+        updated_at=datetime(2026, 5, 27, 10, 0, tzinfo=UTC),
+    )
     expected = session_row(session).relative_time
     assert expected != "unknown"
     assert session_summary_envelope_from_domain(session).relative_time == expected

@@ -258,7 +258,7 @@ async def test_completions_page_against_shared_owner(mcp_server: MCPServerUnderT
     archive = Polylogue(archive_root=root)
     explain = mcp_server._tool_manager._tools["explain"].fn
     shared = await archive.query_completions("field")
-    candidates = shared["candidates"]
+    candidates = cast(list[Any], shared["candidates"])
     assert len(candidates) > 4
     with patch("polylogue.mcp.server._get_polylogue", return_value=archive):
         first = json.loads(await invoke_surface_async(explain, subject="completions", kind="field", limit=2))

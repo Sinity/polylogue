@@ -472,7 +472,8 @@ def test_truncated_orchestration_children_belong_to_retained_topology() -> None:
         Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection.empty()), topology
     )
     assert evidence.topology is not None
-    retained = {node["session_id"] for node in evidence.topology["nodes"]}
+    nodes = cast(list[dict[str, object]], evidence.topology["nodes"])
+    retained = {node["session_id"] for node in nodes}
     assert evidence.children
     assert {child["session_id"] for child in evidence.children} <= retained
     assert "observation_limit" in evidence.gaps

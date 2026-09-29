@@ -357,11 +357,13 @@ class TestApplySessionExcision:
                 ("marker-excision-test",),
             ).fetchone()
         assert row == ("assertion:marker-excision-test", "{}", None, "[]", "deleted")
-        # The actual API all-status projection must still serialize the scrubbed row.
-        # Reverting to excision-marker: raises during ObjectRef validation here.
+        # An all-status claim read serializes the tombstone. With an
+        # ``excision-marker:`` target, ObjectRef validation raises here.
         from polylogue import Polylogue
 
-        claims = asyncio.run(Polylogue(archive_root=tmp_path).list_assertion_claim_payloads(statuses=None))
+        claims = asyncio.run(
+            Polylogue(archive_root=tmp_path).list_assertion_claim_payloads(kinds=(AssertionKind.NOTE,), statuses=None)
+        )
         marker = next(claim for claim in claims if claim.assertion_id == "marker-excision-test")
         assert marker.target_ref == "assertion:marker-excision-test"
         assert marker.model_dump(mode="json")["status"] == "deleted"
