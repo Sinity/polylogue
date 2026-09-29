@@ -46,13 +46,6 @@ class AuthoritativeMessage:
     native_id: str
     role: str
     text: str
-    #: The session whose own evidence this message carries on the wire, or
-    #: ``None``. The convergence harness binds each session's dispatch tool,
-    #: attachment and usage to its first message (``_parsed_session`` in
-    #: ``convergence_harness``), so a child's first message is never the
-    #: parent's even when its id and text match: lineage shares only an
-    #: identical prefix (#5826).
-    owner: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,9 +146,8 @@ def authoritative_sessions(composed: ComposedSources) -> tuple[AuthoritativeSess
                     native_id=str(message.id),
                     role=str(message.role),
                     text="" if message.text is None else str(message.text),
-                    owner=native_id if position == 0 else None,
                 )
-                for position, message in enumerate(selected[native_id].messages)
+                for message in selected[native_id].messages
             ),
         )
         for native_id in sorted(selected)

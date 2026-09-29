@@ -1154,13 +1154,6 @@ class TestNoTokenLogging:
         }
         safe_token_container_results = {
             (Path("polylogue/daemon/browser_capture.py"), "serve_command", "make_server"),
-            # The daemon's terminal receipt for the candidate capture: the
-            # client authenticates with the token, the receipt never holds it.
-            (
-                Path("polylogue/browser_capture/server.py"),
-                "_assertion_candidate_capture",
-                "operation_to_completion",
-            ),
         }
 
         def _call_sink_name(call: ast.Call) -> str | None:

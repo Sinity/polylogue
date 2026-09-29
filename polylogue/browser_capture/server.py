@@ -830,13 +830,15 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             if payload["target_ref"] != expected_message_ref:
                 raise ValueError("selected message target does not match its native observation")
             config = self.server.config
-            response = DaemonClient(
+            # The client holds the credential; the receipt it returns does not.
+            client = DaemonClient(
                 daemon_socket_path(root),
                 auth_token=lambda: resolve_api_auth_token(
                     getattr(config, "api_auth_token", None),
                     allow_no_auth=getattr(config, "api_allow_no_auth", False),
                 ),
-            ).operation_to_completion(
+            )
+            response = client.operation_to_completion(
                 # A mutation is accepted before it completes; follow it to the
                 # terminal receipt rather than reading "accepted" as failure.
                 "mutation.assertion.candidate.capture",

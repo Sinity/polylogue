@@ -242,7 +242,8 @@ def test_late_parent_prefix_resolution_has_append_prefix_control(
 
     composed = compose_fork_prefix_tail_lineage()
     if mutated:
-        monkeypatch.setattr(write_module, "_resolve_session_graph", lambda *_args, **_kwargs: None)
+        # The mutant skips resolution and so reports no session it changed.
+        monkeypatch.setattr(write_module, "_resolve_session_graph", lambda *_args, **_kwargs: set())
     archive = build_converged_archive(tmp_path / "archive", composed, session_order=(1, 0))
     observed = read_semantic_projection(archive.root, probe_terms=("shared",))
     expected = semantic_oracle(authoritative_sessions(composed), probe_terms=("shared",))

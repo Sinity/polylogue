@@ -1260,6 +1260,10 @@ def test_async_execute_query_archive_outputs_stats(
                 db_size_bytes=4096,
             )
 
+    # The fake store answers the stats; the archive root is an empty stand-in,
+    # so its real convergence probe would degrade the outcome (#5700). This
+    # case is about the stats scope, not convergence.
+    monkeypatch.setattr("polylogue.cli.render.outcome.convergence_warning_line", lambda *_args: None)
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
@@ -1425,6 +1429,10 @@ def test_async_execute_query_archive_search_stats_are_not_page_capped_by_default
             assert kwargs["session_ids"] == ("codex-session:native-1", "codex-session:native-2")
             return ArchiveStats(total_sessions=2, total_messages=5)
 
+    # The fake store answers the stats; the archive root is an empty stand-in,
+    # so its real convergence probe would degrade the outcome (#5700). This
+    # case is about the stats scope, not convergence.
+    monkeypatch.setattr("polylogue.cli.render.outcome.convergence_warning_line", lambda *_args: None)
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
@@ -3235,6 +3243,7 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
             "semantic_type": None,
             "text": "keep user prose",
             "tool_id": None,
+            "tool_input": None,
             "tool_name": None,
         }
     ]
@@ -4271,4 +4280,5 @@ def test_a_bounded_stream_reads_every_window_its_limit_covers(
     assert len(lines) == requested_limit
     assert lines[0]["blocks"][0]["text"] == "line 0"
     assert lines[-1]["blocks"][0]["text"] == f"line {requested_limit - 1}"
-    assert windows == [(200, 0), (200, 200)]
+    # The second window asks only for what the limit still needs.
+    assert windows == [(200, 0), (20, 200)]
