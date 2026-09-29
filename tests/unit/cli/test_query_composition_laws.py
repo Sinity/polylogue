@@ -29,6 +29,7 @@ from polylogue.surfaces.payloads import (
     QueryUnitAggregateEnvelope,
     QueryUnitEnvelope,
 )
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.query_manifest_oracle import (
     QUERY_CARDINALITY_TOKEN,
     ActionIdentity,
@@ -196,6 +197,7 @@ def _cli_env(root: Path) -> dict[str, str]:
 def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     query_cardinality_archive: _PreparedArchive,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Survive parser/lowerer, action relation, repository, CLI, and delete.
 
@@ -275,81 +277,86 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     assert tuple(paged) == expected
     assert len(set(paged)) == len(expected)
 
-    # The stable public CLI read route reparses and reexecutes the expression.
-    read_result = CliRunner().invoke(
-        cli,
-        ["--plain", "--format", "json", "find", _ACTION_EXPRESSION],
-        env=_cli_env(root),
-    )
-    assert read_result.exit_code == 0, read_result.output
-    read_payload = cast(dict[str, object], json.loads(read_result.output))
-    read_items = cast(list[dict[str, object]], read_payload["items"])
-    assert tuple(_payload_action_identity(item) for item in read_items) == expected
-    assert read_payload["total"] == len(expected)
+    # The CLI query verbs are served by ``polylogued run`` (#5805): each
+    # archive the CLI reads is served by a real daemon over its socket.
+    monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
+    with cli_daemon_archive(root, monkeypatch):
+        # The stable public CLI read route reparses and reexecutes the expression.
+        read_result = CliRunner().invoke(
+            cli,
+            ["--plain", "--format", "json", "find", _ACTION_EXPRESSION],
+            env=_cli_env(root),
+        )
+        assert read_result.exit_code == 0, read_result.output
+        read_payload = cast(dict[str, object], json.loads(read_result.output))
+        read_items = cast(list[dict[str, object]], read_payload["items"])
+        assert tuple(_payload_action_identity(item) for item in read_items) == expected
+        assert read_payload["total"] == len(expected)
 
-    # A selector-only boolean expression must take the root list route without
-    # losing its compiled predicate.  This is deliberately distinct from the
-    # terminal action expression above: removing ``**filter_kwargs`` from the
-    # final ``list_summaries`` call returns every session in this archive.
-    selector_result = CliRunner().invoke(
-        cli,
-        ["--plain", "--format", "json", "find", _SESSION_EXPRESSION],
-        env=_cli_env(root),
-    )
-    assert selector_result.exit_code == 0, selector_result.output
-    selector_payload = cast(dict[str, object], json.loads(selector_result.output))
-    selector_items = cast(list[dict[str, object]], selector_payload["items"])
-    assert {str(item["id"]) for item in selector_items} == set(manifest.matching_session_ids())
-    assert selector_payload["total"] == len(manifest.matching_session_ids())
+        # A selector-only boolean expression must take the root list route without
+        # losing its compiled predicate.  This is deliberately distinct from the
+        # terminal action expression above: removing ``**filter_kwargs`` from the
+        # final ``list_summaries`` call returns every session in this archive.
+        selector_result = CliRunner().invoke(
+            cli,
+            ["--plain", "--format", "json", "find", _SESSION_EXPRESSION],
+            env=_cli_env(root),
+        )
+        assert selector_result.exit_code == 0, selector_result.output
+        selector_payload = cast(dict[str, object], json.loads(selector_result.output))
+        selector_items = cast(list[dict[str, object]], selector_payload["items"])
+        assert {str(item["id"]) for item in selector_items} == set(manifest.matching_session_ids())
+        assert selector_payload["total"] == len(manifest.matching_session_ids())
 
     # Preview and apply run against a private clone.  The previewed identities
     # equal the planted session set, apply reports the same cardinality, the
     # selected sessions disappear, and the output-only decoy remains.
     mutation_root = _copy_archive(root, tmp_path / "mutation-archive")
-    runner = CliRunner()
-    preview_result = runner.invoke(
-        cli,
-        ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--dry-run", "--all"],
-        env=_cli_env(mutation_root),
-    )
-    assert preview_result.exit_code == 0, preview_result.output
-    preview = cast(dict[str, object], json.loads(preview_result.output))
-    preview_ids = tuple(cast(list[str], preview["session_ids"]))
-    assert preview["status"] == "preview"
-    assert preview["affected_count"] == 0
-    assert set(preview_ids) == set(manifest.matching_session_ids())
-    assert preview["session_count"] == len(manifest.matching_session_ids())
-
-    with patch(
-        "polylogue.cli.archive_query._submit_mutation_operation",
-        side_effect=_daemon_delete_route(mutation_root),
-    ):
-        apply_result = runner.invoke(
+    with cli_daemon_archive(mutation_root, monkeypatch):
+        runner = CliRunner()
+        preview_result = runner.invoke(
             cli,
-            ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--yes", "--all"],
+            ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--dry-run", "--all"],
             env=_cli_env(mutation_root),
         )
-    assert apply_result.exit_code == 0, apply_result.output
-    applied = cast(dict[str, object], json.loads(apply_result.output))
-    assert applied["session_count"] == preview["session_count"]
-    assert applied["affected_count"] == preview["session_count"]
+        assert preview_result.exit_code == 0, preview_result.output
+        preview = cast(dict[str, object], json.loads(preview_result.output))
+        preview_ids = tuple(cast(list[str], preview["session_ids"]))
+        assert preview["status"] == "preview"
+        assert preview["affected_count"] == 0
+        assert set(preview_ids) == set(manifest.matching_session_ids())
+        assert preview["session_count"] == len(manifest.matching_session_ids())
 
-    with ArchiveStore.open_existing(mutation_root) as archive:
-        for session_id in preview_ids:
-            with pytest.raises(KeyError):
-                archive.read_summary(session_id)
-        decoy = archive.read_summary(manifest.decoy_session_id)
-    assert decoy.session_id == manifest.decoy_session_id
+        with patch(
+            "polylogue.cli.archive_query._submit_mutation_operation",
+            side_effect=_daemon_delete_route(mutation_root),
+        ):
+            apply_result = runner.invoke(
+                cli,
+                ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--yes", "--all"],
+                env=_cli_env(mutation_root),
+            )
+        assert apply_result.exit_code == 0, apply_result.output
+        applied = cast(dict[str, object], json.loads(apply_result.output))
+        assert applied["session_count"] == preview["session_count"]
+        assert applied["affected_count"] == preview["session_count"]
 
-    post_result = runner.invoke(
-        cli,
-        ["--plain", "--format", "json", "find", _ACTION_EXPRESSION],
-        env=_cli_env(mutation_root),
-    )
-    assert post_result.exit_code == 2, post_result.output
-    post_payload = cast(dict[str, object], json.loads(post_result.output))
-    assert post_payload["items"] == []
-    assert post_payload["total"] == 0
+        with ArchiveStore.open_existing(mutation_root) as archive:
+            for session_id in preview_ids:
+                with pytest.raises(KeyError):
+                    archive.read_summary(session_id)
+            decoy = archive.read_summary(manifest.decoy_session_id)
+        assert decoy.session_id == manifest.decoy_session_id
+
+        post_result = runner.invoke(
+            cli,
+            ["--plain", "--format", "json", "find", _ACTION_EXPRESSION],
+            env=_cli_env(mutation_root),
+        )
+        assert post_result.exit_code == 2, post_result.output
+        post_payload = cast(dict[str, object], json.loads(post_result.output))
+        assert post_payload["items"] == []
+        assert post_payload["total"] == 0
 
 
 def test_survivor_detects_naive_duplicate_id_join_mutation(
@@ -369,7 +376,12 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
     def _shadow_actions_with_naive_join(conn: sqlite3.Connection) -> None:
         # The read-mode connection runs under ``PRAGMA query_only``, which
         # refuses temp-schema writes too; the main schema stays ``mode=ro``
-        # throughout, so only the temp view is created here.
+        # throughout, so only the temp view is created here. Its read
+        # authorizer (#5642) refuses the pragma, so the mutant lifts it for the
+        # DDL and restores it, as ``attach_readonly_database`` does.
+        from polylogue.storage.sqlite.connection_profile import _authorize_read_operation
+
+        conn.set_authorizer(None)
         conn.execute("PRAGMA query_only = OFF")
         conn.executescript(
             """
@@ -403,6 +415,7 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
             """
         )
         conn.execute("PRAGMA query_only = ON")
+        conn.set_authorizer(_authorize_read_operation)
 
     with pytest.raises(AssertionError) as caught:
         _assert_repository_membership(

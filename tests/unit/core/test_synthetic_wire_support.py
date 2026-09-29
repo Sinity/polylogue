@@ -110,7 +110,12 @@ def test_chatgpt_witness_checks_tool_identity_and_text_parts() -> None:
     tool = next(block for block in sessions[0].messages[0].blocks if block.type is BlockType.TOOL_USE)
     tool.tool_id = "wrong-tool"
     assert not wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    # The parts' text survives on the message and on its tool block, and
+    # either one covers it, so drop the second part from both.
     sessions[0].messages[0].text = "first body"
+    for block in sessions[0].messages[0].blocks:
+        if block.text is not None:
+            block.text = "first body"
     assert not wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
 
 

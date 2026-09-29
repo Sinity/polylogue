@@ -306,10 +306,14 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
         assert conn.execute("SELECT file_mtime_ms FROM raw_sessions").fetchone() == (expected_mtime_ms,)
-        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
-            "workflow_journal",
-            0,
-        )
+        # The ZIP route decodes the member strictly to scan it for delayed
+        # session evidence, and a complete JSONL record that does not decode
+        # is terminal corrupt input for every provider, the raw retained
+        # (#5823, ez5b9 F039). The loose-file test above still reads the
+        # lenient retained decode that polylogue-3p8p7 makes strict.
+        assert conn.execute("SELECT artifact_kind, parse_as_session, support_status FROM raw_artifacts").fetchall() == [
+            ("terminal_corrupt_input", 0, "decode_failed")
+        ]
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -697,7 +701,8 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     # call, and without that guard the next file's publisher blocks on the
     # census transaction's source.db write lock.
     assert result.parse_failures == 0
-    assert census_calls == 4
+    # One membership census per raw, over every session that raw carries.
+    assert census_calls == 2
     assert result.counts["sessions"] == 4
     assert len(_raw_rows_for_path(archive_root / "source.db", str(first_child))) == 1
     assert len(_raw_rows_for_path(archive_root / "source.db", str(second_child))) == 1
