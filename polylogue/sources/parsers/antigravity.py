@@ -838,8 +838,23 @@ def parse_trajectory_db(
                     parent_refs.setdefault(str(child), []).append(
                         _event_payload_row({str(key): value for key, value in zip(row.keys(), row, strict=True)})
                     )
-        meta_query = "SELECT rowid AS _polylogue_meta_rowid, * FROM trajectory_meta ORDER BY rowid"
-        meta_rows = connection.execute(meta_query).fetchall()
+        meta_rows = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid").fetchall()
+        anonymous = [
+            meta
+            for meta in meta_rows
+            if not any(
+                column in meta_columns and meta[column] not in (None, "") for column in ("trajectory_id", "cascade_id")
+            )
+        ]
+        if len(anonymous) > 1:
+            # Nothing stable tells several unidentified trajectories apart: a
+            # row's position or rowid changes with deletions and VACUUM, and
+            # a derived id would then move one trajectory onto another's
+            # archive identity. The export is refused rather than guessed.
+            raise LogicalExportError(
+                f"Antigravity SQLite holds {len(anonymous)} trajectories with no trajectory or cascade id; "
+                "no stable identity tells them apart"
+            )
         if not meta_rows:
             # A structurally valid empty export still gets an attributable
             # outcome when the caller supplied a path-derived identity.
@@ -873,19 +888,11 @@ def parse_trajectory_db(
                 if meta is not None and "cascade_id" in meta_columns and meta["cascade_id"] not in (None, "")
                 else None
             )
-            # Several unidentified rows would all take the one path-derived
-            # fallback and address a single archive session repeatedly. Each
-            # identity is keyed on the row's own rowid, never its position:
-            # the original single row (rowid 1) keeps the path-derived
-            # fallback it had while alone, and row ``n`` is
-            # ``<fallback>:trajectory-<n-1>``, so neither appending a row nor
-            # deleting an earlier one renames a trajectory. The bare fallback
-            # is kept only while no native id or unmatched summary occupies it.
+            # The one unidentified row takes the path-derived fallback, unless
+            # a native id or an unmatched summary already names it.
             row_fallback_id = fallback_id
-            if fallback_id and trajectory_id is None and cascade_id is None:
-                rowid = int(meta["_polylogue_meta_rowid"]) if meta is not None else 1
-                if rowid != 1 or fallback_id in known_native_ids:
-                    row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory-{rowid - 1}", known_native_ids)
+            if fallback_id and trajectory_id is None and cascade_id is None and fallback_id in known_native_ids:
+                row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory", known_native_ids)
             native_id = trajectory_id or cascade_id or row_fallback_id
             if not native_id:
                 continue

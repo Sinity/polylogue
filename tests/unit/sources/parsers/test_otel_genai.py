@@ -833,3 +833,124 @@ def test_a_conversation_id_in_a_conflicting_copy_names_the_session() -> None:
     clean = otel_genai.parse(_document(([_attr("service.name", "agent")], [genai])), "ignored")
 
     assert [session.provider_session_id for session in conflicted] == [session.provider_session_id for session in clean]
+
+
+def test_copies_naming_different_conversations_choose_neither() -> None:
+    """A coordinate whose copies disagree on the conversation has no conversation identity.
+
+    Anti-vacuity (Codex P2, #5711): pick the first sorted conversation and a
+    later clean export of the other copy keys a different session.
+    """
+    trace = "e" * 32
+
+    def copy(conversation: str) -> dict[str, object]:
+        return _span(
+            trace,
+            "b" * 16,
+            1_000,
+            [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.conversation.id", conversation)],
+        )
+
+    sessions = otel_genai.parse(_document(([_attr("service.name", "agent")], [copy("chat-a"), copy("chat-b")])), "x")
+
+    assert [session.provider_session_id for session in sessions] == [f"agent:trace:{trace}"]
+
+
+def test_a_shared_root_stays_with_its_first_conversation_when_a_sibling_joins() -> None:
+    """An ancestor shared by conversations keeps its owner as the export grows.
+
+    Anti-vacuity (Codex P2, #5711): assign the ancestor to the lowest
+    conversation id and appending conversation ``a`` moves the root out of
+    ``z``, turning append-only growth into a conflict.
+    """
+    trace = "f" * 32
+    root = _span(trace, "0" * 16, 1_000, [])
+
+    def child(span_id: str, start: int, conversation: str) -> dict[str, object]:
+        span = _span(
+            trace,
+            span_id,
+            start,
+            [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.conversation.id", conversation)],
+        )
+        span["parentSpanId"] = "0" * 16
+        return span
+
+    def root_owner(spans: list[dict[str, object]]) -> str:
+        sessions = otel_genai.parse(_document(([_attr("service.name", "agent")], spans)), "x")
+        return next(
+            session.provider_session_id
+            for session in sessions
+            for event in session.session_events
+            if event.event_type == "otel_span_evidence" and event.payload.get("span_id") == "0" * 16
+        )
+
+    before = root_owner([root, child("1" * 16, 2_000, "z")])
+    after = root_owner([root, child("1" * 16, 2_000, "z"), child("2" * 16, 3_000, "a")])
+
+    assert before == after == "agent:conversation:z"
+
+
+def test_the_history_overlap_is_linear_in_the_history() -> None:
+    """The prefix/suffix overlap search makes a linear number of comparisons.
+
+    Anti-vacuity (Codex P2, #5711): try every overlap length with fresh slices
+    and a 2,000-entry history with no overlap costs about two million
+    comparisons.
+    """
+    import random
+
+    compared = {"count": 0}
+
+    class Entry(tuple[str, str, bool]):
+        def __eq__(self, other: object) -> bool:
+            compared["count"] += 1
+            return tuple.__eq__(self, other)
+
+        def __ne__(self, other: object) -> bool:
+            return not self.__eq__(other)
+
+        __hash__ = tuple.__hash__
+
+    history = [Entry(("user", f"m{index}", False)) for index in range(2_000)]
+    retained = [Entry(("user", f"r{index}", False)) for index in range(2_000)]
+    assert otel_genai._prefix_suffix_overlap(retained, history) == 0  # type: ignore[arg-type]
+    assert compared["count"] < 10 * 4_000
+
+    rng = random.Random(7)
+    for _ in range(200):
+        text = [rng.choice("ab") for _ in range(rng.randint(0, 12))]
+        pattern = [rng.choice("ab") for _ in range(rng.randint(0, 12))]
+        brute = max(
+            (size for size in range(min(len(text), len(pattern)) + 1) if pattern[:size] == text[len(text) - size :]),
+            default=0,
+        )
+        assert otel_genai._prefix_suffix_overlap(pattern, text) == brute  # type: ignore[arg-type]
+
+
+def test_a_cross_resource_root_is_kept_with_its_trace() -> None:
+    """A trace's HTTP root under another resource stays as evidence of the conversation.
+
+    Anti-vacuity (Codex P1, #5711): decide trace membership per resource and
+    the frontend root is dropped before grouping.
+    """
+    trace = "a" * 32
+    frontend_root = _span(trace, "0" * 16, 1_000, [_attr("http.request.method", "POST")])
+    genai = _span(
+        trace, "1" * 16, 2_000, [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.conversation.id", "chat-x")]
+    )
+    genai["parentSpanId"] = "0" * 16
+
+    sessions = otel_genai.parse(
+        _document(([_attr("service.name", "frontend")], [frontend_root]), ([_attr("service.name", "agent")], [genai])),
+        "x",
+    )
+
+    (session,) = sessions
+    assert session.provider_session_id == "agent:conversation:chat-x"
+    root_evidence = [
+        event.payload
+        for event in session.session_events
+        if event.event_type == "otel_span_evidence" and event.payload.get("span_id") == "0" * 16
+    ]
+    assert root_evidence and root_evidence[0]["resource_id"] == "frontend"

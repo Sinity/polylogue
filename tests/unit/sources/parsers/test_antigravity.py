@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.pipeline.ids import session_revision_projection
@@ -259,12 +261,10 @@ def test_trajectory_sqlite_parser_reserves_summary_keys_against_row_fallback_ids
     """A row-fallback id must not collide with an unmatched summary's key.
 
     Anti-vacuity (Codex P2, #5711): an anonymous ``trajectory_meta`` row (no
-    ``trajectory_id``/``cascade_id``) mints its fallback id as
-    ``f"{fallback_id}:trajectory-{index}"``; an unrelated
-    ``conversation_summaries`` row happening to be keyed by that exact same
-    string is yielded as its own session under the unmatched-summary branch.
-    Without reserving summary keys, both land under one
-    ``provider_session_id`` -- two logical sessions, one identity.
+    ``trajectory_id``/``cascade_id``) takes the path-derived fallback; an
+    unrelated ``conversation_summaries`` row keyed by that exact string is
+    yielded as its own session under the unmatched-summary branch. Without
+    reserving summary keys, both land under one ``provider_session_id``.
     """
     path = tmp_path / "conversation.db"
     with sqlite3.connect(path) as connection:
@@ -275,61 +275,28 @@ def test_trajectory_sqlite_parser_reserves_summary_keys_against_row_fallback_ids
             CREATE TABLE conversation_summaries (cascade_id TEXT, title TEXT, last_modified_time TEXT);
             """
         )
-        # Two anonymous meta rows: the first keeps the plain fallback "x";
-        # the second mints the row-specific "x:trajectory-1", which the
-        # unrelated summary below is keyed by.
-        connection.execute("INSERT INTO trajectory_meta VALUES (NULL, NULL)")
         connection.execute("INSERT INTO trajectory_meta VALUES (NULL, NULL)")
         connection.execute(
-            "INSERT INTO conversation_summaries VALUES (?, ?, ?)",
-            ("x:trajectory-1", "Unrelated summary", "2026-03-06T04:21:34Z"),
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?)", ("x", "Unrelated summary", "2026-03-06T04:21:34Z")
         )
 
     sessions = list(parse_trajectory_db(path, fallback_id="x"))
 
     provider_ids = [session.provider_session_id for session in sessions]
-    assert len(provider_ids) == len(set(provider_ids)), f"colliding provider_session_id: {provider_ids}"
+    assert len(provider_ids) == len(set(provider_ids)) == 2, f"colliding provider_session_id: {provider_ids}"
     orphan = next(session for session in sessions if session.ingest_flags == ["degraded:unmatched-trajectory-summary"])
-    assert orphan.provider_session_id == "x:trajectory-1"
-    meta_ids = [session.provider_session_id for session in sessions if session is not orphan]
-    assert len(meta_ids) == 2
-    assert "x" in meta_ids
-    assert "x:trajectory-1" not in meta_ids
+    assert orphan.provider_session_id == "x"
 
 
-def test_the_first_anonymous_trajectory_keeps_its_id_when_a_second_arrives(tmp_path: Path) -> None:
-    """An export that grows a second unidentified row does not rename the first.
+def test_several_anonymous_trajectories_are_refused(tmp_path: Path) -> None:
+    """Unidentified trajectories with nothing stable between them are not guessed apart.
 
-    Anti-vacuity (Codex P2, #5711): mint row-specific ids for every row once
-    there are two and the original trajectory moves from ``x`` to
-    ``x:trajectory-0``, becoming a new session identity.
+    Anti-vacuity (Codex P1, #5711): key each on its implicit rowid and a
+    ``VACUUM`` after deleting the first renumbers the survivor onto the
+    deleted trajectory's identity.
     """
-    path = tmp_path / "conversation.db"
-    with sqlite3.connect(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
-            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
-            """
-        )
-        connection.execute("INSERT INTO trajectory_meta VALUES (NULL, NULL)")
-    before = [session.provider_session_id for session in parse_trajectory_db(path, fallback_id="x")]
-    with sqlite3.connect(path) as connection:
-        connection.execute("INSERT INTO trajectory_meta VALUES (NULL, NULL)")
-    after = [session.provider_session_id for session in parse_trajectory_db(path, fallback_id="x")]
+    from polylogue.sources.sqlite_export import LogicalExportError
 
-    assert before == ["x"]
-    assert after[0] == "x"
-    assert len(set(after)) == 2
-
-
-def test_deleting_an_anonymous_trajectory_does_not_rename_the_next(tmp_path: Path) -> None:
-    """A surviving anonymous row keeps its identity when an earlier one is deleted.
-
-    Anti-vacuity (Codex P2, #5711): derive the id from the enumeration index
-    and the second row, alone after the first is deleted, takes over the bare
-    ``x`` of the deleted trajectory.
-    """
     path = tmp_path / "conversation.db"
     with sqlite3.connect(path) as connection:
         connection.executescript(
@@ -340,13 +307,9 @@ def test_deleting_an_anonymous_trajectory_does_not_rename_the_next(tmp_path: Pat
             INSERT INTO trajectory_meta VALUES (NULL, NULL);
             """
         )
-    before = [session.provider_session_id for session in parse_trajectory_db(path, fallback_id="x")]
-    with sqlite3.connect(path) as connection:
-        connection.execute("DELETE FROM trajectory_meta WHERE rowid = 1")
-    after = [session.provider_session_id for session in parse_trajectory_db(path, fallback_id="x")]
 
-    assert before == ["x", "x:trajectory-1"]
-    assert after == ["x:trajectory-1"]
+    with pytest.raises(LogicalExportError, match="no stable identity"):
+        list(parse_trajectory_db(path, fallback_id="x"))
 
 
 def test_the_bare_fallback_is_not_taken_when_a_native_id_occupies_it(tmp_path: Path) -> None:

@@ -2306,8 +2306,22 @@ def parse_stream_payload(
         return [observer.apply(session, "codex")]
     if runtime_provider is Provider.HERMES:
         observer = AdmissionObserver(hermes_unknown_wire_type)
+
+        def admitted(records: Iterable[object]) -> Iterator[object]:
+            # The parser's own recognition decides: a known-kind record it
+            # skips (no uuid, say) is refused, not counted as materialized.
+            for item in records:
+                record = _payload_record(item)
+                observer.observe(
+                    item,
+                    malformed=record is not None
+                    and hermes_unknown_wire_type(record) is None
+                    and not hermes_spans.looks_like_atof_payload(record),
+                )
+                yield item
+
         sessions = hermes_spans.parse_atof_stream(
-            observer.observing(payloads),
+            admitted(payloads),
             fallback_id,
             profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )

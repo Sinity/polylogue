@@ -329,11 +329,35 @@ def _history_overlap(inputs: list[_TranscriptEntry], transcript: list[_Transcrip
     pinned = 0
     while pinned < largest and pinned < len(transcript) and inputs[pinned] == transcript[pinned]:
         pinned += 1
-    remaining_inputs = inputs[pinned:largest]
-    for size in range(min(len(remaining_inputs), len(transcript)), 0, -1):
-        if remaining_inputs[:size] == transcript[-size:]:
-            return pinned + size
-    return pinned
+    return pinned + _prefix_suffix_overlap(inputs[pinned:largest], transcript)
+
+
+def _prefix_suffix_overlap(pattern: list[_TranscriptEntry], text: list[_TranscriptEntry]) -> int:
+    """Length of the longest prefix of ``pattern`` that is a suffix of ``text``.
+
+    Knuth-Morris-Pratt over ``text`` with ``pattern``'s failure function:
+    linear in both lengths, where trying every overlap size and slicing
+    each candidate was quadratic in a long retained history.
+    """
+    if not pattern or not text:
+        return 0
+    failure = [0] * len(pattern)
+    matched = 0
+    for index in range(1, len(pattern)):
+        while matched and pattern[index] != pattern[matched]:
+            matched = failure[matched - 1]
+        if pattern[index] == pattern[matched]:
+            matched += 1
+        failure[index] = matched
+    matched = 0
+    for entry in text:
+        if matched == len(pattern):
+            matched = failure[matched - 1]
+        while matched and entry != pattern[matched]:
+            matched = failure[matched - 1]
+        if entry == pattern[matched]:
+            matched += 1
+    return matched
 
 
 def _messages_for_span(
@@ -474,17 +498,23 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
     # Membership reads every variant of a coordinate, so a trace whose GenAI
     # attributes survive only in a conflicting copy keeps its session and the
     # ``otel_conflicting_span_id`` evidence.
+    # A trace is one trace across resources: its HTTP root may live under a
+    # frontend resource while the GenAI child lives under the agent's, so
+    # membership is decided by trace id alone, and topology below links
+    # spans across resources within the trace.
     genai_traces = {
-        coordinate[:2]
+        coordinate[1]
         for coordinate, copies in variants.items()
         if any(any(key.startswith("gen_ai.") for key in _attributes(copy.get("attributes"))) for copy, _ in copies)
     }
     spans = [
         (resource_id, span, schema_url)
         for resource_id, span, schema_url in spans
-        if _span_coordinate(resource_id, span)[:2] in genai_traces
+        if _span_coordinate(resource_id, span)[1] in genai_traces
     ]
-    span_details: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
+    # Topology is trace-scoped: ``(trace_id, span_id)`` -> (own conversation,
+    # parent span, resource, start). Span ids are unique within a trace.
+    span_details: dict[tuple[str, str], tuple[str | None, str | None, str, int]] = {}
     for resource_id, span, _schema_url in spans:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
         span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
@@ -492,86 +522,95 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
             # The conversation is read from every copy of the coordinate, as
             # membership is: a conversation id surviving only in a conflicting
             # copy still names the session, so a later clean export of that
-            # copy keys the same one.
-            conversation_id = next(
-                (
-                    found
-                    for copy, _url in sorted(variants[_span_coordinate(resource_id, span)], key=_span_variant_key)
-                    if (found := optional_string(_attributes(copy.get("attributes")).get("gen_ai.conversation.id")))
-                ),
-                None,
-            )
-            span_details[(resource_id, trace_id, span_id)] = (
-                conversation_id,
+            # copy keys the same one. Copies naming different conversations
+            # leave the coordinate identity-ambiguous: none is chosen.
+            named = {
+                found
+                for copy, _url in variants[_span_coordinate(resource_id, span)]
+                if (found := optional_string(_attributes(copy.get("attributes")).get("gen_ai.conversation.id")))
+            }
+            span_details[(trace_id, span_id)] = (
+                next(iter(named)) if len(named) == 1 else None,
                 optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id")),
+                resource_id,
+                _span_key(span)[0],
             )
 
-    def conversation_for(resource_id: str, trace_id: str, span_id: str) -> str | None:
+    def conversation_for(trace_id: str, span_id: str) -> tuple[str, str] | None:
+        """The conversation a span or its nearest ancestor names, with that span's resource."""
         seen: set[str] = set()
         while span_id not in seen:
             seen.add(span_id)
-            details = span_details.get((resource_id, trace_id, span_id))
+            details = span_details.get((trace_id, span_id))
             if details is None:
                 break
-            conversation_id, parent_id = details
+            conversation_id, parent_id, resource_id, _start = details
             if conversation_id:
-                return conversation_id
+                return conversation_id, resource_id
             if parent_id is None:
                 break
             span_id = parent_id
         return None
 
-    resolved: dict[tuple[str, str, str], str | None] = {key: conversation_for(*key) for key in span_details}
+    # A span joins the session of the span that supplied its conversation:
+    # a GenAI span keeps its own resource, and a topology span from another
+    # resource of the trace joins the conversation it relates to.
+    resolved: dict[tuple[str, str], tuple[str, str] | None] = {key: conversation_for(*key) for key in span_details}
     # A span with no conversation of its own or above it (the HTTP/root span
     # over a GenAI child) is topology evidence of the conversation below it,
-    # not a separate trace session: it joins the conversation of its
-    # descendants, the lowest id when several share the ancestor, and spans
-    # beneath it follow. A trace with exactly one conversation keeps every
-    # remaining span there too.
-    adopted: dict[tuple[str, str, str], set[str]] = defaultdict(set)
-    for (resource_id, trace_id, span_id), conversation_id in resolved.items():
-        if conversation_id is None:
+    # not a separate trace session. When several conversations share the
+    # ancestor it joins the one whose descendant started first, an owner a
+    # later sibling conversation appended to the export cannot displace.
+    # Spans beneath it follow; a trace with exactly one conversation keeps
+    # every remaining span there too.
+    adopted: dict[tuple[str, str], tuple[int, str, tuple[str, str]]] = {}
+    for (trace_id, span_id), conversation in resolved.items():
+        if conversation is None:
             continue
+        claim = (span_details[(trace_id, span_id)][3], span_id, conversation)
         seen_ids = {span_id}
-        parent_id = span_details[(resource_id, trace_id, span_id)][1]
+        parent_id = span_details[(trace_id, span_id)][1]
         while parent_id is not None and parent_id not in seen_ids:
             seen_ids.add(parent_id)
-            parent_key = (resource_id, trace_id, parent_id)
+            parent_key = (trace_id, parent_id)
             if parent_key not in span_details:
                 break
-            if resolved.get(parent_key) is None:
-                adopted[parent_key].add(conversation_id)
+            if resolved.get(parent_key) is None and (parent_key not in adopted or claim < adopted[parent_key]):
+                adopted[parent_key] = claim
             parent_id = span_details[parent_key][1]
-    trace_conversations: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for (resource_id, trace_id, _span_id), conversation_id in resolved.items():
-        if conversation_id is not None:
-            trace_conversations[(resource_id, trace_id)].add(conversation_id)
+    trace_conversations: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for (trace_id, _span_id), conversation in resolved.items():
+        if conversation is not None:
+            trace_conversations[trace_id].add(conversation)
 
-    def group_conversation(resource_id: str, trace_id: str, span_id: str) -> str | None:
-        key = (resource_id, trace_id, span_id)
+    def group_conversation(trace_id: str, span_id: str) -> tuple[str, str] | None:
+        key = (trace_id, span_id)
         if resolved.get(key) is not None:
             return resolved[key]
         seen_ids: set[str] = set()
         current: str | None = span_id
         while current is not None and current not in seen_ids:
             seen_ids.add(current)
-            current_key = (resource_id, trace_id, current)
-            if adopted.get(current_key):
-                return min(adopted[current_key])
+            current_key = (trace_id, current)
+            if current_key in adopted:
+                return adopted[current_key][2]
             details = span_details.get(current_key)
             current = details[1] if details is not None else None
-        only = trace_conversations.get((resource_id, trace_id), set())
+        only = trace_conversations.get(trace_id, set())
         return next(iter(only)) if len(only) == 1 else None
 
-    groups: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = defaultdict(list)
+    groups: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None, str]]] = defaultdict(list)
     for resource_id, span, schema_url in spans:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
         span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
         if trace_id is None or span_id is None:
             continue
-        conversation_id = group_conversation(resource_id, trace_id, span_id)
-        kind, group_identity = ("conversation", conversation_id) if conversation_id else ("trace", trace_id)
-        groups[(resource_id, kind, group_identity)].append((span, schema_url))
+        conversation = group_conversation(trace_id, span_id)
+        if conversation is not None:
+            conversation_id, conversation_resource = conversation
+            groups[(conversation_resource, "conversation", conversation_id)].append((span, schema_url, resource_id))
+        else:
+            groups[(resource_id, "trace", trace_id)].append((span, schema_url, resource_id))
 
     sessions: list[ParsedSession] = []
     for (resource_id, kind, group_identity), scoped_spans in sorted(groups.items()):
@@ -579,9 +618,9 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         events: list[ParsedSessionEvent] = []
         models: set[str] = set()
         transcript: list[_TranscriptEntry] = []
-        for span, schema_url in sorted(
+        for span, schema_url, span_resource in sorted(
             scoped_spans,
-            key=lambda item: (_span_key(item[0]), _span_coordinate(resource_id, item[0])[1]),
+            key=lambda item: (_span_key(item[0]), _span_coordinate(item[2], item[0])[1], item[2]),
         ):
             attrs = _attributes(span.get("attributes"))
             trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
@@ -613,10 +652,13 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
                         },
                         "usage_fidelity": _usage_fidelity(attrs),
                         "events": _json_value(span.get("events", [])),
+                        # A span from another resource of the same trace
+                        # keeps its own resource identity.
+                        **({"resource_id": span_resource} if span_resource != resource_id else {}),
                     },
                 )
             )
-            for conflicting_span, conflicting_schema_url in conflicts.get(_span_coordinate(resource_id, span), ()):
+            for conflicting_span, conflicting_schema_url in conflicts.get(_span_coordinate(span_resource, span), ()):
                 events.append(
                     ParsedSessionEvent(
                         event_type="otel_conflicting_span_id",

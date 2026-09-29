@@ -391,3 +391,29 @@ def test_the_default_scan_never_reads_a_wire_type_from_tool_data() -> None:
         record = {"type": "message", "tool_call": {key: {"type": "unknown", "nested": [{"kind": "future_x"}]}}}
         assert _unknown_wire_type(record) is None, key
     assert _unknown_wire_type({"type": "message", "content": [{"content_type": "future_part"}]}) == "future_part"
+
+
+def test_an_atof_record_the_stream_parser_skips_is_refused() -> None:
+    """A known-kind ATOF record missing its uuid is a typed refusal, not materialized.
+
+    Anti-vacuity (Codex P1, #5711): observe with the discriminator scan alone
+    and the skipped record is counted ``MATERIALIZED`` though it left nothing.
+    """
+    valid = {
+        "atof_version": "0.1",
+        "kind": "mark",
+        "uuid": "u-1",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "name": "hermes.turn.start",
+        "metadata": {"session_id": "hermes-s1"},
+    }
+    missing_uuid = {key: value for key, value in valid.items() if key != "uuid"}
+    from polylogue.sources.dispatch import parse_stream_payload
+
+    sessions = parse_stream_payload(Provider.HERMES, iter([valid, missing_uuid]), "hermes-stream")
+
+    accounting = sessions[0].unit_accounting
+    assert accounting is not None
+    dispositions = [outcome.disposition for outcome in accounting.outcomes]
+    assert AdmissionDisposition.MATERIALIZED in dispositions
+    assert AdmissionDisposition.TYPED_REFUSAL in dispositions

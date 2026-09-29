@@ -285,7 +285,9 @@ class AdmissionObserver:
         #: session drawn from them that carries no ledger of its own.
         self._proof: ParseAccounting | None = None
 
-    def observe(self, item: object, source_index: int | None = None, *, recognized: bool = True) -> None:
+    def observe(
+        self, item: object, source_index: int | None = None, *, recognized: bool = True, malformed: bool = False
+    ) -> None:
         """Classify one record at dense ledger ordinal ``self._count``.
 
         ``source_index`` is the record's 1-based position in the source file
@@ -303,7 +305,10 @@ class AdmissionObserver:
         """
         ordinal = self._count
         self._count += 1
-        if not isinstance(item, Mapping):
+        if not isinstance(item, Mapping) or malformed:
+            # ``malformed`` is the caller's parser decision: a record of a
+            # known kind its parser skips for a missing required field left
+            # no material, so it is a typed refusal, never materialized.
             self._ledger.refusal(
                 AdmissionUnit.OUTER_RECORD, ordinal, type(item).__name__, AdmissionRefusalReason.MALFORMED
             )
