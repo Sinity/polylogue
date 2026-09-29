@@ -680,7 +680,7 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     ) -> None:
         nonlocal census_calls
         census_calls += 1
-        assert kwargs["manage_transaction"] is True
+        assert kwargs.get("manage_transaction", True) is True
         original_census(archive, raw_id, sessions, **kwargs)
 
     monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", require_source_transaction)

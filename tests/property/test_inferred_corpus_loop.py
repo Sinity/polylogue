@@ -369,7 +369,7 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
         assert written.files and all(path.stat().st_size > 0 for path in written.files)
         expected_session_count += written.batch.report.generated_count
         source_paths = tuple(path.relative_to(source_root) for path in written.files)
-        expected_source_paths.update(str(path) for path in source_paths)
+        expected_source_paths.update(str(path.resolve()) for path in written.files)
         sources.extend(Source(name=selection.provider, path=path) for path in source_paths)
 
     archive_root = tmp_path / "archive"

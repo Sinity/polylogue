@@ -26,8 +26,6 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from polylogue.config import Source
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 
@@ -92,9 +90,10 @@ def _write_multi_session_state_db(path: Path) -> None:
     conn.close()
 
 
-@pytest.mark.usefixtures("workspace_env")
-def test_multi_session_hermes_snapshot_imports_as_one_shared_raw(tmp_path: Path) -> None:
-    archive_root = tmp_path / "archive"
+def test_multi_session_hermes_snapshot_imports_as_one_shared_raw(
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
+) -> None:
+    archive_root = one_shot_workspace_env["archive_root"]
     state_db = tmp_path / "hermes-profile" / "state.db"
     _write_multi_session_state_db(state_db)
 
