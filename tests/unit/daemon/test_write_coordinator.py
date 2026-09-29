@@ -1251,6 +1251,29 @@ class TestDeclaredHoldBudgets:
         assert event.hold_over_budget is False
         assert count == 0
 
+    def test_over_budget_failed_admission_is_flagged_and_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anti-vacuity: hard-coding False hides a slow refusing admission hook."""
+        from polylogue.daemon import write_coordinator as wc
+
+        monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
+
+        async def scenario() -> tuple[wc.DaemonWriteEvent, int]:
+            coordinator = wc.DaemonWriteCoordinator()
+
+            def refuse_slowly() -> None:
+                time.sleep(0.01)
+                raise RuntimeError("refused")
+
+            with pytest.raises(RuntimeError, match="refused"):
+                await coordinator.run("slow.admission", _return_ready, on_admit=refuse_slowly)
+            event = coordinator.snapshot().last_event
+            assert event is not None
+            return event, coordinator.snapshot().over_budget_holds
+
+        event, count = asyncio.run(scenario())
+        assert event.hold_over_budget is True
+        assert count == 1
+
     def test_the_admitted_work_can_end_itself_at_the_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The declared bound reaches the work that has to respect it.
 
@@ -1542,6 +1565,33 @@ def test_bridge_refuses_submission_to_an_already_stopped_owner_loop() -> None:
             loop.close()
 
 
+def test_bridge_refuses_submission_to_stopped_but_open_owner_loop() -> None:
+    """Anti-vacuity: is_closed alone submits to a loop that can never run it."""
+    from polylogue.daemon.write_coordinator import DaemonWriterOwnerLoopStopped
+
+    loop = asyncio.new_event_loop()
+    stopped = threading.Event()
+
+    def run_then_stop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+        stopped.set()
+
+    thread = threading.Thread(target=run_then_stop, daemon=True)
+    thread.start()
+    try:
+        assert stopped.wait(timeout=5.0)
+        assert not loop.is_closed()
+        assert not loop.is_running()
+        bridge = DaemonWriteThreadBridge(DaemonWriteCoordinator(), loop, timeout=0.05)
+        with pytest.raises(DaemonWriterOwnerLoopStopped, match="did not start"):
+            bridge.run_sync_with_timeout("embedding.publish", None, lambda: "unreachable")
+    finally:
+        thread.join(timeout=5.0)
+        loop.close()
+
+
 @pytest.mark.asyncio
 async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_write() -> None:
     """Admitted-but-not-started is settlement's problem, not the caller's.
@@ -1626,3 +1676,20 @@ async def test_failed_admission_hook_publishes_terminal_release() -> None:
     assert coordinator.snapshot().active_actor is None
     assert await coordinator.run("successor", lambda: _return_ready()) == "ready"
     assert await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_fresh_task_cannot_write_after_successful_shutdown() -> None:
+    """Anti-vacuity: adding a new task to the managed set would admit this write."""
+    coordinator = DaemonWriteCoordinator()
+    assert await coordinator.shutdown(timeout=1.0)
+    ran = False
+
+    async def operation() -> str:
+        nonlocal ran
+        ran = True
+        return "written"
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await asyncio.create_task(coordinator.run("late.write", operation))
+    assert ran is False

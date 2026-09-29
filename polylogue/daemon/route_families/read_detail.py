@@ -292,14 +292,18 @@ def _handle_get_session_topology(
             topology = asyncio.run(
                 read_session_topology(archive, conv_id, node_offset=node_offset, node_limit=node_limit)
             )
-        result = build_topology_envelope(topology, node_limit=node_limit) if topology is not None else None
+        result = (
+            build_topology_envelope(topology, node_limit=node_limit, node_offset=node_offset)
+            if topology is not None
+            else None
+        )
     else:
 
         async def _get(poly: Polylogue) -> object:
             topology = await poly.get_session_topology(conv_id, node_offset=node_offset, node_limit=node_limit)
             if topology is None:
                 return None
-            return build_topology_envelope(topology, node_limit=node_limit)
+            return build_topology_envelope(topology, node_limit=node_limit, node_offset=node_offset)
 
         result = self._sync_run(_get)
     if result is None:

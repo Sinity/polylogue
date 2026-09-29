@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.evidence_integrity import EvidenceIntegrityStatus
+from polylogue.core.evidence_integrity import EvidenceIntegrityStatus, evaluate_adapter
 from polylogue.operations.finding_evidence import (
     build_finding_evidence_adapter,
     evaluate_finding_evidence,
@@ -241,9 +241,14 @@ def test_closed_loop_on_the_detectors_own_output(tmp_path: Path) -> None:
 
 
 def test_ancestry_expansion_is_bounded(tmp_path: Path) -> None:
-    """The graph population honours the evaluator's own node budget."""
+    """A wide assertion stops at the budget and leaves an exhaustion witness.
+
+    Anti-vacuity: appending every sibling before the guard allocates one node
+    and edge per cited ref, and this synthetic 20-ref envelope makes that
+    growth visible even with a budget of one.
+    """
     with sqlite3.connect(_user_db(tmp_path)) as conn:
-        assertion_id = _grounded_finding(conn)
+        assertion_id = _grounded_finding(conn, evidence_refs=tuple(f"agent:wide-{i}" for i in range(20)))
         conn.commit()
         provenance = compute_finding_provenance(conn, assertion_id)
         assert provenance is not None
@@ -254,9 +259,17 @@ def test_ancestry_expansion_is_bounded(tmp_path: Path) -> None:
             definition_hash="definition",
             max_nodes=1,
         )
+        verdict = evaluate_adapter(
+            f"assertion:{assertion_id}",
+            adapter,
+            frame_hash="index:g1",
+            definition_hash="definition",
+            max_nodes=1,
+        )
 
-    assert len(adapter.nodes()) >= 1
-    assert len(adapter.nodes()) <= 3
+    assert len(adapter.nodes()) == 1
+    assert len(adapter.edges()) == 1
+    assert "evaluation_budget_exhausted" in verdict.reason_codes
 
 
 @pytest.mark.asyncio
@@ -293,3 +306,39 @@ async def test_resolution_reports_the_verdict(tmp_path: Path) -> None:
     assert integrity["evaluator_version"] == "evidence-integrity-v1"
     assert payload.payload["staleness_verdict"] != "current"
     assert any("not current-supported" in caveat for caveat in payload.caveats)
+
+
+def test_session_evidence_resolves_against_the_index(tmp_path: Path) -> None:
+    """Direct and transitive session evidence is proven against the index tier.
+
+    ANTI-VACUITY: drop the index-tier existence probe from
+    ``resolve_evidence_ref`` and every real session becomes a missing node:
+    the directly grounded finding turns UNRESOLVED and the transitively cited
+    session node is no longer ``ok``. An absent session must stay missing.
+    """
+    index = sqlite3.connect(":memory:")
+    index.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+    index.execute("INSERT INTO sessions VALUES ('codex-session:one')")
+    with sqlite3.connect(_user_db(tmp_path)) as conn:
+        direct = _grounded_finding(conn, claim_key="direct", evidence_refs=("session:codex-session:one",))
+        dangling = _grounded_finding(conn, claim_key="dangling", evidence_refs=("session:codex-session:gone",))
+        transitive = _grounded_finding(
+            conn, claim_key="transitive", evidence_refs=(f"assertion:{direct}", f"assertion:{dangling}")
+        )
+        conn.commit()
+        verdicts = {}
+        for name, assertion_id in (("direct", direct), ("dangling", dangling)):
+            provenance = compute_finding_provenance(conn, assertion_id, index_conn=index)
+            assert provenance is not None
+            verdicts[name] = evaluate_finding_evidence(conn, provenance, index_conn=index)
+        transitive_provenance = compute_finding_provenance(conn, transitive, index_conn=index)
+        assert transitive_provenance is not None
+        adapter = build_finding_evidence_adapter(
+            conn, transitive_provenance, frame_hash=None, definition_hash=None, index_conn=index
+        )
+
+    assert verdicts["direct"].status is EvidenceIntegrityStatus.SUPPORTED
+    assert verdicts["dangling"].status is EvidenceIntegrityStatus.UNRESOLVED
+    ref_states = {node.ref: node.ref_state for node in adapter.graph_nodes}
+    assert ref_states["session:codex-session:one"] == "ok"
+    assert ref_states["session:codex-session:gone"] != "ok"

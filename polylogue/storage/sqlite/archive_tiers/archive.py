@@ -6453,6 +6453,7 @@ class ArchiveStore:
         *,
         limit: int | None = None,
         offset: int = 0,
+        actions_only: bool = False,
         sort: str | None = None,
         reverse: bool = False,
         session_id: str | None = None,
@@ -6549,6 +6550,8 @@ class ArchiveStore:
         if session_id is not None:
             where = f"{where} AND s.session_id = ?"
             filter_params.append(session_id)
+        if actions_only:
+            where = f"{where} AND b.block_type IN ('tool_use', 'tool_result')"
         order_by = _search_order_by(sort=sort, reverse=reverse)
         params: list[object] = [match_query, *filter_params]
         params.extend([-1 if limit is None else limit, offset])

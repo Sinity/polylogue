@@ -42,7 +42,8 @@ from polylogue.operations.session_contracts import (
     TimelineEvent,
 )
 
-_EVENT_TEXT_SQL = sql_coalesced_json_extract("e.payload_json", ("summary", "text"))
+_EVENT_SUMMARY_SQL = sql_coalesced_json_extract("e.payload_json", ("summary",))
+_EVENT_TEXT_ONLY_SQL = sql_coalesced_json_extract("e.payload_json", ("text",))
 
 PagedRequest = TypeVar("PagedRequest", SessionList, SessionSearch, SessionRead, SessionTimeline)
 
@@ -260,14 +261,36 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
             SELECT 'session:' || e.session_id, e.session_id, s.origin, 'session-event',
                    e.event_type, e.occurred_at_ms, e.event_id, e.source_message_id,
                    -- polylogue-kc8eq retired the stored ``summary`` column as a
-                   -- write-time render of the payload. This is that render,
-                   -- moved to the read path: same COALESCE order, same '' floor,
-                   -- so the timeline text for a session-event is unchanged.
-                   -- The projection keeps a stored lone-surrogate escape
+                   -- write-time render of the payload. Preserve its Python
+                   -- truthiness fallback before rendering the timeline text.
+                   -- The rendered value keeps a stored lone-surrogate escape
                    -- spelled out; bare json_extract would yield invalid UTF-8.
-                   COALESCE("""
-            + _EVENT_TEXT_SQL
-            + """, '')
+                   CASE
+                     WHEN json_type(e.payload_json, '$.summary') IS NULL
+                       OR json_type(e.payload_json, '$.summary') = 'null'
+                       OR (json_type(e.payload_json, '$.summary') = 'text' AND json_extract(e.payload_json, '$.summary') = '')
+                       OR (json_type(e.payload_json, '$.summary') IN ('integer', 'real') AND json_extract(e.payload_json, '$.summary') = 0)
+                       OR (json_type(e.payload_json, '$.summary') = 'false')
+                       OR (json_type(e.payload_json, '$.summary') = 'array' AND json_array_length(e.payload_json, '$.summary') = 0)
+                       OR (json_type(e.payload_json, '$.summary') IN ('array', 'object')
+                           AND NOT EXISTS (SELECT 1 FROM json_each(e.payload_json, '$.summary')))
+                     THEN CASE
+                       WHEN json_type(e.payload_json, '$.text') IS NULL
+                         OR json_type(e.payload_json, '$.text') = 'null'
+                         OR (json_type(e.payload_json, '$.text') = 'text' AND json_extract(e.payload_json, '$.text') = '')
+                         OR (json_type(e.payload_json, '$.text') IN ('integer', 'real') AND json_extract(e.payload_json, '$.text') = 0)
+                         OR json_type(e.payload_json, '$.text') = 'false'
+                         OR (json_type(e.payload_json, '$.text') IN ('array', 'object')
+                             AND NOT EXISTS (SELECT 1 FROM json_each(e.payload_json, '$.text')))
+                       THEN ''
+                       ELSE """
+            + _EVENT_TEXT_ONLY_SQL
+            + """
+                     END
+                     ELSE """
+            + _EVENT_SUMMARY_SQL
+            + """
+                   END
             FROM session_events e JOIN sessions s ON s.session_id=e.session_id
         ) """
         )
@@ -308,6 +331,11 @@ def _provider(origin: str) -> str:
     return {"codex-session": "codex", "claude-code-session": "claude-code"}[origin]
 
 
+#: The SessionLogService messages that mean the configured root itself is
+#: unreachable, as opposed to a cursor or reference problem.
+_SOURCE_UNAVAILABLE_MESSAGES = frozenset({"session source is unavailable", "session source directory is unavailable"})
+
+
 @overload
 def raw_operation(request: RawRead, *, sources: Any = None, max_result_bytes: int = 256_000) -> RawContent: ...
 
@@ -328,7 +356,7 @@ def raw_operation(
     max_result_bytes: int = 256_000,
 ) -> RawPage | RawContent:
     from polylogue.operations.raw_sessions.memory import MemoryService
-    from polylogue.operations.raw_sessions.sessions import SessionLogService
+    from polylogue.operations.raw_sessions.sessions import SessionError, SessionLogService
     from polylogue.operations.raw_sessions.timeline import TimelineService
 
     service = SessionLogService(sources=sources, max_result_bytes=max_result_bytes)
@@ -390,29 +418,69 @@ def raw_operation(
         rows = result.get("entries", [])
     else:
         provider = _provider(request.origin)
-        if isinstance(request, RawSearch):
-            result = service.search(
-                provider,
-                request.query,
-                request.limit,
-                reference=request.reference,
-                cursor=request.continuation,
-                cursor_key=key,
-                scan_bytes=request.scan_bytes,
-            )
-            rows = result["matches"]
-        else:
-            result = service.timeline(
-                provider, None, None, None, request.limit, cursor=request.continuation, cursor_key=key
-            )
-            rows = result["entries"]
-        result["sources"] = [
-            {
-                "source": provider,
-                "availability": "available",
-                "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
+        configured = next((source for source in service.sources if source.provider == provider), None)
+
+        def unavailable(reason: str) -> dict[str, Any]:
+            # One shape for every raw per-source verb: search and list both
+            # degrade to a typed unavailable source instead of raising.
+            return {
+                "matches": [],
+                "entries": [],
+                "scanned_bytes": 0,
+                "truncated": False,
+                "next_cursor": None,
+                "gaps": [],
+                "sources": [
+                    {
+                        "source": provider,
+                        "availability": "unavailable",
+                        "reason": reason,
+                        "coverage": {"scanned_bytes": 0, "truncated": False},
+                    }
+                ],
             }
-        ]
+
+        if configured is None:
+            result = unavailable("session source is not configured")
+        elif not configured.root.is_dir():
+            result = unavailable("source root unavailable")
+        else:
+            try:
+                if isinstance(request, RawSearch):
+                    result = service.search(
+                        provider,
+                        request.query,
+                        request.limit,
+                        reference=request.reference,
+                        cursor=request.continuation,
+                        cursor_key=key,
+                        scan_bytes=request.scan_bytes,
+                    )
+                else:
+                    result = service.timeline(
+                        provider, None, None, None, request.limit, cursor=request.continuation, cursor_key=key
+                    )
+            except SessionError as exc:
+                # The root can vanish between the check above and the scan,
+                # and a reference can name a session in an unavailable root.
+                # Only the source-root conditions degrade; a stale or changed
+                # continuation is the caller's error and must still raise.
+                if str(exc) not in _SOURCE_UNAVAILABLE_MESSAGES:
+                    raise
+                result = unavailable(
+                    "referenced session source unavailable"
+                    if isinstance(request, RawSearch) and request.reference is not None
+                    else "source root unavailable"
+                )
+        rows = result["matches"] if isinstance(request, RawSearch) else result["entries"]
+        if "sources" not in result:
+            result["sources"] = [
+                {
+                    "source": provider,
+                    "availability": "available",
+                    "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
+                }
+            ]
     # Each row carries the stat identity its text was read under; the scanner
     # verified the descriptor before and after that read. Emission reports
     # that observation instead of re-stating the file, so a later change can

@@ -933,7 +933,7 @@ def archive_verification_migrated_owner_adapters(
             production_route="schema generation",
             population=("sqlite_master",),
             owned_reference="test_missing_enum_value_trips_enum_superset_check",
-            check=lambda: _check_enum_superset(archive_root, sample_limit),
+            check=lambda: _check_enum_superset(archive_root, sample_limit, index_path=index_path_override),
         ),
         _declared_owner(
             name="embeddings-refs-liveness",
@@ -1013,7 +1013,9 @@ def archive_verification_migrated_owner_adapters(
             production_route="hook reconciliation",
             population=("index.db.session_links",),
             owned_reference="test_contradiction_without_authoritative_winner_trips_the_check",
-            check=lambda: _check_hook_authority_topology_conflict(archive_root, sample_limit),
+            check=lambda: _check_hook_authority_topology_conflict(
+                archive_root, sample_limit, index_path=index_path_override
+            ),
         ),
         _declared_owner(
             name="blob-refs-liveness",
@@ -1132,10 +1134,10 @@ def archive_verification_migrated_owner_adapters(
         _declared_owner(
             name="corpus-absences",
             semantic_owner="candidate-corpus-fidelity",
-            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY}),
+            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY, _ROUTE_LIVE}),
             production_route="candidate corpus acceptance",
             population=("source.db.raw_session_memberships", "index.db.sessions"),
-            owned_reference="test_corpus_absences_red_twin",
+            owned_reference="test_absence_gate_catches_unindexed_membership_document",
             check=lambda: (
                 _check_corpus_absences_at_index_path(archive_root, index_path_override, sample_limit)
                 if index_path_override is not None
@@ -1145,10 +1147,10 @@ def archive_verification_migrated_owner_adapters(
         _declared_owner(
             name="corpus-attachment-fidelity",
             semantic_owner="candidate-attachment-fidelity",
-            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY}),
+            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY, _ROUTE_LIVE}),
             production_route="candidate attachment acceptance",
             population=("index.db.attachments", "index.db.attachment_refs"),
-            owned_reference="test_corpus_attachment_fidelity_red_twin",
+            owned_reference="test_attachment_gate_requires_provenance_for_unavailable_refs",
             check=lambda: (
                 _check_corpus_attachment_fidelity_at_index_path(archive_root, index_path_override, sample_limit)
                 if index_path_override is not None
@@ -1158,10 +1160,10 @@ def archive_verification_migrated_owner_adapters(
         _declared_owner(
             name="corpus-revision-fidelity",
             semantic_owner="candidate-revision-fidelity",
-            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY}),
+            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY, _ROUTE_LIVE}),
             production_route="candidate revision acceptance",
             population=("source.db.raw_session_memberships", "index.db.sessions", "index.db.messages"),
-            owned_reference="test_corpus_revision_fidelity_red_twin",
+            owned_reference="test_revision_gate_catches_smaller_index_than_best_recorded_revision",
             check=lambda: (
                 _check_corpus_revision_fidelity_at_index_path(archive_root, index_path_override, sample_limit)
                 if index_path_override is not None
@@ -1548,7 +1550,9 @@ def _check_parent_session_accounting(archive_root: Path, sample_limit: int) -> A
 # ---------------------------------------------------------------------------
 
 
-def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+def _check_hook_authority_topology_conflict(
+    archive_root: Path, sample_limit: int, *, index_path: Path | None = None
+) -> ArchiveVerificationCheck:
     """Census contradictions between hook evidence and transcript inference.
 
     A contradiction is not an error: Codex's own ``thread_spawn_edges``
@@ -1558,7 +1562,7 @@ def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: in
     left no authoritative winner, so that is the only condition reported as an
     error here -- the count itself is reported as observability.
     """
-    index_path = _resolve_index_path(archive_root)
+    index_path = index_path or _resolve_index_path(archive_root)
     if not index_path.exists():
         return _skip_check("hook-authority-topology-conflict", "index.db not present")
     try:
@@ -1789,7 +1793,9 @@ _ORIGIN_CHECK_COLUMN_PATTERN = re.compile(
 )
 
 
-def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+def _check_enum_superset(
+    archive_root: Path, _sample_limit: int, *, index_path: Path | None = None
+) -> ArchiveVerificationCheck:
     """Every live ``origin``/``dst_origin`` CHECK list is a superset of ``Origin``.
 
     A CHECK constraint is generated from :class:`polylogue.core.enums.Origin`
@@ -1816,7 +1822,9 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
     bad: dict[str, Any] = {}
     examined_any = False
     for db_name in ("source.db", "index.db"):
-        db_path = archive_root / db_name if db_name == "source.db" else _resolve_index_path(archive_root)
+        db_path = (
+            archive_root / db_name if db_name == "source.db" else (index_path or _resolve_index_path(archive_root))
+        )
         if not db_path.exists():
             continue
         examined_any = True
@@ -2036,7 +2044,7 @@ def _check_blob_reference_closure_for_index(
             f"{counts['raw_missing_exact_count']:,} raw session(s) and "
             f"{counts['acquired_attachment_missing_ref_count']:,} acquired attachment(s) lack canonical refs"
             if total
-            else "every raw session and acquired attachment has canonical reference closure"
+            else "every raw session and acquired attachment requiring canonical reference closure has it"
         ),
         count=total,
         details=[f"raw:{raw_id}" for raw_id in raw_sample]
@@ -3060,7 +3068,8 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
     valid_supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
     logical_cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
     typed_cte = typed_raw_cte(conn, name="typed_raws")
-    typed_terms = ", ".join(f"'{term}'" for term in sorted(TYPED_ABSENCE_TERMS))
+    terminal_terms = TYPED_ABSENCE_TERMS - {"quarantined_cohort_unmaterialized", "authority_blocked"}
+    typed_terms = ", ".join(f"'{term}'" for term in sorted(terminal_terms))
     row = conn.execute(
         f"""
         WITH {typed_cte}, heads AS (
@@ -3536,8 +3545,8 @@ def _check_chatgpt_content_conservation_at_index_path(
     if not evidence["content_units_enumerated"]:
         return ArchiveVerificationCheck(
             name="chatgpt-content-conservation",
-            status=OutcomeStatus.ERROR,
-            summary="ChatGPT documents overlap the candidate but contain no measurable content units",
+            status=OutcomeStatus.OK,
+            summary="supported ChatGPT documents overlap the candidate and contain no content-bearing units",
             evidence={**evidence, "outcome_reason": "zero_content_units"},
         )
     rejected = int(evidence["rejected_mapping_candidates"])
@@ -3671,9 +3680,24 @@ def verify_archive(
         unsupported = [owner.name for owner in selected if owner.candidate_check is None]
         if unsupported:
             raise ValueError("candidate index verification is unsupported for check(s): " + ", ".join(unsupported))
-    report = compose_outcome_checks(selected)
+    report = compose_outcome_checks(tuple(owner for owner in selected if owner.check is not None))
     coverage = ArchiveVerificationCoverage(
-        route=("candidate-index" if index_path_override is not None else _ROUTE_LIVE),
+        route=(
+            next(
+                (
+                    route
+                    for route in (
+                        _ROUTE_SOURCE_PREFLIGHT,
+                        _ROUTE_CROSS_TIER_CANDIDATE,
+                        _ROUTE_INDEX_CANDIDATE,
+                        _ROUTE_CORPUS_FIDELITY,
+                        _ROUTE_HEALTH_MEDIUM,
+                    )
+                    if set(selected_names) == set(archive_verification_names_for_route(route))
+                ),
+                "reindex-cross-tier-candidate" if index_path_override is not None else _ROUTE_LIVE,
+            )
+        ),
         candidate_id=str(index_path_override) if index_path_override is not None else None,
         declarations=selected,
         missing_production_routes=tuple(owner.name for owner in selected if not owner.production_route),

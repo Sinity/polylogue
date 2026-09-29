@@ -7,16 +7,16 @@ from typing import TYPE_CHECKING, cast
 
 from polylogue.archive.query.retrieval import search_limit
 from polylogue.archive.query.retrieval import search_query_text as plan_search_query_text
-from polylogue.archive.query.search_contract import SearchExecution, resolve_vector_provider
+from polylogue.archive.query.search_contract import SearchExecution
 from polylogue.archive.query.support import session_to_summary
 from polylogue.storage.archive_identity import archive_file_set_root
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
-    from polylogue.archive.query.search_contract import LaneFailure
+    from polylogue.archive.query.search_contract import ArchiveSearchResult
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.config import Config
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 
 DEFAULT_SEARCH_SNIPPET_MAX_CHARS = 320
 DEFAULT_TITLE_MAX_CHARS = 96
@@ -292,51 +292,23 @@ def plan_has_search_hit_evidence(plan: SessionQueryPlan) -> bool:
 async def search_hits_for_plan(
     plan: SessionQueryPlan,
     config: Config,
-) -> list[SessionSearchHit]:
-    """Return evidence-bearing hits for search-like query plans.
-
-    Executes over the archive: lexical (``dialogue``)
-    hits carry FTS snippets, semantic/hybrid lanes resolve through the
-    vector provider, and hybrid preserves per-lane RRF rank contributions.
-    """
-    if not plan_has_search_hit_evidence(plan):
-        return []
-
-    # A session-seeded plan (near:id:) carries no FTS/text evidence; its evidence is
-    # the seed session's stored vectors, resolved by archive_search_hits through the
-    # vector provider. It must bypass the text-query gate below (which would treat an
-    # empty query string as "no hits") and fail typed if it cannot execute.
-    query_text = plan.similar_text or plan_search_query_text(plan)
-    if not query_text and plan.similar_session_id is None:
-        return []
-
+) -> SearchHitResults:
+    """Return the native ranked read and its lane evidence through one projection."""
     from polylogue.archive.query.archive_execution import archive_search_hits
     from polylogue.archive.query.transaction import run_archive_read
 
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
+    if not plan_has_search_hit_evidence(plan):
+        return SearchHitResults([], SearchExecution((), ()))
+    query_text = plan.similar_text or plan_search_query_text(plan)
+    if not query_text and plan.similar_session_id is None:
+        return SearchHitResults([], SearchExecution((), ()))
     archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    needs_vector = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane == "hybrid")
-    vector_provider, vector_failure = (
-        resolve_vector_provider(config, archive_root=archive_root, provider=plan.vector_provider)
-        if needs_vector
-        else (None, None)
-    )
-    if vector_failure is not None and plan.retrieval_lane != "hybrid":
-        from polylogue.core.errors import EmbeddingRetrievalNotReadyError
-
-        raise EmbeddingRetrievalNotReadyError(
-            "semantic retrieval is unavailable: no configured/constructible vector backend; "
-            "configure Voyage/sqlite-vec and retry",
-            readiness_status="disabled" if vector_failure.kind == "unavailable" else "failed",
-        )
-    executable_plan = replace(plan, vector_provider=vector_provider)
-    paired, resolved_lane = await run_archive_read(
+    result = await run_archive_read(
         archive_root,
         operation="archive.query.search-hits-for-plan",
-        arguments={"plan": executable_plan, "default_limit": plan.limit or search_limit(plan)},
+        arguments={"plan": plan, "default_limit": plan.limit or search_limit(plan)},
         work=lambda archive: archive_search_hits(
-            executable_plan,
+            plan,
             archive_root=archive_root,
             config=config,
             default_limit=plan.limit or search_limit(plan),
@@ -347,28 +319,25 @@ async def search_hits_for_plan(
         projection="search-hits",
         workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
     )
-    return project_search_hits(plan, paired, resolved_lane, vector_failure=vector_failure)
+    return project_search_hits(plan, result)
 
 
 def project_search_hits(
     plan: SessionQueryPlan,
-    paired: list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]],
-    resolved_lane: str,
-    *,
-    vector_failure: LaneFailure | None = None,
+    result: ArchiveSearchResult,
 ) -> SearchHitResults:
-    """Hydrate and describe actual executing lanes once for every surface."""
+    """Hydrate hits without reconstructing or discarding the native lane outcome."""
     query_text = plan.similar_text or plan_search_query_text(plan)
     query_terms = (query_text,) if query_text else ()
     terms = search_terms(query_terms)
     hits: list[SessionSearchHit] = []
-    for rank, (native_hit, summary) in enumerate(paired, start=1):
+    for rank, (native_hit, summary) in enumerate(result.hits, start=1):
         hits.append(
             session_search_hit_from_summary(
                 _archive_summary_to_domain(summary),
                 rank=native_hit.rank or rank,
-                retrieval_lane=resolved_lane,
-                match_surface=search_hit_surface(resolved_lane),
+                retrieval_lane=result.retrieval_lane,
+                match_surface=search_hit_surface(result.retrieval_lane),
                 message_id=native_hit.message_id,
                 snippet=native_hit.snippet,
                 matched_terms=terms,
@@ -384,18 +353,7 @@ def project_search_hits(
                 else None,
             )
         )
-    needs_vector = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane == "hybrid")
-    execution = SearchExecution(
-        requested_lanes=("text", "vector")
-        if plan.retrieval_lane == "hybrid"
-        else (("vector",) if needs_vector else ("text",)),
-        executed_lanes=("text", "vector")
-        if resolved_lane == "hybrid"
-        else (("vector",) if resolved_lane == "semantic" else ("text",)),
-        unavailable_lanes=("vector",) if vector_failure and vector_failure.kind == "unavailable" else (),
-        failed_lanes=(vector_failure,) if vector_failure and vector_failure.kind != "unavailable" else (),
-    )
-    return SearchHitResults(hits, execution)
+    return SearchHitResults(hits, result.execution)
 
 
 def _archive_summary_to_domain(summary: object) -> SessionSummary:

@@ -57,8 +57,6 @@ def select_embedding_session_window(
             max_messages=max_messages,
             min_messages=min_messages,
         )
-    if min_messages is not None:
-        rows = [row for row in rows if row.message_count >= min_messages]
     session_limit_reached = max_sessions is not None and len(rows) > max_sessions
     selected = rows if max_sessions is None else rows[:max_sessions]
     return tuple(row.session_id for row in selected), session_limit_reached

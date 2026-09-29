@@ -42,7 +42,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.archive.models import Message, Session, SessionSummary
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
-    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.query.search_hits import SearchHitResults, SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
     from polylogue.core.protocols import SessionOutputStore
@@ -487,7 +487,7 @@ def format_search_hit_list(
 
 
 def format_search_envelope(
-    hits: list[SessionSearchHit],
+    hits: SearchHitResults,
     *,
     query: str,
     retrieval_lane: str,
@@ -505,8 +505,9 @@ def format_search_envelope(
     and the Python API's ``Polylogue.search_envelope()`` shape (#1266, #1749).
     ``total`` is the shared "count when known" field: callers that hold the
     query spec thread the ``spec.count()`` result so the CLI reports a
-    concrete count like every other surface. ``None`` is retained only for
-    the genuine no-spec case where no count is available.
+    concrete count when that relation has an exact count. Ranked vector and
+    hybrid candidate pages retain ``None`` rather than a lexical-only or
+    semantic-only count falsely presented as the union.
     """
     counts = message_counts or {}
     bounded_hits = [_bounded_search_hit(hit) for hit in hits]
@@ -528,13 +529,14 @@ def format_search_envelope(
         sort=sort,
         cursor=cursor,
         authority=authority,
+        execution=hits.execution,
     )
     return envelope.model_dump_json(indent=2, exclude_none=True)
 
 
 async def output_search_hits(
     env: AppEnv,
-    hits: list[SessionSearchHit],
+    hits: SearchHitResults,
     output: QueryOutputSpec,
     repo: SessionOutputStore | None = None,
     *,

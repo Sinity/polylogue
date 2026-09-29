@@ -328,6 +328,8 @@ def _zip_coordinate(row: Mapping[str, object]) -> tuple[int, int] | None:
 
 def _legacy_split_index(row: Mapping[str, object]) -> int | None:
     source_index = row.get("source_index")
+    if source_index is None:
+        return 0
     if not isinstance(source_index, (int, str)):
         return None
     try:

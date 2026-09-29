@@ -533,7 +533,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
                 problems.append("anti-grep control contains no lexical error hit")
             if anti_grep_failed_actions != 0:
                 problems.append("anti-grep control unexpectedly contains a failed action")
-    except (OSError, sqlite3.Error) as exc:
+    except (DatabaseError, OSError, sqlite3.Error) as exc:
         problems.append(f"archive evidence unreadable: {exc}")
 
     try:
@@ -563,7 +563,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
                 row = rows[0]
                 raw_id = str(row["raw_id"])
                 raw_blob_sha256 = str(row["blob_hash"]).lower()
-    except (OSError, sqlite3.Error) as exc:
+    except (DatabaseError, OSError, sqlite3.Error) as exc:
         problems.append(f"source evidence unreadable: {exc}")
 
     completion_claims: CompletionClaimExperimentResult | None = None

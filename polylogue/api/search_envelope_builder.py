@@ -31,6 +31,7 @@ from polylogue.surfaces.payloads import (
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
+    from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
 
 
@@ -96,7 +97,7 @@ async def build_search_envelope_for_spec(
             cursor=spec.cursor,
         )
 
-    hits = await facade.search_session_hits(fetch_spec)
+    hits: list[SessionSearchHit] = await facade.search_session_hits(fetch_spec)
     execution = getattr(hits, "execution", None)
     filter_only = fetch_spec.boolean_predicate is not None or (
         not fetch_spec.query_terms
@@ -124,7 +125,12 @@ async def build_search_envelope_for_spec(
             )
             for index, session in enumerate(sessions, start=1)
         ]
-    total = await spec.count(facade.config)
+    # A vector candidate page is not the archive-wide hybrid union. Counting
+    # through the semantic-only list route can report zero beside lexical hits
+    # and suppress continuation. As on the daemon route, qualify that total as
+    # unknown; an action-only page likewise cannot use the dialogue count.
+    ranked_only = bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane in {"hybrid", "actions"})
+    total = None if ranked_only else await spec.count(facade.config)
     diagnostics_payload: QueryMissDiagnosticsPayload | None = None
     if not hits and spec.has_filters():
         with suppress(Exception):

@@ -24,6 +24,10 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import closing, contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
+from datetime import date, datetime
+from datetime import time as datetime_time
+from decimal import Decimal
+from enum import Enum
 from itertools import chain, islice
 from pathlib import Path
 from typing import Any, Literal, cast, overload
@@ -13508,10 +13512,35 @@ def _json_dumps(value: object) -> str:
     Escaping, unlike replacing it with U+FFFD, keeps the stored payload equal
     to the value the session's content hash was computed from.
     """
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if encoded.isascii() or not _SURROGATE_RE.search(encoded):
         return encoded
     return _SURROGATE_RE.sub(lambda match: f"\\u{ord(match.group()):04x}", encoded)
+
+
+def _json_value(value: object) -> object:
+    """``value`` with every non-JSON type lowered to its stored spelling.
+
+    Strings are kept exactly, a lone surrogate included; ``_json_dumps``
+    escapes it.
+    """
+    if isinstance(value, list | tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, set | frozenset):
+        lowered = [_json_value(item) for item in value]
+        return sorted(lowered, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    if isinstance(value, Enum):
+        return _json_value(value.value)
+    if isinstance(value, Decimal):
+        as_float = float(value)
+        return as_float if Decimal(as_float) == value else str(value)
+    if isinstance(value, bytes | bytearray | memoryview):
+        return bytes(value).hex()
+    if isinstance(value, datetime | date | datetime_time):
+        return value.isoformat()
+    return value
 
 
 def _sqlite_text(value: str | None) -> str | None:

@@ -97,6 +97,7 @@ def message_from_record(
                 # projection the declaration can own.
                 "media_type": media_type,
                 "metadata": block_metadata,
+                "content_hash": b.content_hash,
             }
         )
 

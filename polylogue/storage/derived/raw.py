@@ -158,9 +158,11 @@ class RawObservationDerivation:
         archive_root: Path,
         *,
         prepare_non_json_artifact: Callable[..., PreparedJsonl] | None = None,
+        index_db_path: Path | None = None,
     ) -> None:
         self.archive_root = archive_root
         self._prepare_non_json_artifact = prepare_non_json_artifact
+        self._index_db_path = index_db_path
 
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -173,7 +175,7 @@ class RawObservationDerivation:
         conn = open_readonly_connection(source, timeout_class="background-read", validate_schema=False)
         try:
             conn.row_factory = sqlite3.Row
-            index = ArchiveLocation.resolve(self.archive_root).active_index_path
+            index = self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path
             attach_readonly_database(conn, index, alias="index_tier")
             conn.execute("BEGIN")
             yield conn
@@ -201,7 +203,8 @@ class RawObservationDerivation:
     def _current(self, frame: RawFrame) -> bool:
         return (
             Path(frame.archive_root).resolve() == self.archive_root.resolve()
-            and frame.source_revision == str(ArchiveLocation.resolve(self.archive_root).active_index_path.resolve())
+            and frame.source_revision
+            == str((self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path).resolve())
             and frame.recipe_version(self.domain) == self.recipe_version
         )
 
