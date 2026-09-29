@@ -2562,8 +2562,7 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
         )
 
     from polylogue.sources import source_acquisition_components as components
-
-    real_detect = components.detect_provider_from_raw_bytes_evidence
+    from polylogue.sources.dispatch import detect_provider_from_raw_bytes_evidence as real_detect
 
     def _prefix_only(payload: bytes, *args: Any, **kwargs: Any) -> Any:
         # The inbox provider sniff reads a bounded prefix of each member; a
