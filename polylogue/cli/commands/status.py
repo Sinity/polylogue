@@ -62,15 +62,6 @@ def _default_daemon_url() -> str:
     return load_polylogue_config().daemon_url or _BUILTIN_DAEMON_URL
 
 
-def _observed_archive_root() -> Path | None:
-    from polylogue.paths import archive_root
-
-    try:
-        return archive_root()
-    except Exception:
-        return None
-
-
 def _archive_snapshot_is_absent(archive_root: Path | None) -> bool:
     """Return whether the configured active index is demonstrably absent.
 
@@ -273,8 +264,12 @@ def status_command(
             raise click.exceptions.Exit(2)
         return
     from polylogue.operations.route_observation import observe_route
+    from polylogue.paths import archive_root as _resolve_archive_root
 
-    observed_archive_root = _observed_archive_root()
+    try:
+        observed_archive_root: Path | None = _resolve_archive_root()
+    except Exception:
+        observed_archive_root = None
 
     with observe_route(
         archive_root=observed_archive_root,
@@ -298,8 +293,13 @@ def status_command(
             # ``ArchiveTierUnavailableError`` is the typed form the read
             # boundary now raises for an absent tier (polylogue-wwjy6); it is
             # not a ``sqlite3.Error``, so it is named here explicitly.
-            if _show_first_run_if_no_archive(env, observed_archive_root, output_format=output_format):
-                return
+            from polylogue.cli.commands.status_diagnostics import diagnose_first_run
+
+            if _archive_snapshot_is_absent(observed_archive_root):
+                diagnostic = diagnose_first_run(daemon_alive=False)
+                if diagnostic.kind == "no_archive":
+                    _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
+                    return
             # A failed status read proves nothing about daemon liveness; it
             # must never be recorded or rendered as a reachable daemon.
             obs.attributes["daemon_reachable"] = False
@@ -313,12 +313,11 @@ def status_command(
             # No daemon socket answered for this archive, or the daemon route
             # is disabled, so no status read was attempted. That differs from
             # a read that failed in flight ("unreachable"): it renders as "not
-            # running". With no archive either, the bounded first-run
-            # diagnostic is the whole honest answer.
+            # running", with the first-run hint when no archive exists yet.
             obs.attributes["daemon_reachable"] = False
             obs.daemon_path = "unreachable"
             _show_daemon_absent(env, str(exc), archive_root=observed_archive_root, output_format=output_format)
-            raise click.exceptions.Exit(1) from None
+            raise SystemExit(1) from None
         except OperationKernelError:
             # A failed status read proves nothing about daemon liveness; it
             # must never be recorded or rendered as a reachable daemon.
@@ -361,7 +360,9 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     try:
         result = _status_operation_result(env, probe_timeout_s=_FAST_STATUS_PROBE_TIMEOUT_S)
     except OperationUnavailableError as exc:
-        _show_daemon_absent(env, str(exc), archive_root=_observed_archive_root(), output_format=None)
+        # The probe stays a compact liveness line; ``ops status`` adds the
+        # first-run hint.
+        _show_daemon_absent(env, str(exc), archive_root=None, output_format=None)
         return
     except OperationKernelError:
         _show_daemon_status_unavailable(env, compact=True)
@@ -915,19 +916,6 @@ def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> No
     env.ui.console.print("  Status snapshot: [yellow]unavailable[/yellow]")
     if not compact:
         env.ui.console.print("  [dim]The status read did not answer; daemon liveness was not observed.[/dim]")
-
-
-def _show_first_run_if_no_archive(env: AppEnv, archive_root: Path | None, *, output_format: str | None) -> bool:
-    """Render the bounded first-run diagnostic when no archive exists yet."""
-    if not _archive_snapshot_is_absent(archive_root):
-        return False
-    from polylogue.cli.commands.status_diagnostics import diagnose_first_run
-
-    diagnostic = diagnose_first_run(daemon_alive=False)
-    if diagnostic.kind != "no_archive":
-        return False
-    _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
-    return True
 
 
 def _show_daemon_absent(env: AppEnv, detail: str, *, archive_root: Path | None, output_format: str | None) -> None:
