@@ -29,6 +29,7 @@ import json
 import mimetypes
 import os
 import re
+import stat
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -201,7 +202,7 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
     Assets sit beside ``conversations-*.json`` and, in the extension-carrying
     export shape, under per-conversation ``image/``/``audio/`` subdirectories,
     so the walk is recursive; each file is streamed via
-    ``BlobStore.write_from_path`` (no full-file memory load).
+    ``BlobStore.write_from_fileobj`` over a no-follow regular-file handle.
     """
     from polylogue.storage.blob_publication import flush_blob_publications
 
@@ -219,15 +220,18 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
             continue
         seen_asset_members.add(asset_key)
         try:
-            size_on_disk = asset_path.stat().st_size
-        except OSError as exc:
-            logger.warning("chatgpt_asset_stat_failed", path=str(asset_path), error=str(exc))
-            continue
-        if size_on_disk > MAX_UNCOMPRESSED_SIZE:
-            logger.warning("chatgpt_asset_oversized", path=str(asset_path), size=size_on_disk)
-            continue
-        try:
-            blob_hash, size = store.write_from_path(asset_path)
+            # Inspect the opened object, not a followed path. NOFOLLOW closes
+            # the leaf-symlink race; NONBLOCK prevents a substituted FIFO from
+            # hanging acquisition before its regular-file check.
+            descriptor = os.open(asset_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as handle:
+                observed = os.fstat(handle.fileno())
+                if not stat.S_ISREG(observed.st_mode):
+                    continue
+                if observed.st_size > MAX_UNCOMPRESSED_SIZE:
+                    logger.warning("chatgpt_asset_oversized", path=str(asset_path), size=observed.st_size)
+                    continue
+                blob_hash, size = store.write_from_fileobj(handle)
         except OSError as exc:
             logger.warning("chatgpt_asset_read_failed", path=str(asset_path), error=str(exc))
             continue
@@ -249,8 +253,14 @@ def _walk_asset_files(directory: Path) -> list[Path]:
         dirnames.sort()
         root_path = Path(root)
         for filename in sorted(filenames):
-            if _member_asset_id(filename) is not None:
-                found.append(root_path / filename)
+            if _member_asset_id(filename) is None:
+                continue
+            candidate = root_path / filename
+            try:
+                if stat.S_ISREG(candidate.lstat().st_mode):
+                    found.append(candidate)
+            except OSError as exc:
+                logger.warning("chatgpt_asset_stat_failed", path=str(candidate), error=str(exc))
     return found
 
 
@@ -282,7 +292,8 @@ class ChatGPTAssemblySpec:
         ``BlobStore.write_from_fileobj`` (bounded decompression, no full-file
         memory load — mirrors ``decoder_zip.py``'s ``capture_raw`` branch); an
         extracted-directory source streams the same members from disk through
-        ``BlobStore.write_from_path``. ``blob_store`` is ``None`` for callers
+        ``BlobStore.write_from_fileobj`` after opening without symlink following.
+        ``blob_store`` is ``None`` for callers
         that only need sidecar metadata (e.g. non-session artifact admission),
         so this stays a no-op there.
         """

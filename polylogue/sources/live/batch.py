@@ -1994,6 +1994,7 @@ class LiveBatchProcessor:
             skipped_file_count=metrics.skipped_file_count,
             succeeded_file_count=len(succeeded_paths),
             failed_file_count=len(failed_paths),
+            materialized_count=materialized_session_count,
             input_bytes=input_bytes,
             ingested_bytes=metrics.ingested_bytes,
             failed_bytes=metrics.failed_bytes,
@@ -3234,7 +3235,8 @@ class LiveBatchProcessor:
         antigravity_pb_paths = [
             path
             for path in paths
-            if fallback_provider is Provider.ANTIGRAVITY
+            if not source_only
+            and fallback_provider is Provider.ANTIGRAVITY
             and path.suffix.lower() == ".pb"
             and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
         ]
@@ -5762,6 +5764,11 @@ class LiveBatchProcessor:
                 for info in validator.filter_entries(central_directory, allowed_path=allowed_path):
                     if info.file_size == 0:
                         continue
+                    # A unique strong path declaration is acquisition evidence,
+                    # not provider inference from the member's JSON or Origin.
+                    entry_provider = fallback_provider
+                    if entry_provider is Provider.UNKNOWN:
+                        entry_provider = declared_artifact_provider(info.filename) or Provider.UNKNOWN
                     entry_ordinal = entry_ordinals[id(info)]
                     split_index = 0
                     source_index = zip_member_source_index(
@@ -5773,7 +5780,7 @@ class LiveBatchProcessor:
                         zip_path=path,
                         entry=info,
                         file_mtime=file_mtime,
-                        provider_hint=fallback_provider,
+                        provider_hint=entry_provider,
                         blob_store=blob_store,
                         bound_provider=bound_location_provider(fallback_provider),
                     )
@@ -5783,7 +5790,7 @@ class LiveBatchProcessor:
                         raw_data = stream_preserved_zip_entry_raw_data(
                             zf,
                             member_context,
-                            provider_hint=fallback_provider,
+                            provider_hint=entry_provider,
                             source_index=source_index,
                         )
                     except ZipBombError as exc:
@@ -5813,9 +5820,9 @@ class LiveBatchProcessor:
                             RawSessionRecord(
                                 raw_id=member_raw_id,
                                 blob_hash=raw_data.blob_hash,
-                                payload_provider=fallback_provider,
+                                payload_provider=entry_provider,
                                 capture_mode=fallback_provider,
-                                source_name=fallback_provider.value,
+                                source_name=entry_provider.value,
                                 source_path=raw_data.source_path,
                                 source_index=source_index,
                                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,

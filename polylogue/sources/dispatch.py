@@ -1526,6 +1526,7 @@ def _lower_drive_like_payload(
     fallback_id: str,
     *,
     depth: int,
+    source_path: str | None,
     schema_resolution: SchemaResolution | None,
 ) -> list[LoweredPayloadSpec]:
     payloads = _payload_sequence(shaped_payload)
@@ -1553,6 +1554,7 @@ def _lower_drive_like_payload(
                         provider,
                         item,
                         fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
+                        source_path=source_path,
                         depth=depth + 1,
                         schema_resolution=schema_resolution,
                     )
@@ -1569,6 +1571,7 @@ def _lower_drive_like_payload(
                     provider,
                     item,
                     fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
+                    source_path=source_path,
                     depth=depth + 1,
                     schema_resolution=schema_resolution,
                 )
@@ -1579,7 +1582,7 @@ def _lower_drive_like_payload(
     if record is None:
         return []
     if local_agent.looks_like_gemini_cli(record):
-        return [_local_agent_document_spec(Provider.GEMINI_CLI, record, fallback_id)]
+        return [_local_agent_document_spec(Provider.GEMINI_CLI, record, fallback_id, source_path=source_path)]
     if _record_messages(record) is not None:
         return [_generic_messages_spec(provider, record, fallback_id)]
     # This handles one already-lowered record, not a whole document/list, so
@@ -1758,6 +1761,7 @@ def _lower_payload_specs(
             shaped_payload,
             fallback_id,
             depth=depth,
+            source_path=source_path,
             schema_resolution=schema_resolution,
         )
     if runtime_provider is Provider.HERMES:
