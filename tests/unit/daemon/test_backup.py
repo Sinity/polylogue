@@ -1158,7 +1158,7 @@ def test_full_evidence_backup_verifies_a_full_prefix_append_proof(
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
     assert result.ok, result.error
-    assert result.verification["recoverable_source_blob_count"] == 1
+    assert result.verification["recovered_source_blob_count"] == 1
 
 
 def test_backup_reanchors_dead_root_before_zip_member_replay(
