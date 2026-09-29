@@ -95,6 +95,49 @@ def test_replay_result_reports_typed_unresolved_attachment_owner(tmp_path: Path)
     assert result.unresolved_attachment_owners[0][1] is AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
 
 
+def test_hash_unchanged_replay_reports_the_recorded_owner_gaps(tmp_path: Path) -> None:
+    """A replay whose content hash is unchanged still reports the unowned attachments.
+
+    Anti-vacuity: returning the unchanged result without the recorded gaps
+    reports no unresolved owner on the second write, although the attachment
+    is still unowned.
+    """
+    session = ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id="replay-unchanged-owner",
+        messages=[ParsedMessage(provider_message_id="present", role=Role.USER, text="hello")],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="lost-owner",
+                message_provider_id="absent-message",
+                name="lost.txt",
+                mime_type="text/plain",
+            )
+        ],
+    )
+
+    with ArchiveStore(tmp_path / "archive") as archive:
+        first = archive.write_raw_and_parsed_result(
+            session,
+            payload=b"replay-unchanged-owner",
+            source_path="/tmp/replay-unchanged-owner.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second = archive.write_raw_and_parsed_result(
+            session,
+            payload=b"replay-unchanged-owner",
+            source_path="/tmp/replay-unchanged-owner-again.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    assert first.content_changed is True
+    assert second.content_changed is False
+    assert second.unresolved_attachment_owners == first.unresolved_attachment_owners
+    assert [reason for _id, reason in second.unresolved_attachment_owners] == [
+        AttachmentOwnerResolutionReason.MESSAGE_MISSING
+    ]
+
+
 def test_session_reads_resolve_attachment_bytes_in_the_opened_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

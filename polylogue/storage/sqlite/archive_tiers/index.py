@@ -1414,6 +1414,18 @@ CREATE TABLE IF NOT EXISTS attachment_native_ids (
     {TABLE_SPECS["attachment_native_ids"].ddl_body}
 ) STRICT;
 
+-- Why each attachment of a session's latest write received no owner ref
+-- (``AttachmentOwnerResolutionReason``). Source conservation blocks on a
+-- lost owner (``message_missing``) and explains the rest; a replay whose
+-- content hash is unchanged reports these instead of re-deriving them.
+-- Membership of ``reason`` is validated at the write boundary.
+CREATE TABLE IF NOT EXISTS attachment_owner_gaps (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    attachment_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (session_id, attachment_id)
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS idx_attachment_refs_session
 ON attachment_refs(session_id);
 

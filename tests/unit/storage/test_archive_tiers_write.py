@@ -3980,6 +3980,48 @@ def test_writer_receipt_types_unresolved_inline_attachment_owner(tmp_path: Path)
         conn.close()
 
 
+def test_writer_records_why_a_metadata_only_attachment_has_no_owner(tmp_path: Path) -> None:
+    """A named but absent owner is recorded as ``message_missing``, a never-linked one as such.
+
+    Both are recorded durably in ``attachment_owner_gaps``. Anti-vacuity:
+    classifying every unmatched owner as ``provider_never_linked`` (the
+    reviewed shape) records the same reason for both, and conservation cannot
+    tell a lost owner from an explained one.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        named_absent = ParsedAttachment(
+            provider_attachment_id="named-absent",
+            message_provider_id="absent-message",
+            name="lost.txt",
+            mime_type="text/plain",
+        )
+        never_linked = ParsedAttachment(provider_attachment_id="never-linked", name="loose.txt", mime_type="text/plain")
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="owner-reasons",
+            messages=[ParsedMessage(provider_message_id="present", role=Role.USER, text="hello")],
+            attachments=[named_absent, never_linked],
+        )
+        outcomes: list[ArchiveWriteOutcome] = []
+        session_id = write_parsed_session_to_archive(conn, session, write_outcome=outcomes)
+
+        reasons = dict(outcomes[-1].unresolved_attachment_owners)
+        named_id = archive_tier_write._attachment_id(session_id, named_absent)
+        loose_id = archive_tier_write._attachment_id(session_id, never_linked)
+        assert reasons == {
+            named_id: AttachmentOwnerResolutionReason.MESSAGE_MISSING,
+            loose_id: AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED,
+        }
+        stored = dict(
+            conn.execute("SELECT attachment_id, reason FROM attachment_owner_gaps WHERE session_id = ?", (session_id,))
+        )
+        assert stored == {named_id: "message_missing", loose_id: "provider_never_linked"}
+        assert archive_tier_write.recorded_attachment_owner_gaps(conn, session_id) == tuple(sorted(reasons.items()))
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # ITEM 1: sessions.instructions_text round-trip
 # ---------------------------------------------------------------------------

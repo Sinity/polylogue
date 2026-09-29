@@ -266,6 +266,51 @@ def test_batch_writer_carries_typed_attachment_owner_resolution(tmp_path: Path) 
         conn.close()
 
 
+def test_hash_unchanged_batch_write_still_reports_owner_resolutions(tmp_path: Path) -> None:
+    """Replaying an unchanged session reports the same unresolved owners as its write.
+
+    Anti-vacuity: the hash-unchanged return in ``_write_session`` used to skip
+    the writer and report nothing, so replaying an orphan population reported
+    zero ``attachment_owner_resolutions``.
+    """
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    conn = ingest_batch_core._open_sync_connection(archive_root / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="batch-unchanged-owner",
+            messages=[
+                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
+                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="batch-unchanged-ambiguous",
+                    message_position=0,
+                    name="ambiguous.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+        payload = SessionWritePayload(
+            session_id=str(make_session_id(session.source_name, session.provider_session_id)),
+            content_hash=str(session_content_hash(session)),
+            parsed_session=session,
+            raw_id="raw-batch-unchanged-owner",
+        )
+        first = _IngestBatchSummary()
+        assert ingest_batch_core._write_session_entry(conn, "raw-batch-unchanged-owner", payload, summary=first)
+        conn.commit()
+        replay = _IngestBatchSummary()
+        ingest_batch_core._write_session_entry(conn, "raw-batch-unchanged-owner", payload, summary=replay)
+
+        assert first.attachment_owner_resolutions
+        assert replay.attachment_owner_resolutions == first.attachment_owner_resolutions
+    finally:
+        conn.close()
+
+
 def test_sync_index_connection_ensures_runtime_indexes(tmp_path: Path) -> None:
     conn = ingest_batch_core._open_sync_connection(tmp_path / "archive" / "index.db")
     try:

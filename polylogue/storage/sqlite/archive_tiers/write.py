@@ -127,6 +127,7 @@ from polylogue.storage.runtime import (
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
+from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import should_skip_stale_replace
 from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
     ArchiveSessionTag,
@@ -2866,6 +2867,7 @@ def write_parsed_session_to_archive(
                 preacquired_blobs=preacquired_attachment_blobs,
                 content_identities=content_identities,
                 inherited_prefix_message_ids=context.inherited_prefix_message_ids,
+                replace_owner_gaps=not merge_append,
             )
             add_timing("index.attachments", t0)
             t0 = time.perf_counter()
@@ -6830,8 +6832,13 @@ def _write_attachments(
     preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
     owner_resolution: MessageOwnerResolution | None = None,
     inherited_prefix_message_ids: Sequence[str] = (),
+    replace_owner_gaps: bool = True,
 ) -> tuple[tuple[str, AttachmentOwnerResolutionReason], ...]:
     """Write attachment rows and their message references.
+
+    The returned owner gaps are also recorded in ``attachment_owner_gaps``:
+    a full write replaces the session's gaps, an append write replaces only
+    those of the attachments it carries.
 
     An attachment the tail does not own may belong to an inherited prefix
     message (``inherited_prefix_message_ids`` names those parent rows by
@@ -6844,6 +6851,8 @@ def _write_attachments(
     attachments = tuple(attachments)
     if not attachments:
         refresh_and_sweep_attachment_rows(conn, refresh_attachment_ids or ())
+        if replace_owner_gaps:
+            _record_attachment_owner_gaps(conn, session_id, (), replace_session=True)
         return ()
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     if isinstance(source, SqliteMessageSink) and owner_resolution is None:
@@ -6861,6 +6870,7 @@ def _write_attachments(
                 preacquired_blobs=preacquired_blobs,
                 owner_resolution=resolution,
                 inherited_prefix_message_ids=inherited_prefix_message_ids,
+                replace_owner_gaps=replace_owner_gaps,
             )
     wanted_owner_keys: set[str] | None = None
     if owner_resolution is not None:
@@ -6900,7 +6910,13 @@ def _write_attachments(
             attachments_by_message[message_id].append(attachment)
         else:
             tail_unowned.append(attachment)
-            unresolved[_attachment_id(session_id, attachment)] = AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED
+            # A named owner that no written message carries is a lost owner;
+            # an attachment the provider never linked has no owner to lose.
+            unresolved[_attachment_id(session_id, attachment)] = (
+                AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED
+                if owner_key is None
+                else AttachmentOwnerResolutionReason.MESSAGE_MISSING
+            )
     # Acquisition keys whose owner is an inherited parent row: referenced by
     # it (the parent owns the observation), or not (typed, nothing written).
     inherited_owned: set[object] = set()
@@ -7034,7 +7050,66 @@ def _write_attachments(
     # attachment_refs), while still reporting acquisition_status='acquired'
     # and real fetched bytes.
     refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
-    return tuple(sorted(unresolved.items()))
+    gaps = tuple(sorted(unresolved.items()))
+    _record_attachment_owner_gaps(
+        conn,
+        session_id,
+        gaps,
+        replace_session=replace_owner_gaps,
+        written_attachment_ids={_attachment_id(session_id, attachment) for attachment in attachments},
+    )
+    return gaps
+
+
+def _record_attachment_owner_gaps(
+    conn: sqlite3.Connection,
+    session_id: str,
+    gaps: Sequence[tuple[str, AttachmentOwnerResolutionReason]],
+    *,
+    replace_session: bool,
+    written_attachment_ids: Iterable[str] = (),
+) -> None:
+    """Record why this write left attachments without an owner ref.
+
+    ``replace_session`` drops every earlier gap of the session (a full
+    write); otherwise only the gaps of ``written_attachment_ids`` are
+    replaced, so an append keeps the gaps its earlier writes recorded.
+    """
+    if replace_session:
+        conn.execute("DELETE FROM attachment_owner_gaps WHERE session_id = ?", (session_id,))
+    else:
+        written = iter(sorted(set(written_attachment_ids)))
+        while batch := tuple(islice(written, 128)):
+            conn.execute(
+                "DELETE FROM attachment_owner_gaps WHERE session_id = ? AND attachment_id IN ({})".format(
+                    ",".join("?" for _ in batch)
+                ),
+                (session_id, *batch),
+            )
+    conn.executemany(
+        "INSERT OR REPLACE INTO attachment_owner_gaps(session_id, attachment_id, reason) VALUES (?, ?, ?)",
+        [
+            (
+                session_id,
+                attachment_id,
+                require_vocabulary(reason, AttachmentOwnerResolutionReason, field="attachment_owner_gaps.reason"),
+            )
+            for attachment_id, reason in gaps
+        ],
+    )
+
+
+def recorded_attachment_owner_gaps(
+    conn: sqlite3.Connection, session_id: str
+) -> tuple[tuple[str, AttachmentOwnerResolutionReason], ...]:
+    """The owner gaps the session's latest write recorded, for a replay that does not rewrite it."""
+    return tuple(
+        (str(attachment_id), AttachmentOwnerResolutionReason(str(reason)))
+        for attachment_id, reason in conn.execute(
+            "SELECT attachment_id, reason FROM attachment_owner_gaps WHERE session_id = ? ORDER BY attachment_id",
+            (session_id,),
+        )
+    )
 
 
 def _write_attachment_row(

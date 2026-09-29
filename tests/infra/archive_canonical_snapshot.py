@@ -142,6 +142,7 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("index", "attachments"),
         ("index", "attachment_refs"),
         ("index", "attachment_native_ids"),
+        ("index", "attachment_owner_gaps"),
     ),
     "derived_views": (
         ("index", "session_profiles"),
