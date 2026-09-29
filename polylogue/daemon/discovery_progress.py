@@ -360,8 +360,6 @@ def active_discovery_payload() -> dict[str, object] | None:
             "discovery_active_walk_count": len(running),
             "discovery_pending_walk_count": len(pending),
             "discovery_counter_scope": "all_active_and_pending_walks",
-            "planned_file_count": None,
-            "eta_s": None,
         }
         preparation = _preparation_payload(now)
     # Preparation runs before the dispatcher walks anything, so a running
@@ -430,11 +428,28 @@ def reset_discovery_progress() -> None:
         _last_end_state.clear()
 
 
+#: Keys that describe the whole build rather than the discovery walk.
+_BUILD_PROGRESS_KEYS = frozenset({"mode", "current_phase", "current_source", "current_path"})
+
+
 def overlay_active_discovery(payload: dict[str, object]) -> dict[str, object]:
+    """Merge live discovery counters into the catch-up status.
+
+    A cold build pages discovery while it admits and writes. Once the build
+    has a planned denominator its mode, phase and ETA describe the build, and
+    the walk only adds its ``discovery_*`` counters; overwriting them made the
+    status read ``discovery_pending`` with no ETA for the whole paged walk.
+    """
     active = active_discovery_payload()
     if active is None:
         return payload
     result = dict(payload)
-    catchup = result.get("catchup")
-    result["catchup"] = {**(catchup if isinstance(catchup, dict) else {}), **active}
+    raw_catchup = result.get("catchup")
+    catchup: dict[str, object] = dict(raw_catchup) if isinstance(raw_catchup, dict) else {}
+    build_in_progress = catchup.get("planned_raw_revision_count") is not None and active.get("mode") != (
+        "cold_build_preparing"
+    )
+    if build_in_progress:
+        active = {key: value for key, value in active.items() if key not in _BUILD_PROGRESS_KEYS}
+    result["catchup"] = {**catchup, **active}
     return result

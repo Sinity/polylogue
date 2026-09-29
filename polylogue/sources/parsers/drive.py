@@ -542,7 +542,10 @@ def _parse_chunked_records(
             gemini_message = GeminiMessage.model_validate(chunk_obj)
             used_typed_model = True
             content_block_payloads = _gemini_content_block_payloads(gemini_message, text)
-        except (ValidationError, Exception):
+        except ValidationError:
+            # Only a chunk the typed model rejects takes the fallback; a
+            # defect in the typed extraction must surface, not silently drop
+            # structured blocks and change the content hash (polylogue-hu24g).
             content_block_payloads = _fallback_gemini_content_blocks(chunk_obj, text)
 
         if chunk_attachments and not used_typed_model:

@@ -480,6 +480,34 @@ async def test_from_empty_and_incremental_one_shot_routes_write_identical_materi
 
 
 @pytest.mark.asyncio
+async def test_one_shot_ingest_settles_a_source_that_produced_no_sessions() -> None:
+    """A no-session exclusion is settled, not a refusal to retry or raise on.
+
+    Anti-vacuity: once batch metrics report no-session files as excluded
+    instead of succeeded, treating that reason like any other exclusion made
+    a one-shot import of a valid but empty transcript raise.
+    """
+    paths = [Path("/synthetic/empty.jsonl"), Path("/synthetic/full.jsonl")]
+    passes: list[list[Path]] = []
+
+    async def ingest_pass(offered: list[Path]) -> SimpleNamespace:
+        passes.append(offered)
+        return SimpleNamespace(
+            failed_file_count=0,
+            deferred_file_count=0,
+            succeeded_file_count=1,
+            succeeded_paths=(offered[1],),
+            excluded_file_count=1,
+            excluded_paths={str(offered[0]): "no_sessions"},
+        )
+
+    receipts = await _ingest_selected_paths(paths, ingest_pass)
+
+    assert len(receipts) == 1
+    assert passes == [paths]
+
+
+@pytest.mark.asyncio
 async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_stage(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],

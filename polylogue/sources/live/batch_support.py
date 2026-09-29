@@ -308,6 +308,10 @@ class _FullIngestResult:
     #: Admitted paths whose provider is the source fallback only because
     #: detection crashed, with the failure. A shape fallback is not listed.
     detection_fallbacks: dict[Path, str] = field(default_factory=dict)
+    #: Succeeded paths whose every record parsed to zero sessions. The cursor
+    #: advances like any success, so identical bytes are not re-parsed, but
+    #: the intake outcome is an exclusion, never an admission (xf8qp).
+    no_session: list[Path] = field(default_factory=list)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
@@ -352,6 +356,7 @@ def _full_ingest_result_from_summary(
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
     detection_fallbacks: dict[Path, str] | None = None,
+    no_session: list[Path] | None = None,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     raw_frontier_sizes: dict[Path, int] | None = None,
@@ -374,6 +379,7 @@ def _full_ingest_result_from_summary(
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
         detection_fallbacks=dict(detection_fallbacks or {}),
+        no_session=list(no_session or ()),
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         raw_frontier_sizes=raw_frontier_sizes or {},
