@@ -14,6 +14,7 @@ import ijson
 
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
+from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
 from polylogue.sources import value_bounds
 
@@ -199,10 +200,10 @@ def _iter_jsonl_stream(
     pending_line_number: int | None = None
     first_decode_error_line: int | None = None
 
-    for line in handle:
+    for line in bounded_lines(handle):
         physical_line_number += 1
-        raw = line.strip()
-        if not raw:
+        raw = None if isinstance(line, OversizedRecord) else line.strip()
+        if raw is not None and not raw:
             continue
         if pending is not None:
             records, new_errors, error_line = _yield_jsonl_pending(
@@ -221,6 +222,19 @@ def _iter_jsonl_stream(
                 elif error_count == 4:
                     logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
             yield from records
+            pending = None
+        if isinstance(line, OversizedRecord):
+            # Refused by name at the record bound, never allocated.
+            error_count += 1
+            if first_decode_error_line is None:
+                first_decode_error_line = physical_line_number
+            logger_obj.warning(
+                "Skipping JSONL record of %d bytes at line %d in %s: beyond the record bound",
+                line.size,
+                physical_line_number,
+                path_name,
+            )
+            continue
         pending = raw
         pending_line_number = physical_line_number
 
@@ -248,6 +262,20 @@ def _iter_jsonl_stream(
         logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
 
 
+def _stdlib_prefixed_items(handle: JsonReadable, prefix: str) -> list[JsonValue] | None:
+    """The ``prefix`` items of the whole document as ``json.load`` reads it, or ``None``."""
+    handle.seek(0)
+    try:
+        data = json.load(handle)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if prefix == "sessions.item" and isinstance(data, dict):
+        data = data.get("sessions")
+    if prefix in {"item", "sessions.item"} and isinstance(data, list) and _is_json_value(data):
+        return cast(list[JsonValue], data)
+    return None
+
+
 def _stream_prefixed_items(
     logger_obj: LoggerLike,
     ijson_module: IjsonModuleLike,
@@ -271,6 +299,12 @@ def _stream_prefixed_items(
             # silently truncates the session set, so surface a typed error
             # instead. A JSONError with zero items found is a normal
             # "wrong prefix, try the next strategy" signal and is swallowed.
+            recovered = _stdlib_prefixed_items(handle, prefix)
+            if recovered is not None:
+                # ijson refused bytes the decoder's own ``json.load`` fallback
+                # accepts (directly encoded surrogates, NaN): the document is
+                # whole, so it is read that way instead of reported partial.
+                return (True, recovered)
             offset = _json_error_offset(exc)
             logger_obj.warning(
                 "Partial JSON stream decode of %s (strategy %s): corruption after %d record(s)%s",
@@ -288,6 +322,9 @@ def _stream_prefixed_items(
         return (found_any, records)
     except Exception as exc:
         if found_any:
+            recovered = _stdlib_prefixed_items(handle, prefix)
+            if recovered is not None:
+                return (True, recovered)
             # Same failure, and therefore the same handling as the JSONError
             # branch above: records were already recovered, so returning the
             # partial set silently truncates the session set. Only the

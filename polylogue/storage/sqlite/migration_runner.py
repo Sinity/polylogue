@@ -675,8 +675,13 @@ def _canonical_json_sha256(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _sqlite_user_version(path: Path) -> int:
-    with closing(open_readonly_connection(path, immutable=True, validate_schema=False)) as conn:
+def _sqlite_user_version(path: Path, *, live: bool = False) -> int:
+    """Read ``user_version`` from a sealed artifact or a live tier's WAL."""
+    if live:
+        conn = open_readonly_connection(path, validate_schema=False, timeout_class="offline-bulk")
+    else:
+        conn = open_readonly_connection(path, immutable=True, validate_schema=False)
+    with closing(conn):
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
@@ -1264,12 +1269,6 @@ def migrate_archive_tier(
                     f"{tier.value} migration {step.name} expected version {step.version - 1}, found {before}"
                 )
             _execute_migration_sql(conn, step.sql)
-            # Saved-query migration now runs after v8 has installed the
-            # definition-version column consumed by the canonical identity API.
-            if tier is ArchiveTier.USER and step.version == 8:
-                from polylogue.storage.sqlite.query_objects import migrate_saved_query_assertions
-
-                migrate_saved_query_assertions(conn)
             conn.execute(f"PRAGMA user_version = {step.version}")
             if not conn.in_transaction:
                 raise MigrationError("durable migration SQL escaped the existing transaction")
@@ -1659,7 +1658,6 @@ class DurableChangeTrain:
     released_at_ms: int | None
     release_evidence_ref: str | None
     proof_refs: tuple[str, ...]
-    source_continuity_evidence: DurableDatabaseEvidence | None = None
 
     @property
     def contention_key(self) -> tuple[str, int, int]:
@@ -3363,10 +3361,6 @@ def validate_durable_change_train_manifest(train: DurableChangeTrain) -> None:
     """Validate cross-field lifecycle invariants for loaded and transitioned manifests."""
     if train.manifest_format != DURABLE_CHANGE_TRAIN_FORMAT:
         raise DurableChangeTrainError(f"unsupported durable change train format: {train.manifest_format}")
-    if train.source_continuity_evidence is not None and (
-        train.tier is not ArchiveTier.SOURCE or train.state is not DurableChangeTrainState.RELEASED
-    ):
-        raise DurableChangeTrainError("source continuity evidence is only valid on a released source train")
     if train.tier not in DURABLE_MIGRATION_TIERS:
         raise DurableChangeTrainError(f"manifest tier is not durable: {train.tier.value}")
     if train.current_version < 1 or train.target_version != train.current_version + 1:
@@ -3500,24 +3494,6 @@ def validate_durable_change_train_manifest(train: DurableChangeTrain) -> None:
             raise DurableChangeTrainError("train release evidence is not retained by the manifest")
         if apply_evidence is None:
             raise DurableChangeTrainError("released manifest lacks apply evidence")
-        if train.source_continuity_evidence is not None:
-            _validate_database_evidence(
-                train.source_continuity_evidence,
-                train,
-                expected_version=train.target_version,
-                label="source continuity evidence",
-            )
-            apply_post = apply_evidence.post
-            refreshed = train.source_continuity_evidence
-            if (
-                refreshed.schema_inventory_sha256 != apply_post.schema_inventory_sha256
-                or refreshed.archive_identity_digest != apply_post.archive_identity_digest
-            ):
-                raise DurableChangeTrainError("source continuity evidence changed schema or archive identity")
-            if refreshed.observed_at_ms < train.released_at_ms:
-                raise DurableChangeTrainError("source continuity evidence predates train release")
-            if not any(ref.startswith("proof:source-continuity-refresh:") for ref in train.proof_refs):
-                raise DurableChangeTrainError("source continuity evidence is not retained by the train")
         return
     raise DurableChangeTrainError(f"unknown durable change train state: {train.state}")
 
@@ -3679,45 +3655,12 @@ def _decode_manifest_value(annotation: object, value: object, *, label: str) -> 
     raise DurableChangeTrainError(f"{label} has unsupported manifest annotation {annotation!r}")
 
 
-def _backfilled_parity_inventory(value: object) -> object:
-    """Fill a pre-``parity_inventory_sha256`` parity proof from its own digest.
-
-    A manifest written before the projected digest was split out (polylogue-jkoah)
-    carried one migrated digest, and that digest was necessarily both -- the
-    split only separates two values when the tier retires something, and a
-    retirement-exercising train could not have been recorded while the proof
-    that consumes it refused every such tier. So copying the recorded digest
-    into the projected slot reproduces exactly what that train proved; it does
-    not assume a retirement away.
-
-    The manifest checksum is verified before this runs, so the backfill can
-    only complete a payload that already authenticated.
-    """
-    if not isinstance(value, dict) or "parity_inventory_sha256" in value:
-        return value
-    migrated = value.get("migrated_inventory_sha256")
-    if not isinstance(migrated, str):
-        return value
-    return {**value, "parity_inventory_sha256": migrated}
-
-
 def durable_change_train_from_payload(payload: Mapping[str, object]) -> DurableChangeTrain:
     """Strictly decode and validate a checksummed durable train manifest."""
     mutable = dict(payload)
     checksum = mutable.pop("manifest_sha256", None)
     if not isinstance(checksum, str) or checksum != _canonical_json_sha256(mutable):
         raise DurableChangeTrainError("durable change train manifest checksum mismatch")
-    # v1 manifests written before source continuity refreshes omitted this
-    # optional field. Preserve their checksum and decode them as no refresh.
-    mutable.setdefault("source_continuity_evidence", None)
-    if "fresh_ddl_parity" in mutable:
-        mutable["fresh_ddl_parity"] = _backfilled_parity_inventory(mutable["fresh_ddl_parity"])
-    recorded_proof = mutable.get("proof")
-    if isinstance(recorded_proof, dict) and "fresh_ddl_parity" in recorded_proof:
-        mutable["proof"] = {
-            **recorded_proof,
-            "fresh_ddl_parity": _backfilled_parity_inventory(recorded_proof["fresh_ddl_parity"]),
-        }
     decoded = _decode_manifest_value(DurableChangeTrain, mutable, label="train")
     if not isinstance(decoded, DurableChangeTrain):
         raise DurableChangeTrainError("durable change train payload decoded to the wrong type")

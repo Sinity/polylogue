@@ -910,19 +910,6 @@ def _initialize_active_archive_root(root: Path) -> None:
         elif format_marker.exists() and not any_durable_tier_exists:
             raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
 
-        def classify_paths() -> tuple[bool, bool]:
-            durable_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
-            adoption = (
-                (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-                and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
-                and manifest_root.is_dir()
-                and not has_durable_train_state
-                and not has_bootstrap_marker
-                and not has_pending_bootstrap
-            )
-            return durable_exists, adoption
-
-        durable_tier_exists, pre_marker_adoption = classify_paths()
         fresh_durable_bootstrap = (
             not durable_tier_exists
             and not has_durable_train_state
@@ -957,7 +944,7 @@ def _initialize_active_archive_root(root: Path) -> None:
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
         ):
             raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
-        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption and not format_marker.exists():
+        if not recovering_fresh_durable_bootstrap and not format_marker.exists():
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         location = ArchiveLocation.resolve(root)
@@ -972,13 +959,6 @@ def _initialize_active_archive_root(root: Path) -> None:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)
             record_fresh_archive_format(root)
-        elif pre_marker_adoption:
-            from polylogue.storage.sqlite.durable_change_train import _adopt_pre_marker_durable_bootstrap
-
-            assert_owned_root()
-            _adopt_pre_marker_durable_bootstrap(root)
-            assert_owned_root()
-            reconcile_durable_change_trains_on_startup(root)
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the
