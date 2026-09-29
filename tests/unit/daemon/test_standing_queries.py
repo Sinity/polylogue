@@ -272,6 +272,31 @@ def test_clock_boundary_rechecks_promoted_relative_finding_without_watch(tmp_pat
     assert any(request.purpose == "finding-drift" for request in evaluator.requests)
     assert stage.check(index_db) is False
 
+    # A finding accepted later the same day is a new input to the receipt.
+    # Anti-vacuity: a receipt keyed only by query hash stays evaluated here.
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        later = upsert_findings_as_assertions(
+            conn,
+            [
+                FindingAssertion(
+                    claim_key="expected-count-later",
+                    target_ref=f"query:{query_hash}",
+                    body_text="Expected two members.",
+                    finding_kind="measure",
+                    statistic={"op": "count", "value": 2, "unit": "members"},
+                    n=2,
+                    query_ref=f"query:{query_hash}",
+                    result_set_ref="result-set:later",
+                    detector_ref="agent:test-detector",
+                    expected={"measure": "member_count", "op": "=", "value": 2},
+                )
+            ],
+            now_ms=3,
+        )[0]
+        mark_assertion_status(conn, later.assertion_id, AssertionStatus.ACCEPTED, now_ms=4)
+        conn.commit()
+    assert stage.check(index_db) is True
+
 
 # ---------------------------------------------------------------------------
 # Planner-derived candidate-set narrowing (polylogue-bv1w.1)

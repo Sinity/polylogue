@@ -29,8 +29,11 @@ class _PagedArchive:
     async def get_session(self, *_args: object, **_kwargs: object) -> object:
         raise AssertionError("attachment library must not hydrate sessions")
 
-    async def get_session_summary(self, session_id: str) -> object:
-        return SimpleNamespace(display_label="Synthesized session", title="Opening prompt")
+    async def get_session_summaries(self, session_ids: list[str]) -> dict[str, object]:
+        return {
+            session_id: SimpleNamespace(display_label="Synthesized session", title="Opening prompt")
+            for session_id in session_ids
+        }
 
 
 def _attachment(index: int) -> object:

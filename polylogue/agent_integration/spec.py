@@ -505,6 +505,13 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("offset", "integer", False, "Offset into ranked candidates for decimal offset pagination."),
             _arg("recipient_ref", "string", False, "Recipient identity for delivery receipts."),
             _arg("assertion_ref", "string", False, "Assertion identity to include in context."),
+            _arg(
+                "segment_profile",
+                "string",
+                False,
+                "Segment compilation profile: default, or prose_with_refs for prose recaps carrying evidence refs.",
+                ("default", "prose_with_refs"),
+            ),
         ),
         examples=(
             _example(

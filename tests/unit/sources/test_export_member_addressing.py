@@ -19,7 +19,7 @@ from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity, structurally_equal
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_container, zip_member_coordinate
 from polylogue.operations.zip_acquisition_replay import (
     MemberCandidate,
     resolve_member_candidate,
@@ -658,3 +658,19 @@ def test_replay_refuses_to_guess_a_provider_from_the_public_origin(tmp_path: Pat
 
     assert payload is None
     assert error == "replay_provider_unrecorded"
+
+
+def test_zip_member_coordinate_splits_after_a_colon_in_the_container_path(tmp_path: Path) -> None:
+    """Anti-vacuity: splitting at the first colon names ``<tmp>/odd`` as the
+    container, which is not a file, so both lookups return ``None``.
+    """
+    container = tmp_path / "odd:name.zip"
+    with zipfile.ZipFile(container, "w") as archive:
+        archive.writestr("conversations.json", "[]")
+    coordinate = f"{container}:conversations.json"
+    assert zip_member_coordinate(coordinate) == (container, "conversations.json")
+    assert zip_member_container(coordinate) == container
+    # A loose file whose literal name holds a colon is never a member coordinate.
+    loose = tmp_path / "plain:file.json"
+    loose.write_text("{}")
+    assert zip_member_coordinate(str(loose)) is None

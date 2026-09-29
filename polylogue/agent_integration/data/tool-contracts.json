@@ -475,6 +475,16 @@
           "kind": "string",
           "name": "assertion_ref",
           "required_initial": false
+        },
+        {
+          "description": "Segment compilation profile: default, or prose_with_refs for prose recaps carrying evidence refs.",
+          "enum_values": [
+            "default",
+            "prose_with_refs"
+          ],
+          "kind": "string",
+          "name": "segment_profile",
+          "required_initial": false
         }
       ],
       "confirmation": null,

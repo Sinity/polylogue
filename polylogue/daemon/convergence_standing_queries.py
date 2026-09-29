@@ -26,6 +26,7 @@ from polylogue.archive.query.evaluator import (
 from polylogue.archive.query.metadata import DATE_QUERY_FIELD_REGISTRY
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.hashing import hash_payload
+from polylogue.core.json import JSONValue
 from polylogue.core.query_identity import query_ref, result_set_ref
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
@@ -65,7 +66,10 @@ CLOCK_BOUNDARY_MS = 24 * 60 * 60 * 1000
 #: expressible in this grammar, so probing every string value in the AST would
 #: add only false positives from search terms and titles.
 _CLOCK_BOUND_FIELDS = frozenset(DATE_QUERY_FIELD_REGISTRY) | {"since", "until", "time"}
-_PROMOTED_CLOCK_BOUNDARIES: dict[tuple[str, str], int] = {}
+#: Keyed by (user database, query hash, digest of the accepted findings and
+#: their expectations for that query): a finding accepted after the day's
+#: evaluation is a new input, so it must not inherit the earlier receipt.
+_PROMOTED_CLOCK_BOUNDARIES: dict[tuple[str, str, str], int] = {}
 
 
 def clock_boundary_start_ms(now_ms: int, *, boundary_ms: int = CLOCK_BOUNDARY_MS) -> int:
@@ -156,34 +160,47 @@ def _clock_due_watches(conn: sqlite3.Connection, *, now_ms: int) -> tuple[QueryO
     return tuple(due)
 
 
-def _clock_due_promoted_findings(conn: sqlite3.Connection, *, now_ms: int, db_path: Path) -> tuple[str, ...]:
+def _clock_due_promoted_findings(
+    conn: sqlite3.Connection, *, now_ms: int, db_path: Path
+) -> dict[str, tuple[str, str, str]]:
     """Return relative query hashes whose accepted expectation is due by clock.
 
     Promoted findings have no watch baseline. Keep a process-local boundary
     receipt so a clock-only convergence pass evaluates them once per day.
     Restarting may repeat the read, which is safe; it cannot skip a boundary.
+    Each hash maps to its receipt key, which covers the accepted findings'
+    identities and expectations as well as the query.
     """
     boundary = clock_boundary_start_ms(now_ms)
-    due: list[str] = []
+    expectations: dict[str, list[tuple[str, JSONValue]]] = {}
     for finding in list_assertion_claims(
         conn,
         kinds=(AssertionKind.FINDING,),
         statuses=(AssertionStatus.ACCEPTED,),
     ):
         value = finding.value if isinstance(finding.value, dict) else {}
-        if not isinstance(value.get("expected"), dict):
+        expected = value.get("expected")
+        if not isinstance(expected, dict):
             continue
         reference = value.get("query_ref")
         if not isinstance(reference, str):
             continue
         query_hash = reference.removeprefix("query:")
-        query = get_query(conn, query_hash)
-        if query is None or not query_is_clock_relative(query):
-            continue
-        key = (str(db_path), query_hash)
+        if query_hash not in expectations:
+            query = get_query(conn, query_hash)
+            if query is None or not query_is_clock_relative(query):
+                continue
+            expectations[query_hash] = []
+        expectations[query_hash].append((finding.assertion_id, expected))
+    due: dict[str, tuple[str, str, str]] = {}
+    for query_hash, findings in expectations.items():
+        revision = hash_payload(
+            [[assertion_id, expected] for assertion_id, expected in sorted(findings, key=lambda item: item[0])]
+        )
+        key = (str(db_path), query_hash, revision)
         if _PROMOTED_CLOCK_BOUNDARIES.get(key, -1) < boundary:
-            due.append(query_hash)
-    return tuple(dict.fromkeys(due))
+            due[query_hash] = key
+    return due
 
 
 def make_standing_query_stage(
@@ -240,17 +257,17 @@ def make_standing_query_stage(
                 if evaluation.cache_only:
                     continue
                 _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
-            staged_boundaries: dict[tuple[str, str], int] = {}
+            staged_boundaries: dict[tuple[str, str, str], int] = {}
             if promoted_due:
                 unevaluated = _materialize_promoted_finding_drifts(
                     conn, evaluator, now_ms=now_ms, query_hashes=frozenset(promoted_due)
                 )
                 boundary = clock_boundary_start_ms(now_ms)
-                for query_hash in promoted_due:
+                for query_hash, receipt_key in promoted_due.items():
                     # A cache-only evaluation produced no answer; leave it due so
                     # the next check retries instead of waiting a clock boundary.
                     if query_hash not in unevaluated:
-                        staged_boundaries[(str(db_path), query_hash)] = boundary
+                        staged_boundaries[receipt_key] = boundary
             conn.commit()
             # Publish the receipts only once the drifts they vouch for are durable.
             _PROMOTED_CLOCK_BOUNDARIES.update(staged_boundaries)

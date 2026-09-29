@@ -200,6 +200,7 @@ Arguments:
 | `offset` | `integer` | no | Offset into ranked candidates for decimal offset pagination. |
 | `recipient_ref` | `string` | no | Recipient identity for delivery receipts. |
 | `assertion_ref` | `string` | no | Assertion identity to include in context. |
+| `segment_profile` | `string` | no | Segment compilation profile: default, or prose_with_refs for prose recaps carrying evidence refs. |
 
 Example — Compile a context snapshot:
 

@@ -430,37 +430,54 @@ async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_list_summaries_by_query_hydrates_session_profile_slice() -> None:
-    """Repository summaries carry profile outcome/cost when the profile exists.
+async def test_list_summaries_by_query_hydrates_session_profile_slice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repository summaries carry profile outcome/cost only from a current profile.
 
-    Anti-vacuity: removing the batch profile lookup leaves the SessionSummary
-    defaults (None) and fails both profile-field assertions.
+    Anti-vacuity: removing the batch profile lookup leaves the first summary's
+    defaults (None); overlaying unconditionally publishes the placeholder zero
+    as a known cost on the second and the stale row's facts on the third.
     """
     from types import SimpleNamespace
 
+    from polylogue.storage.repository.archive import sessions as sessions_module
     from polylogue.storage.repository.archive.sessions import RepositoryArchiveSessionMixin
+    from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
-    record = make_session("conv-profile-summary", source_name="codex", title="Profile Summary")
-    session_id = str(record.session_id)
-    profile = SimpleNamespace(terminal_state="refused", total_cost_usd=1.75, cost_provenance="provider_reported")
+    records = [
+        make_session(f"conv-profile-{name}", source_name="codex", title=name) for name in ("known", "unknown", "stale")
+    ]
+    ids = [str(record.session_id) for record in records]
+    profiles = {
+        ids[0]: SimpleNamespace(terminal_state="refused", total_cost_usd=1.75, cost_provenance="provider_reported"),
+        ids[1]: SimpleNamespace(terminal_state="completed", total_cost_usd=0.0, cost_provenance="unknown"),
+        ids[2]: SimpleNamespace(terminal_state="failed", total_cost_usd=9.0, cost_provenance="provider_reported"),
+    }
+    profile_records = {
+        session_id: SimpleNamespace(
+            session_id=session_id,
+            input_content_hash=None if session_id == ids[2] else "bound",
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+        )
+        for session_id in ids
+    }
+    monkeypatch.setattr(sessions_module, "hydrate_session_profile", lambda record: profiles[record.session_id])
     queries = SimpleNamespace(
-        list_session_summaries=AsyncMock(return_value=[record]),
-        get_message_counts_batch=AsyncMock(return_value={session_id: 4}),
+        list_session_summaries=AsyncMock(return_value=records),
+        get_message_counts_batch=AsyncMock(return_value=dict.fromkeys(ids, 4)),
     )
 
     class _Repo(RepositoryArchiveSessionMixin):
         def __init__(self) -> None:
             self.queries = cast(Any, queries)
             setattr(self, "_fetch_tags_by_session", AsyncMock(return_value={}))  # noqa: B010
-            setattr(self, "get_session_profiles_batch", AsyncMock(return_value={session_id: profile}))  # noqa: B010
+            setattr(self, "get_session_profile_records_batch", AsyncMock(return_value=profile_records))  # noqa: B010
 
     repo = _Repo()
-    summaries = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=1))
-    assert len(summaries) == 1
-    assert summaries[0].terminal_state == "refused"
-    assert summaries[0].total_cost_usd == 1.75
-    assert summaries[0].cost_provenance == "provider_reported"
-    cast(AsyncMock, repo.get_session_profiles_batch).assert_awaited_once_with([session_id])
+    known, unknown, stale = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=3))
+    assert (known.terminal_state, known.total_cost_usd, known.cost_provenance) == ("refused", 1.75, "provider_reported")
+    assert (unknown.terminal_state, unknown.total_cost_usd, unknown.cost_provenance) == ("completed", None, None)
+    assert (stale.terminal_state, stale.total_cost_usd, stale.cost_provenance) == (None, None, None)
+    cast(AsyncMock, repo.get_session_profile_records_batch).assert_awaited_once_with(ids)
 
 
 def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:

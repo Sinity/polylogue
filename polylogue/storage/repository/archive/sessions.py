@@ -10,6 +10,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.archive.session.events import SessionEvent
+from polylogue.storage.derived.session.profiles import hydrate_session_profile
 from polylogue.storage.hydrators import (
     message_from_record,
     session_event_from_record,
@@ -19,11 +20,13 @@ from polylogue.storage.hydrators import (
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.runtime import (
+    SESSION_INSIGHT_MATERIALIZER_VERSION,
     AttachmentRecord,
     FileEditRecord,
     LineageCompleteness,
     MessageRecord,
     SessionCommitRecord,
+    SessionProfileRecord,
     SessionRecord,
     SessionRefRecord,
     WebContentConstructRecord,
@@ -38,16 +41,19 @@ if TYPE_CHECKING:
 
 
 def _with_profile(summary: SessionSummary, profile: SessionProfile | None) -> SessionSummary:
-    """Overlay materialized profile facts, identically on single and list reads."""
+    """Overlay materialized profile facts, identically on single and list reads.
+
+    A profile with ``unknown`` cost provenance stores zero as a placeholder;
+    the summary keeps ``None`` (cost unavailable) rather than publish that
+    zero as a known cost.
+    """
     if profile is None:
         return summary
-    return summary.model_copy(
-        update={
-            "terminal_state": profile.terminal_state,
-            "total_cost_usd": profile.total_cost_usd,
-            "cost_provenance": profile.cost_provenance,
-        }
-    )
+    update: dict[str, object] = {"terminal_state": profile.terminal_state}
+    if profile.cost_provenance != "unknown":
+        update["total_cost_usd"] = profile.total_cost_usd
+        update["cost_provenance"] = profile.cost_provenance
+    return summary.model_copy(update=update)
 
 
 class RepositoryArchiveSessionMixin:
@@ -56,7 +62,26 @@ class RepositoryArchiveSessionMixin:
         queries: SQLiteQueryStore
 
         # Provided by RepositoryInsightProfileReadMixin in the composed repository.
-        async def get_session_profiles_batch(self, session_ids: list[str]) -> dict[str, SessionProfile]: ...
+        async def get_session_profile_records_batch(
+            self, session_ids: list[str]
+        ) -> dict[str, SessionProfileRecord]: ...
+
+    async def _current_profiles(self, session_ids: list[str]) -> dict[str, SessionProfile]:
+        """Profiles still bound to their session's current input.
+
+        An ingest that changes a session clears the profile's
+        ``input_content_hash`` and enqueues profile demand; until convergence
+        republishes it, the stale row's facts are not current summary facts.
+        """
+        if not session_ids:
+            return {}
+        records = await self.get_session_profile_records_batch(session_ids)
+        return {
+            session_id: hydrate_session_profile(record)
+            for session_id, record in records.items()
+            if record.input_content_hash is not None
+            and record.materializer_version == SESSION_INSIGHT_MATERIALIZER_VERSION
+        }
 
     async def _fetch_tags_by_session(self, session_ids: list[str]) -> dict[str, tuple[str, ...]]:
         """#1240: batch-fetch M2M tags for hydration of Session/SessionSummary."""
@@ -319,7 +344,7 @@ class RepositoryArchiveSessionMixin:
         tags_by_id = await self._fetch_tags_by_session([session_id])
         # Hydrate message_count from the current sessions aggregate.
         counts_by_id = await self.queries.get_message_counts_batch([session_id])
-        profiles_by_id = await self.get_session_profiles_batch([session_id])
+        profiles_by_id = await self._current_profiles([session_id])
         return _with_profile(
             session_summary_from_record(
                 conv_record,
@@ -338,7 +363,7 @@ class RepositoryArchiveSessionMixin:
         tags_by_id = await self._fetch_tags_by_session(ids)
         # Hydrate message_count from the current sessions aggregate.
         counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
-        profiles_by_id = await self.get_session_profiles_batch(ids) if ids else {}
+        profiles_by_id = await self._current_profiles(ids)
         summaries: list[SessionSummary] = []
         for record in conv_records:
             session_id = str(record.session_id)
