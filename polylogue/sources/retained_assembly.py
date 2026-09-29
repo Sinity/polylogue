@@ -51,6 +51,7 @@ from typing import TypeVar, cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -396,6 +397,13 @@ def chatgpt_export_scope(session_source_path: str) -> str | None:
     return f"{parent}/"
 
 
+def _member_basename(source_path: str) -> str:
+    """The file name live discovery sees: a ZIP member's own name, not ``<zip>:<member>``."""
+    split = split_zip_member_text(source_path)
+    member = split[1] if split is not None else source_path
+    return PurePosixPath(member.replace("\\", "/")).name
+
+
 def retained_chatgpt_sidecars(
     source_conn: sqlite3.Connection,
     blob_store: BlobStore,
@@ -430,7 +438,7 @@ def retained_chatgpt_sidecars(
         except (JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
             logger.debug("retained chatgpt asset index is not JSON (%s): %s", path, exc)
             continue
-        name = PurePosixPath(path.replace("\\", "/")).name
+        name = _member_basename(path)
         if name == "library_files.json" and library_payload is None:
             library_payload = document
         elif name == "conversation_asset_file_names.json" and asset_names_payload is None:
@@ -449,10 +457,10 @@ def retained_chatgpt_sidecars(
     # member, with the member named relative to its export scope.
     member_by_asset: dict[str, str] = {}
     for path, artifact in sorted(assets.items()):
-        asset_id = _member_asset_id(PurePosixPath(path.replace("\\", "/")).name)
+        asset_id = _member_asset_id(_member_basename(path))
         if asset_id is None:
             continue
-        member = path[len(scope) :] if path.startswith(scope) else PurePosixPath(path.replace("\\", "/")).name
+        member = path[len(scope) :] if path.startswith(scope) else _member_basename(path)
         _record_asset_blob(asset_blobs, member_by_asset, asset_id, member, (artifact.blob_hash, artifact.blob_size))
 
     if library_payload is None and asset_names_payload is None and not asset_blobs:

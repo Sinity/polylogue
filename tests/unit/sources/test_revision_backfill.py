@@ -3056,8 +3056,8 @@ def test_chain_census_finds_learned_keys_without_scanning_every_key(
 
     Wrong outcome prevented: ``provisional_full_raw_ids.items()`` scanned per
     lookup. Anti-vacuity: restore the linear scan in the census's
-    ``bound_logical_key`` and the scan count below grows with the chain count,
-    so the two runs differ. The interior members still inherit their own
+    ``bound_logical_key`` and each run scans once per deferred member instead
+    of at most once per phase. The interior members still inherit their own
     chain's key, which pins the reverse map's semantics.
     """
     original_state = revision_backfill._RevisionCensusState
@@ -3086,7 +3086,9 @@ def test_chain_census_finds_learned_keys_without_scanning_every_key(
             for inherited in chain[2:-1]:
                 assert _census_facts(root, inherited) == (key, "byte_proven", (key,))
 
-    assert scans[0] == scans[1]
+    # The decode prefetcher snapshots the learned keys once per replay phase
+    # when it runs; a per-member lookup scan would add one per deferred member.
+    assert max(scans) <= 1, scans
 
 
 def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
