@@ -814,36 +814,57 @@ def _incoming_write_carries_distinct_messages(
     and its distinct messages then never land. Skipping is counted, not
     silent, but the content is still lost on a fresh import.
 
-    Each message is compared by its complete semantic revision,
-    ``message_content_identity``: the digest of every declared semantic field
-    (``pipeline.ids``), stored as ``messages.content_identity``. The composed
-    transcript (inherited prefix + own tail, ``_composed_db_signatures``) is
-    the same view the incoming full parse represents, so a revision that
-    merely re-states what is stored is a multiset subset and stays skippable,
-    while one that adds a message or revises any semantic field -- including
-    model, stop reason, material origin or provider message id, which the
-    coarse lineage signature omits -- is not. The measured aistudio-drive
-    shape (identical messages, differing attachment coverage) is a subset by
-    construction and remains blocked.
+    A message the session owns is compared by its complete semantic
+    revision, ``message_content_identity``: the digest of every declared
+    semantic field (``pipeline.ids``), stored as ``messages.content_identity``,
+    so a revision that changes only model, stop reason, material origin or
+    provider message id -- which the coarse lineage signature omits -- is new
+    content. An inherited prefix message is compared by that lineage
+    signature, as the append delta compares it (``_append_delta_payload``): a
+    child replays its parent's prefix under its own provider ids, so no
+    stored identity can match it. The composed transcript (inherited prefix +
+    own tail, ``_composed_db_signatures``) is the same view the incoming full
+    parse represents, so a revision that merely re-states what is stored is a
+    multiset subset and stays skippable, while one that adds or revises a
+    message is not. The measured aistudio-drive shape (identical messages,
+    differing attachment coverage) is a subset by construction and remains
+    blocked.
 
     Multiplicity matters: two byte-identical messages in the incoming parse
     against one stored occurrence is new content, so the comparison counts
     occurrences rather than testing set membership.
     """
-    message_ids = [message_id for message_id, _signature in _composed_db_signatures(conn, payload.session_id)]
-    existing_identities: Counter[str] = Counter()
-    for start in range(0, len(message_ids), 500):
-        batch = message_ids[start : start + 500]
+    composed = _composed_db_signatures(conn, payload.session_id)
+    owners = _composed_message_owners(conn, [message_id for message_id, _signature in composed])
+    own_message_ids: list[str] = []
+    inherited_signatures: Counter[str] = Counter()
+    for message_id, signature in composed:
+        if owners.get(message_id, (payload.session_id, None))[0] == payload.session_id:
+            own_message_ids.append(message_id)
+        else:
+            inherited_signatures[signature] += 1
+    own_identities: Counter[str] = Counter()
+    for start in range(0, len(own_message_ids), 500):
+        batch = own_message_ids[start : start + 500]
         placeholders = ",".join("?" for _ in batch)
-        existing_identities.update(
+        own_identities.update(
             str(row[0])
             for row in conn.execute(
                 f"SELECT content_identity FROM messages WHERE message_id IN ({placeholders})", batch
             )
             if row[0] is not None
         )
-    incoming_identities = Counter(message_content_identity(message) for message in session_to_write.messages)
-    return any(count > existing_identities[identity] for identity, count in incoming_identities.items())
+    for message in session_to_write.messages:
+        identity = message_content_identity(message)
+        if own_identities[identity] > 0:
+            own_identities[identity] -= 1
+            continue
+        signature = _parsed_message_signature(message)
+        if inherited_signatures[signature] > 0:
+            inherited_signatures[signature] -= 1
+            continue
+        return True
+    return False
 
 
 def _preacquire_sidecar_blobs(

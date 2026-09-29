@@ -11,7 +11,10 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Origin, Provider
-from polylogue.pipeline.services.ingest_batch._core import _append_delta_payload
+from polylogue.pipeline.services.ingest_batch._core import (
+    _append_delta_payload,
+    _incoming_write_carries_distinct_messages,
+)
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.security.excision import apply_session_excision
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
@@ -144,6 +147,34 @@ def test_append_delta_compares_composed_parent_prefix(tmp_path: Path) -> None:
     assert delta is not None
     assert skipped == 2
     assert [message.text for message in delta.messages] == ["new tail"]
+    index.close()
+
+
+def test_freshness_tie_matches_a_replayed_parent_prefix_by_content(tmp_path: Path) -> None:
+    """A child's tied re-acquisition replays the parent prefix under its own ids.
+
+    The inherited prefix is compared by content, as the append delta compares
+    it, and the child's own rows by their full semantic identity. Anti-vacuity:
+    comparing the replayed ``replayed-p0`` by content identity (which covers
+    the provider message id) reports it as distinct content, so a tied
+    re-acquisition that only regresses attachment coverage is never skipped.
+    """
+    index = _index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("parent", [_message("p0", "shared", 0)]))
+    child = _session("child", [_message("c0", "shared", 0), _message("c1", "old tail", 1)], parent="parent")
+    child_id = write_parsed_session_to_archive(index, child)
+    replay = _session("child", [_message("replayed-p0", "shared", 0), _message("c1", "old tail", 1)], parent="parent")
+    grown = _session(
+        "child",
+        [_message("replayed-p0", "shared", 0), _message("c1", "old tail", 1), _message("c2", "new tail", 2)],
+        parent="parent",
+    )
+
+    def carries(session: ParsedSession) -> bool:
+        payload = SessionWritePayload(session_id=child_id, content_hash="", parsed_session=session)
+        return _incoming_write_carries_distinct_messages(index, payload, session)
+
+    assert (carries(replay), carries(grown)) == (False, True)
     index.close()
 
 
