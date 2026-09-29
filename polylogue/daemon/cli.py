@@ -40,7 +40,7 @@ from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV, api_command
 from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
 from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
-from polylogue.daemon.execution import publish_daemon_compute_adapter
+from polylogue.daemon.execution import publish_daemon_compute_adapter, reset_daemon_compute_adapter
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -118,6 +118,7 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 
 
 if TYPE_CHECKING:
+    from polylogue.daemon.derivation import DerivationReport
     from polylogue.daemon.events import DaemonEventRecord
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
@@ -201,6 +202,9 @@ def _lineage_startup_lifecycle_phase(census: LineageStartupCensus) -> str:
 
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
+#: How long shutdown waits for compute workers to exit before naming them.
+#: It bounds reporting only: a worker still running is not interrupted.
+_COMPUTE_JOIN_TIMEOUT_S = 5.0
 #: Cadences that used to be bare literals inside their own ``while True``.
 #: They live here so the runner, the service registry and a reader of this
 #: module see one value per loop (polylogue-74wvj).
@@ -1170,6 +1174,39 @@ def _raw_materialized_session_ids(archive: Path, raw_id: str) -> tuple[str, ...]
     from polylogue.operations.raw_observation_derivation import raw_observation_output_session_ids
 
     return raw_observation_output_session_ids(archive, raw_id)
+
+
+def _derivation_admission(report: DerivationReport, key: str, *, subject: str) -> AdmissionResult:
+    """Map one exact-key derivation pass onto a fair-intake admission verdict.
+
+    A discovery or bulk-inspection failure is recorded under the domain-wide
+    key ``"*"``, not under ``key``; it still means this pass did not decide
+    ``key`` and must be retried, never acknowledged as a duplicate. The
+    retained outcome sample may be truncated, so the authoritative failure
+    count also counts. No ``actual_cost`` is returned: discovery costed the
+    item in payload bytes, and that estimate is what the pass spent.
+    """
+    from polylogue.daemon.derivation import Outcome
+
+    outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key in (key, "*"))
+    failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
+    if failed is not None or (report.done == 0 and report.failed > 0):
+        return AdmissionResult(
+            AdmissionOutcome.RETRYABLE,
+            reason=(failed.error if failed is not None else None) or f"{subject} derivation failed",
+        )
+    pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
+    if pending is not None or (report.done == 0 and report.pending > 0):
+        return AdmissionResult(
+            AdmissionOutcome.RETRYABLE,
+            reason=pending.reason.value if pending is not None and pending.reason is not None else f"{subject} pending",
+        )
+    if report.done:
+        return AdmissionResult(AdmissionOutcome.ADMITTED)
+    # A concurrent publisher may have made the inspected key valid between
+    # discovery and this exact pass. Acknowledgement is then warranted, but
+    # only because the canonical output relation said so.
+    return AdmissionResult(AdmissionOutcome.DUPLICATE)
 
 
 async def _converge_raw_materialized_session_profiles(
@@ -2280,6 +2317,7 @@ async def _run_daemon_services_under_active_writer_lease(
         _daemon_lifecycle = await write_coordinator.run_sync(
             "daemon.lifecycle.start",
             DaemonLifecycle.start,
+            archive_root_path=archive_root_path,
             details={"archive_root": str(archive_root_path)},
         )
         # Interrupted effects are classified once under the real daemon writer
@@ -2875,41 +2913,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await asyncio.wrap_future(submitted.future)
 
                     async def admit_raw_intake(raw_id: str) -> AdmissionResult:
-                        from polylogue.daemon.derivation import Outcome
-
                         report = await raw_observation_owner.converge_raw_id(raw_id)
-                        outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key == raw_id)
-                        failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
-                        if failed is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=failed.error or "raw observation derivation failed",
-                            )
-                        if report.failed:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason="raw observation derivation domain failed",
-                            )
-                        pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
-                        if pending is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=pending.reason.value
-                                if pending.reason is not None
-                                else "raw observation pending",
-                            )
-                        if report.done:
+                        result = _derivation_admission(report, raw_id, subject="raw observation")
+                        if result.outcome is AdmissionOutcome.ADMITTED:
                             await _converge_raw_materialized_session_profiles(
                                 archive_root_path,
                                 raw_id,
                                 session_profile_callback,
                             )
-                            return AdmissionResult(AdmissionOutcome.ADMITTED)
-                        # A concurrent publisher may have made the inspected
-                        # raw valid between discovery and this exact pass.
-                        # Dispatcher acknowledgement is then warranted, but
-                        # only because the canonical output relation said so.
-                        return AdmissionResult(AdmissionOutcome.DUPLICATE)
+                        return result
 
                     async def discover_hook_events(limit: int) -> Sequence[tuple[str, int]]:
                         from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
@@ -2930,7 +2942,6 @@ async def _run_daemon_services_under_active_writer_lease(
                         is already materialized is a duplicate.
                         """
 
-                        from polylogue.daemon.derivation import Outcome
                         from polylogue.operations.hook_event_derivation import converge_hook_carriers
 
                         submitted = daemon_compute.submit(
@@ -2940,22 +2951,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             admission_class="incremental-background",
                         )
                         report = await asyncio.wrap_future(submitted.future)
-                        outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key == raw_id)
-                        failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
-                        if failed is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=failed.error or "hook event derivation failed",
-                            )
-                        pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
-                        if pending is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=pending.reason.value if pending.reason is not None else "hook events pending",
-                            )
-                        if report.done:
-                            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1)
-                        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
+                        return _derivation_admission(report, raw_id, subject="hook event")
 
                     drive_sources_configured = False
                     with contextlib.suppress(Exception):
@@ -3247,7 +3243,16 @@ async def _run_daemon_services_under_active_writer_lease(
                         on_pass_complete=refresh_cold_build_progress if cold_build is not None else None,
                     )
                     supervisor.start("fair_intake", intake_service.run)
-                    if enable_watch:
+                    if enable_watch and not watcher.prepare_watch_roots():
+                        # A watcher with nothing to watch is unavailable, not
+                        # a watch that completed. Fair intake's idle pass
+                        # still discovers files once a root appears.
+                        supervisor.mark_unavailable("watcher", reason="no configured source root exists")
+                        if supervisor.is_schedulable("watcher_registered_bridge"):
+                            supervisor.mark_unavailable("watcher_registered_bridge", reason="watcher is unavailable")
+                        if watcher_registered_gate_event is not None:
+                            watcher_registered_gate_event.set()
+                    elif enable_watch:
                         watcher_registered = getattr(watcher, "watcher_ready", None)
                         supervisor.start("watcher", watcher.run)
                         if watcher_registered_gate_event is not None and watcher_registered is not None:
@@ -3472,9 +3477,25 @@ async def _run_daemon_services_under_active_writer_lease(
             if uds_server is not None:
                 with contextlib.suppress(Exception):
                     uds_server.server_close()
-            from polylogue.daemon.execution import reset_daemon_compute_adapter
-
-            reset_daemon_compute_adapter()
+            # The process compute capacity is the API server's kernel or the
+            # shared fallback; either way this run published it, so this run
+            # joins its workers. Every service and the writer have stopped, so
+            # nothing new is admitted; a worker still running is named.
+            surviving_compute = reset_daemon_compute_adapter(join_timeout_s=_COMPUTE_JOIN_TIMEOUT_S)
+            if surviving_compute:
+                emit(
+                    "daemon.shutdown.compute_threads_orphaned",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="outlived_shutdown_deadline",
+                    orphaned=len(surviving_compute),
+                    error_detail=", ".join(surviving_compute),
+                    timeout_ms=round(_COMPUTE_JOIN_TIMEOUT_S * 1000),
+                )
+                # A live compute worker is an incomplete shutdown: keep archive
+                # ownership and report the stop as degraded, never clean.
+                writer_drained = False
+                ownership_retained_reason = "compute_threads_orphaned"
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()

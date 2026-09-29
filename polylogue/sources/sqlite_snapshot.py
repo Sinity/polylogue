@@ -414,25 +414,22 @@ def snapshot_sqlite_to_blob(
     # already present is either included in the export or causes one harmless
     # extra acquisition when the token was sampled just before it.
     source_fingerprint = sqlite_source_revision(source)
-    temporary_path = blob_store.allocate_staging_path(prefix=".sqlite-export.", suffix=".jsonl")
-    try:
-        with temporary_path.open("wb") as handle:
-            write_logical_export(source, handle, scope=member_export_scope(source))
-        blob_hash, blob_size = blob_store.write_from_path(temporary_path, heartbeat=heartbeat)
-        from polylogue.storage.blob_publication import publication_receipt_id
+    # The export is written straight into the blob store's own staging file:
+    # exporting to a work file and copying it would hold two full-size copies
+    # on the blob filesystem at once, which capacity preflight never budgets.
+    blob_hash, blob_size = blob_store.write_from_writer(
+        lambda handle: write_logical_export(source, handle, scope=member_export_scope(source)),
+        heartbeat=heartbeat,
+    )
+    from polylogue.storage.blob_publication import publication_receipt_id
 
-        return SQLiteBlobSnapshot(
-            blob_hash=blob_hash,
-            blob_size=blob_size,
-            source_revision=blob_hash,
-            source_fingerprint=source_fingerprint,
-            blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
-        )
-    finally:
-        blob_store.discard_staging_path(
-            temporary_path,
-            companion_suffixes=_SQLITE_SIDECAR_SUFFIXES,
-        )
+    return SQLiteBlobSnapshot(
+        blob_hash=blob_hash,
+        blob_size=blob_size,
+        source_revision=blob_hash,
+        source_fingerprint=source_fingerprint,
+        blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
+    )
 
 
 __all__ = [

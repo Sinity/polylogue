@@ -82,7 +82,7 @@ def recover_embedding_catchup_receipts(archive_root: Path) -> int:
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     placeholders = ", ".join("?" for _ in UNFINISHED_CATCHUP_RECEIPT_STATUSES)
-    with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
+    with open_initialized_tier_connection(ops_db, ArchiveTier.OPS, archive_root=archive_root) as conn:
         updated = conn.execute(
             f"""
             UPDATE embedding_catchup_runs
@@ -358,7 +358,7 @@ def _upsert_archive_embedding_catchup_run(
 
     ops_db.parent.mkdir(parents=True, exist_ok=True)
 
-    with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
+    with open_initialized_tier_connection(ops_db, ArchiveTier.OPS, archive_root=ops_db.parent) as conn:
         return upsert_embedding_catchup_run(
             conn,
             run_id=run_id,

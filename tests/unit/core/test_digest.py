@@ -33,7 +33,7 @@ from polylogue.core.digest import (
     digest,
     profile_for,
 )
-from polylogue.core.hashing import hash_payload
+from polylogue.core.hashing import hash_item_payload, hash_payload
 from polylogue.core.json import dumps_bytes
 from polylogue.material_protocol.v1.canonical import canonical_bytes as material_canonical_bytes
 
@@ -318,3 +318,11 @@ class TestStdlibChunks:
         for payload in self.PAYLOADS:
             expected = hashlib.sha256(_reference_query_bytes(payload)).hexdigest()
             assert digest(payload, QUERY) == expected
+
+    @pytest.mark.parametrize("index", range(len(PAYLOADS)))
+    def test_frame_depth_never_moves_the_digest(self, index: int) -> None:
+        """Anti-vacuity: an item digest that framed or sorted differently fails here."""
+        payload = self.PAYLOADS[index]
+        expected = hashlib.sha256(_reference_query_bytes(payload)).hexdigest()
+        assert [digest(payload, QUERY, frame_depth=depth) for depth in range(4)] == [expected] * 4
+        assert hash_item_payload(payload) == hash_payload(payload) == expected

@@ -673,13 +673,13 @@ class PolylogueConfig:
         return int(str(value))
 
     @property
-    def daemon_parse_stage_warm_timeout_seconds(self) -> float | None:
-        """Bound (seconds) on how long a prefetch warm() pass waits for workers.
+    def daemon_parse_stage_stall_report_seconds(self) -> float | None:
+        """Seconds without a completed worker before a warm() pass reports a stall.
 
-        ``None``/absent or <=0 falls back to the 300s default. See
-        ``polylogue.daemon.parse_prefetch``.
+        Not a deadline: warm() keeps waiting for its workers. ``None``/absent
+        or <=0 falls back to the 300s default. See ``polylogue.daemon.parse_prefetch``.
         """
-        value = self._data.get("daemon_parse_stage_warm_timeout_seconds")
+        value = self._data.get("daemon_parse_stage_stall_report_seconds")
         if value is None:
             return None
         return float(str(value))
@@ -709,13 +709,14 @@ class PolylogueConfig:
         return int(str(value))
 
     @property
-    def live_watcher_parse_stage_warm_timeout_seconds(self) -> float | None:
-        """Bound (seconds) on how long a watcher prefetch warm() pass waits for workers.
+    def live_watcher_parse_stage_stall_report_seconds(self) -> float | None:
+        """Seconds without forward progress before a watcher preparation reports a stall.
 
+        Not a deadline: the watcher warm keeps waiting for its preparations.
         ``None``/absent or <=0 falls back to the 60s default. See
         ``polylogue.sources.live.parse_prefetch``.
         """
-        value = self._data.get("live_watcher_parse_stage_warm_timeout_seconds")
+        value = self._data.get("live_watcher_parse_stage_stall_report_seconds")
         if value is None:
             return None
         return float(str(value))
@@ -1438,15 +1439,15 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "daemon_parse_stage_warm_timeout_seconds",
-        toml_path="daemon.raw_materialization.parse_stage_warm_timeout_seconds",
-        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS",
+        "daemon_parse_stage_stall_report_seconds",
+        toml_path="daemon.raw_materialization.parse_stage_stall_report_seconds",
+        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_STALL_REPORT_SECONDS",
         owner_class="resource-policy",
         reload_behavior="daemon-loop",
         description=(
-            "Bound (seconds) on how long a prefetch warm() pass waits for "
-            "its dispatched workers before leaving stragglers uncached. "
-            "<=0 falls back to the 300s default."
+            "Seconds without a completed worker before a prefetch warm() "
+            "pass reports daemon.parse_prefetch.preparation_stalled. Not a "
+            "deadline: the pass keeps waiting. <=0 falls back to the 300s default."
         ),
     ),
     ConfigInventoryEntry(
@@ -1475,15 +1476,15 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "live_watcher_parse_stage_warm_timeout_seconds",
-        toml_path="watcher.parse_stage_warm_timeout_seconds",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS",
+        "live_watcher_parse_stage_stall_report_seconds",
+        toml_path="watcher.parse_stage_stall_report_seconds",
+        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS",
         owner_class="resource-policy",
         reload_behavior="daemon-loop",
         description=(
-            "Bound (seconds) on how long a watcher prefetch warm() pass "
-            "waits for its dispatched workers before leaving stragglers "
-            "uncached. <=0 falls back to the 60s default."
+            "Seconds without forward progress before a watcher preparation "
+            "reports live.parse_prefetch.preparation_stalled. Not a deadline: "
+            "the warm keeps waiting. <=0 falls back to the 60s default."
         ),
     ),
     ConfigInventoryEntry(
@@ -1555,8 +1556,8 @@ _INT_CONFIG_KEYS = frozenset(
 _FLOAT_CONFIG_KEYS = frozenset(
     {
         "embedding_max_cost_usd",
-        "daemon_parse_stage_warm_timeout_seconds",
-        "live_watcher_parse_stage_warm_timeout_seconds",
+        "daemon_parse_stage_stall_report_seconds",
+        "live_watcher_parse_stage_stall_report_seconds",
     }
 )
 _BOOL_CONFIG_KEYS = frozenset(
@@ -1783,10 +1784,10 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "daemon_parse_stage_workers": None,
         "daemon_parse_stage_max_inflight_bytes": None,
         "daemon_parse_stage_max_cached_tree_bytes": None,
-        "daemon_parse_stage_warm_timeout_seconds": None,
+        "daemon_parse_stage_stall_report_seconds": None,
         "live_watcher_parse_stage_workers": None,
         "live_watcher_parse_stage_max_inflight_bytes": None,
-        "live_watcher_parse_stage_warm_timeout_seconds": None,
+        "live_watcher_parse_stage_stall_report_seconds": None,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,
         "mcp_maintenance_enabled": False,
