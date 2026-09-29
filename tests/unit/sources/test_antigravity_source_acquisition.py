@@ -177,20 +177,25 @@ def test_source_census_counts_non_regular_and_unreadable_items(tmp_path: Path, m
     assert census.unexplained_items == ()
 
 
-def test_symlinked_brain_document_is_censused_but_not_admitted(tmp_path: Path) -> None:
+def test_symlinked_conversation_is_censused_but_not_admitted(tmp_path: Path) -> None:
+    """A production-eligible path is rejected because it is a symlink, not its suffix."""
     root = tmp_path / "antigravity"
-    target = tmp_path / "real.md"
-    target.write_text("# linked", encoding="utf-8")
-    linked = root / "brain" / "w" / "linked.md"
+    target = tmp_path / "real.pb"
+    target.write_bytes(b"opaque")
+    linked = root / "conversations" / "linked.pb"
     linked.parent.mkdir(parents=True)
     linked.symlink_to(target)
+    regular = linked.with_name("regular.pb")
+    regular.write_bytes(target.read_bytes())
 
     census = antigravity.census_source(root)
 
     assert census.inspection_counts[antigravity.AntigravitySourceInspection.NON_REGULAR] == 1
     assert census.unknown_count == 1
     assert linked in {item.path for item in census.items}
-    assert linked not in antigravity._conversation_pb_paths(root)
+    # Both names pass the conversation taxonomy. Removing the walker's
+    # no-follow regular-file check now admits linked.pb and makes this red.
+    assert antigravity._conversation_pb_paths(root) == [regular]
 
 
 def test_skip_directories_are_shared_by_census_and_production_walk(tmp_path: Path) -> None:

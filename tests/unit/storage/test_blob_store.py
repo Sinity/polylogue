@@ -46,7 +46,13 @@ def test_publish_fsyncs_staged_file_before_close_and_shard_after_replace(
         real_close(fd)
 
     def recording_fsync(fd: int) -> None:
-        events.append(("fsync", fd))
+        mode = os.fstat(fd).st_mode
+        if stat.S_ISREG(mode):
+            kind = "file_fsync"
+        else:
+            assert stat.S_ISDIR(mode), "publication must fsync a regular file or directory"
+            kind = "directory_fsync"
+        events.append((kind, fd))
         real_fsync(fd)
 
     def recording_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
@@ -59,14 +65,15 @@ def test_publish_fsyncs_staged_file_before_close_and_shard_after_replace(
 
     blob_store.write_from_bytes(b"durable blob")
 
-    file_fsync_index = next(index for index, event in enumerate(events) if event[0] == "fsync")
+    file_fsync_index = next(index for index, event in enumerate(events) if event[0] == "file_fsync")
     file_fsync_fd = events[file_fsync_index][1]
     assert file_fsync_fd is not None
     assert events[file_fsync_index + 1] == ("close", file_fsync_fd)
 
     replace_index = next(index for index, event in enumerate(events) if event[0] == "replace")
+    assert file_fsync_index < replace_index
     directory_fsync_index = next(
-        index for index in range(replace_index + 1, len(events)) if events[index][0] == "fsync"
+        index for index in range(replace_index + 1, len(events)) if events[index][0] == "directory_fsync"
     )
     directory_fsync_fd = events[directory_fsync_index][1]
     assert directory_fsync_fd is not None
