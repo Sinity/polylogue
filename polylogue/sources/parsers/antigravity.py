@@ -1210,8 +1210,14 @@ class AntigravityLanguageServerClient:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        self.port = self._await_discovered_port(launched_at_ns=launched_at_ns)
-        self._wait_until_ready()
+        try:
+            self.port = self._await_discovered_port(launched_at_ns=launched_at_ns)
+            self._wait_until_ready()
+        except BaseException:
+            # A start that does not complete (a refusal, a cancellation) must
+            # not leave its child running; a retry would accumulate servers.
+            self.close()
+            raise
         self.server_info = AntigravityLanguageServerInfo(
             binary_path=binary,
             version=version,
@@ -1258,13 +1264,16 @@ class AntigravityLanguageServerClient:
         also names that pid, so a file is accepted only once it was written
         at or after this launch; an older one is watched until the child
         rewrites it.
+
+        There is no deadline: a slow child that is still alive is still
+        starting. The child's exit ends the wait, and a cancellation of the
+        caller ends it through ``start``, which then stops the child.
         """
         process = self._process
         if process is None:
             raise AntigravityExportError("Antigravity language server is not running")
         discovery_dir = self.root / "daemon"
-        deadline = time.monotonic() + self.startup_timeout_s
-        while time.monotonic() < deadline:
+        while True:
             if process.poll() is not None:
                 raise AntigravityExportError(f"Antigravity language server exited with code {process.returncode}")
             for candidate in sorted(discovery_dir.glob("ls_*.json")) if discovery_dir.is_dir() else ():
@@ -1280,7 +1289,6 @@ class AntigravityLanguageServerClient:
                 if isinstance(port, int) and not isinstance(port, bool) and port > 0:
                     return port
             time.sleep(_READY_RETRY_SLEEP_S)
-        raise AntigravityExportError("Antigravity language server published no HTTP port before its startup deadline")
 
     def _wait_until_ready(self) -> None:
         """Probe the vendor surface until it answers a search call.

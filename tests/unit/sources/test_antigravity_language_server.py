@@ -894,7 +894,9 @@ def test_client_launches_vendor_on_a_random_port_with_a_run_token(
     assert client.port == 40003
 
 
-def test_a_discovery_file_older_than_the_launch_is_not_accepted_for_a_reused_pid(tmp_path: Path) -> None:
+def test_a_discovery_file_older_than_the_launch_is_not_accepted_for_a_reused_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Anti-vacuity: accept on pid alone and the crashed server's stale port 40009 wins."""
     daemon_dir = tmp_path / "daemon"
     daemon_dir.mkdir()
@@ -902,14 +904,81 @@ def test_a_discovery_file_older_than_the_launch_is_not_accepted_for_a_reused_pid
     stale.write_text('{"pid": 444, "httpPort": 40009}')
     os.utime(stale, ns=(1_000_000_000, 1_000_000_000))
     launched_at_ns = 2_000_000_000
-    client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=0.3)
+    client = AntigravityLanguageServerClient(tmp_path)
     client._process = _FakeProcess(444)  # type: ignore[assignment]
-    with pytest.raises(AntigravityExportError, match="published no HTTP port"):
-        client._await_discovered_port(launched_at_ns=launched_at_ns)
+    waits: list[float] = []
 
-    stale.write_text('{"pid": 444, "httpPort": 40010}')
-    os.utime(stale, ns=(3_000_000_000, 3_000_000_000))
+    def child_rewrites(seconds: float) -> None:
+        waits.append(seconds)
+        stale.write_text('{"pid": 444, "httpPort": 40010}')
+        os.utime(stale, ns=(3_000_000_000, 3_000_000_000))
+
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.time.sleep", child_rewrites)
+
     assert client._await_discovered_port(launched_at_ns=launched_at_ns) == 40010
+    assert waits
+
+
+def test_a_slow_child_is_still_waited_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live child that publishes after the startup budget still starts.
+
+    Anti-vacuity (Codex P2, #5704): stop waiting at ``startup_timeout_s`` and
+    a slow but healthy server becomes an export failure.
+    """
+    daemon_dir = tmp_path / "daemon"
+    daemon_dir.mkdir()
+    client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=0.0)
+    client._process = _FakeProcess(555)  # type: ignore[assignment]
+    waits: list[float] = []
+
+    def publish_late(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 50:
+            (daemon_dir / "ls_late.json").write_text('{"pid": 555, "httpPort": 40011}')
+
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.time.sleep", publish_late)
+
+    assert client._await_discovered_port(launched_at_ns=0) == 40011
+    assert len(waits) == 50
+
+
+def test_a_start_that_fails_stops_its_child(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A refused start leaves no language server running.
+
+    Anti-vacuity (Codex P2, #5704): raise from ``start`` without cleanup and
+    the child stays alive, so retries accumulate servers.
+    """
+    terminated: list[int] = []
+
+    class Child(_FakeProcess):
+        def terminate(self) -> None:
+            terminated.append(self.pid)
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode if self.returncode is not None else 0
+
+    binary = tmp_path / "language_server_linux_x64"
+    binary.write_bytes(b"")
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.subprocess.Popen", lambda *_a, **_k: Child(666))
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._discover_language_server_version", lambda _b: "1.11.0")
+    monkeypatch.setattr(
+        AntigravityLanguageServerClient, "_await_discovered_port", lambda self, *, launched_at_ns: 40012
+    )
+
+    def refuse(self: AntigravityLanguageServerClient) -> None:
+        raise AntigravityExportError("not ready")
+
+    monkeypatch.setattr(AntigravityLanguageServerClient, "_wait_until_ready", refuse)
+    client = AntigravityLanguageServerClient(tmp_path / "antigravity", language_server_path=binary)
+
+    with pytest.raises(AntigravityExportError, match="not ready"):
+        client.start()
+    assert terminated == [666]
+    assert client._process is None
 
 
 def test_language_server_rpcs_never_go_through_an_environment_proxy(
