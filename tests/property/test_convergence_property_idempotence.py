@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from hypothesis import HealthCheck, Phase, given, settings
+from hypothesis import Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.archive_canonical_snapshot import (
@@ -36,10 +36,9 @@ from tests.infra.sqlite_work_counter import mutating_statements
     max_examples=8,
     phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.target, Phase.shrink),
     deadline=None,
-    suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1))
-def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int) -> None:
+def test_convergence_property_reingest_is_idempotent(tmp_path_factory: pytest.TempPathFactory, shift: int) -> None:
     """Re-ingesting a converged corpus changes nothing the archive durably holds.
 
     ``SemanticProjection`` is FTS membership plus aggregate role counts, and
@@ -58,6 +57,7 @@ def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int)
     ``source.raw_sessions`` row. That mutation is invisible to every other
     assertion in this test.
     """
+    tmp_path = tmp_path_factory.mktemp("convergence-example")
     workload = generated_convergence_workload()
     composed = workload.sources
     order = rotated_session_order(composed, shift)

@@ -38,9 +38,36 @@ def test_fixture_compiler_plants_corrected_parallel_incident_population(
         context="incident oracle",
     )
     expected = require_json_document(oracle["facts"], context="incident facts")
-    for name, value in expected.items():
-        if name in seed.direct_facts:
-            assert seed.direct_facts[name] == value
+    oracle_to_census = {
+        "attempt_transcripts": "incident_members",
+        "non_workflow_children": "other_children",
+        "coordinator_children": "coordinator_children",
+        "workflow_invocations": "workflow_invocations",
+        "final_result_count": "final_result_count",
+        "incident_curriculum_cases": "incident_curriculum_cases",
+        "call_keys": "call_keys",
+        "completed_call_keys": "completed_call_keys",
+        "unresolved_call_keys": "unresolved_call_keys",
+        "result_records": "result_records",
+    }
+    assert set(expected) == set(oracle_to_census), "every planted incident fact needs a census comparison"
+    for oracle_name, census_name in oracle_to_census.items():
+        assert seed.direct_facts[census_name] == expected[oracle_name], oracle_name
+
+    oracles = require_json_document(continuity_corpus[1]["oracles"], context="continuity oracles")
+    cost = require_json_document(oracles["cost"], context="cost oracle")
+    usage = require_json_document(cost["facts"], context="usage facts")
+    usage_to_census = {
+        "input_tokens": "usage_input_tokens",
+        "output_tokens": "usage_output_tokens",
+        "cached_input_tokens": "usage_cached_input_tokens",
+        "total_tokens": "usage_total_tokens",
+    }
+    # pricing_grain is a product projection, checked by the official MCP
+    # replay; all numeric usage facts are independently counted here.
+    assert set(usage) == set(usage_to_census) | {"pricing_grain"}
+    for oracle_name, census_name in usage_to_census.items():
+        assert seed.direct_facts[census_name] == usage[oracle_name], oracle_name
 
 
 def _incident_facts(catalog: JSONDocument) -> JSONDocument:
@@ -364,3 +391,33 @@ async def test_mutated_planted_fact_is_diagnosed_without_changing_route_output(
             "bead:polylogue-t8t",
         ],
     } in diagnostics
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "attempt_transcripts",
+        "non_workflow_children",
+        "call_keys",
+        "completed_call_keys",
+        "unresolved_call_keys",
+        "result_records",
+    ),
+)
+def test_direct_census_rejects_each_previously_uncompared_incident_fact(
+    continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed], field: str
+) -> None:
+    """The old intersection loop silently accepted each wrong planted count."""
+    root, catalog, seed = continuity_corpus
+    changed = deepcopy(catalog)
+    facts = _incident_facts(changed)
+    facts[field] = cast(int, facts[field]) + 1
+    # require_json_document returns a document value; assign it explicitly so
+    # the test does not depend on whether that validator copies its argument.
+    oracles = require_json_document(changed["oracles"], context="mutated oracles")
+    incident = require_json_document(oracles["parallel-claude-incident"], context="mutated incident")
+    incident["facts"] = facts
+    oracles["parallel-claude-incident"] = incident
+    changed["oracles"] = oracles
+    with pytest.raises(AssertionError, match=field):
+        test_fixture_compiler_plants_corrected_parallel_incident_population((root, changed, seed))

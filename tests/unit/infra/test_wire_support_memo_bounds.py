@@ -10,13 +10,14 @@ retention passes the declared budget. Each also pins the opposite direction,
 because a memo that stores nothing satisfies every ceiling while destroying
 the reason the memo exists.
 
-The real budget constants are exercised, not stand-ins. A test that lowered
-``_GENERATED_WITNESS_BYTES_LIMIT`` to something cheap would prove the
-eviction loop runs and prove nothing about what a worker retains.
+The large-payload cases exercise the real worker budget. The tiny-witness
+case additionally lowers that budget to exercise retained entry overhead
+without requiring millions of one-byte payloads in a regression test.
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,8 +55,22 @@ def _corpus(index: int) -> Any:
     )
 
 
-def _retained_payload_bytes() -> int:
-    return sum(len(payload) for entry in wire_support._GENERATED_WITNESSES.values() for payload in entry)
+def _retained_heap_bytes() -> int:
+    """Measure the reachable memo containers independently of its byte ledger."""
+    seen: set[int] = set()
+
+    def size(value: object) -> int:
+        if id(value) in seen:
+            return 0
+        seen.add(id(value))
+        total = sys.getsizeof(value)
+        if isinstance(value, dict):
+            total += sum(size(key) + size(item) for key, item in value.items())
+        elif isinstance(value, (list, tuple)):
+            total += sum(size(item) for item in value)
+        return total
+
+    return size(wire_support._GENERATED_WITNESSES)
 
 
 @pytest.fixture
@@ -93,13 +108,14 @@ def test_generated_witness_memo_holds_its_declared_byte_budget(monkeypatch: pyte
         "the fixture must offer more than the budget or the bound is never exercised"
     )
     assert generated == corpora, "every distinct corpus must reach the real generator exactly once"
-    retained = _retained_payload_bytes()
+    retained = _retained_heap_bytes()
     assert retained <= wire_support._GENERATED_WITNESS_BYTES_LIMIT, (
         f"memo retained {retained / 1024 / 1024:.1f} MiB in {len(wire_support._GENERATED_WITNESSES)} entries, "
         f"budget {wire_support._GENERATED_WITNESS_BYTES_LIMIT / 1024 / 1024:.1f} MiB"
     )
-    assert _retained_payload_bytes() == wire_support._GENERATED_WITNESS_BYTES, (
-        "the running byte count must match what the memo actually holds"
+    assert (
+        sum(wire_support._witness_entry_bytes(key, values) for key, values in wire_support._GENERATED_WITNESSES.items())
+        == wire_support._GENERATED_WITNESS_BYTES
     )
 
 
@@ -145,7 +161,27 @@ def test_generated_witness_memo_keeps_the_corpus_it_was_just_asked_for(monkeypat
     assert len(wire_support._GENERATED_WITNESSES) == 1, (
         f"an over-budget corpus evicted itself: {len(wire_support._GENERATED_WITNESSES)} entries retained"
     )
-    assert _retained_payload_bytes() == oversized
+    assert sum(len(payload) for entry in wire_support._GENERATED_WITNESSES.values() for payload in entry) == oversized
+
+
+@pytest.mark.usefixtures("isolated_memos")
+def test_tiny_witnesses_are_bounded_by_retained_entry_heap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Payload-only accounting retains all 5,000 keys despite their heap cost."""
+    budget = 256 * 1024
+    monkeypatch.setattr(wire_support, "_GENERATED_WITNESS_BYTES_LIMIT", budget)
+
+    def stub_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
+        return [b"0"]
+
+    monkeypatch.setattr(wire_formats, "generate_coverage_witnesses", stub_witnesses)
+    corpus = _corpus(0)
+    with wire_support.shared_wire_generation():
+        for seed in range(5_000):
+            assert wire_formats.generate_coverage_witnesses(corpus, seed=seed, max_witnesses=1) == [b"0"]
+
+    assert wire_support._GENERATED_WITNESSES, "the budget must still retain usable tiny witnesses"
+    assert len(wire_support._GENERATED_WITNESSES) < 5_000
+    assert _retained_heap_bytes() <= budget
 
 
 @pytest.mark.usefixtures("isolated_memos")
@@ -211,3 +247,15 @@ def test_identity_digest_memo_answers_repeats_within_its_limit(monkeypatch: pyte
             wire_support._stable_digest(value)
 
     assert digests == len(live), f"{digests} digests for {len(live)} objects over 4 passes: the memo is not answering"
+
+
+def test_identity_digest_refreshes_recently_used_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FIFO evicts the refreshed first schema instead of the unused second one."""
+    monkeypatch.setattr(wire_support, "_IDENTITY_DIGESTS", {})
+    values = [[index] for index in range(wire_support._IDENTITY_DIGEST_LIMIT + 1)]
+    for value in values[:-1]:
+        wire_support._stable_digest(value)
+    wire_support._stable_digest(values[0])
+    wire_support._stable_digest(values[-1])
+    assert id(values[0]) in wire_support._IDENTITY_DIGESTS
+    assert id(values[1]) not in wire_support._IDENTITY_DIGESTS

@@ -19,7 +19,7 @@ try:
 except ImportError:  # pragma: no cover - the dev dependency is present in CI
     _regex = None
 
-_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[()][0-2])")
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)|[()][0-2])")
 _OSC8_RE = re.compile(r"\x1b\]8;;(?P<uri>[^\x07\x1b]*)(?:\x07|\x1b\\)(?P<body>.*?)\x1b\]8;;(?:\x07|\x1b\\)", re.DOTALL)
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 
@@ -114,16 +114,21 @@ def normalize_terminal_text(
     """Normalize text into bounded cells with deterministic wrapping/clipping."""
     if columns < 1 or rows < 1:
         raise ValueError("terminal dimensions must be positive")
-    cells: list[TerminalCell] = []
+    cells: dict[tuple[int, int], TerminalCell] = {}
+    # Every display column points to the start of its grapheme. This allows
+    # overwrites to remove an entire wide cluster without rescanning the frame.
+    occupied: dict[tuple[int, int], tuple[int, int]] = {}
     row = 0
     column = 0
     for segment, hyperlink in _linked_segments(value):
         for grapheme in graphemes(_safe_text(segment)):
-            if grapheme == "\n":
+            if grapheme in {"\n", "\r\n"}:
                 row += 1
                 column = 0
                 if row >= rows:
-                    return TerminalFrame(columns, rows, tuple(cells), redirected, color_mode, theme)
+                    return TerminalFrame(
+                        columns, rows, tuple(cells[key] for key in sorted(cells)), redirected, color_mode, theme
+                    )
                 continue
             if grapheme == "\r":
                 column = 0
@@ -134,9 +139,10 @@ def normalize_terminal_text(
                 continue
             width = display_width(grapheme)
             if width == 0:
-                if cells and cells[-1].row == row:
-                    previous = cells[-1]
-                    cells[-1] = TerminalCell(
+                previous_key = occupied.get((row, column - 1))
+                if previous_key is not None:
+                    previous = cells[previous_key]
+                    cells[previous_key] = TerminalCell(
                         previous.row,
                         previous.column,
                         previous.grapheme + grapheme,
@@ -158,22 +164,31 @@ def normalize_terminal_text(
                 column = 0
                 if row >= rows:
                     break
-            cells.append(
-                TerminalCell(
-                    row,
-                    column,
-                    grapheme,
-                    width,
-                    semantic_role,
-                    hyperlink,
-                    focused,
-                    non_color_label,
-                )
+            # A carriage return repositions the cursor. Subsequent output
+            # replaces overlapping clusters rather than adding duplicate cells.
+            for cursor_column in range(column, column + width):
+                previous_key = occupied.get((row, cursor_column))
+                if previous_key is not None:
+                    previous = cells.pop(previous_key)
+                    for previous_column in range(previous.column, previous.column + previous.display_width):
+                        del occupied[(row, previous_column)]
+            key = (row, column)
+            cells[key] = TerminalCell(
+                row,
+                column,
+                grapheme,
+                width,
+                semantic_role,
+                hyperlink,
+                focused,
+                non_color_label,
             )
+            for cursor_column in range(column, column + width):
+                occupied[(row, cursor_column)] = key
             column += width
         if row >= rows:
             break
-    return TerminalFrame(columns, rows, tuple(cells), redirected, color_mode, theme)
+    return TerminalFrame(columns, rows, tuple(cells[key] for key in sorted(cells)), redirected, color_mode, theme)
 
 
 def frame_law_violations(frame: TerminalFrame) -> tuple[str, ...]:
