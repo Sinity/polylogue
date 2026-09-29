@@ -59,6 +59,7 @@ from polylogue.cli.read_views.messages import (
     run_read_messages,
 )
 from polylogue.cli.read_views.neighbors import build_neighbor_options, run_read_neighbors
+from polylogue.cli.read_views.orchestration import run_read_orchestration
 from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.read_views.session_evidence import (
     build_events_options,
@@ -66,6 +67,7 @@ from polylogue.cli.read_views.session_evidence import (
     run_read_events,
     run_read_file_edits,
     run_read_hooks,
+    run_read_materials,
     run_read_raw,
     run_read_web_content,
 )
@@ -130,6 +132,7 @@ READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
     "raw": ReadViewExecution(run_read_raw, build_message_options),
     "hooks": ReadViewExecution(run_read_hooks),
     "effective_context": ReadViewExecution(run_read_effective_context, build_effective_context_options),
+    "orchestration": ReadViewExecution(run_read_orchestration),
     "lineage": ReadViewExecution(run_read_lineage, build_lineage_options),
     "topology": ReadViewExecution(run_read_topology, build_topology_options),
     "context": ReadViewExecution(run_read_context, build_context_options),
@@ -150,6 +153,7 @@ SESSION_LIST_READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
     "file-edits": ReadViewExecution(run_read_file_edits, build_events_options),
     "agent-policies": ReadViewExecution(run_read_agent_policies),
     "web-content": ReadViewExecution(run_read_web_content, build_events_options),
+    "materials": ReadViewExecution(run_read_materials, build_events_options),
 }
 
 

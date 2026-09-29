@@ -41,10 +41,10 @@ land, and the precedence order and payload shape do not need to change to
 accommodate them.
 
 Architecture note: the ``assertion`` tier is deliberately a *read-time*
-overlay (``resolve_session_objective_posture``), never baked into the
-materialized ``session_profiles`` row. ``index.db`` must stay independently
-rebuildable from ``source.db`` alone (see the schema-regimes note in
-``CLAUDE.md``); entangling index materialization with a ``user.db`` read
+overlay (``analysis.resume.resolve_session_objective_posture``), never
+baked into the materialized ``session_profiles`` row. ``index.db`` must stay
+independently rebuildable from ``source.db`` alone (see the schema-regimes
+note in ``CLAUDE.md``); entangling index materialization with a ``user.db`` read
 would break that invariant. Only the ``structural_inference`` tier
 (``structural_objective_posture``), which needs no durable-tier read, is
 safe to compute at materialization time.
@@ -54,10 +54,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Literal, Protocol, cast
+from typing import Literal, cast
 
 from polylogue.analysis.archive_models import ObjectivePosturePayload
-from polylogue.core.enums import TERMINAL_STATE_VALUES, AssertionKind, AssertionStatus, TerminalState
+from polylogue.core.enums import TERMINAL_STATE_VALUES, AssertionKind, TerminalState
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
@@ -241,56 +241,11 @@ def derive_objective_posture(
     )
 
 
-class ObjectivePostureOperations(Protocol):
-    """Minimal read surface `resolve_session_objective_posture` needs.
-
-    Satisfied structurally by the ``Polylogue`` API facade and by
-    ``ResumeOperations`` -- no explicit inheritance required.
-    """
-
-    async def list_assertion_claims(
-        self,
-        *,
-        kinds: Sequence[str | AssertionKind] | None = None,
-        target_ref: str | None = None,
-        statuses: Sequence[str | AssertionStatus] | None = None,
-    ) -> list[ArchiveAssertionEnvelope]: ...
-
-
-async def resolve_session_objective_posture(
-    operations: ObjectivePostureOperations,
-    *,
-    session_id: str,
-    structural: ObjectivePosturePayload,
-) -> ObjectivePosturePayload:
-    """Read-time projection: overlay the live ``assertion`` tier on top of
-    the ``structural_inference`` tier already materialized on the session
-    profile.
-
-    Scoped to the single physical ``session_id`` supplied (matching how
-    assertions are authored today, e.g. ``scenarios/corpus.py``'s
-    ``target_ref=f"session:{session_id}"``) -- it does not yet fan out
-    across a logical session's full lineage. Widening to the logical-session
-    scope is a bounded follow-on, not a redesign: it only changes which
-    ``target_ref``s get queried.
-    """
-
-    target_ref = ObjectRef(kind="session", object_id=session_id).format()
-    assertions = await operations.list_assertion_claims(
-        kinds=ASSERTION_TIER_KINDS,
-        target_ref=target_ref,
-        statuses=(AssertionStatus.ACTIVE,),
-    )
-    return derive_objective_posture(structural, assertions)
-
-
 __all__ = [
     "ASSERTION_TIER_KINDS",
     "AUTHORITY_ORDER",
     "ObjectivePosture",
     "ObjectivePostureAuthority",
-    "ObjectivePostureOperations",
     "derive_objective_posture",
-    "resolve_session_objective_posture",
     "structural_objective_posture",
 ]

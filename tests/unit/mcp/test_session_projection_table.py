@@ -22,6 +22,7 @@ from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
 from polylogue.mcp.server_cutover import mcp_get_projection_names, mcp_query_projection_names
+from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
 from polylogue.operations.session_projections import (
     SESSION_LIST_PROJECTION_NAMES,
     SESSION_LIST_PROJECTIONS,
@@ -130,13 +131,15 @@ async def test_projection_table_drives_cli_and_mcp_name_vocabulary(
 async def test_session_list_projection_routes_through_read_and_get(mcp_server: MCPServerUnderTest) -> None:
     """Both MCP routes must look up an entry in the table.
 
-    Anti-vacuity: restore a hand-written ``if projection == \"events\"``
+    ``agent-policies`` is the one list projection answered whole; the windowed
+    ones are covered by the next test.
+    Anti-vacuity: restore a hand-written ``if projection == \"agent-policies\"``
     branch, or remove either table lookup, and this does not observe the same
     facade method and response key from both production tool handlers.
     """
-    projection = SESSION_LIST_PROJECTIONS["events"]
+    projection = SESSION_LIST_PROJECTIONS["agent-policies"]
     poly = make_polylogue_mock()
-    method = AsyncMock(return_value=[{"kind": "event"}])
+    method = AsyncMock(return_value=[{"kind": "policy"}])
     setattr(poly, projection.method, method)
 
     with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
@@ -155,8 +158,116 @@ async def test_session_list_projection_routes_through_read_and_get(mcp_server: M
             )
         )
 
-    assert read[projection.payload_key] == get[projection.payload_key] == [{"kind": "event"}]
+    assert read[projection.payload_key] == get[projection.payload_key] == [{"kind": "policy"}]
     assert method.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["events", "file-edits", "web-content", "materials"])
+async def test_windowed_session_list_projection_pages_through_the_evidence_window(
+    mcp_server: MCPServerUnderTest, name: str
+) -> None:
+    """A windowed list projection is one bounded page on both MCP routes.
+
+    Anti-vacuity: send a windowed projection back to its whole-list facade
+    method (``projection.method``), or drop the ``read`` route's ``limit``,
+    and the refused whole-list call or the forwarded limit goes red here.
+    """
+    projection = SESSION_LIST_PROJECTIONS[name]
+    poly = make_polylogue_mock()
+    setattr(poly, projection.method, AsyncMock(side_effect=AssertionError("answered the relation whole")))
+    window = AsyncMock(
+        return_value={
+            "rows": [{"kind": "row"}],
+            "total": 3,
+            "returned": 1,
+            "limit": 1,
+            "offset": 0,
+            "next_offset": 1,
+            "continuation": "token",
+            "complete": False,
+        }
+    )
+    poly.read_session_evidence_window = window
+
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        read = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref="session:codex:projection-registry",
+                view=projection.name,
+                limit=1,
+                offset=2,
+            )
+        )
+        get = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["get"].fn,
+                ref="session:codex:projection-registry",
+                projection=projection.name,
+            )
+        )
+
+    assert read[projection.payload_key] == get[projection.payload_key] == [{"kind": "row"}]
+    assert read["continuation"] == get["continuation"] == "token"
+    assert read["complete"] is get["complete"] is False
+    assert window.await_args_list[0].args[1] == projection.name
+    assert window.await_args_list[0].kwargs["limit"] == 1
+    assert window.await_args_list[0].kwargs["offset"] == 2
+
+
+@pytest.mark.asyncio
+async def test_budget_trimmed_window_page_narrows_from_the_windows_resolved_offset(
+    mcp_server: MCPServerUnderTest,
+) -> None:
+    """An oversized page reached by continuation narrows from where that page began.
+
+    A continuation overrides the request's coordinates, so the caller's
+    ``offset`` (0 here) is not where the page starts. Anti-vacuity: build the
+    budget continuation from the request's arguments and it restarts at
+    offset 0 (or repeats the same oversized token); leave the page's own
+    ``continuation`` in the trimmed page and following it skips the rows the
+    trim omitted.
+    """
+    from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
+
+    projection = SESSION_LIST_PROJECTIONS["file-edits"]
+    poly = make_polylogue_mock()
+    rows = [{"original_file": "x" * (MCP_RESPONSE_BUDGET_BYTES // 3), "position": i} for i in range(4)]
+    poly.read_session_evidence_window = AsyncMock(
+        return_value={
+            "rows": rows,
+            "total": 12,
+            "returned": 4,
+            "limit": 4,
+            "offset": 4,
+            "next_offset": 8,
+            "continuation": "token-after-8",
+            "complete": False,
+        }
+    )
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        body = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref="session:codex:projection-registry",
+                view=projection.name,
+                limit=4,
+                continuation="token-after-4",
+            )
+        )
+
+    assert body["budget_exceeded"] is True
+    consumed = body["returned_items"]
+    assert 0 < consumed < len(rows)
+    assert body["page"][projection.payload_key] == rows[:consumed]
+    assert body["page"]["continuation"] is None
+    assert body["page"]["next_offset"] == 4 + consumed
+    assert body["continuation"]["tool"] == "read"
+    arguments = body["continuation"]["arguments"]
+    assert arguments["view"] == projection.name
+    assert arguments["offset"] == 4 + consumed
+    assert "continuation" not in arguments
 
 
 @pytest.mark.asyncio
@@ -233,9 +344,16 @@ async def test_capability_explanation_is_derived_from_session_projection_table(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("view", tuple(SESSION_LIST_PROJECTIONS))
+@pytest.mark.parametrize(
+    "view", tuple(name for name in SESSION_LIST_PROJECTIONS if name not in EVIDENCE_WINDOW_FAMILIES)
+)
 async def test_read_list_views_honor_limit_offset_and_next_page(mcp_server: MCPServerUnderTest, view: str) -> None:
-    """Without the shared read slice, the handler returns all five rows on every page."""
+    """A list view answered whole is still sliced by ``limit``/``offset``.
+
+    The windowed views page through the evidence window instead (previous
+    tests). Anti-vacuity: without the shared read slice, the handler returns
+    all five rows on every page.
+    """
     projection = SESSION_LIST_PROJECTIONS[view]
     poly = make_polylogue_mock()
     rows = [{"event_index": i} for i in range(5)]

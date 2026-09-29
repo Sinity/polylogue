@@ -1063,6 +1063,13 @@ writes:
     tier: "user"
     classification: lifecycle_transition
     reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). the watch-clearing UPDATE lives in clear_query_watch and is additionally guarded WHERE watch = 1"
+  - file: "polylogue/storage/sqlite/query_objects.py"
+    function: "retire_unwatched_baselines"
+    table: "watched_query_baselines"
+    kind: "delete"
+    tier: "user"
+    classification: lifecycle_transition
+    reason: "a watch baseline is the pointer to the last evaluation of a query some name watches; when a hash loses its last watcher (clear_query_watch, or put_query_name moving the name off it) the pointer is retired in the same transaction so a re-enabled watch measures the archive afresh instead of reporting its unwatched interval as a delta. the pointed-to watch result set is not deleted, and the delete is guarded by NOT EXISTS over watched names"
   - file: "polylogue/storage/sqlite/query_watch.py"
     function: "clear_query_watch"
     table: "query_names"

@@ -45,6 +45,7 @@ __all__ = [
     "run_read_events",
     "run_read_file_edits",
     "run_read_hooks",
+    "run_read_materials",
     "run_read_raw",
     "run_read_web_content",
     "run_session_evidence_view",
@@ -337,5 +338,31 @@ def run_read_web_content(env: AppEnv, request: RootModeRequest, invocation: Read
             "continuation": window["continuation"],
             "complete": window["complete"],
             "web_content_constructs": window["rows"],
+        },
+    )
+
+
+def run_read_materials(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Render one page of the session's retained source-tier materials from ``session.read``.
+
+    Codex goals and memories are admitted only as materials, so this is the
+    route by which their objective, status and memory text are read back.
+    """
+
+    window, session_id, served_by = _read_evidence_window(request, invocation, kind="materials")
+    _echo_served_by(request, served_by)
+    _deliver_evidence_document(
+        env,
+        invocation,
+        {
+            "session_id": session_id,
+            "total": window["total"],
+            "returned": window["returned"],
+            "limit": window["limit"],
+            "offset": window["offset"],
+            "next_offset": window["next_offset"],
+            "continuation": window["continuation"],
+            "complete": window["complete"],
+            "materials": window["rows"],
         },
     )

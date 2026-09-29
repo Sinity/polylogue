@@ -351,6 +351,19 @@ def _bounded_root_dict_page(
         count = (low + high) // 2
         candidate_root = dict(root)
         candidate_root[item_field] = items[:count]
+        if count < len(items):
+            # As in the attribute path: the payload's own cursor points after
+            # rows the trim omitted, so the envelope's continuation is the
+            # only valid advancing one.
+            offset = root.get("offset")
+            if "next_offset" in root and isinstance(offset, int) and not isinstance(offset, bool):
+                candidate_root["next_offset"] = offset + count
+            if "continuation" in root:
+                candidate_root["continuation"] = None
+            if "complete" in root:
+                candidate_root["complete"] = False
+            if "returned" in root:
+                candidate_root["returned"] = count
         candidate = payload.model_copy(update={"root": candidate_root})
         size = len(_serialize_payload(candidate, exclude_none=exclude_none).encode("utf-8"))
         if size <= MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES:
