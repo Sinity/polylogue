@@ -467,6 +467,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "list_context_injection_ledger",
             "post_blackboard_note",
             "record_context_delivery",
+            "record_context_ledger",
             "record_manual_continuation",
             "compile_and_record_context",
             "compile_context",

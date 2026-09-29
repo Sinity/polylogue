@@ -332,6 +332,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_command_shape_usage",
         "list_context_injection_ledger",
         "list_tool_episode_insights",
+        "record_context_ledger",
         "record_manual_continuation",
         "record_work_event",
     }
