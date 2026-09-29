@@ -2254,21 +2254,20 @@ def bundle_member_sessions(
     return sessions
 
 
-def _lower_shared_chatgpt_document(record: PayloadRecord) -> ChatGPTLoweredDocument | None:
+def _chatgpt_parsed_session_id(record: PayloadRecord, fallback_id: str) -> str:
+    """The ``provider_session_id`` ``chatgpt.parse`` gives this record.
+
+    The census keys a document by the session the parser materializes, so an
+    id-less record takes the same supplied fallback id the parser does.
+    """
+    return str(record.get("id") or record.get("uuid") or record.get("conversation_id") or fallback_id)
+
+
+def _lower_shared_chatgpt_document(record: PayloadRecord, fallback_id: str) -> ChatGPTLoweredDocument | None:
     if not chatgpt.looks_like_shared_decode(record):
         return None
-    conversation_id = next(
-        (
-            optional_string(record.get(key))
-            for key in ("id", "uuid", "conversation_id", "shared_conversation_id")
-            if optional_string(record.get(key))
-        ),
-        None,
-    )
-    if conversation_id is None:
-        return None
     return ChatGPTLoweredDocument(
-        conversation_id,
+        _chatgpt_parsed_session_id(record, fallback_id),
         cast(PayloadRecord, chatgpt.shared_decode_mapping(record)),
         "shared_page_decode",
     )
@@ -2305,7 +2304,7 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
     documents: list[ChatGPTLoweredDocument] = []
     shared_record = _payload_record(payload)
     if shared_record is not None:
-        shared_document = _lower_shared_chatgpt_document(shared_record)
+        shared_document = _lower_shared_chatgpt_document(shared_record, fallback_id)
         if shared_document is not None:
             return [shared_document]
     for spec in _lower_payload_specs(Provider.CHATGPT, payload, fallback_id):
@@ -2319,7 +2318,7 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
         record = _payload_record(spec.payload)
         if record is None:
             continue
-        shared_document = _lower_shared_chatgpt_document(record)
+        shared_document = _lower_shared_chatgpt_document(record, spec.fallback_id)
         if shared_document is not None:
             documents.append(shared_document)
             continue
@@ -2379,17 +2378,13 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
                 )
             )
             continue
-        conversation_id = next(
-            (
-                str(record[key])
-                for key in ("id", "uuid", "conversation_id")
-                if isinstance(record.get(key), str) and record[key]
-            ),
-            None,
-        )
-        if conversation_id is not None and isinstance(record.get("mapping"), dict):
+        if isinstance(record.get("mapping"), dict):
             documents.append(
-                ChatGPTLoweredDocument(conversation_id, cast(PayloadRecord, record["mapping"]), artifact_class)
+                ChatGPTLoweredDocument(
+                    _chatgpt_parsed_session_id(record, spec.fallback_id),
+                    cast(PayloadRecord, record["mapping"]),
+                    artifact_class,
+                )
             )
     return documents
 

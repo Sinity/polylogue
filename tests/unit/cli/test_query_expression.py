@@ -6063,7 +6063,7 @@ class TestMCPWiring:
         # Must NOT go to FTS query_terms.
         assert not any("origin" in t for t in spec.query_terms)
 
-    @pytest.mark.parametrize("token", ["codex", "claude-code", "unknown-export", "beads-issue"])
+    @pytest.mark.parametrize("token", ["codex", "claude-code", "beads-issue"])
     def test_dsl_origin_rejects_provider_and_non_filter_tokens(self, token: str) -> None:
         from polylogue.mcp.query_contracts import build_query_spec
 

@@ -83,6 +83,26 @@ def test_hermes_source_class_recognition_accepts_atof_jsonl(tmp_path: Path) -> N
     assert result.source_class == "session"
 
 
+def test_hermes_source_class_recognition_reads_jsonl_txt_as_records(tmp_path: Path) -> None:
+    """A ``.jsonl.txt`` stream is JSONL by the shared suffix rule, not one JSON document.
+
+    Anti-vacuity: probing by ``path.suffix`` sees ``.txt``, reads the two
+    records as a single JSON document, and refuses the file.
+    """
+
+    path = tmp_path / "moved-events.jsonl.txt"
+    path.write_text(
+        '{"atof_version":"0.1","kind":"mark","uuid":"u-1",'
+        '"timestamp":"2026-08-26T00:00:00Z","name":"hermes.turn.start"}\n'
+        '{"atof_version":"0.1","kind":"mark","uuid":"u-2",'
+        '"timestamp":"2026-08-26T00:00:01Z","name":"hermes.turn.end"}\n',
+        encoding="utf-8",
+    )
+    result = recognize_source_class(Provider.HERMES, path)
+    assert result is not None
+    assert result.source_class == "session"
+
+
 def test_source_class_recognition_defers_zip_members_to_archive_extraction(tmp_path: Path) -> None:
     """A provider archive is classified after its members are extracted."""
 

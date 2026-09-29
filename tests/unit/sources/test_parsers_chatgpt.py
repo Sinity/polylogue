@@ -639,6 +639,51 @@ def test_chatgpt_shared_decode_lowering_uses_parser_conversation_id_precedence()
     assert document.document_id == "native-id"
 
 
+def _id_less_mapping_record() -> dict[str, object]:
+    return {
+        "title": "No native id",
+        "mapping": {
+            "node-1": {
+                "id": "node-1",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "message-1",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                },
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(_id_less_mapping_record(), id="direct"),
+        pytest.param([_id_less_mapping_record(), _id_less_mapping_record()], id="bundle"),
+        pytest.param(
+            {key: value for key, value in _shared_decode_payload().items() if key != "conversation_id"},
+            id="shared-decode",
+        ),
+    ],
+)
+def test_chatgpt_census_keys_id_less_documents_by_the_parser_fallback_identity(payload: object) -> None:
+    """The conservation census and ingestion name an id-less document identically.
+
+    Anti-vacuity: a census that skips records without a native id (or keys a
+    shared decode by ``shared_conversation_id``) returns no document, or one
+    the parser never materialized, and this comparison fails.
+    """
+    from polylogue.sources.dispatch import lower_chatgpt_documents, parse_payload
+
+    documents = lower_chatgpt_documents(payload, "raw-fallback")
+    sessions = parse_payload("chatgpt", payload, "raw-fallback")
+
+    assert sessions
+    assert [document.document_id for document in documents] == [session.provider_session_id for session in sessions]
+
+
 def test_chatgpt_temporary_payload_sets_session_kind() -> None:
     session = chatgpt_parse(
         {

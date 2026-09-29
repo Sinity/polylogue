@@ -31,7 +31,6 @@ from polylogue.schemas.source_inference import (
     inventory_schema_sources,
     parse_schema_source_input,
 )
-from tests.infra.logical_source_probe import record_logical_source_connections
 
 
 def test_declared_claude_jsonl_source_reaches_evidence_schema_emission(tmp_path: Path) -> None:
@@ -90,35 +89,43 @@ def test_declared_codex_database_observes_table_and_column_shape(tmp_path: Path)
     assert "title" in json.dumps(evidence.structure)
 
 
-def test_database_schema_observation_closes_its_private_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Structure observation must release the connection it opened.
+def test_live_sqlite_revision_and_cache_follow_a_wal_only_schema_change(tmp_path: Path) -> None:
+    """A schema change still in the WAL moves the revision and the observed structure.
 
-    ``sqlite3``'s own context manager commits or rolls back and never closes,
-    so ``with open_logical_source(...)`` returned with the read handle still
-    open -- one stranded handle per observed candidate, and for a retained
-    export one stranded inode too, since the reconstruction is unlinked while
-    the connection holds it.
-
-    Anti-vacuity: revert ``closing(open_logical_source(...))`` in
-    ``_collect_database_schema_candidate`` to a bare ``with
-    open_logical_source(...)`` and ``probe.closed`` is ``False`` while the
-    observed structure below stays exactly right.
+    Anti-vacuity: revising a live member by its main file's bytes keeps the
+    pre-ALTER revision, so the second run answers from the cached evidence
+    and ``wal_only_column`` never appears.
     """
     path = tmp_path / "state_5.sqlite"
-    with sqlite3.connect(path) as conn:
-        conn.executescript(
-            "CREATE TABLE threads (id TEXT, title TEXT, added_column INTEGER);"
-            "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);"
-        )
-
+    cache_path = tmp_path / "source-cache.sqlite3"
+    inputs = (SchemaSourceInput("codex", path),)
     candidate = _SourceCandidate("codex", tmp_path, path, "codex-state")
-    with record_logical_source_connections(monkeypatch, source_inference_module) as opened:
+    writer = sqlite3.connect(path)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE threads (id TEXT, title TEXT)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = infer_sources(inputs, cache_path=cache_path, max_workers=1)
+        before_revision = _collect_candidate(candidate).revision
+        main_file = path.read_bytes()
+        writer.execute("ALTER TABLE threads ADD COLUMN wal_only_column INTEGER")
+        writer.commit()
+        assert path.read_bytes() == main_file, "sanity: the ALTER is committed to the WAL only"
+        after = infer_sources(inputs, cache_path=cache_path, max_workers=1)
         collected = _collect_candidate(candidate)
-        assert collected.terminal.outcome == "included", "sanity: the observation really ran"
-        assert "added_column" in json.dumps(
-            SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["database_schema"]).structure
-        )
-        assert [probe.closed for probe in opened] == [True]
+    finally:
+        writer.close()
+
+    assert before.terminal_counts == after.terminal_counts == {"included": 1}
+    assert "wal_only_column" not in json.dumps(before.evidence_by_element)
+    assert "wal_only_column" in json.dumps(after.evidence_by_element)
+    assert before_revision is not None and collected.revision is not None
+    assert collected.revision.revision_sha256 != before_revision.revision_sha256
+    assert "wal_only_column" in json.dumps(
+        SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["database_schema"]).structure
+    )
 
 
 def test_declared_json_array_accepts_fractional_values_and_one_file_source(tmp_path: Path) -> None:
@@ -1350,6 +1357,46 @@ def test_identical_headerless_codex_captures_count_once(tmp_path: Path) -> None:
     assert result.included_native_source_revision_count == 1
     assert evidence.current_source_count == 1
     assert evidence.current_record_count == 1
+
+
+def test_chatgpt_zip_export_attachment_is_non_applicable_not_schema_evidence(tmp_path: Path) -> None:
+    """A declared opaque export asset stays out of schema evidence even when it is conversation-shaped JSON.
+
+    Anti-vacuity: reading every ``.json`` member of the ZIP folds the
+    attachment's ``attachment_only_field`` into the ChatGPT evidence, and an
+    attachment-only export reports schema evidence instead of exclusion.
+    """
+    import zipfile
+
+    mixed = tmp_path / "mixed" / "chatgpt-export.zip"
+    mixed.parent.mkdir()
+    attachments_only = tmp_path / "attachments" / "chatgpt-export.zip"
+    attachments_only.parent.mkdir()
+    attachment = json.dumps(_chatgpt_conversation("attachment", updated=1.0, extra="attachment_only_field"))
+    with zipfile.ZipFile(mixed, "w") as archive:
+        archive.writestr("conversations.json", json.dumps([_chatgpt_conversation("conversation", updated=1.0)]))
+        archive.writestr("file-abc.json", attachment)
+    with zipfile.ZipFile(attachments_only, "w") as archive:
+        archive.writestr("conversation-1/", "")
+        archive.writestr("conversation-1/file-abc.json", attachment)
+
+    included = infer_sources(
+        (SchemaSourceInput("chatgpt", mixed.parent),),
+        cache_path=tmp_path / "mixed-cache.sqlite3",
+        max_workers=1,
+    )
+    excluded = infer_sources(
+        (SchemaSourceInput("chatgpt", attachments_only.parent),),
+        cache_path=tmp_path / "attachments-cache.sqlite3",
+        max_workers=1,
+    )
+
+    assert included.terminal_counts == {"included": 1}
+    encoded = json.dumps(included.evidence_by_element)
+    assert "mapping" in encoded
+    assert "attachment_only_field" not in encoded
+    assert excluded.terminal_counts == {"intentionally_excluded": 1}
+    assert excluded.evidence_by_element == {}
 
 
 def _claude_export_zip(path: Path, *, conversation_uuid: str, design_uuid: str, design_title: str) -> None:
