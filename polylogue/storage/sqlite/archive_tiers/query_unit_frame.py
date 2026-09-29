@@ -25,6 +25,7 @@ IndexFrameRelation = Literal[
     "action_pairs",
     "blocks",
     "delegation_facts",
+    "file_edits",
     "messages",
     "repos",
     "session_links",
@@ -33,6 +34,7 @@ IndexFrameRelation = Literal[
     "session_tags",
     "sessions",
     "session_working_dirs",
+    "web_content_constructs",
 ]
 
 # User-tier relations with the same property. The user tier is durable and

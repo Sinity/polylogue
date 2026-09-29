@@ -750,16 +750,22 @@ def _current_raw_payload_bytes(
                     allowed_path = (
                         (lambda name: artifact_rule_for_path(provider, name) is not None) if provider else None
                     )
-                    admitted = list(
-                        ZipAdmission(zip_path=zip_path).filter_entries(
-                            matching,
+                    # Admission is cumulative over the whole central
+                    # directory (the aggregate budget counts every admitted
+                    # entry before this one), so it is replayed in directory
+                    # order rather than over the matching entry alone.
+                    target = matching[0]
+                    admitted = any(
+                        info is target
+                        for info in ZipAdmission(zip_path=zip_path).filter_entries(
+                            central_directory,
                             allowed_suffixes=ZIP_JSON_SUFFIXES,
                             allowed_path=allowed_path,
                         )
                     )
-                    if len(admitted) != 1:
+                    if not admitted:
                         return None, "container_member_rejected"
-                    with open_bounded_zip_entry(archive, admitted[0]) as handle:
+                    with open_bounded_zip_entry(archive, target) as handle:
                         member_bytes = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
                 if source_bytes_cache is not None:
                     source_bytes_cache[cache_key] = member_bytes

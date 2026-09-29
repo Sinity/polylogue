@@ -19,7 +19,7 @@ from dataclasses import replace as dataclasses_replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path, PurePath
+from pathlib import Path
 from time import monotonic, time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
@@ -744,42 +744,6 @@ def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
 
 def _dump_actions(actions: Mapping[str, ReaderActionAvailabilityPayload]) -> dict[str, object]:
     return {name: availability.model_dump(mode="json", exclude_none=True) for name, availability in actions.items()}
-
-
-def _staged_inbox_source(raw_path: object, inbox: Path) -> tuple[Path | None, str | None]:
-    """Resolve an ingest request to an existing client-staged inbox entry.
-
-    ``polylogue import PATH`` accepts arbitrary user-supplied paths and stages
-    them before calling this route.  The daemon itself only resolves a matching
-    inbox entry so the loopback HTTP surface never becomes an arbitrary local
-    file copier.
-    """
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        return None, "missing_path"
-
-    source_name = PurePath(raw_path).name
-    if not source_name or source_name in {".", ".."}:
-        return None, "invalid_path"
-
-    try:
-        inbox_root = inbox.resolve()
-        candidates = list(inbox.iterdir())
-    except FileNotFoundError:
-        return None, "path_not_found"
-    except OSError:
-        return None, "path_not_found"
-
-    for candidate in candidates:
-        if candidate.name != source_name:
-            continue
-        resolved = candidate.resolve()
-        try:
-            resolved.relative_to(inbox_root)
-        except ValueError:
-            return None, "invalid_path"
-        return resolved, None
-
-    return None, "path_not_found"
 
 
 def _confidence_tag(status: str) -> str:
@@ -5513,10 +5477,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if body is None:
             return
 
-        inbox = self.server.archive_root / "inbox"
-        inbox.mkdir(parents=True, exist_ok=True)
+        from polylogue.operations.import_staging import import_staging_root, resolve_staged_import
 
-        source, error = _staged_inbox_source(body.get("path"), inbox)
+        # Staged imports wait outside the watched inbox, so the ingest
+        # operation is the only route that acquires them.
+        import_staging_root(self.server.archive_root).mkdir(parents=True, exist_ok=True)
+        source, error = resolve_staged_import(body.get("path"), self.server.archive_root)
         if error is not None:
             self._send_error(HTTPStatus.BAD_REQUEST, error)
             return

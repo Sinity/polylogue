@@ -148,7 +148,7 @@ def test_conservation_treats_pending_publication_reservation_as_live(
     monkeypatch.setattr(
         blob_conservation, "project_source_blob_liveness", lambda *args, **kwargs: BlobLivenessProjection(frozenset())
     )
-    monkeypatch.setattr(blob_conservation, "_source_blob_reservations", lambda *args, **kwargs: {reserved})
+    monkeypatch.setattr(blob_conservation, "source_blob_reservations", lambda *args, **kwargs: {reserved})
 
     report = blob_conservation.check_blob_conservation(tmp_path)
 
@@ -172,7 +172,7 @@ def test_conservation_treats_unpublished_reservation_as_in_flight(
         "project_source_blob_liveness",
         lambda *args, **kwargs: BlobLivenessProjection(frozenset()),
     )
-    monkeypatch.setattr(blob_conservation, "_source_blob_reservations", lambda *args, **kwargs: {reserved})
+    monkeypatch.setattr(blob_conservation, "source_blob_reservations", lambda *args, **kwargs: {reserved})
 
     report = blob_conservation.check_blob_conservation(tmp_path)
 

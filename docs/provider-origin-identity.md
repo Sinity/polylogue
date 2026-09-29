@@ -97,9 +97,9 @@ enrichment hook that polylogue-2qx.2/j2zz/ih67 extend).
   cursor failure in one-shot ingest). Declared `raw-only` artifact paths are
   classified by location without consulting shape. The Drive/AI Studio source
   admits only the AI Studio prompt MIME type, so a transcript uploaded to a chat
-  is an attachment, not a session. Only the import inbox and browser-capture
-  envelopes (whose provider is declared in the envelope) run cross-origin
-  classification.
+  is an attachment, not a session. Only the archive inbox, `polylogue import`,
+  and browser-capture envelopes (whose provider is declared in the envelope)
+  run cross-origin classification.
 - `Origin` is the public archive source-origin vocabulary. Query specs,
   terminal unit rows, daemon query parameters, and MCP query-unit filters use
   `origin`/`exclude_origin` tokens and should continue to prefer that spelling.
@@ -132,8 +132,8 @@ enrichment hook that polylogue-2qx.2/j2zz/ih67 extend).
 `otel-genai` is a local-file origin for OTLP JSON
 `ExportTraceServiceRequest` documents. It is not a receiver, and no tool writes
 these files to a canonical location, so they arrive through
-`polylogue import <file>`: the daemon's import-inbox watch source classifies
-them by shape. The detector
+`polylogue import <file>`: the daemon's `ingest` operation classifies them by
+shape. The detector
 requires an OTLP resource/span document with at least one `gen_ai.*` attribute
 under the supported GenAI schema URL, or under no schema URL. A schema URL the
 adapter does not support stays in span evidence when the document also has a

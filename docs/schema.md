@@ -281,7 +281,7 @@ Every index-tier bump updates the canonical DDL and schema manifest. Schema
 drift requires a rebuild from durable evidence:
 
 ```bash
-polylogue ops reset --index && polylogued run
+polylogue ops reset --index, then restart polylogued
 ```
 
 Durable source/user changes instead use additive SQL under

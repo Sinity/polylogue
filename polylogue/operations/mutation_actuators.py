@@ -623,6 +623,11 @@ class FilesystemResetActuator(ConvergentReplay):
     def apply(self, plan: MutationPlan, args: FilesystemResetArgs) -> MutationReceipt:
         import shutil
 
+        # APPLY runs in a live process that may hold tier connections, so it
+        # never unlinks a tier file. The daemon handler stages such a reset
+        # for the next start instead (``recover`` under ``archive_tiers_closed``).
+        self._refuse_live_tier_deletion(args)
+
         deleted: list[str] = []
         missing: list[str] = []
         for name, path in args.targets:
@@ -654,6 +659,22 @@ class FilesystemResetActuator(ConvergentReplay):
             },
         )
 
+    @staticmethod
+    def _refuse_live_tier_deletion(args: FilesystemResetArgs) -> None:
+        from polylogue.operations.reset_safety import (
+            LiveArchiveTierResetError,
+            UnresettableArchiveTierError,
+            classify_reset_targets,
+        )
+
+        classes = classify_reset_targets(
+            args.archive_root, args.targets, served_index_path=_index_db_path(args.archive_root)
+        )
+        if classes.unresettable:
+            raise UnresettableArchiveTierError(classes.unresettable_names)
+        if classes.derived_tier_files:
+            raise LiveArchiveTierResetError(classes.derived_tier_names)
+
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> FilesystemResetArgs:
         return FilesystemResetArgs(
             archive_root=handles.archive_root,
@@ -668,12 +689,52 @@ class FilesystemResetActuator(ConvergentReplay):
         A path whose authorized object is gone was reset; one recreated since
         (a new login token, a fresh cache) holds content nobody previewed and
         is left alone. Identity is checked immediately before each deletion.
+
+        A plan naming ``index.db``/``ops.db`` files is a reset the live
+        daemon staged: it runs only inside :func:`archive_tiers_closed`, the
+        daemon's startup seam, and stays pending anywhere else. There each
+        tier database is deleted with every sidecar beside it. The sidecars
+        are not identity-checked: with no connection open they belong to the
+        database at their path, and a stale ``-wal`` left beside the file
+        bootstrap creates next would be replayed into it.
         """
         import shutil
 
+        from polylogue.operations.reset_safety import (
+            SQLITE_SIDECAR_SUFFIXES,
+            UnresettableArchiveTierError,
+            archive_tiers_are_closed,
+            classify_reset_targets,
+            sqlite_primary,
+        )
+
+        args = self.replay_args(handles, plan)
+        classes = classify_reset_targets(
+            args.archive_root, args.targets, served_index_path=_index_db_path(args.archive_root)
+        )
+        if classes.unresettable:
+            return RecoveryResolution("replay-failed", str(UnresettableArchiveTierError(classes.unresettable_names)))
+        tier_files = {path for _name, path in classes.derived_tier_files}
+        if tier_files:
+            if not archive_tiers_are_closed(args.archive_root):
+                raise RecoveryDeferredError(
+                    "a reset of archive tier files is applied when polylogued next starts, before any tier opens"
+                )
+            if (args.archive_root / ".index-active-pointer").exists():
+                return RecoveryResolution(
+                    "replay-failed",
+                    "a managed index generation was promoted after the reset was staged; "
+                    "the pointer-managed index is never deleted in place; no files were deleted",
+                )
         identities = cast("dict[str, list[int]]", plan.context["identities"])
+        names = {path: name for name, path in args.targets}
         deleted: list[str] = []
-        for name, path in self.replay_args(handles, plan).targets:
+        databases: dict[Path, str] = {}
+        for name, path in args.targets:
+            if path in tier_files:
+                primary = sqlite_primary(path) or path
+                databases.setdefault(primary, names.get(primary, name))
+                continue
             if str(path) not in identities or _path_identity(path) != identities[str(path)]:
                 continue
             if path.is_dir() and not path.is_symlink():
@@ -681,6 +742,19 @@ class FilesystemResetActuator(ConvergentReplay):
             else:
                 path.unlink()
             deleted.append(name)
+        for database, name in databases.items():
+            current = _path_identity(database)
+            if current is not None:
+                if current != identities.get(str(database)):
+                    # Recreated after the preview: not the authorized object.
+                    continue
+                database.unlink()
+                deleted.append(name)
+            for suffix in SQLITE_SIDECAR_SUFFIXES:
+                sidecar = database.with_name(f"{database.name}{suffix}")
+                if sidecar.is_symlink() or sidecar.exists():
+                    sidecar.unlink()
+                    deleted.append(f"{name} {suffix}")
         receipt = MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,

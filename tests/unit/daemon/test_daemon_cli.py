@@ -1505,6 +1505,66 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
     recover_mock.assert_not_called()
 
 
+def test_run_daemon_services_applies_staged_resets_before_any_tier_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-9kemf 07.F012: a staged tier reset lands before startup opens a tier.
+
+    The seam must run under the daemon's archive ownership and before the
+    schema preflight, lifecycle start and operation recovery, which all open
+    tier connections. At the seam this process holds no descriptor on any tier
+    file.
+
+    Anti-vacuity: move ``apply_staged_archive_resets`` after the schema
+    preflight (or drop it) and the recorded order no longer starts with the
+    seam.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+    tier_names = {f"{tier.value}.db{suffix}" for tier in ArchiveTier for suffix in ("", "-wal", "-shm")}
+    order: list[str] = []
+    open_tier_files: list[str] = []
+
+    class _StopStartupError(Exception):
+        pass
+
+    def seam(root: Path) -> tuple[str, ...]:
+        order.append("seam")
+        assert root == archive_root_path
+        for fd in Path("/proc/self/fd").iterdir():
+            with contextlib.suppress(OSError):
+                target = Path(os.readlink(fd))
+                if target.parent == archive_root_path and target.name in tier_names:
+                    open_tier_files.append(target.name)
+        return ()
+
+    def preflight() -> object:
+        order.append("schema_preflight")
+        raise _StopStartupError
+
+    with (
+        patch("polylogue.operations.mutation_replay.apply_staged_archive_resets", seam),
+        patch.object(daemon_cli, "_check_schema_version_fast", preflight),
+        pytest.raises(_StopStartupError),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=archive_root_path),),
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+            )
+        )
+
+    assert order == ["seam", "schema_preflight"]
+    assert open_tier_files == []
+
+
 def test_forward_versioned_durable_tier_is_a_typed_startup_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3517,7 +3577,12 @@ def _daemon_startup_stubs(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("fault", "expected_reason"),
-    (("busy", "sqlite_busy"), ("cantopen", "sqlite_open_unavailable")),
+    (
+        ("busy", "sqlite_busy"),
+        ("cantopen", "sqlite_open_unavailable"),
+        ("ioerr", "candidate_storage_unavailable"),
+        ("ioerr_read", "candidate_storage_unavailable"),
+    ),
 )
 async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
     tmp_path: Path, fault: str, expected_reason: str
@@ -3562,6 +3627,8 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
         sqlite3.connect(f"file:{missing_database}?mode=ro", uri=True)
     assert cantopen.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
 
+    ioerr = sqlite3.OperationalError("synthetic transient candidate read failure")
+    ioerr.sqlite_errorcode = sqlite3.SQLITE_IOERR_READ if fault == "ioerr_read" else sqlite3.SQLITE_IOERR
     real_readiness = ArchiveStore.run_generation_readiness_pass
     real_verify = ProductionSourceBaseline.verify
     calls = 0
@@ -3569,8 +3636,8 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
     def busy_once(self: ArchiveStore) -> None:
         nonlocal calls
         calls += 1
-        if fault == "busy" and calls == 1:
-            raise busy.value
+        if fault != "cantopen" and calls == 1:
+            raise busy.value if fault == "busy" else ioerr
         real_readiness(self)
 
     verify_calls = 0
@@ -3632,7 +3699,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                         if task.done():
                             await task
                         await asyncio.sleep(0.05)
-                assert (calls if fault == "busy" else verify_calls) == 2
+                assert (verify_calls if fault == "cantopen" else calls) == 2
                 assert candidate.publication_complete
                 assert _cold_build_settlement()["cold_build_candidate_id"] == candidate_id
                 with contextlib.closing(

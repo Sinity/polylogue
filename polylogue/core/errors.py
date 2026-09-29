@@ -9,6 +9,7 @@ Hierarchy (subclasses defined in their respective modules):
     ├── ConfigError                         # config.py
     ├── DriveError                          # sources/drive_client.py
     │   ├── DriveAuthError
+    │   ├── DriveAccessDeniedError
     │   └── DriveNotFoundError
     ├── DatabaseError                       # this module
     │   └── SqliteVecError                  # storage/search_providers/sqlite_vec.py

@@ -652,28 +652,24 @@ Usage: polylogue ops reset [OPTIONS]
     --dry-run     Preview exact target rows before any tombstone write
 
 Options:
-  --index              Delete only the rebuildable index tier
-  --database           Delete derived SQLite tiers, preserving durable
-                       source.db and user.db
-  --include-user-db    Also delete the irreplaceable user.db tier (tags,
-                       annotations, marks, notes). Destructive.
-  --include-source-db  Also delete durable source.db evidence. Refuses when
-                       raw rows point at missing source files.
-  --blob               Delete the content-addressed blob store
-  --assets             Delete archived assets/attachments
-  --cache              Delete search indexes, schemas, and cache
-  --auth               Delete Google Drive OAuth tokens
-  --all                Reset everything
-  -y, --yes            Skip confirmation prompt
-  --session TEXT       Tombstone a specific session by ID
-  --source PATH        Tombstone all sessions from a source path
-  --dry-run            Preview --session/--source identity-reset targets
-                       without mutating anything
-  --json               Shortcut for --format json (applies to
-                       --session/--source).
-  --format [json]      Output format for --session/--source identity resets.
-                       JSON emits a MutationResultPayload.
-  --help               Show this message and exit.
+  --index          Delete the rebuildable index tier when polylogued next
+                   starts
+  --database       Delete the derived index.db and ops.db tiers when
+                   polylogued next starts; durable tiers are never deleted
+  --blob           Delete the content-addressed blob store
+  --assets         Delete archived assets/attachments
+  --cache          Delete search indexes, schemas, and cache
+  --auth           Delete Google Drive OAuth tokens
+  --all            Reset everything
+  -y, --yes        Skip confirmation prompt
+  --session TEXT   Tombstone a specific session by ID
+  --source PATH    Tombstone all sessions from a source path
+  --dry-run        Preview --session/--source identity-reset targets without
+                   mutating anything
+  --json           Shortcut for --format json (applies to --session/--source).
+  --format [json]  Output format for --session/--source identity resets. JSON
+                   emits a MutationResultPayload.
+  --help           Show this message and exit.
 ```
 
 ## Config

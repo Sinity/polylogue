@@ -344,7 +344,23 @@ class FtsDerivationAdapter:
         return FtsPartitionInput(key, _generation(conn), self.recipe_id, row_count, digest)
 
     def inspect_partition(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInspection:
-        """Inspect membership against ``blocks`` without consulting state tables."""
+        """Inspect membership against ``blocks`` without consulting state tables.
+
+        The inspection is several COUNTs over ``blocks`` and the FTS shadow
+        tables. In autocommit each would read a different commit, so a probe
+        racing a writer could report missing or excess rows that no committed
+        state has. Outside a caller's transaction they share one read
+        snapshot here; inside one they already do.
+        """
+        if conn.in_transaction:
+            return self._inspect_partition(conn, key)
+        conn.execute("BEGIN")
+        try:
+            return self._inspect_partition(conn, key)
+        finally:
+            conn.rollback()
+
+    def _inspect_partition(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInspection:
         generation = _generation(conn)
         compatible = _schema_compatible(conn)
         # Inspection counts the two relations; it never materializes the input

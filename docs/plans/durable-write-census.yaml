@@ -534,6 +534,13 @@ writes:
     classification: declared_retention
     reason: "a blob_publication_reservations row has a declared lifetime -- it protects staged bytes only until the durable row referencing them exists -- and each delete ends exactly that lifetime: consume by the matching reference transaction (publication_id AND blob_hash), release when the referent was refused as excised, reconcile only under archive-wide publisher exclusion after the hash is proven UNREFERENCED, and abandon only with confirmed=True under the same exclusion. None of them rewrites a retained reservation"
   - file: "polylogue/storage/blob_publication.py"
+    function: "consume_restored_raw_blob_receipts"
+    table: "blob_publication_reservations"
+    kind: "delete"
+    tier: "source"
+    classification: declared_retention
+    reason: "restoring an absent retained raw blob publishes bytes whose referencing raw_sessions row committed earlier, so no later reference transaction exists; this is that matching transaction. It deletes only the exact (publication_id, blob_hash) receipt and only while the raw row still names that hash, ending the reservation's declared lifetime without rewriting a retained reservation"
+  - file: "polylogue/storage/blob_publication.py"
     function: "reconcile_blob_publication_reservations"
     table: "blob_publication_reservations"
     kind: "delete"

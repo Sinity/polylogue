@@ -16,6 +16,22 @@ P = ParamSpec("P")
 T = TypeVar("T")
 
 
+def drive_http_error(status: int, *errors: tuple[str, str]) -> Exception:
+    """A provider ``HttpError`` whose body names ``(domain, reason)`` pairs, as Drive v3 sends them."""
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    body = {
+        "error": {
+            "code": status,
+            "message": "synthetic Drive failure",
+            "errors": [{"domain": domain, "reason": reason, "message": reason} for domain, reason in errors],
+        }
+    }
+    failure: Exception = HttpError(httplib2.Response({"status": status}), json.dumps(body).encode("utf-8"))
+    return failure
+
+
 class BinaryWritable(Protocol):
     """Minimal writable handle contract used by Drive downloads."""
 

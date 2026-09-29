@@ -1013,7 +1013,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Delete selected archive databases, blob/assets/cache trees, or authentication state after an exact "
             "target preview and explicit confirmation. Routed through OperationExecutor/FilesystemResetActuator, so "
             "the preview, authorization and attempt rows land before the first unlink and an interrupted reset leaves "
-            "a sweepable attempt (polylogue-4fbgw). Session/source identity reset is a separate operation."
+            "a sweepable attempt (polylogue-4fbgw). A reset naming index.db or ops.db, which the daemon holds "
+            "open, is staged and applied at the next daemon start before any tier opens. Session/source identity "
+            "reset is a separate operation."
         ),
         surfaces=("cli",),
         mutates_state=True,

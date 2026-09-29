@@ -368,7 +368,7 @@ allowed to instrument*. It failed against writers it is not allowed to
 instrument: `tests/unit/storage/test_repair.py::test_raw_materialization_replays_governed_bundle_after_index_reset`
 deletes and reinitializes `index.db` directly between two
 `repair_raw_materialization` calls (modeling the documented, ordinary
-`polylogue ops reset --index && polylogued run` operational flow — see this
+`polylogue ops reset --index, then restart polylogued` operational flow — see this
 repo's schema-regimes doctrine) and
 `test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt`
 writes `raw_membership_census` via direct SQL between two

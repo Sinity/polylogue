@@ -371,26 +371,6 @@
   },
   {
     "target": "polylogue/daemon",
-    "file": "polylogue/daemon/backup.py",
-    "import": "polylogue.storage.backup_attestation"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/backup.py",
-    "import": "polylogue.storage.blob_integrity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/backup.py",
-    "import": "polylogue.storage.blob_publication"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/backup.py",
-    "import": "polylogue.storage.blob_store"
-  },
-  {
-    "target": "polylogue/daemon",
     "file": "polylogue/daemon/blob_gc_periodic.py",
     "import": "polylogue.sources.live.sqlite_locking"
   },

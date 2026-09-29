@@ -31,6 +31,7 @@ from polylogue.core.loopback import is_loopback_host
 from polylogue.daemon.http import _check_auth_logic
 from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
 from polylogue.daemon.web_auth import exact_origin_allowed
+from polylogue.operations.import_staging import import_staging_root
 from tests.infra.daemon_http_harness import MockDaemonServer, capture_responses, make_daemon_handler
 
 if TYPE_CHECKING:
@@ -524,14 +525,14 @@ class TestDeleteEndpointHostGate:
 
 # ---------------------------------------------------------------------------
 # Ingest endpoint — user-facing clients accept arbitrary local paths, stage
-# them into the archive inbox, then ask the daemon to schedule that staged
-# entry. The daemon route itself must not become an arbitrary local file
+# them into the archive's import staging directory, then ask the daemon to
+# schedule that staged entry. The daemon route itself must not become an arbitrary local file
 # copier from HTTP request data.
 # ---------------------------------------------------------------------------
 
 
-class TestIngestEndpointInboxBoundary:
-    """``POST /api/ingest`` schedules client-staged inbox artifacts only."""
+class TestIngestEndpointStagingBoundary:
+    """``POST /api/ingest`` schedules client-staged import entries only."""
 
     @pytest.fixture(autouse=True)
     def admitted_runtime(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
@@ -561,13 +562,13 @@ class TestIngestEndpointInboxBoundary:
 
         monkeypatch.setattr(DaemonAPIHandler, "_execute_daemon_operation", accepted)
 
-    def test_accepts_absolute_reference_only_by_matching_inbox_entry(
+    def test_accepts_absolute_reference_only_by_matching_staged_entry(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        inbox = workspace_env["archive_root"] / "inbox"
-        inbox.mkdir(parents=True)
-        staged = inbox / "session.json"
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True)
+        staged = staging / "session.json"
         staged.write_text(
             json.dumps(
                 {
@@ -617,9 +618,9 @@ class TestIngestEndpointInboxBoundary:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        inbox = workspace_env["archive_root"] / "inbox"
-        inbox.mkdir(parents=True)
-        staged = inbox / "unknown.json"
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True)
+        staged = staging / "unknown.json"
         staged.write_text(json.dumps({"not": "an export"}))
 
         body = json.dumps({"path": str(staged)}).encode("utf-8")
@@ -646,9 +647,9 @@ class TestIngestEndpointInboxBoundary:
         """An event-only acknowledgement would falsely accept this unreserved input."""
         from polylogue.daemon.http import DaemonAPIHandler
 
-        inbox = workspace_env["archive_root"] / "inbox"
-        inbox.mkdir(parents=True)
-        staged = inbox / "session.json"
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True)
+        staged = staging / "session.json"
         staged.write_text(
             json.dumps(
                 {
@@ -688,9 +689,9 @@ class TestIngestEndpointInboxBoundary:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        inbox = workspace_env["archive_root"] / "inbox"
-        inbox.mkdir(parents=True)
-        staged = inbox / "mixed.zip"
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True)
+        staged = staging / "mixed.zip"
         with zipfile.ZipFile(staged, "w") as zf:
             zf.writestr(
                 "conversations.json",
@@ -730,6 +731,35 @@ class TestIngestEndpointInboxBoundary:
         assert payload["preflight"]["unsupported_count"] == 1
         assert payload["accepted_reference"]["artifact_kind"] == "source-generation"
 
+    def test_watched_inbox_entry_is_not_a_staged_import(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """03.F045: the route submits staged imports, never watched inbox files.
+
+        The live watcher already acquires ``<archive>/inbox`` under the inbox
+        path. Submitting an inbox file to the ingest operation as well, keyed
+        on the caller's ``source_path``, records a second raw revision of the
+        same bytes.
+
+        Anti-vacuity: resolve the request against ``<archive>/inbox`` again
+        and this entry is accepted and scheduled.
+        """
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "session.json").write_text(json.dumps({"mapping": {}}))
+        import_staging_root(workspace_env["archive_root"]).mkdir(parents=True, exist_ok=True)
+
+        body = json.dumps({"path": "session.json", "source_path": "/exports/session.json"}).encode("utf-8")
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = capture_responses(handler)
+
+        with patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]):
+            handler.do_POST()
+
+        send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "path_not_found")
+        send_json.assert_not_called()
+
     def test_rejects_unstaged_absolute_local_path(
         self,
         workspace_env: dict[str, Path],
@@ -760,29 +790,30 @@ class TestIngestEndpointInboxBoundary:
             "../evil",
             "/etc/passwd",
             "/tmp/evil.jsonl",
-            "inbox/../../../etc/passwd",
+            "import-staging/../../../etc/passwd",
             "a/b/c/session.jsonl",
         ],
     )
-    def test_traversal_attempt_cannot_escape_inbox(
+    def test_traversal_attempt_cannot_escape_import_staging(
         self,
         traversal_path: str,
         workspace_env: dict[str, Path],
         tmp_path: Path,
     ) -> None:
-        """Path traversal attempts via ``..`` or embedded ``/`` cannot escape inbox.
+        """Path traversal attempts via ``..`` or embedded ``/`` cannot escape staging.
 
-        ``_staged_inbox_source`` uses ``PurePath(raw).name`` which strips all
-        directory components before matching against inbox entries. The resolved
-        candidate is then re-checked with ``relative_to(inbox_root)`` to catch
-        symlink escapes. A file with the extracted basename that lives outside the
-        inbox must produce ``path_not_found``; one that happens to match an inbox
-        entry may only be returned if the resolved path is inside inbox_root.
+        ``resolve_staged_import`` uses ``PurePath(raw).name`` which strips all
+        directory components before matching against staged entries. The
+        resolved candidate is then re-checked with ``relative_to`` the staging
+        root to catch symlink escapes. A file with the extracted basename that
+        lives outside the staging root must produce ``path_not_found``; one that
+        happens to match a staged entry may only be returned if the resolved
+        path is inside the staging root.
         """
-        inbox = workspace_env["archive_root"] / "inbox"
-        inbox.mkdir(parents=True, exist_ok=True)
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True, exist_ok=True)
 
-        # Put a file with the traversal's extracted basename OUTSIDE the inbox.
+        # Put a file with the traversal's extracted basename OUTSIDE staging.
         from pathlib import PurePath
 
         basename = PurePath(traversal_path).name
@@ -800,26 +831,26 @@ class TestIngestEndpointInboxBoundary:
         ):
             handler.do_POST()
 
-        # Must be rejected — the file is outside inbox, regardless of the
+        # Must be rejected — the file is outside staging, regardless of the
         # path shape the client sent.
         assert send_error.called, f"traversal path {traversal_path!r} was not rejected"
         send_json.assert_not_called()
         emit_event.assert_not_called()
 
-    def test_traversal_basename_matches_inbox_entry_is_accepted(
+    def test_traversal_basename_matches_staged_entry_is_accepted(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        """When the basename extracted from a traversal path matches a real inbox entry
-        AND the inbox entry is inside inbox_root, the daemon schedules it normally.
+        """When the basename extracted from a traversal path matches a real staged
+        entry inside the staging root, the daemon schedules it normally.
 
         This confirms the name-extraction is sanitizing the input, not just
-        blocking it — clients can refer to inbox files via absolute or relative
-        paths as long as the file is actually in the inbox.
+        blocking it — clients can refer to staged files via absolute or relative
+        paths as long as the file is actually staged.
         """
-        inbox = workspace_env["archive_root"] / "inbox"
-        inbox.mkdir(parents=True, exist_ok=True)
-        staged = inbox / "session.jsonl"
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True, exist_ok=True)
+        staged = staging / "session.jsonl"
         staged.write_text(
             json.dumps(
                 {
@@ -839,7 +870,7 @@ class TestIngestEndpointInboxBoundary:
         )
 
         # Client sends a dotdot path whose basename is "session.jsonl"
-        body = json.dumps({"path": "../inbox/session.jsonl"}).encode("utf-8")
+        body = json.dumps({"path": "../import-staging/session.jsonl"}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
 
@@ -849,7 +880,7 @@ class TestIngestEndpointInboxBoundary:
         ):
             handler.do_POST()
 
-        # Name was sanitized → matched the real inbox entry → accepted
+        # Name was sanitized → matched the real staged entry → accepted
         send_error.assert_not_called()
         assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
         payload = send_json.call_args.args[1]
@@ -860,16 +891,16 @@ class TestIngestEndpointInboxBoundary:
         workspace_env: dict[str, Path],
         tmp_path: Path,
     ) -> None:
-        """A symlink inside the inbox pointing outside cannot be followed.
+        """A symlink inside the staging root pointing outside cannot be followed.
 
-        ``_staged_inbox_source`` calls ``resolved.relative_to(inbox_root)``
-        after resolving, which raises ValueError when the target escapes.
+        ``resolve_staged_import`` calls ``relative_to`` the staging root after
+        resolving, which raises ValueError when the target escapes.
         """
-        inbox = workspace_env["archive_root"] / "inbox"
-        inbox.mkdir(parents=True, exist_ok=True)
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True, exist_ok=True)
         real_file = tmp_path / "real_secret.jsonl"
         real_file.write_text('{"type":"session"}\n')
-        link = inbox / "escape_link.jsonl"
+        link = staging / "escape_link.jsonl"
         link.symlink_to(real_file)
 
         body = json.dumps({"path": "escape_link.jsonl"}).encode("utf-8")

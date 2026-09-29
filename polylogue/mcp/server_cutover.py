@@ -1128,6 +1128,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         relation whole would return every row however large, whatever
         ``limit`` the caller named.
         """
+        from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES, MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES
         from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
 
         if projection.name in EVIDENCE_WINDOW_FAMILIES:
@@ -1143,6 +1144,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     limit=hooks.clamp_limit(limit),
                     offset=offset,
                     continuation=continuation,
+                    max_bytes=MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES,
                 )
             except (QueryContinuationStaleError, QueryContinuationInvalidError) as exc:
                 return hooks.error_json(str(exc), code=exc.code, tool=tool)
@@ -1173,6 +1175,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                             "next_offset": window["next_offset"],
                             "continuation": window["continuation"],
                             "complete": window["complete"],
+                            **({"row_fragment": window["row_fragment"]} if window.get("row_fragment") else {}),
                             "outcome": decide_outcome(matched=total).to_dict(),
                         }
                     )

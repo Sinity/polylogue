@@ -90,7 +90,6 @@ async def test_later_input_page_failure_aborts_preaccept_source_state(
         spool: Path,
         *,
         after_coordinate: str | None,
-        source_path: str | None,
         publisher: ArchiveBlobPublisher,
         check_stop: Callable[[], None],
     ) -> tuple[FrozenSourceInput, ...]:
@@ -101,7 +100,6 @@ async def test_later_input_page_failure_aborts_preaccept_source_state(
         return retain_input_page(
             spool,
             after_coordinate=after_coordinate,
-            source_path=source_path,
             publisher=publisher,
             check_stop=check_stop,
         )

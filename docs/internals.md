@@ -294,8 +294,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   `identity_mismatch_rows` count is refreshed by full reconciliation rather
   than only ever moving via ingest-time repair or the
   ordinary FTS convergence path. Existing index tiers must
-  be rebuilt from source evidence (`polylogue ops reset --index && polylogued
-  run`) to populate the new ledger for already-indexed rows; every ledgered
+  be rebuilt from source evidence (`polylogue ops reset --index, then restart polylogued`) to populate the new ledger for already-indexed rows; every ledgered
   field is re-derivable from already-persisted `blocks` columns with no raw
   reparse.
 - Index schema version 42 stops materializing `session_events` rows for four
@@ -324,7 +323,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   `function_call_output` payload-slimming is a separate, not-yet-decided
   change. This is a writer-behavior change with no DDL delta on
   `session_events` itself; existing index tiers rebuild from
-  source evidence (`polylogue ops reset --index && polylogued run`). A
+  source evidence (`polylogue ops reset --index, then restart polylogued`). A
   companion finding from the same audit -- `session_provider_usage_events.
   payload_json` totaling ~700MB with zero readers in `storage/usage.py` --
   was **not** dropped in this version: `_reextract_provider_usage_tail_db`
@@ -354,7 +353,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   100% discarded); and the new `session_refs` table (tracker-agnostic PR/
   issue references, 20,702 occurrences). Every value depends on parser
   semantics to populate honestly, so existing index tiers must be rebuilt from
-  source evidence (`polylogue ops reset --index && polylogued run`).
+  source evidence (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 45 resolves two independent changes folded into one
   bump: `session_provider_usage_events.payload_json` is dropped and its
   eight billing-provenance keys (`estimated_cost_usd`, `actual_cost_usd`,
@@ -388,7 +387,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   so every reader (CLI, API, MCP, insights, `delegation_facts_source`) keeps
   byte-identical `tool_input`/`output_text` payloads with no caller change.
   Existing index tiers must be rebuilt from source evidence (`polylogue ops
-  reset --index && polylogued run`), though the transition itself needs no raw
+  reset --index, then restart polylogued`), though the transition itself needs no raw
   reparse.
 - Index schema version 37 drops the three run-projection materialized cache
   tables — `session_runs`, `session_observed_events`,
@@ -405,7 +404,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   rather than hardcoding `"main"` (a bug that had made every subagent run
   report as `role="main"` regardless of the materialized/source split).
   Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`); the drop needs no
+  (`polylogue ops reset --index, then restart polylogued`); the drop needs no
   migration since derived tiers are rebuilt wholesale, not migrated in place.
 - Index schema version 36 has no structural DDL change of its own; it is the
   version bump accompanying `beads-issue` origin ingestion support
@@ -429,8 +428,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   only) and expressed once from `PL_FOLD_TABLE`; real-route rebuild and
   repair tests lock the write-side calls to query-side normalization.
   Existing index tiers must be
-  rebuilt from source evidence (`polylogue ops reset --index && polylogued
-  run`) to pick up the new tokenizer and re-fold already-indexed rows.
+  rebuilt from source evidence (`polylogue ops reset --index, then restart polylogued`) to pick up the new tokenizer and re-fold already-indexed rows.
 - Index schema version 34 rebuilds the `delegations` view (polylogue-y964,
   polylogue-4c27). The prior view aliased `session_links.src_session_id`
   (canonically the CHILD) as `parent_session_id` and
@@ -449,7 +447,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   turn-level claims) — replacing the old `orchestrator_model`/
   `subagent_model` columns, which conflated a session-wide aggregate with
   per-turn dispatch authorship. Existing index tiers must be rebuilt from
-  source evidence (`polylogue ops reset --index && polylogued run`); no
+  source evidence (`polylogue ops reset --index, then restart polylogued`); no
   public reader should keep consuming the old column names.
 - Index schema version 85 retires the per-session insight lifecycle ledger.
   Existing derived rows are regenerated from source evidence through ordinary
@@ -478,7 +476,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   projections. The original provider-local source-message reference is stored
   independently from its nullable canonical `messages.message_id` resolution,
   so unresolved and lineage-normalized references remain auditable. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 28 adds the `delegations` VIEW, derived from
   `session_links` (`link_type='subagent'`) LEFT JOIN'd to the parent's Task
   dispatch `actions` row and both sessions' `session_profiles` — no
@@ -505,7 +503,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already
   owns the session. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 23 adds `idx_blocks_search_text_populated`, a partial
   index over text-bearing `blocks` rows, and makes `fts_freshness_state` part of
   the canonical fresh index tier. Message search readiness compares that source
@@ -513,15 +511,14 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   before running user FTS queries; without the partial index and ledger, large
   archives can spend the query budget scanning `blocks` merely to decide whether
   `polylogue find hermes` is allowed to run. Existing index tiers must be
-  rebuilt from source evidence (`polylogue ops reset --index && polylogued
-  run`).
+  rebuilt from source evidence (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 22 adds `idx_blocks_tool_result_outcome`, a partial
   index over structured `tool_result` outcome fields. Claim-vs-evidence and
   action-outcome reads anchor on provider-reported `is_error` / non-zero
   `exit_code` rather than assistant prose; without an outcome-leading index,
   large archives must scan the whole tool-result block set before pairing
   actions. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 21 adds `idx_messages_embedding_prose`, a partial
   covering index for authored prose messages eligible for paid embeddings:
   standard `message` rows from `user`/`assistant` roles, with
@@ -530,14 +527,14 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   reads use this index when present so cost windows do not scan unrelated tool,
   protocol, context-pack, or runtime rows in large archives. Existing index
   tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 20 adds `idx_blocks_type_tool`, an expression index on
   `(block_type, COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown'))`, so tool
   family rollups can resolve exact tool names and MCP-server prefixes without
   scanning every `tool_use` block in large archives. The `analyze tools`
   lowerers use range predicates for MCP prefixes to match the index expression.
   Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 19 adds expression indexes for materialized
   `session_observed_events` tool outcome payload fields. The terminal query DSL
   can now ask questions such as
@@ -547,8 +544,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   The v19 indexes key `(kind, COALESCE(NULLIF(json_extract(payload_json,
   '$.<field>'), ''), 'unknown'))` for `tool_name`, `handler_kind`, and
   `status`, matching the SQL lowerer's group expressions. Existing index tiers
-  must be rebuilt from source evidence (`polylogue ops reset --index &&
-  polylogued run`).
+  must be rebuilt from source evidence (`polylogue ops reset --index, then restart
+  polylogued`).
 - Index schema version 16 captured structured tool-result outcomes (the
   "keystone") in nullable legacy columns. The new index schema generation
   adds the canonical
@@ -556,7 +553,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   `tool_result_outcome_unknown_reason`; the `actions` view exposes the paired
   result state without guessing from prose. Existing index tiers require a
   semantic replay from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
   (#2475 perf audit). At that version the keyset and paginated message reads
@@ -566,7 +563,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   session (expensive on multi-thousand-message sessions). Transcript order is
   content position now, so the index covers the per-session timestamp filters
   and the chronological projections instead. Rebuild from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  (`polylogue ops reset --index, then restart polylogued`).
 - Index schema version 14 hardens lineage normalization (#2467 audit).
   `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
   NULL`: a parent's full-replace re-ingest (`DELETE FROM messages` then re-INSERT)
@@ -593,8 +590,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   (`get_messages`, `read_archive_session_envelope`) compose the parent transcript
   up to the branch point + the child's own tail, so each real message is stored
   once while the full logical transcript is still served. Existing index tiers
-  must be rebuilt from source evidence (`polylogue ops reset --index &&
-  polylogued run`); `source.db` is untouched, so this is a derived-index rebuild
+  must be rebuilt from source evidence (`polylogue ops reset --index, then restart
+  polylogued`); `source.db` is untouched, so this is a derived-index rebuild
   with no user-data impact. (The matching parser detection of Codex
   `forked_from_id`/`thread_spawn` and Claude `agent-acompact-*` shipped
   alongside.)

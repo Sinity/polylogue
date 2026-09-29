@@ -744,8 +744,8 @@ class DaemonOperationRuntime:
                                 outcome="rejected",
                                 error={"code": "ingest_runtime_unavailable", "retryable": False},
                             ).to_dict()
-                        from polylogue.daemon.backup import execute_backup_operation
                         from polylogue.daemon.embedding_owner import execute_embedding_backfill_operation
+                        from polylogue.operations.archive_backup import execute_backup_operation
                         from polylogue.operations.daemon_ingest import execute_ingest_operation
                         from polylogue.operations.daemon_insights import execute_insights_rebuild_operation
 

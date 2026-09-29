@@ -373,3 +373,47 @@ async def test_read_list_views_honor_limit_offset_and_next_page(mcp_server: MCPS
     assert [page["total"] for page in pages] == [5, 5, 5]
     assert [page["next_offset"] for page in pages] == [2, 4, None]
     assert [item for page in pages for item in page[projection.payload_key]] == rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["file-edits", "web-content"])
+async def test_evidence_fragment_survives_both_mcp_projection_routes(mcp_server: MCPServerUnderTest, name: str) -> None:
+    """07.F049: zero complete rows is advancing content, not an empty result."""
+    from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES, MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES
+
+    projection = SESSION_LIST_PROJECTIONS[name]
+    poly = make_polylogue_mock()
+    fragment = {
+        "row_offset": 0,
+        "complete": False,
+        "fields": [{"field": "text", "encoding": "utf-8", "offset": 0, "total_bytes": 10, "data_base64": "YQ=="}],
+    }
+    poly.read_session_evidence_window = AsyncMock(
+        return_value={
+            "rows": [],
+            "total": 1,
+            "returned": 0,
+            "limit": 1,
+            "offset": 0,
+            "next_offset": 0,
+            "continuation": "advancing-field-token",
+            "complete": False,
+            "row_fragment": fragment,
+        }
+    )
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        for tool, options in (("read", {"view": name}), ("get", {"projection": name})):
+            payload = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools[tool].fn,
+                    ref="session:codex:projection-registry",
+                    **options,
+                )
+            )
+            assert payload[projection.payload_key] == []
+            assert payload["row_fragment"] == fragment
+            assert payload["returned"] == payload["next_offset"] == 0
+            assert payload["continuation"] == "advancing-field-token"
+            assert payload["complete"] is False
+    for call in poly.read_session_evidence_window.await_args_list:
+        assert call.kwargs["max_bytes"] == MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES

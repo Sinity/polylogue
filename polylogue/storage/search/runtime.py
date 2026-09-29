@@ -50,25 +50,34 @@ def search_messages_impl(
 
     sql, params = query_spec.sql, query_spec.params
     with open_read_connection(db_path) as conn:
-        readiness = message_fts_search_readiness_sync(conn)
-        check_fts_readiness(readiness)
+        # FTS admission and the rows it admits read one snapshot; in autocommit
+        # each inspection COUNT would see a different commit.
+        owns_snapshot = not conn.in_transaction
+        if owns_snapshot:
+            conn.execute("BEGIN")
         try:
-            if _table_exists(conn, "messages_fts") and _table_exists(conn, "blocks"):
-                rows = _search_archive_blocks(conn, query=query, limit=limit, source=source, since=since)
-            else:
-                rows = conn.execute(sql, tuple(params)).fetchall()
-        except sqlite3.Error as exc:
-            raise DatabaseError(f"Invalid search query: {exc}") from exc
-        try:
-            fallback_snippets = {
-                row["message_id"]: (
-                    _row_text(row, "fallback_text") or _fallback_snippet(conn, row["message_id"], query)
-                )
-                for row in rows
-                if not row["snippet"]
-            }
-        except sqlite3.Error as exc:
-            raise DatabaseError(f"Invalid search query: {exc}") from exc
+            readiness = message_fts_search_readiness_sync(conn)
+            check_fts_readiness(readiness)
+            try:
+                if _table_exists(conn, "messages_fts") and _table_exists(conn, "blocks"):
+                    rows = _search_archive_blocks(conn, query=query, limit=limit, source=source, since=since)
+                else:
+                    rows = conn.execute(sql, tuple(params)).fetchall()
+            except sqlite3.Error as exc:
+                raise DatabaseError(f"Invalid search query: {exc}") from exc
+            try:
+                fallback_snippets = {
+                    row["message_id"]: (
+                        _row_text(row, "fallback_text") or _fallback_snippet(conn, row["message_id"], query)
+                    )
+                    for row in rows
+                    if not row["snippet"]
+                }
+            except sqlite3.Error as exc:
+                raise DatabaseError(f"Invalid search query: {exc}") from exc
+        finally:
+            if owns_snapshot:
+                conn.rollback()
 
     hits: list[SearchHit] = []
     for row in rows:

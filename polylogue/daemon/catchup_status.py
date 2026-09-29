@@ -396,7 +396,8 @@ def _unavailable_cumulative(reason: str) -> dict[str, object]:
 
 
 def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
-    """Project durable source halts from their scheduling authority."""
+    """Project each halt from its authority without changing its lifetime."""
+    from polylogue.core.source_halts import halted_sources
     from polylogue.daemon.service_halt import HaltRegistry, UnitKind
 
     registry = HaltRegistry(ops_db.parent)
@@ -414,7 +415,19 @@ def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
                 observed_at=record.halted_at,
             )
         )
-    return statuses
+    durable_names = {status.source_name for status in statuses}
+    statuses.extend(
+        HaltedSourceStatus(
+            source_name=name,
+            code=reason.code,
+            message=reason.message,
+            derived_only=reason.derived_only,
+            observed_at=datetime.now(UTC).isoformat(),
+        )
+        for name, reason in halted_sources().items()
+        if name not in durable_names
+    )
+    return sorted(statuses, key=lambda status: status.source_name)
 
 
 def _cumulative_attempts(ops_db: Path, *, now: datetime) -> dict[str, int | float | None]:

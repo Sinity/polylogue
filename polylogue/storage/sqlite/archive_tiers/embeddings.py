@@ -14,7 +14,7 @@ EMBEDDING_DIMENSION = 1024
 #
 # embeddings.db is a rebuildable derived tier (no migration chain): a schema
 # mismatch blue-green-replaces the tier from source
-# (`polylogue ops reset --index && polylogued run`), so this is an in-place DDL
+# (`polylogue ops reset --index, then restart polylogued`), so this is an in-place DDL
 # edit, not an additive migration.
 #
 # polylogue-a7xr.27: each CREATE TABLE in this module renders from a TableColumnSpec

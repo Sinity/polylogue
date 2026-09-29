@@ -96,7 +96,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # 2026-07-14..07-26 -- entirely before the deployed daemon build contained
 # 1e0246d77 (sinnix's polylogue pin only advanced past it 2026-07-29). Like
 # every other SEMANTIC_REPARSE version here, resolving this requires
-# `polylogue ops reset --index && polylogued run`, which an agent must not
+# `polylogue ops reset --index, then restart polylogued`, which an agent must not
 # trigger against the operator's live archive without explicit scheduling.
 # v49 batches two related cost-accounting fixes from the same forensic audit
 # (polylogue-shnc, polylogue-gt1z) onto one bump, matching the v46 "one bump
@@ -153,7 +153,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # because providers re-sign on every replay; including it would break
 # citation-anchor and fork-prefix matching for otherwise-identical replayed
 # content. Resolving existing rows (recovering historical thinking/reasoning
-# content) requires `polylogue ops reset --index && polylogued run` --
+# content) requires `polylogue ops reset --index, then restart polylogued` --
 # deliberately NOT executed by this declaration.
 #
 # polylogue-u6tl: v51 wires delegation_facts.mapping_state/result_status onto
@@ -198,8 +198,8 @@ def _profile_demand_sql(session_id: str) -> str:
 # bytes: some payloads previously admitted as claude-ai-export sessions
 # are now refused. SEMANTIC_REPARSE, not a free fast-forward: only
 # re-parsing already-acquired raw evidence applies the corrected
-# admission decision to existing rows. `polylogue ops reset --index &&
-# polylogued run` is required; deliberately NOT executed by this
+# admission decision to existing rows. `polylogue ops reset --index, then restart
+# polylogued` is required; deliberately NOT executed by this
 # declaration.
 #
 # polylogue-0cn3 / polylogue-5dfu: v55 bundles a derived-tier vocabulary
@@ -238,7 +238,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # rows the new, narrower CHECKs would reject on a plain copy-forward, and
 # the write-path behavior for title_source genuinely changes (no longer
 # ever recomputes 'unknown') -- SEMANTIC_REPARSE, not a free fast-forward.
-# `polylogue ops reset --index && polylogued run` is required; deliberately
+# `polylogue ops reset --index, then restart polylogued` is required; deliberately
 # NOT executed by this declaration.
 
 # polylogue-fuky: v56 stops materializing `agent_reasoning` rows into
@@ -259,7 +259,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # this is a writer-materialization change with no DDL delta on
 # `session_events` -- SEMANTIC_REPARSE, not a free fast-forward: only
 # re-parsing recovers the dropped rows on already-acquired raw evidence.
-# `polylogue ops reset --index && polylogued run` is required; deliberately
+# `polylogue ops reset --index, then restart polylogued` is required; deliberately
 # NOT executed by this declaration.
 
 # polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, an immutable
@@ -289,7 +289,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # only raw rows found in the same scan (that estimate's ~214 count applied
 # to index.db zero-message sessions, not raw_sessions rows -- some or all
 # may already have been swept by an intervening full reindex). `polylogue
-# ops reset --index && polylogued run` is required to apply this;
+# ops reset --index, then restart polylogued` is required to apply this;
 # deliberately NOT executed by this declaration.
 # polylogue-4987i: v59 makes Claude Code session_events ordering deterministic
 # and chunk-count-invariant (order_session_events/reconcile_code_session_chunks,
@@ -340,7 +340,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # AND has a non-fallback_id-matching group with the largest record count --
 # SEMANTIC_REPARSE, not a free fast-forward: no DDL change, only re-parsing
 # already-acquired raw evidence recovers the corrected identity split.
-# `polylogue ops reset --index && polylogued run` is required; deliberately
+# `polylogue ops reset --index, then restart polylogued` is required; deliberately
 # NOT executed by this declaration.
 # v61 (polylogue-resk): drops session_model_usage.priced_with/priced_at_ms
 # and narrows the CHECK that referenced priced_with -- both were write-only
@@ -1490,6 +1490,30 @@ CREATE TABLE IF NOT EXISTS session_tags (
     {TABLE_SPECS["session_tags"].ddl_body}
 ) STRICT;
 
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_file_edits_insert
+AFTER INSERT ON file_edits BEGIN
+    {index_frame_bump_sql("file_edits")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_file_edits_update
+AFTER UPDATE ON file_edits BEGIN
+    {index_frame_bump_sql("file_edits")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_file_edits_delete
+AFTER DELETE ON file_edits BEGIN
+    {index_frame_bump_sql("file_edits")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_web_content_constructs_insert
+AFTER INSERT ON web_content_constructs BEGIN
+    {index_frame_bump_sql("web_content_constructs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_web_content_constructs_update
+AFTER UPDATE ON web_content_constructs BEGIN
+    {index_frame_bump_sql("web_content_constructs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_web_content_constructs_delete
+AFTER DELETE ON web_content_constructs BEGIN
+    {index_frame_bump_sql("web_content_constructs")}
+END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_insert
 AFTER INSERT ON sessions BEGIN
     {index_frame_bump_sql("sessions")}

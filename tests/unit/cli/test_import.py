@@ -25,6 +25,7 @@ from polylogue.cli.operation_kernel import (
     OperationIndeterminateError,
     OperationUnavailableError,
 )
+from polylogue.operations.import_staging import import_staging_root
 
 # One record of a shape the import preflight actually admits. The preflight is
 # a real admissibility check, so a placeholder like ``{"type": "session"}`` is
@@ -104,7 +105,7 @@ def test_import_command_stages_local_path_before_daemon_request(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """CLI owns arbitrary local path reads; the daemon receives the inbox path.
+    """CLI owns arbitrary local path reads; the daemon receives the staged path.
 
     Anti-vacuity: submitting ``source_path`` as the operation's ``path`` (the
     pre-staging path, i.e. asking the daemon to read an arbitrary local file)
@@ -125,7 +126,7 @@ def test_import_command_stages_local_path_before_daemon_request(
         )
 
     assert result.exit_code == 0, result.output
-    staged = workspace_env["archive_root"] / "inbox" / source.name
+    staged = import_staging_root(workspace_env["archive_root"]) / source.name
     assert staged.read_text() == source.read_text()
 
     assert submit.calls[-1][0] == "ingest"
@@ -137,7 +138,7 @@ def test_import_command_stages_local_path_before_daemon_request(
     assert submit.payload["path"] != str(source)
 
     # Truthfulness: success output must point at observable state — the
-    # staged inbox path AND actionable next-step guidance. The old
+    # staged path AND actionable next-step guidance. The old
     # "polylogue ops status" message was misleading (status doesn't show
     # recent completed operations); #1679 replaced it with journalctl
     # for live progress. Convergence/readiness checks should point at daemon
@@ -145,6 +146,50 @@ def test_import_command_stages_local_path_before_daemon_request(
     assert str(staged) in result.output
     assert "polylogued status" in result.output
     assert "polylogue status --full" in result.output
+
+
+def test_staged_import_is_read_by_no_watch_root_or_configured_source(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """03.F045: only the submitted ``ingest`` operation acquires a staged import.
+
+    The operation keys its raws on the caller's ``source_path``. A staged copy
+    under a watched root was acquired a second time by the live watcher and
+    fair file intake, keyed on the staged path, so one import produced two raw
+    revisions of the same bytes.
+
+    Anti-vacuity: stage into ``<archive>/inbox`` again and the staged entry
+    sits under the ``inbox`` watch root and the ``inbox`` configured source.
+    """
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+    from polylogue.config import resolve_runtime_config
+    from polylogue.sources.live.watcher import daemon_watch_sources
+
+    (tmp_path / "exports").mkdir()
+    source = _write_supported_source(tmp_path / "exports" / "session.jsonl")
+    submit = _RecordingSubmit()
+    with _patch_submit(submit):
+        result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+    assert result.exit_code == 0, result.output
+
+    staged = Path(str(submit.payload["path"])).resolve()
+    assert staged.parent == import_staging_root(workspace_env["archive_root"]).resolve()
+    assert staged.is_file()
+    assert submit.payload["source_path"] == str(source.resolve())
+    roots = {
+        **{f"watch:{watched.name}": watched.root for watched in daemon_watch_sources()},
+        **{f"source:{configured.name}": configured.path for configured in resolve_runtime_config().sources},
+    }
+    assert "watch:inbox" in roots
+    readers = sorted(
+        name
+        for name, root in roots.items()
+        if root is not None and staged.is_relative_to(Path(root).expanduser().resolve())
+    )
+    assert readers == []
 
 
 def test_import_command_snapshots_hermes_state_db_before_daemon_request(
@@ -240,7 +285,7 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
         writer.close()
 
     assert result.exit_code == 0, result.output
-    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
     with sqlite3.connect(staged) as conn:
         assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
         assert conn.execute("SELECT content FROM messages ORDER BY id DESC LIMIT 1").fetchone()[0] == "WAL turn"
@@ -273,7 +318,7 @@ def test_stage_for_daemon_removes_stale_sqlite_provenance(tmp_path: Path, worksp
     with sqlite3.connect(first) as conn:
         conn.execute("CREATE TABLE evidence(value TEXT)")
 
-    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
     stage_sqlite_snapshot(first, staged)
     metadata_path = sqlite_staging_metadata_path(staged)
     assert metadata_path.exists()
@@ -324,6 +369,35 @@ def test_stage_for_daemon_reflinks_and_restages_idempotently(tmp_path: Path, wor
     assert not [path for path in staged_dir.rglob(".*") if path.is_file()]
 
 
+def test_directory_restage_holds_exactly_the_new_trees_members(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """03.F045: a staged directory is an exact copy of the tree being imported.
+
+    The ingest operation keys every staged member under the caller's
+    ``source_path``. A member left over from an earlier same-named import
+    would be acquired as part of this one, under a path where the caller has
+    no such file.
+
+    Anti-vacuity: copy over the earlier staged tree (``copytree`` with
+    ``dirs_exist_ok`` into the destination) and ``stale.json`` survives.
+    """
+    from polylogue.cli.commands import import_command
+
+    first = tmp_path / "first" / "export"
+    (first / "nested").mkdir(parents=True)
+    (first / "conversations.json").write_text('{"first": true}')
+    (first / "nested" / "stale.json").write_text('{"stale": true}')
+    second = tmp_path / "second" / "export"
+    second.mkdir(parents=True)
+    (second / "conversations.json").write_text('{"second": true}')
+
+    staged = import_command._stage_for_daemon(first)
+    assert import_command._stage_for_daemon(second) == staged
+
+    assert sorted(str(path.relative_to(staged)) for path in staged.rglob("*")) == ["conversations.json"]
+    assert (staged / "conversations.json").read_text() == '{"second": true}'
+    assert [path.name for path in staged.parent.iterdir()] == ["export"]
+
+
 def test_failed_restage_keeps_the_earlier_import(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
     """A restage that cannot read its source leaves the earlier staged copy.
 
@@ -371,7 +445,7 @@ def test_failed_restage_keeps_the_earlier_snapshot_provenance(tmp_path: Path, wo
     first = first_root / "state.db"
     with sqlite3.connect(first) as conn:
         conn.execute("CREATE TABLE evidence(value TEXT)")
-    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
     stage_sqlite_snapshot(first, staged)
     earlier = staged.read_bytes()
 
@@ -411,7 +485,7 @@ def test_restage_keeps_snapshot_provenance_for_the_whole_copy(tmp_path: Path, wo
     first = first_root / "state.db"
     with sqlite3.connect(first) as conn:
         conn.execute("CREATE TABLE evidence(value TEXT)")
-    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    staged = import_staging_root(workspace_env["archive_root"]) / "state.db"
     stage_sqlite_snapshot(first, staged)
     metadata_path = sqlite_staging_metadata_path(staged)
 
@@ -439,10 +513,11 @@ def test_restage_keeps_snapshot_provenance_for_the_whole_copy(tmp_path: Path, wo
 
 
 def test_failed_directory_restage_restores_read_only_modes(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """A directory restage that fails puts the staged tree's modes back.
+    """A directory restage that fails leaves the earlier staged tree as it was.
 
-    Anti-vacuity: leave the owner-write bits added for the restage and the
-    staged ``0555`` directory is ``0755`` after the failure.
+    Anti-vacuity: build the restage inside the earlier staged tree, making
+    its directories owner-writable to do so, and the staged ``0555``
+    directory is ``0755`` after the failure.
     """
     import os
     import stat
@@ -454,7 +529,7 @@ def test_failed_directory_restage_restores_read_only_modes(tmp_path: Path, works
     locked.mkdir(parents=True)
     (locked / "member.json").write_text('{"first": true}')
     locked.chmod(0o555)
-    staged_locked = workspace_env["archive_root"] / "inbox" / "export" / "locked"
+    staged_locked = import_staging_root(workspace_env["archive_root"]) / "export" / "locked"
     try:
         staged = import_command._stage_for_daemon(export)
         assert stat.S_IMODE(os.stat(staged / "locked").st_mode) == 0o555
@@ -478,9 +553,9 @@ def test_failed_directory_restage_restores_read_only_modes(tmp_path: Path, works
 def test_restage_publishes_into_a_read_only_staged_directory(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
     """An export with a ``0555`` directory can be staged again.
 
-    Anti-vacuity: without making the earlier staged tree owner-writable, the
-    replacement's temporary cannot be created inside the read-only directory
-    and the restage fails with ``EACCES`` (for a non-root user).
+    Anti-vacuity: remove the retired staged tree without making it
+    owner-writable first and the restage fails with ``EACCES`` (for a
+    non-root user).
     """
     import os
     import stat
@@ -503,7 +578,7 @@ def test_restage_publishes_into_a_read_only_staged_directory(tmp_path: Path, wor
         assert stat.S_IMODE(os.stat(staged / "locked").st_mode) == 0o555
     finally:
         locked.chmod(0o755)
-        staged_locked = workspace_env["archive_root"] / "inbox" / "export" / "locked"
+        staged_locked = import_staging_root(workspace_env["archive_root"]) / "export" / "locked"
         if staged_locked.exists():
             staged_locked.chmod(0o755)
 
@@ -555,7 +630,7 @@ def test_import_command_uses_daemon_url_env_by_default(
     socket_path = str(daemon_socket_path(workspace_env["archive_root"]))
     assert f"Daemon:       {socket_path}" in result.output
     assert "http://127.0.0.1:9876" not in result.output
-    assert (workspace_env["archive_root"] / "inbox" / source.name).is_file()
+    assert (import_staging_root(workspace_env["archive_root"]) / source.name).is_file()
 
 
 def test_import_demo_materializes_fixture_world_before_daemon_request(
@@ -578,7 +653,7 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
 
     assert result.exit_code == 0, result.output
     source_root = workspace_env["archive_root"] / "demo-fixture-world-source"
-    staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
+    staged = import_staging_root(workspace_env["archive_root"]) / "demo-fixture-world-source"
     assert sorted(path.name for path in source_root.iterdir()) == [
         "antigravity",
         "browser-capture",
@@ -687,7 +762,7 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
         "augment_payload": {"with_overlays": False},
     }
     assert events == ["daemon", "wait-base", "augment-daemon", "verify"]
-    staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
+    staged = import_staging_root(workspace_env["archive_root"]) / "demo-fixture-world-source"
     assert str(staged) in result.output
     assert "Demo archive verified" in result.output
     assert "sessions=19 messages=31" in result.output
@@ -965,7 +1040,7 @@ def test_import_surfaces_refused_operation_with_staged_path(
     """A typed operation refusal is reported truthfully, naming the staged file.
 
     This is the law the old HTTP 4xx/5xx test carried: a daemon that answers
-    and rejects is a contract problem, and the staged inbox entry is still
+    and rejects is a contract problem, and the staged entry is still
     there for the operator to inspect.
 
     Anti-vacuity: mapping ``OperationFailedError`` onto the success path, or
@@ -979,17 +1054,17 @@ def test_import_surfaces_refused_operation_with_staged_path(
 
     def refused(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
         del config, operation, payload
-        raise OperationFailedError("invalid_request", "inbox entry could not be resolved")
+        raise OperationFailedError("invalid_request", "staged entry could not be resolved")
 
     runner = CliRunner()
     with patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=refused):
         result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
-    staged = workspace_env["archive_root"] / "inbox" / source.name
+    staged = import_staging_root(workspace_env["archive_root"]) / source.name
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
     assert "invalid_request" in combined
-    assert "inbox entry could not be resolved" in combined
+    assert "staged entry could not be resolved" in combined
     assert str(staged).lower() in combined
 
 
@@ -1018,7 +1093,7 @@ def test_import_refuses_indeterminate_submission(
         result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
-    staged = workspace_env["archive_root"] / "inbox" / source.name
+    staged = import_staging_root(workspace_env["archive_root"]) / source.name
     combined = result.output + (result.stderr if result.stderr_bytes else "")
     assert "no receipt came back" in combined
     assert "rather than re-running this command" in combined
@@ -1056,7 +1131,7 @@ def test_import_refuses_inadmissible_source_before_submitting(
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
     assert "unsupported_import_source" in combined
     assert "no parseable polylogue export shape" in combined
-    assert str(workspace_env["archive_root"] / "inbox" / source.name).lower() in combined
+    assert str(import_staging_root(workspace_env["archive_root"]) / source.name).lower() in combined
 
 
 def test_import_refuses_envelope_without_durable_acceptance(

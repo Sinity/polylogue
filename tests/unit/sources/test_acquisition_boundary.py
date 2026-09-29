@@ -405,6 +405,10 @@ _SOURCE_BYTE_SINKS = frozenset(
 #: acquisition of bound session material. A new route is not added here: it
 #: reads through ``acquisition_boundary``.
 _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
+    ("polylogue/storage/source_blob_restoration.py", "stage_exact_blob"): (
+        "Exact-byte restoration of an already-retained raw: verifies the existing SHA-256 and size "
+        "before staging, and publishes through the archive reservation owner; no new acquisition."
+    ),
     ("polylogue/sources/acquisition_boundary.py", "open_bound_member"): "the boundary itself",
     ("polylogue/sources/acquisition_boundary.py", "capture_bound_stream"): "the boundary itself",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_path"): "blob store implementation",

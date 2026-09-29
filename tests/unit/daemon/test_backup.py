@@ -17,10 +17,16 @@ from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
-from polylogue.daemon import backup as backup_mod
-from polylogue.daemon.backup import backup_archive
+from polylogue.operations import archive_backup as backup_mod
+from polylogue.operations.archive_backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.backup_attestation import attestation_key_path
+from polylogue.storage.backup_blob_closure import (
+    SOURCE_DECLARED_ABSENT_AUTHORITY,
+    SOURCE_DECLARED_ABSENT_FILE,
+    SOURCE_DECLARED_ABSENT_FORMAT,
+    load_source_declared_absent,
+)
 from polylogue.storage.blob_integrity import BlobLivenessProjection
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
@@ -583,12 +589,18 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
 
 @pytest.mark.contract
 @pytest.mark.parametrize("source_kind", ["direct", "zip"])
-def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
+def test_full_evidence_backup_carries_recovered_missing_raw_blob(
     workspace_env: dict[str, Path],
     tmp_path: Path,
     source_kind: str,
 ) -> None:
-    """A pruned raw blob is valid backup evidence only when reacquisition matches it."""
+    """A pruned raw blob enters the package as its reacquired exact bytes.
+
+    Anti-vacuity: subtracting source-recoverable hashes from the required set
+    instead of copying them lets verification pass with the blob absent from
+    the package, and then verification of the closed package depends on the
+    source file, so drifting or deleting it turns the verdict red.
+    """
     archive_root = workspace_env["archive_root"]
     source_path = tmp_path / ("source.json" if source_kind == "direct" else "source.zip")
     member_payload = b""
@@ -658,7 +670,11 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
     assert result.ok, result.error
     assert result.verified
     assert result.verification["missing_canonical_blob_count"] == 0
-    assert result.verification["recoverable_source_blob_count"] == 1
+    assert result.verification["recovered_source_blob_count"] == 1
+    backup_root = Path(result.output_path or "")
+    blob_hex = blob_hash.hex()
+    assert (backup_root / "blob" / blob_hex[:2] / blob_hex[2:]).read_bytes() == payload
+    assert not (backup_root / "blob" / ".staging").exists()
 
     if source_kind == "direct":
         source_path.write_bytes(b"changed source bytes")
@@ -669,19 +685,68 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
         ]
         with zipfile.ZipFile(source_path, "w") as archive:
             archive.writestr("conversations.json", json.dumps(drifted_records, separators=(",", ":")))
-    drifted_source = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
-    assert drifted_source["ok"] is False
-    assert drifted_source["missing_canonical_blob_count"] == 1
+    drifted_source = backup_mod._verify_archive_file_set_backup(backup_root)
+    assert drifted_source["ok"] is True
+    assert drifted_source["missing_canonical_blob_count"] == 0
 
-    if source_kind == "direct":
-        source_path.write_bytes(payload)
-    else:
-        with zipfile.ZipFile(source_path, "w") as archive:
-            archive.writestr("conversations.json", member_payload)
     source_path.unlink()
-    missing_source = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
-    assert missing_source["ok"] is False
-    assert missing_source["missing_canonical_blob_count"] == 1
+    missing_source = backup_mod._verify_archive_file_set_backup(backup_root)
+    assert missing_source["ok"] is True
+    assert missing_source["missing_canonical_blob_count"] == 0
+
+
+def test_migration_gate_refuses_package_missing_a_source_recoverable_blob(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A successful receipt over a package lacking a required blob is refused.
+
+    This is the package an earlier verifier signed when a live acquisition
+    file could reproduce the blob: the receipt re-hashes cleanly, yet
+    restoring the package leaves a raw row whose bytes are absent once the
+    file is gone. Anti-vacuity: drop the package blob-closure check from
+    ``_validate_closed_backup_package`` and the gate accepts it.
+    """
+    from polylogue.storage.sqlite.migration_runner import MigrationError
+
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "direct-source.json"
+    payload = b'{"messages":["kept only by its source"]}'
+    source_path.write_bytes(payload)
+    blob_hash = hashlib.sha256(payload).digest()
+    source_db = archive_root / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES ('source-recoverable', 'chatgpt-export', 'recoverable', ?, 0, ?, ?, 1, 'passed')""",
+            (str(source_path), blob_hash, len(payload)),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, "source-recoverable", "raw_payload", str(source_path), len(payload), 1),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert result.ok, result.error
+    backup_root = Path(result.output_path or "")
+    source_path.unlink()
+    with sqlite3.connect(source_db) as conn:
+        receipt = validate_migration_backup_manifest(backup_root / "manifest.json", ArchiveTier.SOURCE, connection=conn)
+    assert receipt.name == "verification-receipt.json"
+
+    # Re-create the incomplete package an external-recoverability verifier
+    # signed: the blob is gone from the package and the receipt binds that.
+    blob_hex = blob_hash.hex()
+    (backup_root / "blob" / blob_hex[:2] / blob_hex[2:]).unlink()
+    (backup_root / "blob" / blob_hex[:2]).rmdir()
+    backup_mod._write_successful_verification_receipt(
+        backup_root,
+        {"ok": True, "receipt_evidence": backup_mod._receipt_evidence(backup_root)},
+    )
+    with sqlite3.connect(source_db) as conn, pytest.raises(MigrationError, match="omits 1 blob"):
+        validate_migration_backup_manifest(backup_root / "manifest.json", ArchiveTier.SOURCE, connection=conn)
 
 
 @pytest.mark.contract
@@ -752,7 +817,7 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
     assert result.ok, result.error
     assert result.verified
     assert result.verification["missing_canonical_blob_count"] == 0
-    assert result.verification["recoverable_source_blob_count"] == 1
+    assert result.verification["recovered_source_blob_count"] == 1
 
 
 def test_resolved_direct_path_keeps_colon_as_filename_data(tmp_path: Path) -> None:
@@ -813,7 +878,7 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
 
     assert result.ok, result.error
     assert result.verified
-    assert result.verification["recoverable_source_blob_count"] == 1
+    assert result.verification["recovered_source_blob_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -1025,7 +1090,7 @@ def test_full_evidence_backup_reacquires_live_append_segment_after_file_grows(
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
     assert result.ok, result.error
-    assert result.verification["recoverable_source_blob_count"] == 1
+    assert result.verification["recovered_source_blob_count"] == 1
     source_path.write_bytes(prefix + append + b'{"id":"later"}\n')
     verified_after_growth = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
     assert verified_after_growth["ok"] is True
@@ -1485,7 +1550,7 @@ def test_backup_verification_scratch_stays_near_backup_output(
 
 
 def test_backup_result_formats_non_default_omissions_neutrally() -> None:
-    from polylogue.daemon.backup import BackupResult, format_backup_result
+    from polylogue.operations.archive_backup import BackupResult, format_backup_result
 
     lines = format_backup_result(
         BackupResult(ok=True, output_path="/tmp/backup", backup_profile="user_overlays", omitted_tiers=["source.db"])
@@ -1791,12 +1856,12 @@ def test_pre_generation_source_uses_declared_absence(
     assert without_assertion.ok is False
     assert without_assertion.verification["missing_canonical_blob_count"] == 1
 
-    assertion_path = archive_root / backup_mod._SOURCE_DECLARED_ABSENT_FILE
+    assertion_path = archive_root / SOURCE_DECLARED_ABSENT_FILE
     assertion_path.write_text(
         json.dumps(
             {
-                "format": backup_mod._SOURCE_DECLARED_ABSENT_FORMAT,
-                "freeze_authority": backup_mod._SOURCE_DECLARED_ABSENT_AUTHORITY,
+                "format": SOURCE_DECLARED_ABSENT_FORMAT,
+                "freeze_authority": SOURCE_DECLARED_ABSENT_AUTHORITY,
                 "source_db_sha256": hashlib.sha256(source_db.read_bytes()).hexdigest(),
                 "declared_absent_blob_hashes": [absent_hash.hex()],
             },
@@ -1810,7 +1875,7 @@ def test_pre_generation_source_uses_declared_absence(
     assert with_assertion.verified
     assert with_assertion.verification["missing_canonical_blob_count"] == 0
     assert with_assertion.verification["source_effective_scope_nonempty"] is True
-    assert Path(with_assertion.output_path or "", backup_mod._SOURCE_DECLARED_ABSENT_FILE).is_file()
+    assert Path(with_assertion.output_path or "", SOURCE_DECLARED_ABSENT_FILE).is_file()
     with sqlite3.connect(source_db) as conn:
         assert (
             validate_migration_backup_manifest(
@@ -1897,10 +1962,10 @@ def test_source_declared_absent_authentication_rejects_each_mutation(
     with sqlite3.connect(source_db) as conn:
         conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         conn.execute("INSERT INTO marker VALUES ('source')")
-    assertion_path = tmp_path / backup_mod._SOURCE_DECLARED_ABSENT_FILE
+    assertion_path = tmp_path / SOURCE_DECLARED_ABSENT_FILE
     assertion: dict[str, object] = {
-        "format": backup_mod._SOURCE_DECLARED_ABSENT_FORMAT,
-        "freeze_authority": backup_mod._SOURCE_DECLARED_ABSENT_AUTHORITY,
+        "format": SOURCE_DECLARED_ABSENT_FORMAT,
+        "freeze_authority": SOURCE_DECLARED_ABSENT_AUTHORITY,
         "source_db_sha256": hashlib.sha256(source_db.read_bytes()).hexdigest(),
         "declared_absent_blob_hashes": ["a" * 64],
     }
@@ -1908,7 +1973,7 @@ def test_source_declared_absent_authentication_rejects_each_mutation(
     assertion_path.write_text(json.dumps(assertion), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match=message):
-        backup_mod._load_source_declared_absent(source_db, assertion_path)
+        load_source_declared_absent(source_db, assertion_path)
 
 
 def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path: Path) -> None:
@@ -2008,7 +2073,8 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
             conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
 
     monkeypatch.setattr(
-        "polylogue.daemon.backup._verify_archive_file_set_backup", lambda _path: {"ok": False, "error": "bad"}
+        "polylogue.operations.archive_backup._verify_archive_file_set_backup",
+        lambda _path: {"ok": False, "error": "bad"},
     )
 
     result = backup_archive(output_dir=tmp_path / "backups", verify=True)
@@ -2284,7 +2350,7 @@ def test_embedded_backup_refused_beside_resident_daemon(
     ``BEGIN IMMEDIATE`` across the copy.
 
     The refusal used to live in ``polylogue/cli/commands/backup.py``, covering
-    exactly one caller; ``from polylogue.daemon.backup import backup_archive``
+    exactly one caller; ``from polylogue.operations.archive_backup import backup_archive``
     reached the whole truncating snapshot beside a live daemon with no
     ownership check at all. That is the standalone Python entry point
     polylogue-8qm4k AC1's coverage receipt names.
@@ -2315,36 +2381,3 @@ def test_embedded_backup_refused_beside_resident_daemon(
         process.wait(timeout=30)
         if process.stdout is not None:
             process.stdout.close()
-
-
-def test_reset_safety_requires_the_retained_zip_member_not_just_a_zip(
-    workspace_env: dict[str, Path],
-) -> None:
-    """Anti-vacuity: checking only that the container is a ZIP reports zero
-    at-risk rows after the member is gone, and reset would delete the only copy.
-    """
-    from polylogue.operations.reset_safety import unresolvable_raw_source_count
-
-    archive_root = workspace_env["archive_root"]
-    zip_path = archive_root / "bundle.zip"
-    member_payload = dumps_bytes({"id": "recoverable"})
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.writestr("conversation.json", member_payload)
-    with seed_durable_tier(archive_root / "source.db") as conn:
-        conn.execute(
-            """INSERT INTO raw_sessions (
-                raw_id, origin, source_path, source_index, blob_hash, blob_size,
-                acquired_at_ms, validation_status
-            ) VALUES (?, 'chatgpt-export', ?, 0, ?, ?, 1, 'passed')""",
-            (
-                "zip-member",
-                f"{zip_path}:conversation.json",
-                hashlib.sha256(member_payload).digest(),
-                len(member_payload),
-            ),
-        )
-    assert unresolvable_raw_source_count(archive_root) == 0
-
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.writestr("other.json", member_payload)
-    assert unresolvable_raw_source_count(archive_root) == 1

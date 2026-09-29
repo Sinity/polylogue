@@ -28,12 +28,10 @@ from polylogue.paths import (
     state_home,
 )
 
-# Durable acquired source evidence. Deleting it means future rebuilds can only
-# recover rows whose original source files still exist.
-_SOURCE_ARCHIVE_DATABASE = ("source database", "source.db")
-
 # Rebuildable tiers: replayed from preserved source evidence by maintenance.
 # Deleting these is the supported "move aside and replay source.db" reset path.
+# They are the only tiers a reset deletes: bootstrap recreates them, while an
+# established archive missing source.db, user.db or audit.db refuses to open.
 # ``embeddings.db`` is deliberately NOT here: bootstrap classifies it
 # ``expensive_rebuild`` (storage/sqlite/archive_tiers/bootstrap.py) because
 # nothing replays its vectors from source.db -- they are re-purchased from the
@@ -48,10 +46,6 @@ _REBUILDABLE_ARCHIVE_DATABASES = (
 #: not a reset, it is a repurchase, so this file has no delete target at all and
 #: the command names the preservation route instead.
 _EMBEDDINGS_ARCHIVE_DATABASE = ("embeddings database", "embeddings.db")
-# Irreplaceable tier: marks, annotations, corrections, tags, saved views,
-# recall packs, workspaces, blackboard notes. Nothing re-creates it, so
-# ``reset --database`` preserves it unless the operator opts in explicitly.
-_USER_ARCHIVE_DATABASE = ("user database", "user.db")
 _INDEX_ARCHIVE_DATABASE = ("index database", "index.db")
 
 
@@ -83,25 +77,15 @@ def _user_db_path() -> Path:
     return _archive_root() / "user.db"
 
 
-def _archive_database_targets(
-    *,
-    include_source_db: bool = False,
-    include_user_db: bool = False,
-) -> list[tuple[str, Path]]:
+def _archive_database_targets() -> list[tuple[str, Path]]:
     """Resolve archive-tier files to delete for ``reset --database``.
 
-    The durable ``source.db`` and irreplaceable ``user.db`` tiers are excluded
-    unless explicitly requested.  A plain ``reset --database`` drops only
-    derived/rebuildable tiers so index rebuilds can replay preserved source
-    evidence, including rows whose original source files have rotated away.
+    Only the derived tiers: index rebuilds replay preserved source evidence,
+    including rows whose original source files have rotated away.
     """
     root = _archive_root()
-    databases = [
-        *((_SOURCE_ARCHIVE_DATABASE,) if include_source_db else ()),
-        *_REBUILDABLE_ARCHIVE_DATABASES,
-        *((_USER_ARCHIVE_DATABASE,) if include_user_db else ()),
-    ]
-    if (root / ".index-active-pointer").exists() and any(filename == "index.db" for _name, filename in databases):
+    databases = _REBUILDABLE_ARCHIVE_DATABASES
+    if (root / ".index-active-pointer").exists():
         raise click.ClickException(
             "reset --database is unsafe for a managed active generation; "
             "the pointer-managed index.db must not be deleted in place"
@@ -154,13 +138,6 @@ def _source_db_present() -> bool:
 
 def _embeddings_db_present() -> bool:
     return (_archive_root() / _EMBEDDINGS_ARCHIVE_DATABASE[1]).exists()
-
-
-def _unresolvable_raw_source_count() -> int:
-    """Count raw source rows whose original source path is no longer readable."""
-    from polylogue.operations.reset_safety import unresolvable_raw_source_count
-
-    return unresolvable_raw_source_count(_archive_root())
 
 
 def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
@@ -277,21 +254,16 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
 
 
 @click.command("reset")
-@click.option("--index", "index", is_flag=True, help="Delete only the rebuildable index tier")
+@click.option(
+    "--index",
+    "index",
+    is_flag=True,
+    help="Delete the rebuildable index tier when polylogued next starts",
+)
 @click.option(
     "--database",
     is_flag=True,
-    help="Delete derived SQLite tiers, preserving durable source.db and user.db",
-)
-@click.option(
-    "--include-user-db",
-    is_flag=True,
-    help="Also delete the irreplaceable user.db tier (tags, annotations, marks, notes). Destructive.",
-)
-@click.option(
-    "--include-source-db",
-    is_flag=True,
-    help="Also delete durable source.db evidence. Refuses when raw rows point at missing source files.",
+    help="Delete the derived index.db and ops.db tiers when polylogued next starts; durable tiers are never deleted",
 )
 @click.option("--blob", is_flag=True, help="Delete the content-addressed blob store")
 @click.option("--assets", is_flag=True, help="Delete archived assets/attachments")
@@ -331,8 +303,6 @@ def reset_command(
     env: AppEnv,
     index: bool,
     database: bool,
-    include_user_db: bool,
-    include_source_db: bool,
     blob: bool,
     assets: bool,
     cache: bool,
@@ -456,19 +426,11 @@ def reset_command(
     if index:
         targets.extend(_archive_index_targets())
     if database:
-        if include_source_db:
-            at_risk = _unresolvable_raw_source_count()
-            if at_risk:
-                fail(
-                    "reset",
-                    f"Refusing to delete source.db: {at_risk} raw row(s) reference source paths that no longer exist. "
-                    "Preserve source.db and rebuild index.db from it instead.",
-                )
-        targets.extend(_archive_database_targets(include_source_db=include_source_db, include_user_db=include_user_db))
-        if not include_source_db and _source_db_present():
+        targets.extend(_archive_database_targets())
+        if _source_db_present():
             env.ui.console.print(
                 "Preserving source.db (durable acquired evidence). Rebuild index.db from it with `polylogued run`; "
-                "ordinary convergence replays source.db into index.db. Pass --include-source-db to delete source.db too."
+                "ordinary convergence replays source.db into index.db."
             )
         if _embeddings_db_present():
             env.ui.console.print(
@@ -476,11 +438,10 @@ def reset_command(
                 "provider, never replayed from source.db). Its vectors are keyed by content, so they are "
                 "reused after an index rebuild."
             )
-        if not include_user_db and _user_db_present():
+        if _user_db_present():
             env.ui.console.print(
                 "Preserving user.db (irreplaceable: tags, annotations, marks, saved views, "
-                "notes). Rebuild index.db from preserved source evidence with `polylogued run`. "
-                "Pass --include-user-db to delete user.db too."
+                "notes). Rebuild index.db from preserved source evidence with `polylogued run`."
             )
     if blob:
         _blob_root = blob_store_root()
@@ -534,8 +495,6 @@ def reset_command(
         {
             "index": index,
             "database": database,
-            "include_user_db": include_user_db,
-            "include_source_db": include_source_db,
             "blob": blob,
             "assets": assets,
             "cache": cache,
@@ -547,15 +506,29 @@ def reset_command(
     )
     deleted_value = result.get("affected_count", 0)
     deleted = deleted_value if isinstance(deleted_value, int) else 0
-    result_targets = result.get("result")
-    target_names = result_targets.get("targets", []) if isinstance(result_targets, dict) else []
-    if isinstance(target_names, list):
+    result_body = result.get("result")
+    result_body = result_body if isinstance(result_body, dict) else {}
+    target_names = result_body.get("targets", [])
+    target_names = target_names if isinstance(target_names, list) else []
+    if result_body.get("state") == "staged":
+        # The daemon holds index.db and ops.db open, so it records the
+        # authorized reset and deletes it at its next start, before any tier
+        # opens. Nothing is deleted yet.
         for name in target_names:
-            env.ui.console.print(f"  Deleted {name}")
+            env.ui.console.print(f"  Staged {name}")
+        env.ui.console.print(
+            f"\nReset staged: {len(target_names)} item(s) are deleted when polylogued next starts, "
+            "before it opens any archive database. Nothing has been deleted yet."
+        )
+        env.ui.console.print(
+            "Next: restart polylogued (for example `systemctl --user restart polylogued`); "
+            "it applies the reset, then rebuilds index.db from source.db."
+        )
+        return
+    for name in target_names:
+        env.ui.console.print(f"  Deleted {name}")
 
     env.ui.console.print(f"\nReset complete: {deleted} item(s) deleted.")
-    if index or database:
-        env.ui.console.print("Next: run `polylogued run`; ordinary convergence replays source.db into index.db.")
 
 
 def _dedupe_targets(targets: list[tuple[str, Path]]) -> list[tuple[str, Path]]:

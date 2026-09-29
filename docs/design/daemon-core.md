@@ -149,7 +149,7 @@ defects fit the evidence instead, and they are what the lease must close:
    (`watcher.py:295`). A test double's shape can disable the single-writer
    invariant in production.
 3. **Backup takes a live write lock with no daemon guard.**
-   `daemon/backup.py:467-491` opens `sqlite3.connect(live_path, timeout=30.0)`
+   `operations/archive_backup.py` opens `sqlite3.connect(live_path, timeout=30.0)`
    and runs `PRAGMA wal_checkpoint(TRUNCATE)` and `BEGIN IMMEDIATE` against the
    live tier, with no `offline_guard` and no lease check.
 

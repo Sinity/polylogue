@@ -85,6 +85,12 @@ __all__ = [
 
 
 _RAW_DISCOVERY_INSPECTION_LIMIT = 32
+#: A raw sweep that follows a completed one pages at the service's idle
+#: cadence until this multiple of the previous sweep's duration has passed,
+#: then at the prompt one. Prompt paging therefore holds at most about a tenth
+#: of wall time however large the archive grows, while a raw that becomes owed
+#: without an arrival is still reached within about ten sweep durations.
+_RAW_RESWEEP_REST_FACTOR = 9.0
 _FILE_DISCOVERY_STEP_LIMIT = 256
 #: Fresh paths discovered beyond the offered page, so the next page's parsing
 #: can be prefetched while the current page publishes.
@@ -134,7 +140,7 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         if primary == sqlite3.SQLITE_FULL:
             return "capacity_unavailable", False
         if primary == sqlite3.SQLITE_IOERR:
-            return "candidate_storage_unavailable", False
+            return "candidate_storage_unavailable", True
         return None
     if isinstance(exc, OSError):
         if is_transient_cold_storage_errno(exc.errno):
@@ -1139,20 +1145,11 @@ class MultiplexIntakeAdapter(IntakeAdapter):
         are never discovered, so nothing downstream forms a batch from them
         or takes the writer lease on their behalf.
 
-        Two halt signals are read, and the second is what makes the policy
-        reach production. ``self._halts`` records refusals this policy itself
-        classified as ``CLASS_TERMINAL`` -- and **no production adapter emits
-        that outcome**. The real structural halt is raised inside live ingest:
-        a ``SchemaVersionMismatchError`` or another structural ``DatabaseError``
-        goes through ``handle_structural_database_error``, which records the
-        source in ``polylogue.core.source_halts`` and then surfaces to
-        :meth:`FileIntakeAdapter.admit_page` only as ``failed_paths`` -- that
-        is, as ``RETRYABLE``. Without this bridge the planner rediscovered the
-        halted source on every pass and took the writer lease for it forever,
-        which is exactly the polylogue-kqrbw shape this class exists to stop.
-        The bridge is one-way and recorded: observing the ingest halt also
-        copies it into the durable policy, so the exclusion survives a pass
-        that does not re-raise it.
+        Explicit terminal refusals use the durable policy. Structural ingest
+        faults use the process-local source registry: they stop selection for
+        this process, but are rechecked after restart. Copying them into a
+        durable terminal refusal would prevent a repaired source from ever
+        being tried by the next daemon.
         """
         from polylogue.core.source_halts import source_halt
 
@@ -1167,21 +1164,10 @@ class MultiplexIntakeAdapter(IntakeAdapter):
 
                 abandon_discovery(adapter)
                 continue
-            halted = source_halt(unit)
-            if halted is not None:
-                if self._halts is not None:
-                    self._halts.halt(unit, f"{halted.code}: {halted.message}")
-                    from polylogue.daemon.discovery_progress import abandon_discovery
+            if source_halt(unit) is not None:
+                from polylogue.daemon.discovery_progress import abandon_discovery
 
-                    abandon_discovery(adapter)
-                    emit(
-                        "daemon.intake.source_halted",
-                        level=WARNING,
-                        outcome="refused",
-                        reason="structural_ingest_halt",
-                        component=unit,
-                        error_detail=halted.message,
-                    )
+                abandon_discovery(adapter)
                 continue
             schedulable.append(adapter)
         return tuple(schedulable)
@@ -1333,15 +1319,18 @@ class CallbackIntakeAdapter(IntakeAdapter):
         *,
         estimated_cost: int = UNMEASURABLE_INTAKE_COST_BYTES,
         persistent: bool = True,
+        poll_interval_s: float = 0.0,
     ) -> None:
         self.class_name = class_name
         self.callback = callback
         self.estimated_cost = max(1, estimated_cost)
         self.persistent = persistent
+        self._poll_interval_s = max(0.0, poll_interval_s)
         self._pending = True
+        self._next_poll_at = 0.0
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
-        if limit <= 0 or not self._pending:
+        if limit <= 0 or not self._pending or time.monotonic() < self._next_poll_at:
             return ()
         return (IntakeItem(self.class_name, self.class_name, estimated_cost=self.estimated_cost),)
 
@@ -1370,6 +1359,10 @@ class CallbackIntakeAdapter(IntakeAdapter):
     async def acknowledge(self, item: IntakeItem) -> None:
         if not self.persistent:
             self._pending = False
+        else:
+            # Completion, not discovery, starts the next polling interval.
+            # Failed attempts remain governed by the dispatcher's retry policy.
+            self._next_poll_at = time.monotonic() + self._poll_interval_s
 
 
 class RawMaterializationIntakeAdapter(IntakeAdapter):
@@ -1381,10 +1374,18 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
         admit_id: Callable[[str], Awaitable[AdmissionResult | int] | AdmissionResult | int],
         *,
         suspended: Callable[[], bool] | None = None,
+        discovery_pending: Callable[[], bool] | None = None,
     ) -> None:
         self._discover_ids = discover_ids
         self._admit_id = admit_id
         self._suspended = suspended
+        self._discovery_pending = discovery_pending
+
+    @property
+    def discovery_pending(self) -> bool:
+        if self._suspended is not None and self._suspended():
+            return False
+        return self._discovery_pending is not None and self._discovery_pending()
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         if self._suspended is not None and self._suspended():
@@ -1475,6 +1476,24 @@ class RawMaterializationDiscovery:
         #: Pending project scans: (project directory, last served path,
         #: last served rowid). Paged by ``_dependents_selected``.
         self._evidence_projects: deque[tuple[str, str, int]] = deque()
+        #: Monotonic start of the sweep in progress, and the end and duration
+        #: of the last completed one, which pace the next (see
+        #: ``_RAW_RESWEEP_REST_FACTOR``).
+        self._sweep_started_at: float | None = None
+        self._last_sweep_finished_at: float | None = None
+        self._last_sweep_duration_s = 0.0
+
+    @property
+    def discovery_pending(self) -> bool:
+        """An unfinished bounded traversal due for prompt paging, not a claim that rows owe work."""
+        if self._evidence_projects:
+            return True
+        if self._cursor is None:
+            return False
+        if self._last_sweep_finished_at is None:
+            return True
+        rest_s = _RAW_RESWEEP_REST_FACTOR * self._last_sweep_duration_s
+        return time.monotonic() >= self._last_sweep_finished_at + rest_s
 
     def _raw_frontier(self) -> int:
         """Return the durable high-water mark for admitted raw observations."""
@@ -1520,6 +1539,10 @@ class RawMaterializationDiscovery:
         if limit <= 0:
             return ()
         if not (self._archive_root / "source.db").exists():
+            self._binding = None
+            self._cursor = None
+            self._held_page = None
+            self._evidence_projects.clear()
             # polylogue-f7pdm: a fresh archive root simply has no raw tier
             # yet. That is an empty page, not a failure: the tier appears as
             # soon as the first acquisition commits and the next pass
@@ -1548,6 +1571,9 @@ class RawMaterializationDiscovery:
             self._held_page = None
             self._frontier = self._raw_frontier()
             self._lane_turn = 0
+            # A new generation owes a fresh sweep now, not after a rest.
+            self._sweep_started_at = None
+            self._last_sweep_finished_at = None
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = make_raw_observation_derivation(self._archive_root)
@@ -1636,6 +1662,8 @@ class RawMaterializationDiscovery:
         # costs one extra bounded page read rather than the whole cycle.
         for _attempt in range(2):
             page_cursor = self._cursor
+            if page_cursor is None:
+                self._sweep_started_at = time.monotonic()
             page, next_cursor = adapter.required_page(frame, cursor=page_cursor, limit=limit)
             # An empty or fully valid page is progress through the required-key
             # space. ``None`` is the completed-traversal marker; the following
@@ -1646,16 +1674,14 @@ class RawMaterializationDiscovery:
                 statuses = adapter.inspect(frame, page)
                 selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
             if not selected:
-                self._cursor = next_cursor
-                self._held_page = None
+                self._advance_sweep(next_cursor)
                 return ()
             held = self._held_page
             if held is not None and held[0] == page_cursor and set(held[1]) == set(selected):
                 # Re-inspected the same page and nothing moved: the blockage is
                 # not budget pressure, so stop pinning the traversal behind it
                 # and go on to the next page in this same call.
-                self._cursor = next_cursor
-                self._held_page = None
+                self._advance_sweep(next_cursor)
                 continue
             # Hold the continuation over keys this page still owes. The
             # dispatcher admits the offered items only until its class budget
@@ -1669,6 +1695,15 @@ class RawMaterializationDiscovery:
             self._cursor = page_cursor
             return selected
         return ()
+
+    def _advance_sweep(self, next_cursor: str | None) -> None:
+        self._cursor = next_cursor
+        self._held_page = None
+        if next_cursor is None and self._sweep_started_at is not None:
+            now = time.monotonic()
+            self._last_sweep_duration_s = max(0.0, now - self._sweep_started_at)
+            self._last_sweep_finished_at = now
+            self._sweep_started_at = None
 
     def _with_costs(self, selected: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
         from polylogue.operations.operation_context import open_operation_read
@@ -1837,6 +1872,7 @@ def build_intake_adapters(
     raw_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     raw_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]] | None = None,
     raw_suspended: Callable[[], bool] | None = None,
+    raw_discovery_pending: Callable[[], bool] | None = None,
     hook_events_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     hook_events_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]]
     | None = None,
@@ -1864,7 +1900,9 @@ def build_intake_adapters(
     if hook_carriers:
         result.append(("hook_carrier", MultiplexIntakeAdapter(hook_carriers, halts=source_halts)))
     if remote_callback is not None:
-        result.append(("configured_remote", CallbackIntakeAdapter("configured_remote", remote_callback)))
+        result.append(
+            ("configured_remote", CallbackIntakeAdapter("configured_remote", remote_callback, poll_interval_s=3600.0))
+        )
     if raw_callback is not None:
         if raw_discover is None:
             result.append(("raw_materialization", CallbackIntakeAdapter("raw_materialization", raw_callback)))
@@ -1879,7 +1917,9 @@ def build_intake_adapters(
             result.append(
                 (
                     "raw_materialization",
-                    RawMaterializationIntakeAdapter(raw_discover, admit_raw, suspended=raw_suspended),
+                    RawMaterializationIntakeAdapter(
+                        raw_discover, admit_raw, suspended=raw_suspended, discovery_pending=raw_discovery_pending
+                    ),
                 )
             )
     if hook_events_callback is not None and hook_events_discover is not None:

@@ -39,7 +39,7 @@ def pre_migration_backup(
 ) -> Path:
     """Take and scratch-verify the backup a data-changing migration requires."""
 
-    from polylogue.daemon.backup import backup_archive
+    from polylogue.operations.archive_backup import backup_archive
 
     output_dir = (
         archive_root

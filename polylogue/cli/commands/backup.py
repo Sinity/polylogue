@@ -7,8 +7,14 @@ from pathlib import Path
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.daemon.backup import BACKUP_PROFILES, BackupProfile, BackupResult, backup_archive, format_backup_result
 from polylogue.logging import configure_logging
+from polylogue.operations.archive_backup import (
+    BACKUP_PROFILES,
+    BackupProfile,
+    BackupResult,
+    backup_archive,
+    format_backup_result,
+)
 
 
 @click.command("backup", help="Back up the Polylogue archive durability tiers.")

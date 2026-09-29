@@ -213,6 +213,7 @@ SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "position": "ordering coordinate the projection already orders by",
     "direction": "hydrated attachment provenance; no profile relation reads it",
     "producer_ref": "hydrated attachment provenance; no profile relation reads it",
+    "supplying_raw_id": "acquisition provenance the attachment byte acquirer keys durable refs on; no profile reads it",
 }
 
 SESSION_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {

@@ -5278,6 +5278,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         limit: int = 50,
         offset: int = 0,
         continuation: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, object] | None:
         """Read one bounded page of a per-session evidence relation.
 
@@ -5289,8 +5290,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         whose archive frame or source relation has moved raises
         ``QueryContinuationStaleError``.
 
+        Large file edits and web constructs carry ``row_fragment`` instead
+        of a partial row. ``returned`` counts completed rows; field-byte
+        progress is carried by the same cross-surface continuation.
         Returns ``None`` when the session does not exist.
         """
+        from polylogue.operations.evidence_payloads import DEFAULT_EVIDENCE_PAGE_BYTES
         from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS, read_session_evidence_window
 
         if kind not in SESSION_EVIDENCE_PAGE_READERS:
@@ -5299,7 +5304,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         def work(archive: ArchiveStore) -> dict[str, object] | None:
             window = read_session_evidence_window(
-                archive, kind, ref=ref, limit=limit, offset=offset, continuation=continuation
+                archive,
+                kind,
+                ref=ref,
+                limit=limit,
+                offset=offset,
+                continuation=continuation,
+                max_bytes=DEFAULT_EVIDENCE_PAGE_BYTES if max_bytes is None else max_bytes,
             )
             return None if window is None else dict(window)
 

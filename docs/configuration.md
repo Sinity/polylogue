@@ -83,8 +83,8 @@ same directory tree.
   file or directory.
 - A canonical location binds its origin: content there is validated against
   that origin, and another origin's shape is refused, never reclassified.
-  Only the import inbox and browser-capture envelopes (which declare their
-  provider) detect the provider from content.
+  Only the archive inbox, `polylogue import`, and browser-capture envelopes
+  (which declare their provider) detect the provider from content.
 
 ## Configuration Model
 

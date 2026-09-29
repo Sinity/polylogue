@@ -14,6 +14,8 @@ cycle, since that module imports these declarations.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -161,6 +163,52 @@ CONTINUABLE_SESSION_READ_KINDS: frozenset[str] = WINDOWED_SESSION_READ_KINDS | W
 ANCHORED_SESSION_READ_KINDS: frozenset[str] = frozenset({"messages"})
 
 
+class EvidenceFieldFragment(BaseModel):
+    """A lossless byte interval in one projected field; data is base64."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    field: str = Field(min_length=1)
+    encoding: Literal["utf-8", "json"]
+    offset: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+    data_base64: str
+
+    @model_validator(mode="after")
+    def bytes_match_the_declared_interval(self) -> EvidenceFieldFragment:
+        try:
+            data = base64.b64decode(self.data_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("evidence field data must be base64") from exc
+        if self.offset + len(data) > self.total_bytes:
+            raise ValueError("evidence field fragment exceeds its total")
+        if not data and self.total_bytes != 0:
+            raise ValueError("a nonempty field fragment must advance")
+        return self
+
+    @property
+    def complete(self) -> bool:
+        return self.offset + len(base64.b64decode(self.data_base64)) == self.total_bytes
+
+
+class EvidenceRowFragment(BaseModel):
+    """Part of one row, separate from the list of wholly delivered rows."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    row_offset: int = Field(ge=0)
+    fields: list[EvidenceFieldFragment] = Field(min_length=1)
+    complete: bool
+
+    @model_validator(mode="after")
+    def fields_advance_in_order(self) -> EvidenceRowFragment:
+        if len({part.field for part in self.fields}) != len(self.fields):
+            raise ValueError("a fragment cannot repeat a field")
+        if any(not part.complete for part in self.fields[:-1]):
+            raise ValueError("a fragment cannot skip an unfinished field")
+        if self.complete and not self.fields[-1].complete:
+            raise ValueError("an unfinished field cannot complete its row")
+        return self
+
+
 class EvidenceWindowBody(BaseModel):
     """One bounded page of a per-session evidence relation.
 
@@ -183,9 +231,10 @@ class EvidenceWindowBody(BaseModel):
     #: under the wrong one.
     relation: str = Field(min_length=1)
     rows: list[dict[str, object]]
+    row_fragment: EvidenceRowFragment | None = None
     #: The relation's own row count, *not* the returned count.
     total: int = Field(ge=0)
-    #: How many rows this page actually carries.
+    #: Rows completed by this page, including a finishing row fragment.
     returned: int = Field(ge=0)
     limit: int = Field(ge=1)
     offset: int = Field(ge=0)
@@ -195,7 +244,10 @@ class EvidenceWindowBody(BaseModel):
 
     @model_validator(mode="after")
     def the_reported_count_is_the_delivered_count(self) -> EvidenceWindowBody:
-        if self.returned != len(self.rows):
+        fragment = self.row_fragment
+        if fragment is not None and (self.rows or fragment.row_offset != self.offset):
+            raise ValueError("a row fragment occupies its own row window")
+        if self.returned != len(self.rows) + int(fragment is not None and fragment.complete):
             raise ValueError("returned disagrees with the number of rows delivered")
         return self
 
@@ -227,7 +279,8 @@ class SessionReadRequest(_ReadRequest):
     For a windowed kind, ``limit`` is a hard window, not a hint: a full
     transcript can exceed the 8 MiB bound on a single operation result, so the
     caller loops windows and the handler refuses a window it cannot deliver
-    whole.  Evidence kinds are bounded by construction and ignore the window.
+    whole. File edits and web content also page within oversized rows;
+    their fragment cursor advances even before a full row is completed.
     """
 
     ref: str = Field(min_length=1)

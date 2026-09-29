@@ -429,6 +429,29 @@ class TestBackfillCommand:
         assert result.exception is not None
         assert "polylogued run" in str(result.exception)
 
+    def test_backfill_exits_nonzero_when_the_daemon_reports_failed_keys(
+        self, cli_runner: CliRunner, stub_env: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``failed`` backfill receipt is printed and the command exits 1.
+
+        Anti-vacuity: drop the outcome check after the receipt is echoed and
+        the command exits 0 although the daemon reported failed keys.
+        """
+        receipt = {
+            "operation": "maintenance.embeddings.backfill",
+            "outcome": "failed",
+            "result": {"error": {"code": "embedding_keys_failed"}, "result": {"done": 0, "pending": 0, "failed": 3}},
+        }
+        monkeypatch.setattr(
+            "polylogue.cli.operation_kernel.configured_operation_to_completion",
+            lambda *_args, **_kwargs: receipt,
+        )
+        with _patch_preflight(_make_report()):
+            result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--format", "json"], obj=stub_env)
+
+        assert result.exit_code == 1, result.output
+        assert json.loads(result.stdout) == receipt
+
     def test_backfill_runs_against_stub_provider(
         self,
         cli_runner: CliRunner,

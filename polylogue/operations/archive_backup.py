@@ -12,6 +12,7 @@ the copied bytes and recorded source fingerprint describe the same state.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -20,7 +21,7 @@ import stat
 import tempfile
 import time
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,8 +36,6 @@ from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import require_write_lease, write_lease
-from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
-from polylogue.daemon.status import open_readonly_connection
 from polylogue.operations.zip_acquisition_replay import MemberCandidateCache, zip_reacquisition_payload
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
@@ -44,6 +43,11 @@ from polylogue.storage.backup_attestation import (
     archive_tier_paths,
     assert_archive_format_authority,
     sign_verification_receipt,
+)
+from polylogue.storage.backup_blob_closure import (
+    SOURCE_DECLARED_ABSENT_FILE,
+    package_blob_closure,
+    source_blob_reservations,
 )
 from polylogue.storage.blob_integrity import (
     BlobLivenessProjection,
@@ -54,6 +58,12 @@ from polylogue.storage.blob_integrity import (
     project_source_blob_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.source_blob_restoration import stage_exact_blob
+from polylogue.storage.sqlite.connection_profile import (
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
@@ -70,9 +80,6 @@ BACKUP_PROFILES: tuple[BackupProfile, ...] = (
 _MISSING_BLOB_WARNING_SAMPLE_LIMIT = 10
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _BLOB_REFERENCE_EVIDENCE_FILE = "blob-reference-evidence.json"
-_SOURCE_DECLARED_ABSENT_FILE = "source-declared-absent.json"
-_SOURCE_DECLARED_ABSENT_FORMAT = "polylogue-source-declared-absent-v1"
-_SOURCE_DECLARED_ABSENT_AUTHORITY = "polylogue-2x6xu"
 _ARCHIVE_AUTHORITY_FILES = (
     ".polylogue-format.json",
     ".maintenance-state/durable-change-trains/.bootstrap",
@@ -80,6 +87,15 @@ _ARCHIVE_AUTHORITY_FILES = (
 )
 _SNAPSHOT_LOCK_ATTEMPTS = 5
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+_RECOVERY_PROOF_KINDS = frozenset(
+    {
+        "direct_file_sha256",
+        "historical_snapshot_prefix_sha256",
+        "zip_reacquired_payload",
+        "live_append_segment_sha256",
+        "historical_append_segment_sha256",
+    }
+)
 _RECOVERABILITY_FAILURE_KINDS = frozenset(
     {
         "no_replay_candidate",
@@ -89,6 +105,8 @@ _RECOVERABILITY_FAILURE_KINDS = frozenset(
         "acquisition_coordinate",
         "replay_error",
         "historical_snapshot_prefix_mismatch",
+        "container_member_rejected",
+        "inexact_payload",
         "hash_mismatch",
     }
 )
@@ -553,97 +571,19 @@ def _source_blob_liveness_projection(
     """
 
     projection = project_source_blob_liveness(source_db, index_db=index_db, immutable=True)
-    return projection, _source_blob_reservations(source_db)
-
-
-def _source_generation_tables_exist(conn: sqlite3.Connection) -> bool:
-    """Return whether the source tier has crossed the generation migration."""
-
-    tables = conn.execute(
-        "SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('source_generations', 'source_items')"
-    ).fetchall()
-    return len(tables) == 2
-
-
-def _source_blob_reservations(source_db: Path, *, immutable: bool = True) -> set[str]:
-    """Read pending publication receipts independently of committed liveness."""
-
-    with closing(
-        _open_backup_readonly_connection(
-            source_db,
-            immutable=immutable,
-            timeout_class="offline-bulk" if immutable else "background-read",
-        )
-    ) as source_conn:
-        has_reservations = source_conn.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'blob_publication_reservations'"
-        ).fetchone()
-        if has_reservations is None:
-            return set()
-        columns = {str(row[1]) for row in source_conn.execute("PRAGMA table_info(blob_publication_reservations)")}
-        if "blob_hash" not in columns:
-            raise RuntimeError("source.blob_publication_reservations is missing columns: blob_hash")
-        reservations: set[str] = set()
-        for (blob_hash,) in source_conn.execute("SELECT DISTINCT blob_hash FROM blob_publication_reservations"):
-            if not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
-                raise RuntimeError("source.blob_publication_reservations has invalid blob_hash evidence")
-            reservations.add(blob_hash.hex())
-        return reservations
-
-
-def _source_blob_hashes_from_restored_source(source_db: Path) -> set[str]:
-    """Re-derive source-owned hashes from the restored source tier."""
-
-    projection = project_source_blob_liveness(source_db, immutable=True)
-    if projection.blockers:
-        raise RuntimeError("restored source blob reference projection is blocked: " + "; ".join(projection.blockers))
-    return set(projection.live_hashes)
-
-
-def _load_source_declared_absent(source_db: Path, assertion_path: Path) -> set[str]:
-    """Load and authenticate the operator declaration against ``source.db``."""
-
-    _require_regular_backup_artifact(
-        assertion_path,
-        backup_root=assertion_path.parent,
-        label="source declared-absent assertion",
-    )
-    try:
-        assertion = json.loads(assertion_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("source declared-absent assertion is not valid JSON") from exc
-    if not isinstance(assertion, dict) or assertion.get("format") != _SOURCE_DECLARED_ABSENT_FORMAT:
-        raise RuntimeError("source declared-absent assertion has an unknown format")
-    if assertion.get("freeze_authority") != _SOURCE_DECLARED_ABSENT_AUTHORITY:
-        raise RuntimeError("source declared-absent assertion lacks polylogue-2x6xu freeze authority")
-    if assertion.get("source_db_sha256") != _sha256_file(source_db):
-        raise RuntimeError("source declared-absent assertion is bound to different source.db bytes")
-    raw_hashes = assertion.get("declared_absent_blob_hashes")
-    if not isinstance(raw_hashes, list) or not raw_hashes:
-        raise RuntimeError("source declared-absent assertion has an empty declared set")
-    if any(
-        not isinstance(blob_hash, str)
-        or len(blob_hash) != 64
-        or any(char not in "0123456789abcdef" for char in blob_hash)
-        for blob_hash in raw_hashes
-    ):
-        raise RuntimeError("source declared-absent assertion has invalid blob hashes")
-    hashes = {str(blob_hash) for blob_hash in raw_hashes}
-    if len(hashes) != len(raw_hashes):
-        raise RuntimeError("source declared-absent assertion contains duplicate blob hashes")
-    return hashes
+    return projection, source_blob_reservations(source_db)
 
 
 def _copy_source_declared_absent_assertion(source_db: Path, backup_root: Path) -> Path | None:
     """Copy the optional durable source assertion into a backup package."""
 
-    source_path = source_db.with_name(_SOURCE_DECLARED_ABSENT_FILE)
+    source_path = source_db.with_name(SOURCE_DECLARED_ABSENT_FILE)
     if not source_path.exists() and not source_path.is_symlink():
         return None
     _require_regular_backup_artifact(
         source_path, backup_root=source_db.parent, label="source declared-absent assertion"
     )
-    destination = backup_root / _SOURCE_DECLARED_ABSENT_FILE
+    destination = backup_root / SOURCE_DECLARED_ABSENT_FILE
     shutil.copy2(source_path, destination)
     return destination
 
@@ -886,8 +826,15 @@ def _source_recoverability_proofs(
     decoded_payload_cache: dict[str, object] | None = None,
     zip_payload_cache: MemberCandidateCache | None = None,
     immutable: bool = True,
+    recover: Callable[[str, int, bytes], bool] | None = None,
 ) -> list[dict[str, str]]:
-    """Prove missing source-owned bytes by replaying their acquisition payload."""
+    """Prove missing source-owned bytes by replaying their acquisition payload.
+
+    With ``recover``, a replayed payload is a proof only once ``recover``
+    accepted it as the blob's exact bytes (``recover(blob_hash, size,
+    payload)``); a structural-only match is then recorded as unproven
+    ``inexact_payload``, because a package cannot carry bytes it does not hold.
+    """
     if not missing_hashes:
         return []
     source_bytes_cache = source_bytes_cache if source_bytes_cache is not None else {}
@@ -1011,7 +958,15 @@ def _source_recoverability_proofs(
                             source_bytes_cache=source_bytes_cache,
                             decoded_payload_cache=decoded_payload_cache,
                         )
-            if error is None and payload is not None and _payload_matches_reference(row, payload, blob_hash):
+            matched = error is None and payload is not None and _payload_matches_reference(row, payload, blob_hash)
+            if (
+                matched
+                and payload is not None
+                and recover is not None
+                and not recover(blob_hash, _recorded_blob_size(row, payload), payload)
+            ):
+                matched, error = False, "inexact_payload"
+            if matched:
                 kind = (
                     "zip_reacquired_payload"
                     if is_container
@@ -1074,6 +1029,17 @@ def _source_recoverability_proofs(
     return proofs
 
 
+def _recorded_blob_size(row: Mapping[str, object], payload: bytes) -> int:
+    """The retained size a recovered payload must have; the payload's own when unrecorded."""
+    value = row.get("size_bytes")
+    if isinstance(value, (int, str)):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return len(payload)
+
+
 def _payload_matches_reference(row: Mapping[str, object], payload: bytes, blob_hash: str) -> bool:
     """Verify a replayed payload against its durable byte or value identity.
 
@@ -1114,6 +1080,10 @@ def _recoverability_failure_kind(error: str) -> str:
         return "historical_snapshot_prefix_mismatch"
     if error == "member_yields_no_payload":
         return "no_replay_candidate"
+    if error == "container_member_rejected":
+        return "container_member_rejected"
+    if error == "inexact_payload":
+        return "inexact_payload"
     if error in {
         "container_coordinate_missing",
         "container_coordinate_mismatch",
@@ -1135,7 +1105,9 @@ def _recoverability_failure_kind_for_attempts(kinds: set[str]) -> str:
         "acquisition_coordinate",
         "source_missing",
         "no_replay_candidate",
+        "container_member_rejected",
         "historical_snapshot_prefix_mismatch",
+        "inexact_payload",
         "hash_mismatch",
     ):
         if kind in kinds:
@@ -1210,34 +1182,56 @@ def _copy_referenced_blobs(
     assert isinstance(source_owners, dict)
     source_hashes = set().union(*(set(owner_hashes) for owner_hashes in source_owners.values()))
     unproven: list[dict[str, str]] = []
-    reference_evidence["recoverability_proofs"] = _source_recoverability_proofs(
-        source_db,
-        root=source_blob_root.parent,
-        missing_hashes=missing_hashes & source_hashes,
-        unproven=unproven,
-        source_bytes_cache={},
-        decoded_payload_cache={},
-        zip_payload_cache={},
-    )
+    blob_dst_root = backup_root / "blob"
+    # A missing source-owned blob enters the package only as the exact bytes
+    # its acquisition source still holds. The closed package is then complete
+    # by itself: verification and restore never consult the source again.
+    package_store = BlobStore(blob_dst_root)
+    recovered: set[str] = set()
+
+    def recover(blob_hash: str, size_bytes: int, payload: bytes) -> bool:
+        prepared = stage_exact_blob(package_store, io.BytesIO(payload), blob_hash=blob_hash, size_bytes=size_bytes)
+        if prepared is None:
+            return False
+        package_store.publish_prepared(prepared)
+        recovered.add(blob_hash)
+        return True
+
+    try:
+        reference_evidence["recoverability_proofs"] = _source_recoverability_proofs(
+            source_db,
+            root=source_blob_root.parent,
+            missing_hashes=missing_hashes & source_hashes,
+            unproven=unproven,
+            source_bytes_cache={},
+            decoded_payload_cache={},
+            zip_payload_cache={},
+            recover=recover,
+        )
+    finally:
+        # The package namespace has no concurrent publisher, so its staging
+        # workspace is removed once empty; a leftover file fails the backup.
+        if package_store.staging_root.is_dir():
+            package_store.staging_root.rmdir()
     reference_evidence["recoverability_unproven"] = unproven
     _write_blob_reference_evidence(backup_root, reference_evidence)
     if not hashes:
         return 0, 0, debt_report
 
-    blob_dst_root = backup_root / "blob"
     count = 0
     size = 0
     copied_inventory: list[dict[str, object]] = []
     missing_reserved: list[str] = []
     for hash_hex in sorted(hashes):
-        src = store.blob_path(hash_hex)
-        if not src.exists():
-            if inventory[hash_hex] == {"reserved"}:
-                missing_reserved.append(hash_hex)
-            continue
         dst = blob_dst_root / hash_hex[:2] / hash_hex[2:]
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        if hash_hex not in recovered:
+            src = store.blob_path(hash_hex)
+            if not src.exists():
+                if inventory[hash_hex] == {"reserved"}:
+                    missing_reserved.append(hash_hex)
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
         count += 1
         copied_size = dst.stat().st_size
         size += copied_size
@@ -1261,6 +1255,10 @@ def _copy_referenced_blobs(
                 if missing_reserved
                 else ""
             )
+        )
+    if recovered:
+        warnings.append(
+            f"source-tier referenced blobs recovered into the package from their acquisition sources: {len(recovered)}"
         )
     if debt_report.missing_referenced_blobs:
         _write_blob_reference_debt_report(backup_root, debt_report)
@@ -1802,7 +1800,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         expected_reference_blobs: set[str] = set()
         expected_attachment_hashes: set[str] = set()
         observed_attachment_hashes: set[str] = set()
-        recoverable_source_hashes: set[str] = set()
+        recovered_source_hashes: set[str] = set()
         unproven_hashes: set[str] = set()
         if source_included:
             evidence_path = restored / str(manifest.get("blob_reference_evidence_file", _BLOB_REFERENCE_EVIDENCE_FILE))
@@ -1812,7 +1810,8 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                 evidence_path, backup_root=restored, label="backup blob reference evidence"
             )
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-            expected_reference_blobs = _expected_blob_hashes_from_evidence(evidence)
+            # Refuses malformed owner evidence; the required set comes from the package's own tiers.
+            _expected_blob_hashes_from_evidence(evidence)
             source_evidence_hashes = {
                 blob_hash for hashes in evidence["source_owner_hashes"].values() for blob_hash in hashes
             }
@@ -1824,75 +1823,29 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             if not isinstance(recoverability_unproven, list):
                 reference_evidence_ok = False
                 recoverability_unproven = []
-            source_bytes_cache: dict[str, bytes] = {}
-            decoded_payload_cache: dict[str, object] = {}
-            zip_payload_cache: MemberCandidateCache = {}
-            proof_hashes: set[str] = set()
             for proof in recoverability_proofs:
                 if not isinstance(proof, dict):
                     reference_evidence_ok = False
                     continue
                 blob_hash_value = proof.get("blob_hash")
-                source_path_value = proof.get("source_path")
                 kind = proof.get("kind")
                 if (
                     not isinstance(blob_hash_value, str)
                     or blob_hash_value not in source_evidence_hashes
-                    or not isinstance(source_path_value, str)
-                    or kind
-                    not in {
-                        "direct_file_sha256",
-                        "historical_snapshot_prefix_sha256",
-                        "zip_reacquired_payload",
-                        "live_append_segment_sha256",
-                        "historical_append_segment_sha256",
-                    }
+                    or not isinstance(proof.get("source_path"), str)
+                    or kind not in _RECOVERY_PROOF_KINDS
+                    or blob_hash_value in recovered_source_hashes
                 ):
                     reference_evidence_ok = False
                     continue
-                blob_hash = blob_hash_value
-                if blob_hash in proof_hashes:
+                # A proof records bytes the backup recovered into this package
+                # from their acquisition source. The package must carry them;
+                # the source itself is never replayed here, because it can
+                # change or vanish after the receipt is written.
+                if blob_hash_value not in restored_hash_set:
                     reference_evidence_ok = False
-                proof_hashes.add(blob_hash)
-                source_path = source_path_value
-                source_index_value = proof.get("source_index")
-                source_index = (
-                    int(source_index_value) if isinstance(source_index_value, str) and source_index_value else None
-                )
-                if kind == "zip_reacquired_payload":
-                    recovered_payload, recovery_error = zip_reacquisition_payload(
-                        proof,
-                        source_path=source_path,
-                        zip_payload_cache=zip_payload_cache,
-                    )
-                elif kind in {"live_append_segment_sha256", "historical_append_segment_sha256"}:
-                    start_value = proof.get("append_start_offset")
-                    end_value = proof.get("append_end_offset")
-                    try:
-                        start = int(start_value) if isinstance(start_value, str) and start_value else -1
-                        end = int(end_value) if isinstance(end_value, str) and end_value else -1
-                    except ValueError as exc:
-                        recovered_payload, recovery_error = None, f"append_segment:{exc}"
-                    else:
-                        recovered_payload, recovery_error = _append_segment_payload(source_path, start, end)
-                elif kind == "historical_snapshot_prefix_sha256":
-                    recovered_payload, recovery_error = _historical_snapshot_prefix_payload(proof, source_path)[1:]
-                else:
-                    recovered_payload, recovery_error = _current_raw_payload_bytes(
-                        source_path,
-                        source_index,
-                        raw_id=str(proof.get("raw_id") or "") or None,
-                        blob_hash=blob_hash,
-                        source_bytes_cache=source_bytes_cache,
-                        decoded_payload_cache=decoded_payload_cache,
-                    )
-                payload_matches = recovered_payload is not None and _payload_matches_reference(
-                    proof, recovered_payload, blob_hash
-                )
-                if recovery_error is not None or not payload_matches:
-                    reference_evidence_ok = False
-                else:
-                    recoverable_source_hashes.add(blob_hash)
+                    continue
+                recovered_source_hashes.add(blob_hash_value)
             for failure in recoverability_unproven:
                 if not isinstance(failure, dict):
                     reference_evidence_ok = False
@@ -1916,29 +1869,15 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                 reference_evidence_ok = (
                     reference_evidence_ok and observed_attachment_hashes == expected_attachment_hashes
                 )
-            assertion_path = restored / _SOURCE_DECLARED_ABSENT_FILE
-            with closing(
-                _open_backup_readonly_connection(restored / "source.db", immutable=True, timeout_class="offline-bulk")
-            ) as source_conn:
-                source_generation_tables_exist = _source_generation_tables_exist(source_conn)
-            if (assertion_path.exists() or assertion_path.is_symlink()) and source_generation_tables_exist:
-                raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
-            restored_source_hashes = _source_blob_hashes_from_restored_source(restored / "source.db")
-            reference_evidence_ok = reference_evidence_ok and restored_source_hashes == source_evidence_hashes
-            declared_absent: set[str] = set()
-            if assertion_path.exists() or assertion_path.is_symlink():
-                declared_absent = _load_source_declared_absent(restored / "source.db", assertion_path)
-                if not declared_absent.issubset(restored_source_hashes):
-                    reference_evidence_ok = False
-                effective_source_hashes = restored_source_hashes - declared_absent - recoverable_source_hashes
-            else:
-                effective_source_hashes = restored_source_hashes - recoverable_source_hashes
-            reservations = _source_blob_reservations(restored / "source.db")
-            expected_reference_blobs = effective_source_hashes | expected_attachment_hashes | reservations
-            expected_unproven_hashes = source_evidence_hashes - restored_hash_set - recoverable_source_hashes
+            closure = package_blob_closure(restored)
+            reference_evidence_ok = reference_evidence_ok and closure.source_hashes == source_evidence_hashes
+            if not closure.declared_absent.issubset(closure.source_hashes):
+                reference_evidence_ok = False
+            expected_reference_blobs = set(closure.required) | expected_attachment_hashes
+            expected_unproven_hashes = source_evidence_hashes - restored_hash_set
             reference_evidence_ok = reference_evidence_ok and unproven_hashes == expected_unproven_hashes
-            if assertion_path.exists() or assertion_path.is_symlink():
-                source_scope_ok = bool(effective_source_hashes)
+            if closure.declared_absent_asserted:
+                source_scope_ok = bool(closure.effective_source_hashes)
         missing_canonical_blobs = expected_reference_blobs - restored_hash_set
         canonical_blobs_resolved = not source_included or (
             not missing_canonical_blobs and reference_evidence_ok and source_scope_ok
@@ -1957,7 +1896,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "blob_inventory_exact": blobs_ok,
             "canonical_blobs_resolved": canonical_blobs_resolved,
             "missing_canonical_blob_count": len(missing_canonical_blobs),
-            "recoverable_source_blob_count": len(recoverable_source_hashes),
+            "recovered_source_blob_count": len(recovered_source_hashes),
             "unproven_source_blob_count": len(unproven_hashes),
             "reference_evidence_resolved": reference_evidence_ok,
             "source_effective_scope_nonempty": source_scope_ok,

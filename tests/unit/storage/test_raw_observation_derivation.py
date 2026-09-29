@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
@@ -23,33 +24,38 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
-def _admit(root: Path, names: tuple[str, ...], *, path: str = "bundle.json") -> str:
-    payload = [
-        {
-            "id": name,
-            "title": name,
-            "create_time": 1,
-            "current_node": "m",
-            "mapping": {
-                "m": {
-                    "id": "m",
-                    "parent": None,
-                    "children": [],
-                    "message": {
+def _chatgpt_payload(names: tuple[str, ...]) -> bytes:
+    return json.dumps(
+        [
+            {
+                "id": name,
+                "title": name,
+                "create_time": 1,
+                "current_node": "m",
+                "mapping": {
+                    "m": {
                         "id": "m",
-                        "author": {"role": "user"},
-                        "create_time": 1,
-                        "content": {"content_type": "text", "parts": [name]},
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "m",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": [name]},
+                        },
                     },
                 },
-            },
-        }
-        for name in names
-    ]
+            }
+            for name in names
+        ]
+    ).encode()
+
+
+def _admit(root: Path, names: tuple[str, ...], *, path: str = "bundle.json") -> str:
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         return archive.write_raw_payload(
             provider=Provider.CHATGPT,
-            payload=json.dumps(payload).encode(),
+            payload=_chatgpt_payload(names),
             source_path=path,
             acquired_at_ms=1,
         )
@@ -350,6 +356,47 @@ def test_restart_without_ops_hints_recovers_index_loss_and_new_admission(tmp_pat
     restarted = _run(tmp_path)
     assert restarted.done == 2 and restarted.failed == 0
     assert _run(tmp_path).made_no_publication_attempts
+
+
+def test_absent_retained_blob_is_restored_from_its_exact_direct_source(tmp_path: Path) -> None:
+    """A lost retained blob converges once its direct source proves the bytes.
+
+    While the source holds different bytes the raw fails with a typed,
+    deterministic refusal and nothing is staged or published. Once the source
+    holds the recorded bytes again, the writer restores the blob, consumes its
+    publication receipt, and the next pass materializes the session.
+    Anti-vacuity: without restoration every pass fails with "retained raw blob
+    disappeared" and the session never materializes.
+    """
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from polylogue.storage.blob_store import BlobStore
+
+    bootstrap_archive_root(tmp_path)
+    payload = _chatgpt_payload(("restored",))
+    source = tmp_path / "exports" / "bundle.json"
+    source.parent.mkdir()
+    source.write_bytes(payload)
+    raw_id = _admit(tmp_path, ("restored",), path=str(source))
+    store = BlobStore(tmp_path / "blob")
+    blob_path = store.blob_path(hashlib.sha256(payload).hexdigest())
+    blob_path.unlink()
+
+    source.write_bytes(payload.replace(b"restored", b"rewritten"))
+    with pytest.raises(RetainedPreparationRetryableError, match=r"not restorable from its source \(hash_mismatch\)"):
+        RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
+    assert not blob_path.exists()
+    assert not any(store.staging_root.iterdir())
+
+    source.write_bytes(payload)
+    restoring = _run(tmp_path)
+    assert restoring.failed == 0
+    assert blob_path.read_bytes() == payload
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+    assert restoring.done + _run(tmp_path).done == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
+    assert not any(store.staging_root.iterdir())
 
 
 def test_missing_prepared_raw_retries_without_quarantining_source(tmp_path: Path) -> None:

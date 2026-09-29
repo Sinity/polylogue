@@ -1,57 +1,155 @@
-"""Safety predicates shared by reset previews and daemon mutation handlers."""
+"""Which filesystem reset targets are archive tier files, and when they may go.
+
+The resident daemon holds every tier database open for its lifetime: the
+watcher cursor store, the status registry, readers and the write coordinator
+keep their own connections. Unlinking a tier and its ``-wal``/``-shm``
+sidecars under them leaves those handles on deleted inodes while new
+connections create fresh, empty files. A reset that names a derived tier is
+therefore staged by the live request and applied by the next daemon start,
+before anything opens a tier (:func:`archive_tiers_closed`).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.core.raw_coordinates import zip_member_container
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+#: The tiers a reset may delete. Bootstrap recreates both from nothing. A
+#: durable tier (source, user, audit) is never recreated in an established
+#: archive -- bootstrap refuses a format marker that names a missing one -- and
+#: embeddings.db holds purchased vectors no route replays.
+RESETTABLE_TIERS = (ArchiveTier.INDEX, ArchiveTier.OPS)
+
+_CLOSED_ARCHIVE: ContextVar[Path | None] = ContextVar("polylogue_reset_closed_archive", default=None)
 
 
-def unresolvable_raw_source_count(archive_root: Path) -> int:
-    """Count retained raw rows whose original source path cannot be reacquired.
+class UnresettableArchiveTierError(ValueError):
+    """A reset target is, or holds, a tier no reset may delete."""
 
-    A ZIP member is reacquirable only when replaying it from the retained
-    container still yields the recorded payload: a container that was replaced
-    by another valid ZIP without the member, or with different member bytes,
-    no longer holds the evidence ``source.db`` is the only copy of.
+    code = "reset_unresettable_archive_tier"
+
+    def __init__(self, targets: tuple[str, ...]) -> None:
+        self.targets = targets
+        super().__init__(
+            "refusing to reset "
+            + ", ".join(targets)
+            + ": a reset deletes only index.db and ops.db; durable tiers, embeddings.db and directories "
+            "holding tier databases are never deleted; no files were deleted"
+        )
+
+
+class LiveArchiveTierResetError(ValueError):
+    """A live APPLY was asked to unlink tier files the daemon may hold open."""
+
+    code = "reset_live_archive_tier"
+
+    def __init__(self, targets: tuple[str, ...]) -> None:
+        self.targets = targets
+        super().__init__(
+            "refusing to delete archive tier files outside the daemon's startup seam: "
+            + ", ".join(targets)
+            + "; no files were deleted"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResetTargetClasses:
+    """The reset targets that name tier files, by what may happen to them."""
+
+    #: Targets that are exactly a resettable tier database or one of its
+    #: sidecars. They are deleted only at the daemon's startup seam.
+    derived_tier_files: tuple[tuple[str, Path], ...]
+    #: Targets that are, or contain, a tier no reset deletes.
+    unresettable: tuple[tuple[str, Path], ...]
+
+    @property
+    def unresettable_names(self) -> tuple[str, ...]:
+        return tuple(name for name, _path in self.unresettable)
+
+    @property
+    def derived_tier_names(self) -> tuple[str, ...]:
+        return tuple(name for name, _path in self.derived_tier_files)
+
+
+def _tier_files(database: Path) -> tuple[Path, ...]:
+    return tuple(
+        database.with_name(f"{database.name}{suffix}").resolve(strict=False)
+        for suffix in ("", *SQLITE_SIDECAR_SUFFIXES)
+    )
+
+
+def classify_reset_targets(
+    archive_root: Path, targets: Iterable[tuple[str, Path]], *, served_index_path: Path
+) -> ResetTargetClasses:
+    """Classify each target against every tier database and sidecar of ``archive_root``.
+
+    ``served_index_path`` is the index generation readers resolve, which a
+    pointer-managed archive keeps outside ``index.db``; it counts as an index
+    tier file wherever it lives.
     """
-    source_db = archive_root / "source.db"
-    if not source_db.exists():
-        return 0
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    resettable: set[Path] = set()
+    every: set[Path] = set()
+    for tier in ArchiveTier:
+        files = _tier_files(archive_root / f"{tier.value}.db")
+        every.update(files)
+        if tier in RESETTABLE_TIERS:
+            resettable.update(files)
+    served = _tier_files(served_index_path)
+    every.update(served)
+    resettable.update(served)
+    derived: list[tuple[str, Path]] = []
+    unresettable: list[tuple[str, Path]] = []
+    for name, path in targets:
+        resolved = path.resolve(strict=False)
+        if resolved in resettable:
+            derived.append((name, path))
+        elif any(tier_file.is_relative_to(resolved) for tier_file in every):
+            unresettable.append((name, path))
+    return ResetTargetClasses(derived_tier_files=tuple(derived), unresettable=tuple(unresettable))
 
-    conn = open_readonly_connection(source_db, validate_schema=False)
+
+def sqlite_primary(path: Path) -> Path | None:
+    """The database a sidecar path belongs to, or ``None`` for a primary."""
+    for suffix in SQLITE_SIDECAR_SUFFIXES:
+        if path.name.endswith(suffix):
+            return path.with_name(path.name.removesuffix(suffix))
+    return None
+
+
+@contextmanager
+def archive_tiers_closed(archive_root: Path) -> Iterator[None]:
+    """Declare that no connection to ``archive_root``'s tiers is open.
+
+    Only the daemon's startup seam enters this: it holds exclusive archive
+    ownership and runs before any tier is opened, so deleting a tier file
+    cannot strand a handle on an unlinked inode.
+    """
+    token = _CLOSED_ARCHIVE.set(archive_root.resolve(strict=False))
     try:
-        rows = conn.execute(
-            "SELECT source_path, lower(hex(blob_hash)), COUNT(*) FROM raw_sessions WHERE source_path IS NOT NULL "
-            "AND source_path != '' GROUP BY source_path, blob_hash"
-        ).fetchall()
+        yield
     finally:
-        conn.close()
-
-    at_risk = 0
-    member_rows: dict[str, int] = {}
-    for source_path, blob_hash, count in rows:
-        text = str(source_path)
-        if Path(text).exists():
-            continue
-        # ZIP rows address members as ``<container>:<member>``. The member
-        # suffix is not a filesystem path; the container must hold it.
-        if zip_member_container(text) is None:
-            at_risk += int(count)
-            continue
-        member_rows[str(blob_hash)] = member_rows.get(str(blob_hash), 0) + int(count)
-    if member_rows:
-        from polylogue.daemon.backup import _source_recoverability_proofs
-
-        proven = {
-            proof["blob_hash"]
-            for proof in _source_recoverability_proofs(
-                source_db, root=archive_root, missing_hashes=set(member_rows), immutable=False
-            )
-        }
-        at_risk += sum(count for blob_hash, count in member_rows.items() if blob_hash not in proven)
-    return at_risk
+        _CLOSED_ARCHIVE.reset(token)
 
 
-__all__ = ["unresolvable_raw_source_count"]
+def archive_tiers_are_closed(archive_root: Path) -> bool:
+    return _CLOSED_ARCHIVE.get() == archive_root.resolve(strict=False)
+
+
+__all__ = [
+    "RESETTABLE_TIERS",
+    "SQLITE_SIDECAR_SUFFIXES",
+    "LiveArchiveTierResetError",
+    "ResetTargetClasses",
+    "UnresettableArchiveTierError",
+    "archive_tiers_are_closed",
+    "archive_tiers_closed",
+    "classify_reset_targets",
+    "sqlite_primary",
+]

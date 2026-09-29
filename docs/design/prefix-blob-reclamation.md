@@ -206,7 +206,7 @@ subclasses `BlobStore`.
 **Direct `BlobStore`/`get_blob_store()` callers — a wider surface than the
 bead's framing implies.** Fifteen-plus call sites read blob bytes via
 `blob_store.blob_path(hash)` directly rather than through the publisher:
-`daemon/backup.py`, `pipeline/services/validation_runtime.py`,
+`operations/archive_backup.py`, `pipeline/services/validation_runtime.py`,
 `sources/revision_backfill.py`, `storage/raw_retention.py`,
 `storage/artifacts/inspection.py`, `schemas/sampling_db.py`,
 `schemas/validation/corpus.py`, `storage/blob_integrity.py`,
@@ -348,7 +348,7 @@ discipline. The **reclamation operation** (the physical `unlink` that GC
 performs once a hash is marked collectible) is the actually destructive,
 irreversible act — once the file inode is gone, only a backup restores the
 byte-exact original. This should be gated exactly like other destructive
-durable-tier changes: a **verified backup manifest** (`daemon/backup.py`,
+durable-tier changes: a **verified backup manifest** (`operations/archive_backup.py`,
 `backup_archive`/`_verify_backup_result`) run immediately before the first
 production reclamation pass, plus an explicit operator go-ahead (not
 automatic — no daemon-scheduled auto-reclamation in v1). `backup_archive`

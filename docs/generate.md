@@ -44,8 +44,8 @@ devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed
 
 `polylogue import --demo` is a daemon scheduling command, not an in-process
 archive build. It materializes approved fixture sources under the configured
-archive root, stages them into the daemon inbox, and reports scheduling only
-after the daemon accepts the staged source. Add `--wait` to block until the
+archive root, stages them for the daemon's `ingest` operation, and reports
+scheduling only after the daemon accepts the staged source. Add `--wait` to block until the
 daemon-built archive passes the semantic demo verifier before running the
 search/read/analyze examples. Add `--with-overlays` with `--wait` to attach the
 deterministic user-tier overlays after the target sessions exist.

@@ -311,6 +311,7 @@ def run_read_file_edits(env: AppEnv, request: RootModeRequest, invocation: ReadV
             "continuation": window["continuation"],
             "complete": window["complete"],
             "file_edits": window["rows"],
+            **({"row_fragment": window["row_fragment"]} if window.get("row_fragment") else {}),
         },
     )
 
@@ -338,6 +339,7 @@ def run_read_web_content(env: AppEnv, request: RootModeRequest, invocation: Read
             "continuation": window["continuation"],
             "complete": window["complete"],
             "web_content_constructs": window["rows"],
+            **({"row_fragment": window["row_fragment"]} if window.get("row_fragment") else {}),
         },
     )
 

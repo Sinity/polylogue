@@ -49,8 +49,10 @@ tool's own directory, the hook spools and browser-capture spool under the
 archive root, and the archive inbox. There are no custom watch roots and no
 way to narrow the watch set. A tool whose logs live elsewhere is followed by
 a symlink at its canonical path. Account exports (ChatGPT, Claude, Gemini) are
-imported deliberately with `polylogue import <path>`, which stages them into
-the inbox.
+imported deliberately with `polylogue import <path>`, which stages them in the
+archive's `import-staging/` directory and submits the `ingest` operation. That
+directory is not watched, so the operation is the only route that acquires
+an import, keyed on the original path.
 
 ## Configuration Flags
 
@@ -908,7 +910,7 @@ copy indefinitely (observed 2026-07-30 on an unrelated host-level `VACUUM
 INTO` cron job: 1.5 TB written in 2 hours against a live `index.db` rebuild
 before the operation was killed by its own timeout). Run any operator-owned
 task in a quiet window and never concurrently with
-`polylogue ops reset --index && polylogued run`.
+`polylogue ops reset --index, then restart polylogued`.
 
 ### Litestream Integration (Guidance)
 
@@ -1055,6 +1057,10 @@ archive as `embedding_catchup_runs`. The latest run is shown by
 sessions, embedded messages, errors, and estimated cost. This is the
 operator recovery point after interruption, OOM, restart, or a cost/error
 window stop; per-session retry state still lives in `embedding_status`.
+The backfill operation's own terminal outcome is `cancelled` for an operator
+cancel, `failed` (error code `embedding_keys_failed`) when any embedding key
+failed, even if a bound such as `--max-errors` also stopped the pass,
+`stopped` when a bound stopped it without failures, and `completed` otherwise.
 
 ## Service Recovery
 

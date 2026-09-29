@@ -135,6 +135,23 @@ def _catchup_receipt_status(*, failures: int, pending: int, stopped: bool) -> Op
     return OperationStatus.COMPLETED
 
 
+def _backfill_terminal_outcome(*, stop_reason: str | None, failed_keys: int) -> str:
+    """Classify an operator backfill pass; a failed key is never a completion.
+
+    Cancellation is the operator's own terminal act. Otherwise provider
+    failures decide the outcome whether or not a bound (``max_errors``, a cost
+    or time cap) also stopped the pass, and a stop without failures is
+    ``stopped``.
+    """
+    if stop_reason == "cancelled":
+        return "cancelled"
+    if failed_keys:
+        return "failed"
+    if stop_reason is not None:
+        return "stopped"
+    return "completed"
+
+
 @dataclass(frozen=True, slots=True)
 class ComposedEmbeddingConvergence:
     """One retained owner and adapter for the daemon's shared compute capacity."""
@@ -712,11 +729,11 @@ async def execute_embedding_backfill_operation(
         )
         report = result.report
         stop_reason = runtime.stop_reason(request) or result.deferred_reason
+        failed_keys = 0 if report is None else report.failed
+        outcome = _backfill_terminal_outcome(stop_reason=stop_reason, failed_keys=failed_keys)
         terminal: dict[str, object] = {
             "operation": request.operation,
-            "outcome": "completed"
-            if stop_reason is None
-            else ("cancelled" if stop_reason == "cancelled" else "stopped"),
+            "outcome": outcome,
             "sequence": 1,
             "effect": "committed" if report is not None and report.done else "no-effect",
             "affected_count": 0 if report is None else report.done,
@@ -735,12 +752,17 @@ async def execute_embedding_backfill_operation(
                 "failed": 0 if report is None else report.failed,
             },
         }
+        if outcome == "failed":
+            terminal["error"] = {
+                "code": "embedding_keys_failed",
+                "message": f"{failed_keys} embedding key(s) failed in this pass",
+            }
         if stop_reason is not None:
             audit_reason = (
                 "cancelled" if stop_reason == "cancelled" else "deadline" if stop_reason == "deadline" else "refused"
             )
             await execution.stop(audit_reason)
-        await execution.finalize(terminal)
+        await execution.finalize(terminal, status="failed" if outcome == "failed" else "applied")
     except Exception as exc:
         if execution.operation_id is not None:
             error_text = str(exc)[:512]
