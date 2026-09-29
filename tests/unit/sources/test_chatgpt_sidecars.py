@@ -170,6 +170,49 @@ def test_prepared_carrier_appends_renditions_and_rolls_them_back(
         store.close()
 
 
+def test_both_enrichment_routes_order_renditions_beside_their_pointer(tmp_path: Path) -> None:
+    """The prepared carrier and the in-memory route emit the same attachment order.
+
+    Anti-vacuity: append every extra rendition at the end of the carrier and
+    it yields ``A0, B0, A1, B1`` while the in-memory route yields
+    ``A0, A1, B0, B1``, so one export hashes differently by route.
+    """
+    other = "file_11111111cc4c7243aa6bdd0537ca804e"
+    blobs = {
+        **_RENDITION_BLOBS,
+        f"{other}#03adfe6a4b1e5a0#{other}#p_0.jpg-p_0.jpg": ("c0" * 32, 5),
+        f"{other}#03adfe6a4b1e5a0#{other}#p_1.jpg-p_1.jpg": ("c1" * 32, 6),
+    }
+    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": blobs}
+    pointers = [
+        ParsedAttachment(provider_attachment_id=_RENDITION_ID, message_provider_id="m1"),
+        ParsedAttachment(provider_attachment_id="file-plain", message_provider_id="m1"),
+        ParsedAttachment(provider_attachment_id=other, message_provider_id="m2"),
+    ]
+    in_memory = ChatGPTAssemblySpec().enrich_session(
+        ParsedSession(
+            source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[], attachments=pointers
+        ),
+        sidecars,
+    )
+
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        attachments = store.new_attachment_sink()
+        events = store.new_event_sink()
+        attachments.extend(pointers)
+        session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[])
+        session = session.model_copy(update={"attachments": attachments, "session_events": events})
+        ChatGPTAssemblySpec().enrich_session(session, sidecars)
+        prepared_ids = [attachment.provider_attachment_id for attachment in attachments]
+    finally:
+        store.close()
+
+    in_memory_ids = [attachment.provider_attachment_id for attachment in in_memory.attachments]
+    assert len(in_memory_ids) == 5
+    assert prepared_ids == in_memory_ids
+
+
 def test_sidecar_enrichment_rolls_back_prepared_rows_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

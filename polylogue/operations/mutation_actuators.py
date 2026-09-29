@@ -1664,7 +1664,7 @@ class CaptureAssertionCandidateActuator(ConvergentReplay):
             idempotency_key=None,
             assertion_id=str(context["assertion_id"]),
             ttl_seconds=cast("int | None", context["ttl_seconds"]),
-            evidence_refs=tuple(cast("list[str]", context.get("supplied_evidence_refs") or [])),
+            evidence_refs=tuple(cast("list[str]", context["supplied_evidence_refs"])),
         )
 
 

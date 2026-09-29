@@ -356,10 +356,15 @@ class ChatGPTAssemblySpec:
             attachment_count = len(attachments)
             conn.execute(f"SAVEPOINT {savepoint}")
             try:
-                # Iterate the input extent only: renditions appended below are
-                # already resolved and must not be resolved again.
+                # Write the expanded sequence in place, in the same order the
+                # in-memory route produces: each pointer's renditions sit
+                # together. A rendition can overwrite a slot not yet read;
+                # that input is kept aside until its turn, so only displaced
+                # rows are held, never the whole attachment list.
+                displaced: dict[int, ParsedAttachment] = {}
+                write_position = 0
                 for position in range(attachment_count):
-                    attachment = attachments[position]
+                    attachment = displaced.pop(position) if position in displaced else attachments[position]
                     resolved_items, resolved_events = _resolve_attachment_renditions(
                         attachment,
                         index,
@@ -367,10 +372,17 @@ class ChatGPTAssemblySpec:
                         asset_blobs=asset_blobs,
                         member_keys_by_asset=member_keys_by_asset,
                     )
-                    first, *extra = resolved_items
-                    if first is not attachment:
-                        attachments[position] = first
-                    attachments.extend(extra)
+                    for item in resolved_items:
+                        if write_position >= attachment_count:
+                            attachments.append(item)
+                        elif write_position == position:
+                            if item is not attachment:
+                                attachments[write_position] = item
+                        else:
+                            if write_position not in displaced:
+                                displaced[write_position] = attachments[write_position]
+                            attachments[write_position] = item
+                        write_position += 1
                     events.extend(resolved_events)
             except BaseException:
                 conn.execute(f"ROLLBACK TO {savepoint}")
