@@ -666,6 +666,12 @@ class ParsedSession(BaseModel):
     # validate and publish the source-bound digest without hashing the tree a
     # second time.  It is excluded from payloads and semantic identity.
     content_hash: str | None = Field(default=None, exclude=True, repr=False)
+    # Enrichment carrier: the digest of the retained evidence this session was
+    # enriched from (``session_enrichment_evidence_key``), stamped where the
+    # enrichment ran. The writer binds it only when the archive still holds
+    # that evidence, so a session enriched before its index or thread state
+    # arrived is re-derived rather than certified. Not session content.
+    enrichment_evidence_key: str | None = Field(default=None, exclude=True, repr=False)
     messages: list[ParsedMessage]
     # Parser-only admission proof. It is excluded from serialized payloads and
     # content hashes, but the storage writer validates it before lowering.

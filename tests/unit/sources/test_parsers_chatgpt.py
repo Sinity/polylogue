@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeAlias
 from unittest.mock import patch
@@ -2132,32 +2131,30 @@ def test_chatgpt_mapping_order_does_not_create_revision_conflict() -> None:
     assert result.equivalent_raw_ids == ("raw-right",)
     assert result.ambiguous_raw_ids == ()
 
-    original_extract = chatgpt_parser._extract_generation_timings
+    from polylogue.sources.prepared_message_sink import GenerationTimings
 
-    def historical_extract(mapping: Mapping[str, object]) -> list[Any]:
-        timings = original_extract(mapping)
-        timed_message_ids: list[str] = []
-        for node_id, raw_node in mapping.items():
-            if not isinstance(raw_node, Mapping):
-                continue
-            raw_message = raw_node.get("message")
-            if not isinstance(raw_message, Mapping):
-                continue
-            raw_author = raw_message.get("author")
-            if not isinstance(raw_author, Mapping) or raw_author.get("role") not in {"assistant", "tool"}:
-                continue
-            metadata = raw_message.get("metadata")
-            if not isinstance(metadata, Mapping) or not any(
-                field in metadata for field in ("reasoning_start_time", "reasoning_end_time", "finished_duration_sec")
-            ):
-                continue
-            timed_message_ids.append(str(raw_message.get("id") or raw_node.get("id") or node_id))
-        assert timed_message_ids
-        return [replace(timing, message_provider_id=timed_message_ids[0]) for timing in timings]
+    original_selected = GenerationTimings.selected
 
     def historically_parsed(order: list[dict[str, Any]]) -> ParsedSession:
+        # The historical parser anchored each timing to whichever timed
+        # message the mapping order surfaced first.
+        timed_message_ids = [
+            str(node["message"]["id"])
+            for node in order
+            if node["message"]["author"]["role"] in {"assistant", "tool"}
+            and any(
+                field in node["message"].get("metadata", {})
+                for field in ("reasoning_start_time", "reasoning_end_time", "finished_duration_sec")
+            )
+        ]
+        assert timed_message_ids
+
+        def historical_selected(self: Any) -> Iterator[tuple[str, Any]]:
+            for branch_key, timing in original_selected(self):
+                yield branch_key, {**timing, "message_provider_id": timed_message_ids[0]}
+
         payload = {"id": "tie-break-order", "mapping": {node["id"]: node for node in order}, "current_node": "node_b"}
-        with patch.object(chatgpt_parser, "_extract_generation_timings", historical_extract):
+        with patch.object(GenerationTimings, "selected", historical_selected):
             return chatgpt_parse(payload, "fallback-id")
 
     historical_left = historically_parsed([user, node_a, node_b])
@@ -3849,18 +3846,18 @@ def test_citation_marker_stripping_is_linear_in_unterminated_openers() -> None:
     assert elapsed < 2.0, f"citation stripping took {elapsed:.2f}s; expected linear time"
 
 
-def test_sandbox_link_attachments_are_bounded_with_an_exact_found_count(
+def test_in_memory_sandbox_link_attachments_are_bounded_with_an_exact_found_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A message linking a huge number of sandbox files degrades, never silently.
+    """An in-memory parse bounds sandbox attachments and reports the excess.
 
-    Anti-vacuity: removing the ``MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE`` bound in
-    ``_sandbox_file_paths`` restores one ``ParsedAttachment`` per distinct link,
-    so the attachment count becomes ``link_count`` instead of the cap and no
-    ``sources.chatgpt.sandbox_links_bounded`` event is emitted -- both the cap
-    assertion and the event assertions go red. Dropping the emit while keeping
-    the cap turns the fix into a silent truncation and fails the event half
-    alone.
+    Without a scratch spill (the bundle-member route) every link would become
+    an in-memory ``ParsedAttachment``; the scratch-backed route records every
+    link (``test_chatgpt_sandbox_links_spill_every_attachment``).
+
+    Anti-vacuity (Codex P1, #5643): drop the in-memory bound and the
+    attachment count becomes ``link_count`` with no degradation event; drop
+    the dedup and the repeated link counts twice in ``found``.
     """
     captured: list[tuple[str, dict[str, object]]] = []
 
@@ -3868,44 +3865,36 @@ def test_sandbox_link_attachments_are_bounded_with_an_exact_found_count(
         captured.append((event, dict(fields)))
 
     monkeypatch.setattr("polylogue.sources.parsers.chatgpt.emit", record)
-
-    link_count = chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE * 3
+    limit = chatgpt_parser.MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE
+    link_count = limit * 3
     text = " ".join(f"[f](sandbox:/mnt/data/f{index}.bin)" for index in range(link_count))
+    text += " [again](sandbox:/mnt/data/f0.bin)"
     mapping = {"node1": make_chatgpt_node("msg1", "assistant", [text])}
 
     _messages, attachments = extract_messages_from_mapping(mapping)
 
     sandbox = [a for a in attachments if a.attachment_kind == "sandbox_file"]
-    assert len(sandbox) == chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE
-    # The retained set is the ordered prefix, not an arbitrary sample.
-    assert sandbox[0].source_url == "sandbox:/mnt/data/f0.bin"
-
+    assert len(sandbox) == limit
+    assert [a.source_url for a in sandbox[:2]] == ["sandbox:/mnt/data/f0.bin", "sandbox:/mnt/data/f1.bin"]
     bounded = [fields for event, fields in captured if event == "sources.chatgpt.sandbox_links_bounded"]
     assert len(bounded) == 1
-    # The count the message actually carried survives the bound exactly.
     assert bounded[0]["found"] == link_count
-    assert bounded[0]["recorded"] == chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE
-    assert bounded[0]["skipped"] == link_count - chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE
+    assert bounded[0]["recorded"] == limit
+    assert bounded[0]["skipped"] == link_count - limit
     assert bounded[0]["outcome"] == "degraded"
 
 
-def test_sandbox_links_under_the_bound_emit_no_degradation() -> None:
-    """The bound is inert for ordinary Code Interpreter turns.
-
-    Anti-vacuity: emitting the degradation unconditionally (for example by
-    comparing against the retained list rather than the true total) makes this
-    assertion red, so the counted-degradation channel cannot become noise on
-    every assistant message that links a file.
-    """
-    captured: list[tuple[str, dict[str, object]]] = []
+def test_sandbox_links_under_the_bound_emit_no_degradation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The in-memory bound is inert for ordinary Code Interpreter turns."""
+    captured: list[str] = []
+    monkeypatch.setattr("polylogue.sources.parsers.chatgpt.emit", lambda event, /, **_fields: captured.append(event))
     text = "[a](sandbox:/mnt/data/a.zip) and [b](sandbox:/mnt/data/b.zip)"
     mapping = {"node1": make_chatgpt_node("msg1", "assistant", [text])}
 
-    with patch("polylogue.sources.parsers.chatgpt.emit", lambda event, /, **f: captured.append((event, f))):
-        _messages, attachments = extract_messages_from_mapping(mapping)
+    _messages, attachments = extract_messages_from_mapping(mapping)
 
     assert len([a for a in attachments if a.attachment_kind == "sandbox_file"]) == 2
-    assert [event for event, _ in captured if event == "sources.chatgpt.sandbox_links_bounded"] == []
+    assert "sources.chatgpt.sandbox_links_bounded" not in captured
 
 
 def test_chatgpt_thought_step_keeps_its_summary_beside_its_content() -> None:

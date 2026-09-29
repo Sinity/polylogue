@@ -798,7 +798,12 @@ def _enrich_parsed_sessions(
         archive_root=context.archive_root,
         source_path=context.raw_record.source_path,
     )
-    return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions]
+    from polylogue.sources.revision_backfill import stamp_enrichment_evidence
+
+    return [
+        stamp_enrichment_evidence(plan.provider, sidecar_data, spec.enrich_session(convo, sidecar_data))
+        for convo in parsed_sessions
+    ]
 
 
 def _with_retained_codex_state_titles(
