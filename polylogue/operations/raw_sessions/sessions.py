@@ -399,7 +399,7 @@ class SessionLogService:
         # Trim display-only trailing newlines, but never bytes in the match.
         kept = max(match_end, len(data.rstrip(b"\r\n")))
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        return start, decoder.decode(data[:kept], final=False)
+        return start, decoder.decode(data[:kept], final=True)
 
     def _scan_literal(
         self,

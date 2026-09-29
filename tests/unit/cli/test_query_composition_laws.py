@@ -206,7 +206,7 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     ``action_relation_select_sql``, ``ArchiveStore.query_actions`` and
     ``query_unit_counts``, ``query_unit_rows``, root CLI ``find``, and the
     public ``find ... then delete`` preview/apply route.  Removing the command
-    predicate, losing ordinal result pairing, applying LIMIT before selection,
+    predicate, inventing an ambiguous result pairing, applying LIMIT before selection,
     or letting preview/apply resolve different sets makes this test fail.
     """
     root = query_cardinality_archive.root
@@ -221,7 +221,7 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     assert compiled_selector.boolean_predicate is not None
 
     # SQL repository membership and the shared terminal-row envelope agree with
-    # the independent provider-wire oracle, including duplicate IDs, a missing
+    # the independent provider-wire oracle, including ambiguous duplicate IDs, a missing
     # result, and an orphan result that must not create an action.
     _assert_repository_membership(root, manifest)
     with ArchiveStore.open_existing(root) as archive:

@@ -739,7 +739,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
     assert rows_by_command["absent-linkage"].output_text is None
 
 
-def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pairing(
+def test_session_action_occurrences_keep_parallel_repeated_ids_ambiguous_when_paged(
     tmp_path: Path,
 ) -> None:
     session = ParsedSession(
@@ -805,12 +805,16 @@ def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pai
         first_page = facade.query_session_action_occurrences([session_id], limit=1, offset=0)
         second_page = facade.query_session_action_occurrences([session_id], limit=1, offset=1)
 
-    assert [(row.tool_command, row.output_text) for row in all_rows] == [
-        ("first", "result-one"),
-        ("second", "result-two"),
+    assert [(row.tool_command, row.result_state, row.tool_result_block_id, row.output_text) for row in all_rows] == [
+        ("first", ActionResultState.OUTCOME_UNKNOWN, None, None),
+        ("second", ActionResultState.OUTCOME_UNKNOWN, None, None),
     ]
-    assert [(row.tool_command, row.output_text) for row in first_page] == [("first", "result-one")]
-    assert [(row.tool_command, row.output_text) for row in second_page] == [("second", "result-two")]
+    assert [(row.tool_command, row.result_state) for row in first_page] == [
+        ("first", ActionResultState.OUTCOME_UNKNOWN)
+    ]
+    assert [(row.tool_command, row.result_state) for row in second_page] == [
+        ("second", ActionResultState.OUTCOME_UNKNOWN)
+    ]
 
 
 def test_exact_session_action_count_bounds_pairing_before_global_ranking(

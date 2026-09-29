@@ -34,7 +34,7 @@ from tests.infra.live_ingest import write_index_session
 def test_writer_canonical_bulk_and_events_agree_on_causal_evidence(
     tmp_path: Path, sequence: str, expected: list[tuple[str, str | None, str]]
 ) -> None:
-    """Ordinal joins fail orphan/gap/duplicate cases; nearest joins fail parallel uses."""
+    """Causal pairing rejects shifted receipts and ambiguous parallel reuse."""
     events = [
         (
             name,
@@ -68,14 +68,27 @@ def test_writer_canonical_bulk_and_events_agree_on_causal_evidence(
             )
             for name, result, outcome in expected
         ]
-        columns = "tool_command, tool_result_block_id, tool_outcome, result_state, outcome_unknown_reason"
-        materialized_sql = f"SELECT {columns} FROM actions WHERE session_id = ? ORDER BY tool_command"
-        assert [tuple(row) for row in conn.execute(materialized_sql, (session_id,))] == expected_rows
+        materialized_columns = "tool_command, tool_result_block_id, tool_outcome, outcome_unknown_reason"
+        materialized_sql = f"SELECT {materialized_columns} FROM action_pairs WHERE session_id = ? ORDER BY tool_command"
+        materialized_expected = [
+            (
+                name,
+                result_block,
+                {"ok": "ok", "error": "error", "unknown": "unknown", "no_result": "no_result"}[outcome],
+                reason,
+            )
+            for name, result_block, outcome, _state, reason in expected_rows
+        ]
+        assert [tuple(row) for row in conn.execute(materialized_sql, (session_id,))] == materialized_expected
         for bounded in (False, True):
             sql = action_relation_select_sql(session_placeholders="?" if bounded else None)
             parameters = (session_id,) * 3 if bounded else ()
+            columns = "tool_command, tool_result_block_id, result_state, outcome_unknown_reason"
             rows = conn.execute(f"SELECT {columns} FROM ({sql}) ORDER BY tool_command", parameters).fetchall()
-            assert [tuple(row) for row in rows] == expected_rows
+            canonical_expected = [
+                (name, result_block, state, reason) for name, result_block, _outcome, state, reason in expected_rows
+            ]
+            assert [tuple(row) for row in rows] == canonical_expected
             for row in conn.execute(f"SELECT * FROM ({sql})", parameters):
                 if row["tool_result_block_id"] is None:
                     assert row["output_text"] is None
@@ -100,13 +113,13 @@ def test_writer_canonical_bulk_and_events_agree_on_causal_evidence(
             assert [tuple(row) for row in event_rows] == expected_events
 
         refresh_action_pairs(conn, session_id)
-        assert [tuple(row) for row in conn.execute(materialized_sql, (session_id,))] == expected_rows
+        assert [tuple(row) for row in conn.execute(materialized_sql, (session_id,))] == materialized_expected
         rebuild_all_action_pairs_sync(conn)
-        assert [tuple(row) for row in conn.execute(materialized_sql, (session_id,))] == expected_rows
+        assert [tuple(row) for row in conn.execute(materialized_sql, (session_id,))] == materialized_expected
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         conn.commit()
     with ArchiveStore.open_existing(tmp_path / "archive") as reopened:
-        assert [tuple(row) for row in reopened._conn.execute(materialized_sql, (session_id,))] == expected_rows
+        assert [tuple(row) for row in reopened._conn.execute(materialized_sql, (session_id,))] == materialized_expected
 
 
 def test_branch_sessions_and_different_tool_ids_do_not_share_ambiguity(tmp_path: Path) -> None:
