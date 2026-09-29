@@ -146,14 +146,12 @@ def frame_request(
 
     decoded = QueryContinuation.decode(continuation)
     transaction = decoded.request
-    if (
-        transaction.operation != operation
-        or transaction.projection != projection
-        or decoded.result_ref != transaction.result_ref
-    ):
+    if transaction.operation != operation or transaction.projection != projection:
         actual = f"{transaction.operation}/{transaction.projection}"
         expected = f"{operation}/{projection}"
         raise QueryContinuationInvalidError(f"continuation dialect mismatch: expected {expected}, got {actual}")
+    if decoded.result_ref != transaction.result_ref:
+        raise QueryContinuationInvalidError("continuation result identity does not match its bound request")
     original_arguments = {
         key: value for key, value in transaction.arguments.items() if key not in (extra_arguments or {})
     }
@@ -174,7 +172,9 @@ def frame_request(
         return original, transaction
     if request.limit > transaction.page_size:
         raise QueryContinuationInvalidError("continuation cannot widen its bound window")
-    return request, replace(transaction, page_size=request.limit)
+    # Only the window narrows; the selection and offset bound into the token
+    # stay, and the new request's defaults must not replace them.
+    return original.model_copy(update={"limit": request.limit}), replace(transaction, page_size=request.limit)
 
 
 def bind_snapshot(archive: Any, transaction: QueryTransactionRequest) -> QueryTransactionRequest:
@@ -317,6 +317,11 @@ async def message_transcript_window(
 
     from polylogue.archive.message.types import MessageType
 
+    # The reader filters by the selection the window is framed with. A resumed
+    # request that states only its continuation carries default filters, so
+    # reading those would serve unfiltered rows at a filtered token's offset.
+    submitted = request
+    request, _transaction = frame_request(submitted)
     session_id = request.ref.removeprefix("session:")
 
     async def storage_page(resolved_session_id: str, limit: int, offset: int) -> tuple[list[Any], int, Any]:
@@ -384,7 +389,7 @@ async def message_transcript_window(
         active_root = active_root.parent
     elif active_root.parent.name == ".index-generations":
         active_root = active_root.parent.parent
-    return await read_transcript_window(active_root, request, read=read)
+    return await read_transcript_window(active_root, submitted, read=read)
 
 
 def window_request(

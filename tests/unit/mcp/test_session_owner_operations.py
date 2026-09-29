@@ -131,6 +131,18 @@ async def test_search_read_timeline_and_mcp_use_owner(tmp_path: Path) -> None:
                 await invoke_surface_async(query, projection="sessions", continuation=first["continuation"])
             )
             assert first["items"][0]["id"] != second["items"][0]["id"]
+            # An omitted limit keeps the token's page size; an explicit one is
+            # the caller's and is honoured: narrowing works, widening is refused.
+            pair = json.loads(await invoke_surface_async(query, projection="sessions", limit=2))
+            narrowed = json.loads(
+                await invoke_surface_async(query, projection="sessions", continuation=pair["continuation"], limit=1)
+            )
+            assert [item["id"] for item in narrowed["items"]] == [ids[0]]
+            widened = json.loads(
+                await invoke_surface_async(query, projection="sessions", continuation=pair["continuation"], limit=3)
+            )
+            assert "items" not in widened
+            assert "widen" in widened["message"]
             exact = json.loads(
                 await invoke_surface_async(
                     query,
