@@ -28,8 +28,12 @@ from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
+    from polylogue.cli.select import SelectSessionRow
     from polylogue.cli.shared.types import AppEnv
     from polylogue.config import Config
+
+
+_CHOOSER_PAGE_SIZE = 500
 
 
 def resolve_single_session_id(
@@ -62,11 +66,24 @@ def resolve_single_session_id(
     rows = query_session_rows(config, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
     if len(rows) <= 1:
         return rows[0].session_id if rows else None
+
+    def every_row() -> list[SelectSessionRow]:
+        # The probe bounds only the refusal's candidate display. A chooser
+        # must offer the whole selection, so it pages through all of it.
+        if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
+            return list(rows)
+        loaded: list[SelectSessionRow] = []
+        while True:
+            page = query_session_rows(config, request, limit=_CHOOSER_PAGE_SIZE, offset=len(loaded))
+            loaded.extend(page)
+            if len(page) < _CHOOSER_PAGE_SIZE:
+                return loaded
+
     return resolve_ambiguous_selection(
         env,
         [row.session_id for row in rows],
         operation=operation,
-        rows_loader=lambda: rows,
+        rows_loader=every_row,
     )
 
 

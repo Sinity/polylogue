@@ -140,6 +140,45 @@ def test_the_terminal_chooser_decides_an_ambiguous_filter(monkeypatch: pytest.Mo
     assert resolved == "codex:b"
 
 
+def test_the_terminal_chooser_offers_every_match_beyond_the_display_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The refusal display is bounded; the chooser pages through the whole selection.
+
+    Anti-vacuity: handing the chooser the bounded probe makes the last
+    session unreachable and the assertion red.
+    """
+    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
+    from polylogue.cli.shared import latest_resolver
+
+    ids = [f"codex:{index:04d}" for index in range(AMBIGUITY_CANDIDATE_LIMIT + 1203)]
+
+    def _query_session_rows(
+        config: object, request: object, *, limit: int, offset: int = 0, **_kwargs: object
+    ) -> list[SelectSessionRow]:
+        return [
+            SelectSessionRow(session_id=ref, origin="codex-session", title=ref, date=None)
+            for ref in ids[offset : offset + limit]
+        ]
+
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_rows", _query_session_rows)
+    monkeypatch.setattr(latest_resolver, "_CHOOSER_PAGE_SIZE", 500)
+    offered: list[int] = []
+
+    def _choose_last(_env: object, rows: Sequence[SelectSessionRow]) -> SelectSessionRow:
+        offered.append(len(rows))
+        return rows[-1]
+
+    monkeypatch.setattr(select_module, "interactive_selection_available", lambda _env: True)
+    monkeypatch.setattr(select_module, "choose_select_row", _choose_last)
+
+    resolved = resolve_session_id_from_root_params(
+        {"origin": "codex-session"},
+        env=SimpleNamespace(ui=SimpleNamespace(plain=False)),  # type: ignore[arg-type]
+    )
+
+    assert offered == [len(ids)]
+    assert resolved == ids[-1]
+
+
 def test_latest_returns_none_when_archive_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--latest`` against an empty archive returns None, not an error."""
     _stub_ids(monkeypatch, [])
