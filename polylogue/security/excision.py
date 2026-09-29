@@ -1413,12 +1413,11 @@ def _apply_single_session_excision(
                     marker_cursor = conn.execute(
                         """
                         UPDATE assertions
-                        SET target_ref = ?, value_json = '{}', body_text = NULL,
+                        SET target_ref = 'assertion:' || assertion_id, value_json = '{}', body_text = NULL,
                             evidence_refs_json = '[]', status = ?, updated_at_ms = ?
                         WHERE target_ref = ? AND assertion_id LIKE 'marker-%'
                         """,
                         (
-                            f"excision-marker:{session_id}",
                             AssertionStatus.DELETED.value,
                             timestamp,
                             ref,

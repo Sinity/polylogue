@@ -93,6 +93,38 @@ def test_session_masks_cover_the_domain_fields_used_by_each_surface() -> None:
         assert getattr(row, surface_name) == expected
 
 
+def test_domain_session_rows_keep_relative_time(frozen_clock: object) -> None:
+    """Domain-built summary and list envelopes carry the session row's relative time.
+
+    Anti-vacuity: leave ``relative_time`` at its model default and both
+    envelopes report ``None`` where the session-row route reports an age.
+    """
+    from polylogue.surfaces.query_rows import session_row
+
+    base = _build_session()
+    session = Session(
+        id=base.id,
+        origin=base.origin,
+        title=base.title,
+        title_source=base.title_source,
+        messages=base.messages,
+        updated_at=datetime(2026, 5, 27, 10, 0, tzinfo=UTC),
+    )
+    expected = session_row(session).relative_time
+    assert expected != "unknown"
+    assert session_summary_envelope_from_domain(session).relative_time == expected
+    assert session_list_envelope_from_domain(session).relative_time == expected
+
+
+def test_session_row_shortens_windows_and_posix_working_directories() -> None:
+    """os.path.basename on Linux leaves the entire Windows source path visible."""
+    from polylogue.surfaces.query_rows import session_row
+
+    for cwd in ("C:\\Users\\example\\project\\", "/home/example/project/"):
+        row = session_row({"id": "session", "working_directories": (cwd,)})
+        assert row.cwd_display == "project"
+
+
 def test_domain_surface_envelopes_do_not_publish_untyped_cost_placeholders() -> None:
     """Domain conversions omit cost until typed usage evidence is available.
 

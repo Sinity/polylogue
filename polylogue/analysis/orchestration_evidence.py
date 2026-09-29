@@ -430,6 +430,7 @@ def build_session_orchestration(
             # with its retained child so the unresolved relationship stays visible.
             if edge["child_id"] in retained_ids and (edge["parent_id"] is None or edge["parent_id"] in retained_ids)
         ]
+        children.rows = [child for child in children.rows if child["session_id"] in retained_ids]
         truncated.append("topology")
         gaps.append("observation_limit")
     return SessionOrchestrationEvidence(

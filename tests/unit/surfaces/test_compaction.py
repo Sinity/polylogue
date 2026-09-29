@@ -195,6 +195,77 @@ def test_compaction_refuses_a_budget_below_its_envelope() -> None:
     assert refusal.value.envelope_tokens > 1
 
 
+def test_compaction_does_not_invent_canonical_content_hashes() -> None:
+    """An input without an archive content hash keeps no anchor hash.
+
+    Anti-vacuity: restore the text-only sha256 fallback and the ``missing``
+    anchor carries a hash the archive never computed.
+    """
+    pack = compact_sessions(
+        [
+            {
+                "id": "s",
+                "messages": [
+                    {"id": "missing", "text": "evidence", "material_origin": "human_authored"},
+                    {"id": "known", "text": "evidence", "material_origin": "human_authored", "content_hash": "a" * 64},
+                ],
+            }
+        ]
+    )
+    hashes = {item.anchor.ref.message_id: item.anchor.content_hash for item in pack.items}
+    assert hashes == {"missing": None, "known": "a" * 64}
+
+
+def test_compaction_identity_commits_to_content_projection_and_provenance() -> None:
+    """Packs that differ in text, projection or provenance get different refs.
+
+    Anti-vacuity: hash only the kept anchor refs and all four packs, which
+    retain the same single anchor, share one ``pack_ref``.
+    """
+
+    def pack(text: str = "evidence", budget: int = 60_000, run: str | None = None) -> CorpusCompactionPack:
+        return compact_sessions(
+            [{"id": "s", "messages": [{"id": "m", "text": text, "material_origin": "human_authored"}]}],
+            spec=CompactProjectionSpec(max_tokens=budget),
+            query_run_ref=run,
+        )
+
+    first = pack()
+    assert first.pack_ref == pack().pack_ref
+    assert first.token_estimate == _wire_tokens(first)
+    refs = {first.pack_ref, pack("changed evidence").pack_ref, pack(budget=59_000).pack_ref}
+    refs.add(pack(run="query-run:other").pack_ref)
+    assert len(refs) == 4
+
+
+def test_compaction_markdown_preserves_fidelity_manifest_and_omission_anchors() -> None:
+    """The Markdown rendering carries the whole manifest and every omission anchor.
+
+    Anti-vacuity: render only the aggregate drop counts and the per-origin and
+    per-session maps, ``unknown`` and the omitted anchors are missing.
+    """
+    pack = compact_sessions(
+        [
+            {
+                "id": "child",
+                "parent_id": "missing-parent",
+                "messages": [
+                    {"id": "omitted", "text": "protocol", "material_origin": "runtime_protocol"},
+                    {"id": "kept", "text": "authored evidence", "material_origin": "human_authored"},
+                ],
+            }
+        ]
+    )
+    markdown = pack.render_markdown()
+    assert "lineage_unresolved" in markdown
+    assert "drop_counts_by_material_origin" in markdown
+    assert "included_tokens_by_session" in markdown
+    assert "dropped_tokens_by_session" in markdown
+    assert pack.omissions
+    for omission in pack.omissions:
+        assert omission.anchor.ref.format() in markdown
+
+
 def test_long_unbroken_runs_are_weighted_by_their_size() -> None:
     """Anti-vacuity: counting a run as one word estimates ``"!" * 100000`` at
     one token, so a tiny budget would accept it.

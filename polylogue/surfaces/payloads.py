@@ -1269,6 +1269,8 @@ def message_render_envelope_from_message_query_row(
 
 
 def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnvelope:
+    from polylogue.surfaces.query_rows import session_row
+
     session_id = str(session.id)
     values = _domain_values(session, _SESSION_LIST_MASK)
     values.update(
@@ -1278,6 +1280,7 @@ def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnve
         title_is_synthesized=session.display_title_is_synthesized,
         message_count=len(session.messages),
         terminal_state=_session_terminal_state(session),
+        relative_time=session_row(session).relative_time,
         # Domain Session deliberately carries no typed usage-cost evidence.
         # Do not expose its legacy zero placeholder as an authoritative cost.
         total_cost_usd=None,
@@ -1346,6 +1349,8 @@ def session_list_envelope_from_domain(
     *,
     bound_title: bool = True,
 ) -> SessionListEnvelope:
+    from polylogue.surfaces.query_rows import session_row
+
     session_id = str(session.id)
     values = _domain_values(session, _SESSION_LIST_MASK)
     values.update(
@@ -1364,6 +1369,7 @@ def session_list_envelope_from_domain(
         actions=reader_session_actions(),
         message_count=len(session.messages),
         terminal_state=_session_terminal_state(session),
+        relative_time=session_row(session).relative_time,
         # Domain Session deliberately carries no typed usage-cost evidence.
         total_cost_usd=None,
         cost_provenance=None,

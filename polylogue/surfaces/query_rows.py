@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from os.path import basename
+from ntpath import basename
 from typing import Any
 
 from polylogue.archive.query.search_hits import bound_display_title, bound_search_snippet
@@ -116,8 +116,10 @@ def session_row(item: object, *, message_count: int | None = None) -> SessionRow
         if (state := str(_value(item, "terminal_state") or "unknown"))
         else "unknown",
         cost_usd=(float(_value(item, "total_cost_usd")) if _value(item, "total_cost_usd") is not None else None),
-        repo=basename(str(repo).rstrip("/")) if repo else None,
-        cwd_display=basename(cwd.rstrip("/")) if cwd else None,
+        # Archives carry POSIX and Windows paths whatever the reading host;
+        # ntpath splits on both separators.
+        repo=basename(str(repo).rstrip("/\\")) if repo else None,
+        cwd_display=basename(cwd.rstrip("/\\")) if cwd else None,
         message_count=int(count or 0),
     )
 
