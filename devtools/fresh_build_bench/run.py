@@ -231,6 +231,10 @@ class Observation:
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
     error: str | None = None
+    #: Whether a failed read may succeed on a later poll (a busy or locked
+    #: database, a file swapped by a generation promotion). A schema the
+    #: driver cannot read (an older candidate) fails the same way forever.
+    error_retryable: bool = True
 
     @property
     def intake_complete(self) -> bool:
@@ -358,7 +362,16 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
                 _last_readiness.update(at=now, archive=str(archive), readiness=dict(observation.readiness))
     except (OSError, sqlite3.Error) as exc:
         observation.error = f"{type(exc).__name__}: {exc}"
+        observation.error_retryable = _retryable_observation_error(exc)
     return observation
+
+
+def _retryable_observation_error(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        message = str(exc).lower()
+        return any(token in message for token in ("locked", "busy", "unable to open", "disk i/o"))
+    # Corruption or a schema this driver cannot read never heals by polling.
+    return isinstance(exc, OSError)
 
 
 #: Seconds between readiness reads once everything else has settled: the
@@ -502,23 +515,41 @@ def candidate_identity(candidate: Path) -> dict[str, Any]:
     }
 
 
-def candidate_stamp(candidate: Path) -> dict[str, tuple[int, int]]:
-    """``{path: (inode, ctime_ns)}`` of every tracked and untracked, unignored file.
+def candidate_stamp(candidate: Path) -> dict[str, tuple[int, ...]]:
+    """Stamps of every tracked and untracked, unignored file and their directories.
 
-    An edit changes a file's ctime even when its bytes are restored before
-    the run ends, so equal stamps mean no module the daemon could import was
-    written in between; the endpoint identity alone cannot tell. A deleted
-    tracked file stamps as ``(0, 0)``.
+    A file stamps as ``(inode, ctime_ns)``: an edit changes its ctime even
+    when its bytes are restored before the run ends. Each directory holding
+    one, and the root, stamps as ``(inode, mtime_ns, ctime_ns)``: a module
+    created, imported and removed again changes its directory's times even
+    though neither ``git ls-files`` snapshot lists it. Equal stamps mean the
+    daemon could import nothing the recorded identity does not describe. A
+    deleted tracked file stamps as ``(0, 0)``.
     """
-    names = _git(candidate, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
-    stamps: dict[str, tuple[int, int]] = {}
-    for name in sorted({name for name in names if name}):
+    names = sorted(
+        {
+            name
+            for name in _git(candidate, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+            if name
+        }
+    )
+    stamps: dict[str, tuple[int, ...]] = {}
+    directories: set[str] = {"."}
+    for name in names:
+        directories.update(parent.as_posix() for parent in Path(name).parents)
         try:
             status = os.lstat(candidate / name)
         except FileNotFoundError:
             stamps[name] = (0, 0)
             continue
         stamps[name] = (status.st_ino, status.st_ctime_ns)
+    for directory in sorted(directories):
+        try:
+            status = os.lstat(candidate / directory)
+        except FileNotFoundError:
+            stamps[f"{directory}/"] = (0, 0, 0)
+            continue
+        stamps[f"{directory}/"] = (status.st_ino, status.st_mtime_ns, status.st_ctime_ns)
     return stamps
 
 
@@ -571,6 +602,10 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
         "POLYLOGUE_LOG_FORMAT": "json",
         "POLYLOGUE_LOG_FILE": str(paths["events"]),
         "PYTHONPATH": str(config.candidate),
+        # Bytecode goes to scratch, never into the candidate tree: the tree's
+        # directory stamps (``candidate_stamp``) then move only when files
+        # are added or removed there.
+        "PYTHONPYCACHEPREFIX": str(paths["tmp"] / "pycache"),
     }
     # Per-thread CPU is always sampled (cheap); stacks only with --profile.
     env["POLYLOGUE_BENCH_SAMPLER"] = str(_SAMPLER_PATH)
@@ -635,15 +670,42 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     return paths
 
 
-def _stop(process: subprocess.Popen[bytes], timeout_s: float) -> tuple[int | None, float]:
+def _stop(
+    process: subprocess.Popen[bytes],
+    *,
+    stall_s: float,
+    progress: Callable[[], object],
+    interrupted: list[int],
+    poll_s: float = 5.0,
+) -> tuple[int | None, float]:
+    """Ask the daemon to stop and wait for it while its shutdown progresses.
+
+    Draining a large archive or checkpointing SQLite can take longer than any
+    fixed deadline; killing it then turns a valid build into an unclean
+    shutdown. The daemon is killed only when its process tree stops moving
+    (``progress`` -- CPU and I/O -- unchanged for ``stall_s``) or when a
+    cancellation arrives during the shutdown itself.
+    """
     began = time.monotonic()
     if process.poll() is None:
         process.send_signal(signal.SIGINT)
-        try:
-            process.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+        cancellations = len(interrupted)
+        last = progress()
+        last_moved = time.monotonic()
+        while True:
+            try:
+                process.wait(timeout=poll_s)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            now = time.monotonic()
+            current = progress()
+            if current != last:
+                last, last_moved = current, now
+            if len(interrupted) > cancellations or now - last_moved > stall_s:
+                process.kill()
+                process.wait()
+                break
     return process.returncode, time.monotonic() - began
 
 
@@ -689,7 +751,7 @@ def _measure_and_write_receipt(
     manifest: dict[str, Any],
     paths: dict[str, Path],
     identity: dict[str, Any],
-    candidate_files: dict[str, tuple[int, int]],
+    candidate_files: dict[str, tuple[int, ...]],
     env_summary: dict[str, Any],
     command: list[str],
     daemon_env: dict[str, str],
@@ -733,6 +795,12 @@ def _measure_and_write_receipt(
                 paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
             )
             observations.append(observation)
+            if observation.error is not None and not observation.error_retryable:
+                # The archive cannot be read by this driver at all (a
+                # candidate whose schema predates a column it reads): a typed
+                # refusal, not a wait that only cancellation could end.
+                outcome = "observation_refused"
+                break
             if observation.error is not None:
                 # A failed read (a busy database) says nothing about progress:
                 # its all-zero counts must not alternate with the real ones.
@@ -792,7 +860,12 @@ def _measure_and_write_receipt(
                 )
             time.sleep(config.poll_s)
     finally:
-        exit_code, shutdown_s = _stop(process, 300.0)
+        exit_code, shutdown_s = _stop(
+            process,
+            stall_s=config.stall_timeout_s,
+            progress=lambda: sampler.samples[-1][2:] if sampler.samples else None,
+            interrupted=interrupted,
+        )
         sampler.finish()
         log_stream.close()
     if interrupted:

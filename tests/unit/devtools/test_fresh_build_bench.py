@@ -251,7 +251,9 @@ def test_compare_refuses_different_configs_and_unqualified_runs() -> None:
     assert ok and "WARNING" in text and "IDENTICAL" in text
 
 
-@pytest.mark.parametrize("check", ["candidate_unchanged", "corpus_unchanged", "events_lossless"])
+@pytest.mark.parametrize(
+    "check", ["candidate_unchanged", "corpus_unchanged", "events_lossless", "evidence_unchanged", "wall_clock_steady"]
+)
 def test_allow_unqualified_never_waives_an_integrity_failure(check: str) -> None:
     """Anti-vacuity: waiving every qualification problem admits a receipt
     whose corpus, candidate or event log was invalid and prints IDENTICAL."""
@@ -681,7 +683,7 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
     monkeypatch.setattr(run, "TreeSampler", Sampler)
     monkeypatch.setattr(run, "observe", observe)
-    monkeypatch.setattr(run, "_stop", lambda _process, _timeout: (0, 0.0))
+    monkeypatch.setattr(run, "_stop", lambda _process, **_kwargs: (0, 0.0))
     monkeypatch.setattr(run, "verify_manifest", lambda *_args: None)
     monkeypatch.setattr(run, "candidate_identity", lambda _candidate: {})
     monkeypatch.setattr(run, "candidate_stamp", lambda _candidate: {})
@@ -969,7 +971,7 @@ def _scripted_run(
     observe_kwargs: list[dict[str, object]] = []
     interrupted: list[int] = []
 
-    def stop(_process: object, _timeout: float) -> tuple[int, float]:
+    def stop(_process: object, **_kwargs: object) -> tuple[int, float]:
         if interrupt_at_stop:
             interrupted.append(15)
         return 0, 0.0
@@ -1389,3 +1391,197 @@ def test_sampling_follows_symlinked_source_directories(tmp_path: Path) -> None:
     units = _units(source)
 
     assert [Path(key).name for key, _paths, _size in units] == ["rollout.jsonl"]
+
+
+def test_a_progressing_shutdown_is_never_killed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon still draining after any fixed deadline keeps running until it exits.
+
+    Anti-vacuity (Codex P1, #5678): kill after 300 s and this shutdown, which
+    takes an hour while its CPU keeps moving, ends as an unclean shutdown.
+    """
+    from devtools.fresh_build_bench import run
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+
+    class Draining:
+        returncode: int | None = None
+        killed = False
+        waits = 0
+
+        def poll(self) -> None:
+            return None
+
+        def send_signal(self, _signal: int) -> None: ...
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.waits += 1
+            clock["now"] += 60.0
+            if self.waits < 60:
+                raise subprocess.TimeoutExpired("daemon", timeout or 0)
+            self.returncode = 0
+            return 0
+
+    process = Draining()
+    cpu = iter(range(1000))
+    exit_code, shutdown_s = run._stop(
+        process,  # type: ignore[arg-type]
+        stall_s=900.0,
+        progress=lambda: next(cpu),
+        interrupted=[],
+    )
+
+    assert exit_code == 0 and not process.killed
+    assert shutdown_s >= 3600.0
+
+
+def test_a_shutdown_that_stops_moving_is_killed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon whose process tree stops moving is killed after the stall window."""
+    from devtools.fresh_build_bench import run
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+
+    class Stuck:
+        returncode: int | None = None
+        killed = False
+
+        def poll(self) -> None:
+            return None
+
+        def send_signal(self, _signal: int) -> None: ...
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.killed:
+                return -9
+            clock["now"] += 60.0
+            raise subprocess.TimeoutExpired("daemon", timeout or 0)
+
+    process = Stuck()
+    exit_code, _shutdown_s = run._stop(process, stall_s=300.0, progress=lambda: 7, interrupted=[])  # type: ignore[arg-type]
+
+    assert process.killed and exit_code == -9
+
+
+def test_a_permanent_observation_error_is_a_typed_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A schema the driver cannot read ends the run instead of polling forever.
+
+    Anti-vacuity (Codex P1, #5678): skip every failed observation and a
+    candidate whose cursor table lacks a read column never reaches a receipt.
+    """
+    import sqlite3
+
+    from devtools.fresh_build_bench.run import _retryable_observation_error
+
+    assert _retryable_observation_error(sqlite3.OperationalError("database is locked"))
+    assert not _retryable_observation_error(sqlite3.OperationalError("no such column: deferred_end_offset"))
+    captured = _scripted_run(
+        tmp_path,
+        monkeypatch,
+        [{"error": "OperationalError: no such column: deferred_end_offset", "error_retryable": False}],
+        stall_timeout_s=7200.0,
+    )
+
+    assert captured["outcome"] == "observation_refused"
+
+
+def test_linked_top_level_corpus_roots_are_refused(tmp_path: Path) -> None:
+    """A corpus whose ``home`` is a link to a live tree cannot be sealed.
+
+    Anti-vacuity (Codex P1, #5678): check only nested links and a linked
+    ``home`` is walked and sealed, while the change stamp skips it.
+    """
+    from devtools.fresh_build_bench.corpus import _hash_tree
+
+    live = tmp_path / "live"
+    (live / ".codex").mkdir(parents=True)
+    (live / ".codex" / "rollout.jsonl").write_bytes(b"{}\n")
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "home").symlink_to(live, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        _hash_tree(corpus)
+
+
+def test_sampling_skips_linked_files_and_refuses_unreadable_subtrees(tmp_path: Path) -> None:
+    """Sampling sees what production's walk ingests, and never loses a subtree silently.
+
+    Anti-vacuity (Codex P1/P2, #5678): follow a linked transcript file and it
+    joins the sample; walk without ``onerror`` and an unreadable directory's
+    transcripts vanish from the population.
+    """
+    import os
+
+    from devtools.fresh_build_bench.corpus import SampleSource, _units
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    (root / "real.jsonl").write_bytes(b"{}\n")
+    (tmp_path / "elsewhere.jsonl").write_bytes(b"{}\n")
+    (root / "latest.jsonl").symlink_to(tmp_path / "elsewhere.jsonl")
+    source = SampleSource("codex", root, "home/.codex/sessions", (".jsonl",))
+
+    assert [Path(key).name for key, _paths, _size in _units(source)] == ["real.jsonl"]
+
+    locked = root / "locked"
+    locked.mkdir()
+    (locked / "hidden.jsonl").write_bytes(b"{}\n")
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):
+            pytest.skip("running with permission to read any directory")
+        with pytest.raises(ValueError, match="unreadable"):
+            _units(source)
+    finally:
+        locked.chmod(0o700)
+
+
+def test_a_candidate_module_added_and_removed_during_the_run_is_a_change(tmp_path: Path) -> None:
+    """A transient untracked module leaves its directory's times changed.
+
+    Anti-vacuity (Codex P1, #5678): stamp listed files only and a module
+    created, imported and deleted before the end passes.
+    """
+    from devtools.fresh_build_bench.run import candidate_stamp
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "pkg/__init__.py"], check=True)
+    before = candidate_stamp(tmp_path)
+    transient = package / "transient.py"
+    transient.write_text("VALUE = 1\n", encoding="utf-8")
+    transient.unlink()
+
+    assert candidate_stamp(tmp_path) != before
+
+
+def test_named_transcripts_bring_their_sidecar_units(tmp_path: Path) -> None:
+    """A named Claude transcript is sealed with its tool-results sidecars.
+
+    Anti-vacuity (Codex P1, #5678): copy only the named JSONL and the
+    corpus lacks the sidecar the daemon reads beside it.
+    """
+    from devtools.fresh_build_bench.corpus import corpus_from_files
+
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / "proj"
+    (project / "s1" / "tool-results").mkdir(parents=True)
+    transcript = project / "s1.jsonl"
+    transcript.write_text('{"type": "user", "message": {"role": "user", "content": "hi"}}\n', encoding="utf-8")
+    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+
+    corpus_from_files(tmp_path / "corpus", [transcript], home=home)
+
+    sealed = tmp_path / "corpus" / "home" / ".claude" / "projects" / "proj"
+    assert (sealed / "s1.jsonl").is_file()
+    assert (sealed / "s1" / "tool-results" / "toolu_1.txt").is_file()

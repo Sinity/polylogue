@@ -1037,9 +1037,17 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
 
 
 #: Checks whose failure invalidates a receipt rather than leaving its build
-#: unsettled: the candidate or corpus changed under the run, or the event log
-#: the receipt reduces lost events. ``--allow-unqualified`` never waives them.
-INTEGRITY_CHECKS: Final = ("candidate_unchanged", "corpus_unchanged", "events_lossless")
+#: unsettled: the candidate or corpus changed under the run, the event log the
+#: receipt reduces lost events or changed after recording (a refresh read
+#: altered evidence), or the wall clock stepped under the timings.
+#: ``--allow-unqualified`` never waives them.
+INTEGRITY_CHECKS: Final = (
+    "candidate_unchanged",
+    "corpus_unchanged",
+    "events_lossless",
+    "evidence_unchanged",
+    "wall_clock_steady",
+)
 
 
 def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified: bool = False) -> tuple[bool, str]:

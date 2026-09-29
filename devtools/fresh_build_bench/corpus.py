@@ -123,6 +123,11 @@ def _hash_tree(root: Path) -> list[CorpusFile]:
     files: list[CorpusFile] = []
     for top in ("home", "exports"):
         base = root / top
+        # A linked top-level root is walked by os.walk (and by the daemon)
+        # but skipped by the change stamp: the same unsealed-input hole as a
+        # nested link.
+        if base.is_symlink():
+            raise ValueError("corpus holds a symbolic link; a sealed corpus holds only real files")
         if not base.exists():
             continue
         for directory, dirs, names in os.walk(base):
@@ -343,7 +348,18 @@ def _units(source: SampleSource) -> list[tuple[str, list[Path], int]]:
     # and its population denominator see the files the daemon would.
     from polylogue.sources.source_walk import _iter_source_entries
 
-    files = [path for path in _iter_source_entries(source.root) if path.is_file() and _admitted(source, path)]
+    def unreadable(error: OSError) -> None:
+        # os.walk would skip an unreadable subtree silently; a sample and its
+        # population must not lose valid operator input that way.
+        raise ValueError(f"a {source.origin} source subtree is unreadable ({error.strerror})") from error
+
+    # Linked files are not followed: production's walk stats entries without
+    # following them, so a linked transcript is not something it ingests.
+    files = [
+        path
+        for path in _iter_source_entries(source.root, onerror=unreadable)
+        if path.is_file() and not path.is_symlink() and _admitted(source, path)
+    ]
     if not source.session_units:
         return [(str(path), [path], path.stat().st_size) for path in files]
     grouped: dict[str, list[Path]] = defaultdict(list)
@@ -465,9 +481,13 @@ def corpus_from_files(
     home: Path,
     exports: Sequence[tuple[str, Path]] = (),
 ) -> dict[str, Any]:
-    """Seal a private corpus of exactly the named real files.
+    """Seal a private corpus of the named real transcripts and their units.
 
-    Each file keeps its position under ``home`` (so a Claude Code transcript
+    A named transcript brings the rest of its sampling unit -- its
+    subagent transcripts and parser sidecars (``tool-results/``,
+    ``tool-outputs/``) -- exactly as ``sample`` groups them, since the daemon
+    reads those beside it from the real source tree. Each file keeps its
+    position under ``home`` (so a Claude Code transcript
     stays under ``.claude/projects/...``) and must lie under one of the typed
     default source roots. This is how a single large source -- a whale -- is
     measured through the same benchmark as a stratified sample. ``exports``
@@ -482,6 +502,9 @@ def corpus_from_files(
 
     sources = [(source.root.resolve(), source) for source in default_sample_sources(home)]
     home = home.resolve()
+    #: Each session-unit source's units, read once: ``{resolved file: unit files}``.
+    unit_of: dict[str, dict[Path, list[Path]]] = {}
+    copied: set[Path] = set()
     for file in files:
         resolved = file.resolve(strict=True)
         admitted = [source for root, source in sources if root in resolved.parents]
@@ -496,7 +519,20 @@ def corpus_from_files(
         recognition = recognize_source_class(Provider(admitted[0].origin), resolved)
         if recognition is not None and recognition.source_class != "session":
             raise ValueError(f"{file} is not a session transcript: {recognition.reason}")
-        _copy_private(resolved, out / "home" / resolved.relative_to(home))
+        unit = [resolved]
+        if admitted[0].session_units:
+            if admitted[0].origin not in unit_of:
+                unit_of[admitted[0].origin] = {
+                    path.resolve(): [member.resolve() for member in members]
+                    for _key, members, _size in _units(admitted[0])
+                    for path in members
+                }
+            unit = unit_of[admitted[0].origin].get(resolved, unit)
+        for member in unit:
+            if member in copied:
+                continue
+            copied.add(member)
+            _copy_private(member, out / "home" / member.relative_to(home))
     staged: set[Path] = set()
     for origin, file in exports:
         if origin not in EXPORT_ORIGINS:
