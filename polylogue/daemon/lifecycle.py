@@ -73,7 +73,7 @@ class DaemonLifecycle:
     def start(
         cls,
         *,
-        archive_root_path: Path | None = None,
+        archive_root_path: Path,
         details: dict[str, object] | None = None,
     ) -> DaemonLifecycle:
         """Create and activate a lifecycle row for the current process.
@@ -82,7 +82,7 @@ class DaemonLifecycle:
         row lands in that archive's ``ops.db`` rather than one re-resolved here.
         """
         global _active_lifecycle
-        ops_db_path = _ops_db_path() if archive_root_path is None else archive_root_path / "ops.db"
+        ops_db_path = archive_root_path / "ops.db"
         lifecycle = cls(run_id=str(uuid.uuid4()), ops_db_path=ops_db_path)
         _write_lifecycle(
             lifecycle.ops_db_path,
