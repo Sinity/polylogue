@@ -60,7 +60,8 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
-from polylogue.sources.revision_backfill import parse_enriched_retained_raw_sessions, parse_retained_raw_sessions
+from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.revision_backfill import enrich_sessions_from_archive, parse_retained_raw_sessions
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.ingest_governance import (
@@ -139,6 +140,19 @@ class _ExcisedRecords:
                     diagnostic="content excised",
                     observed_at_ms=observed_at_ms,
                 )
+
+
+def _parse_assembled_retained_raw(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
+    """Parse one retained raw and apply its provider's session assembly.
+
+    The same composition the live writer uses
+    (``LiveBatchProcessor._parse_retained_raw_sessions``), so a session
+    admitted through this operation carries the same assembled title and
+    enrichment as one admitted by the watcher or a from-empty build.
+    """
+    sessions = parse_retained_raw_sessions(archive, raw_id)
+    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+    return enrich_sessions_from_archive(archive, provider, source_path, sessions)
 
 
 class IngestStoppedError(RuntimeError):
@@ -851,9 +865,7 @@ class IngestExecution:
                             logical_source_key=cohort_key,
                             source_generation_id=generation_id,
                             parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                            # Assembled exactly as the live writer assembles it,
-                            # so both routes write the same session material.
-                            parse_retained_raw=parse_enriched_retained_raw_sessions,
+                            parse_retained_raw=_parse_assembled_retained_raw,
                             acquired_at_ms=cohort_observed_at_ms,
                         )
 

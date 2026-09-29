@@ -170,7 +170,12 @@ def test_judge_accept_refuses_without_a_daemon(authority_archive: Path) -> None:
 #: argv reaches a verb; kept honest by
 #: :func:`test_the_matrix_covers_every_cli_bound_mutating_operation`, which
 #: fails when a new mutating operation gains a CLI binding without a row here.
+#: A real provider export: ``import`` stages it and runs the admissibility
+#: preflight before it reaches the daemon probe.
+_IMPORTABLE_EXPORT = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
+
 _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("import", ("import", str(_IMPORTABLE_EXPORT)), "ingest"),
     ("mark-star", ("find", f"id:{_SESSION_ID}", "then", "mark", "--star"), "mutation.session.mark"),
     ("mark-tag-add", ("find", f"id:{_SESSION_ID}", "then", "mark", "--tag-add", "X"), "mutation.session.tag"),
     ("mark-note", ("find", f"id:{_SESSION_ID}", "then", "mark", "--note", "n"), "mutation.annotation.save"),
@@ -247,7 +252,6 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 #: staged export, a live blob-GC generation id), so the row would be asserting
 #: the argument check rather than the authority check.
 _MATRIX_EXEMPT: Mapping[str, str] = {
-    "ingest": "needs a real staged export path; `import` refuses an absent path first",
     "maintenance.demo.augment": "only reachable behind `import --demo`, which seeds a fixture world first",
     "maintenance.blob-publications.abandon": "needs live publication ids read from source.db",
     "mutation.raw-authority-blocker.resolve": "needs a live blocker id read from source.db",

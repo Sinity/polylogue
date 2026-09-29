@@ -85,7 +85,7 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
 
     Anti-vacuity: let the ``ingest`` cohort parse retained raws without the
     provider's session assembly (``parse_retained_raw_sessions`` instead of
-    ``parse_enriched_retained_raw_sessions``) and its sessions keep the bare
+    ``_parse_assembled_retained_raw``) and its sessions keep the bare
     native id as title while the from-empty build's carry the assembled one.
     """
     import asyncio

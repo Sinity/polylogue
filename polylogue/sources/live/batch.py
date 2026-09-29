@@ -205,7 +205,7 @@ from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
     enrich_sessions_from_archive,
-    parse_enriched_retained_raw_sessions,
+    parse_retained_raw_sessions,
     prepare_retained_jsonl_artifact,
     prepared_enrichment_dependency_state,
 )
@@ -5496,7 +5496,9 @@ class LiveBatchProcessor:
 
     @staticmethod
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:
-        return parse_enriched_retained_raw_sessions(archive, raw_id)
+        sessions = parse_retained_raw_sessions(archive, raw_id)
+        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        return enrich_sessions_from_archive(archive, provider, source_path, sessions)
 
     def _extract_zip_member_records(
         self,
