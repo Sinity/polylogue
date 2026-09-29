@@ -59,6 +59,7 @@ from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import (
     MemberAddressingMode,
+    zip_member_container,
     zip_member_identity_coordinate,
     zip_member_raw_id,
     zip_member_source_index,
@@ -4782,13 +4783,10 @@ class LiveBatchProcessor:
                     # A ZIP member record is offered by its container path;
                     # normalize the durable ``container:member`` coordinate
                     # back to that offered path for caller-side accounting.
-                    # A loose file may itself contain a colon: the literal path
-                    # wins, and only a missing one is read as a coordinate.
-                    literal = Path(record.source_path)
-                    offered_path, separator, member = record.source_path.partition(":")
-                    result.excised_paths.add(
-                        literal if literal.exists() or not (separator and member) else Path(offered_path)
-                    )
+                    # A loose file may itself contain a colon: only a confirmed
+                    # ZIP member maps back to its container path.
+                    container = zip_member_container(record.source_path)
+                    result.excised_paths.add(container if container is not None else Path(record.source_path))
                     # The bytes were published (staged and reserved) before the
                     # write refused them. Nothing will ever reference them, so
                     # the success path's receipt consumption never runs and the

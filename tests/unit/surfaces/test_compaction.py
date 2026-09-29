@@ -81,11 +81,13 @@ def test_compaction_budget_is_deterministic_and_clips_before_dropping() -> None:
             ],
         }
     ]
-    spec = CompactProjectionSpec(max_tokens=60)
+    # 200 tokens covers the serialized skeleton (projection and manifest keys at
+    # the calibrated 1.3 ratio) while still forcing the ~520-token body to clip.
+    spec = CompactProjectionSpec(max_tokens=200)
     first = compact_sessions(sessions, spec=spec)
     second = compact_sessions(sessions, spec=spec)
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
-    assert first.token_estimate <= 60
+    assert first.token_estimate <= 200
     assert first.manifest.degradation_order[:3] == ("clip", "collapse_runs_to_counts", "skeleton_only")
     assert first.manifest.drop_counts["budget_clip"] >= 1
 
@@ -148,8 +150,8 @@ def test_compaction_budget_counts_serialized_omissions() -> None:
             ],
         }
     ]
-    pack = compact_sessions(sessions, spec=CompactProjectionSpec(max_tokens=60))
-    assert pack.token_estimate <= 60
+    pack = compact_sessions(sessions, spec=CompactProjectionSpec(max_tokens=200))
+    assert pack.token_estimate <= 200
     assert len(pack.omissions) < 100
 
 

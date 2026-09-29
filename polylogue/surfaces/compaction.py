@@ -125,7 +125,10 @@ def _estimate_serialized_tokens(payload: str) -> int:
     as one token.
     """
 
-    words = len(re.findall(r"[A-Za-z]+|\d+", payload))
+    # Letter runs and digit runs count, and so does a standalone punctuation
+    # token (``= = =`` in a tool result), bounded by whitespace or a string
+    # quote. Punctuation inside a value (ids, paths) and JSON structure do not.
+    words = len(re.findall(r'[A-Za-z]+|\d+|(?:(?<=\s)|(?<="))[^\w\s"{}\[\],:]+(?=\s|")', payload))
     return max(1, int(words * 1.3)) if words else 0
 
 

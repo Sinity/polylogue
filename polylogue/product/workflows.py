@@ -107,10 +107,15 @@ def _session_id(value: Any) -> str:
 
 
 def _summary_hit(value: Any) -> Any:
-    summary = getattr(value, "summary", None)
-    if summary is not None:
-        return summary
     from polylogue.archive.session.domain_models import SessionSummary
+
+    if isinstance(value, SessionSummary):
+        return value
+    # A hit wrapper nests its SessionSummary; a full Session's ``summary`` is
+    # metadata prose, so only a model (or a wrapper exposing an id) unwraps.
+    summary = getattr(value, "summary", None)
+    if isinstance(summary, SessionSummary) or (summary is not None and hasattr(summary, "id")):
+        return summary
 
     fields = SessionSummary.model_fields
     payload = {name: getattr(value, name) for name in fields if hasattr(value, name)}
@@ -139,7 +144,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
 
     seeds = await store.search_summary_hits(query, limit=min(request.seed_limit, request.max_sessions))
     for hit in seeds:
-        summary = getattr(hit, "summary", hit)
+        summary = _summary_hit(hit)
         sid = _session_id(summary)
         sessions[sid] = summary
         evidence[sid] = TopicPackEvidence(sid, "fts", {"rank": getattr(hit, "rank", None), "lane": "text"})

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.core.raw_coordinates import zip_member_container
+
 
 def unresolvable_raw_source_count(archive_root: Path) -> int:
     """Count retained raw rows whose original source path cannot be reacquired."""
@@ -24,12 +26,8 @@ def unresolvable_raw_source_count(archive_root: Path) -> int:
     def reacquirable(source_path: object) -> bool:
         # ZIP rows address members as ``<container>:<member>``. The member
         # suffix is not a filesystem path; check the retained container.
-        # A loose file may itself contain a colon, so the literal path wins.
         text = str(source_path)
-        if Path(text).exists():
-            return True
-        container, separator, member = text.partition(":")
-        return bool(separator and member) and Path(container).exists()
+        return Path(text).exists() or zip_member_container(text) is not None
 
     return sum(int(count) for source_path, count in rows if not reacquirable(source_path))
 

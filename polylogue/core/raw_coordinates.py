@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import zipfile
 from hashlib import sha256
 from math import isqrt
+from pathlib import Path
 
 from polylogue.core.enums import PolylogueStrEnum
 
@@ -81,7 +83,25 @@ def zip_member_identity_coordinate(
     return (entry_ordinal, split_index) if raw_id == expected_raw_id else None
 
 
+def zip_member_container(source_path: str) -> Path | None:
+    """The ZIP container a recorded ``<container>:<member>`` coordinate names.
+
+    A loose file may legally contain a colon, so the literal path wins when it
+    exists, and a missing path is read as a member coordinate only when its
+    prefix is a real ZIP file. An existing prefix directory or plain file
+    proves nothing and yields ``None``.
+    """
+    if Path(source_path).exists():
+        return None
+    container, separator, member = source_path.partition(":")
+    if not (separator and member):
+        return None
+    container_path = Path(container)
+    return container_path if container_path.is_file() and zipfile.is_zipfile(container_path) else None
+
+
 __all__ = [
+    "zip_member_container",
     "MemberAddressingMode",
     "zip_member_identity_coordinate",
     "zip_member_raw_id",
