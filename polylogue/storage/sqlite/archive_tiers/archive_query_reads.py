@@ -3917,7 +3917,6 @@ def query_unit_agg_metrics(
         ranked AS (
             SELECT
                 {ranked_selection},
-                COUNT(*) OVER () AS total_groups,
                 ROW_NUMBER() OVER ({f"ORDER BY {order_clause}" if order_clause else ""}) AS ordinal
             FROM grouped
             {" ".join(percentile_joins)}
@@ -3927,10 +3926,12 @@ def query_unit_agg_metrics(
     rows = self._conn.execute(
         f"""
         {cte_sql}
-        SELECT *
-        FROM ranked
-        WHERE ordinal > ? AND ordinal <= ?
-        ORDER BY ordinal
+        SELECT stats.total_groups, page.*
+        FROM (SELECT COUNT(*) AS total_groups FROM grouped) AS stats
+        LEFT JOIN (
+            SELECT * FROM ranked WHERE ordinal > ? AND ordinal <= ?
+        ) AS page ON 1 = 1
+        ORDER BY page.ordinal
         """,
         [
             *relation_params,
@@ -3941,8 +3942,8 @@ def query_unit_agg_metrics(
             normalized_offset + normalized_limit,
         ],
     ).fetchall()
-    if not rows:
-        return ArchiveQueryUnitAggMetricPage(rows=(), total_groups=0)
+    # The count row is always present: an empty page (offset past the last
+    # group, or limit zero) still reports the exact size of the full result.
     return ArchiveQueryUnitAggMetricPage(
         rows=tuple(
             ArchiveQueryUnitAggMetricRow(
@@ -3954,6 +3955,7 @@ def query_unit_agg_metrics(
                 },
             )
             for row in rows
+            if row["ordinal"] is not None
         ),
         total_groups=int(rows[0]["total_groups"]),
     )

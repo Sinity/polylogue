@@ -1588,7 +1588,7 @@ class ArchiveStore:
             raise KeyError(f"session not found: {resolved}")
         native_id, origin = str(existing[0]), str(existing[1])
         provider = provider_from_origin(Origin.from_string(origin))
-        event_payload = {"event_id": event_id, "summary": summary, **payload}
+        event_payload = {**payload, "event_id": event_id, "summary": summary}
         event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
         # The event carries no header. The writer recognizes the work-event
         # raw and appends only the event, keeping every session-owned field;
@@ -4544,15 +4544,7 @@ class ArchiveStore:
             "ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') "
             "END"
         )
-        status_expr = (
-            "CASE "
-            "WHEN r.tool_result_exit_code IS NOT NULL "
-            "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
-            "WHEN r.tool_result_is_error IS NOT NULL "
-            "THEN CASE WHEN r.tool_result_is_error = 1 THEN 'failed' ELSE 'ok' END "
-            "ELSE 'unknown' "
-            "END"
-        )
+        status_expr = "CASE r.tool_outcome WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
         where.append("r.rowid IS NOT NULL")
         if request.tool:
             where.append(f"{tool_expr} = LOWER(?)")
@@ -4878,6 +4870,9 @@ class ArchiveStore:
                         normalized_key = key.strip()
                         if not normalized_key:
                             raise ValueError("metadata key cannot be empty")
+                        # Validate first writes too; comparison with an existing
+                        # assertion is not the admission boundary for JSON values.
+                        canonical_value = _canonical_json_text(value)
                         existing = read_assertion_envelope(
                             user_conn,
                             assertion_id_for_session_metadata(session_id, normalized_key),
@@ -4885,7 +4880,7 @@ class ArchiveStore:
                         if (
                             existing is not None
                             and existing.status != "deleted"
-                            and _canonical_json_text(existing.value) == _canonical_json_text(value)
+                            and _canonical_json_text(existing.value) == canonical_value
                         ):
                             continue
                         upsert_session_metadata_assertion(
@@ -5270,10 +5265,16 @@ class ArchiveStore:
             # transaction (PR #5375).
             previous_name = str(assertion.key) if assertion is not None and assertion.key else None
             with user_conn:
+                previous_owner = (
+                    _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, previous_name)
+                    if previous_name is not None
+                    else None
+                )
+                owns_previous_name = previous_owner is not None and previous_owner.assertion_id == assertion_id
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
                     mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 envelope = upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
-                if previous_name is not None and previous_name != normalized_name:
+                if owns_previous_name and previous_name is not None and previous_name != normalized_name:
                     clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
                 register_query_watch(
                     user_conn,
@@ -5341,8 +5342,14 @@ class ArchiveStore:
             # retires are the same lifecycle event.
             deleted_at_ms = int(datetime.now(UTC).timestamp() * 1000)
             with user_conn:
+                name_owner = (
+                    _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, watched_name)
+                    if watched_name is not None
+                    else None
+                )
+                owns_name = name_owner is not None and name_owner.assertion_id == assertion_id
                 deleted = mark_assertion_status(user_conn, assertion_id, "deleted", now_ms=deleted_at_ms)
-                if watched_name is not None:
+                if deleted and owns_name and watched_name is not None:
                     clear_query_watch(user_conn, name=watched_name, now_ms=deleted_at_ms)
             return deleted
         finally:
