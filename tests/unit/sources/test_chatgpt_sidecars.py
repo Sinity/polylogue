@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.sources.assembly import SidecarData
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.chatgpt_sidecars import (
@@ -47,6 +48,169 @@ def test_sidecar_enrichment_updates_prepared_rows_without_collecting(tmp_path: P
         assert [event.event_type for event in events] == ["chatgpt_asset_resolution"] * 3
     finally:
         store.close()
+
+
+_RENDITION_ID = "file_00000000cc4c7243aa6bdd0537ca804e"
+_RENDITION_BLOBS = {
+    f"{_RENDITION_ID}#03adfe6a4b1e5a0#{_RENDITION_ID}#p_0.jpg-p_0.jpg": ("a0" * 32, 11),
+    f"{_RENDITION_ID}#03adfe6a4b1e5a0#{_RENDITION_ID}#p_1.jpg-p_1.jpg": ("a1" * 32, 18),
+}
+
+
+def _assert_every_rendition_is_archived(attachments: list[ParsedAttachment]) -> None:
+    blobs = [attachment.precomputed_blob for attachment in attachments]
+    assert all(blob is not None for blob in blobs)
+    assert sorted(blob for blob in blobs if blob is not None) == sorted(_RENDITION_BLOBS.values())
+    assert len({attachment.provider_attachment_id for attachment in attachments}) == 2
+    assert len({attachment.name for attachment in attachments}) == 2
+    assert {attachment.mime_type for attachment in attachments} == {"image/jpeg"}
+    assert {attachment.provider_file_id for attachment in attachments} == {_RENDITION_ID}
+
+
+def test_every_duplicate_asset_rendition_becomes_its_own_attachment() -> None:
+    """Two members normalizing to one asset id both receive an attachment and blob.
+
+    Anti-vacuity: binding only the lexically first member to the pointer
+    leaves ``p_1``'s blob with no attachment reference.
+    """
+    pointer = ParsedAttachment(provider_attachment_id=f"sediment://{_RENDITION_ID}", message_provider_id="m1")
+    session = ParsedSession(
+        source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[], attachments=[pointer]
+    )
+
+    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": _RENDITION_BLOBS}
+    returned = ChatGPTAssemblySpec().enrich_session(session, sidecars)
+
+    _assert_every_rendition_is_archived(list(returned.attachments))
+    members = sorted(str(event.payload["member_name"]) for event in returned.session_events)
+    assert members == sorted(key.split("#", 1)[1] for key in _RENDITION_BLOBS)
+
+
+def test_renditions_keep_a_provider_file_id_the_pointer_already_carried() -> None:
+    """Provider identity and media type the pointer carried survive expansion.
+
+    Anti-vacuity: overwrite ``provider_file_id`` with the member's normalized
+    asset id, or ``mime_type`` with a failed extension guess, and every
+    rendition loses the pointer's value.
+    """
+    pointer = ParsedAttachment(
+        provider_attachment_id=f"sediment://{_RENDITION_ID}",
+        provider_file_id="file-provider-native",
+        mime_type="image/png",
+        message_provider_id="m1",
+    )
+    extensionless = {
+        f"{_RENDITION_ID}#03adfe6a4b1e5a0#{_RENDITION_ID}#p_0": ("b0" * 32, 11),
+        f"{_RENDITION_ID}#03adfe6a4b1e5a0#{_RENDITION_ID}#p_1": ("b1" * 32, 18),
+    }
+    session = ParsedSession(
+        source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[], attachments=[pointer]
+    )
+    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": extensionless}
+
+    returned = ChatGPTAssemblySpec().enrich_session(session, sidecars)
+
+    assert len(returned.attachments) == 2
+    assert {attachment.provider_file_id for attachment in returned.attachments} == {"file-provider-native"}
+    assert {attachment.mime_type for attachment in returned.attachments} == {"image/png"}
+
+
+def test_prepared_carrier_appends_renditions_and_rolls_them_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prepared-carrier route archives every rendition, and a failure undoes the appends.
+
+    Anti-vacuity: resolving only the first member leaves one attachment row;
+    not restoring the attachment count after rollback leaves ``len`` at 3
+    while the carrier holds 2 rows.
+    """
+    from polylogue.sources import assembly_chatgpt
+
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        attachments = store.new_attachment_sink()
+        events = store.new_event_sink()
+        attachments.append(ParsedAttachment(provider_attachment_id=_RENDITION_ID, message_provider_id="m1"))
+        session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[])
+        session = session.model_copy(update={"attachments": attachments, "session_events": events})
+        sidecars: SidecarData = {
+            "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
+            "chatgpt_asset_blobs": _RENDITION_BLOBS,
+        }
+
+        assert ChatGPTAssemblySpec().enrich_session(session, sidecars) is session
+        _assert_every_rendition_is_archived(list(attachments))
+        assert len(events) == 2
+
+        attachments = store.new_attachment_sink()
+        events = store.new_event_sink()
+        attachments.extend(
+            [
+                ParsedAttachment(provider_attachment_id=_RENDITION_ID, message_provider_id="m1"),
+                ParsedAttachment(provider_attachment_id="file-other", message_provider_id="m2"),
+            ]
+        )
+        session = session.model_copy(update={"attachments": attachments, "session_events": events})
+        original = assembly_chatgpt._resolve_attachment_renditions
+        calls = 0
+
+        def fail_second(*args: object, **kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError("injected rendition failure")
+            return original(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(assembly_chatgpt, "_resolve_attachment_renditions", fail_second)
+        with pytest.raises(ValueError, match="injected rendition failure"):
+            ChatGPTAssemblySpec().enrich_session(session, sidecars)
+        assert [attachment.provider_attachment_id for attachment in attachments] == [_RENDITION_ID, "file-other"]
+        assert len(events) == 0
+    finally:
+        store.close()
+
+
+def test_both_enrichment_routes_order_renditions_beside_their_pointer(tmp_path: Path) -> None:
+    """The prepared carrier and the in-memory route emit the same attachment order.
+
+    Anti-vacuity: append every extra rendition at the end of the carrier and
+    it yields ``A0, B0, A1, B1`` while the in-memory route yields
+    ``A0, A1, B0, B1``, so one export hashes differently by route.
+    """
+    other = "file_11111111cc4c7243aa6bdd0537ca804e"
+    blobs = {
+        **_RENDITION_BLOBS,
+        f"{other}#03adfe6a4b1e5a0#{other}#p_0.jpg-p_0.jpg": ("c0" * 32, 5),
+        f"{other}#03adfe6a4b1e5a0#{other}#p_1.jpg-p_1.jpg": ("c1" * 32, 6),
+    }
+    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": blobs}
+    pointers = [
+        ParsedAttachment(provider_attachment_id=_RENDITION_ID, message_provider_id="m1"),
+        ParsedAttachment(provider_attachment_id="file-plain", message_provider_id="m1"),
+        ParsedAttachment(provider_attachment_id=other, message_provider_id="m2"),
+    ]
+    in_memory = ChatGPTAssemblySpec().enrich_session(
+        ParsedSession(
+            source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[], attachments=pointers
+        ),
+        sidecars,
+    )
+
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        attachments = store.new_attachment_sink()
+        events = store.new_event_sink()
+        attachments.extend(pointers)
+        session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[])
+        session = session.model_copy(update={"attachments": attachments, "session_events": events})
+        ChatGPTAssemblySpec().enrich_session(session, sidecars)
+        prepared_ids = [attachment.provider_attachment_id for attachment in attachments]
+    finally:
+        store.close()
+
+    in_memory_ids = [attachment.provider_attachment_id for attachment in in_memory.attachments]
+    assert len(in_memory_ids) == 5
+    assert prepared_ids == in_memory_ids
 
 
 def test_sidecar_enrichment_rolls_back_prepared_rows_on_failure(

@@ -3759,3 +3759,35 @@ describe("pairing-code bootstrap (polylogue-gnie)", () => {
     expect(stored.receiverAuthToken).toBe("");
   });
 });
+
+describe("accepted message identity storage", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("drops a version 1 identity cache instead of reading it", async () => {
+    // Anti-vacuity: without the startup replacement the snapshot indexes the
+    // stale scalar entry as if it were a keyed map and reports its fields as
+    // accepted message refs.
+    const legacy = {
+      message_ref: "chatgpt-export:conv-123:n:m1",
+      evidence_ref: "chatgpt/conv-123.json#message:m1",
+      fidelity: "native",
+    };
+    await loadBackground({
+      polylogueState: { provider: "chatgpt", provider_session_id: "conv-123" },
+      polylogueAcceptedMessageIdentities: { "chatgpt:conv-123": legacy },
+    });
+    globalThis.fetch = vi.fn(async () => responseJson({ ok: false }, { ok: false, status: 503 }));
+
+    const snapshot = await sendRuntimeMessage(
+      { type: "polylogue.missionControl.status", refresh: false },
+      { tab: { id: 7, url: "https://chatgpt.com/c/conv-123", title: "conversation" } },
+    );
+
+    expect(stored.polylogueAcceptedMessageIdentitiesVersion).toBe(2);
+    expect(stored.polylogueAcceptedMessageIdentities).toEqual({});
+    expect(snapshot.assertions.accepted_identities).toEqual({});
+  });
+});

@@ -322,7 +322,7 @@ def _iter_schema_units_from_db(
     origins = _sample_origins_for_provider(Provider.from_string(query_provider), config)
     placeholders = ",".join("?" for _ in origins)
     effective_origin = raw_provider_origin_sql(table_alias="raw_sessions")
-    with connection_context(source_db_path) as conn:
+    with connection_context(source_db_path, archive_root=location.configured_root) as conn:
         conn.row_factory = sqlite3.Row
         if logical_heads_only:
             logical_cohort_expr = logical_head_cohort_sql(
@@ -572,7 +572,7 @@ def get_sample_count_from_db(
     origins = _sample_origins_for_provider(source_name, config)
     placeholders = ",".join("?" for _ in origins)
 
-    with connection_context(db_path) as conn:
+    with connection_context(db_path, archive_root=db_path.parent) as conn:
         row = conn.execute(
             f"""
             SELECT COUNT(*)

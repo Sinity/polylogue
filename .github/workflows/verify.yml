@@ -53,6 +53,8 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # The devshell keeps the old .venv when `uv sync --frozen` fails and marks
+      # the shell incomplete; `devtools verify` then refuses instead of testing it.
       # `devtools verify` names the run it produced in .cache/verify/current-run.json;
       # the receipt check below is bound to that run id, never to the newest file.
       - name: Verify

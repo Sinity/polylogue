@@ -604,11 +604,13 @@ def _search_payload(
         from polylogue.api.archive import _archive_count_sessions_for_spec
 
         total = _archive_count_sessions_for_spec(archive, fetch_spec)
+    # Same projection as the API builder: ``matched`` is the query's match
+    # total, ``analyzed`` the hit window this route returns.
     authority = authority_for_reader(
         archive,
         server_identity="daemon" if serving_identity == "daemon" else "direct",
         started_at=monotonic(),
-    ).model_copy(update={"matched": len(hit_payloads), "analyzed": total})
+    ).model_copy(update={"matched": total, "analyzed": len(hit_payloads)})
     # The ranked envelope must name what it counted.  Without this a
     # ``--no-root`` search reports subagent/branch rows under the "top-level
     # sessions" label, because the renderer has nothing to read but a default.
@@ -638,7 +640,7 @@ def _search_payload(
     emitted_hits = envelope_model.hits
     if envelope_model.authority is not None:
         envelope_model = envelope_model.model_copy(
-            update={"authority": envelope_model.authority.model_copy(update={"matched": len(emitted_hits)})}
+            update={"authority": envelope_model.authority.model_copy(update={"analyzed": len(emitted_hits)})}
         )
     envelope = envelope_model.model_dump(mode="json")
     # Match the direct branch's hit shape exactly: ``archive_query._hit_payload``
@@ -1168,7 +1170,7 @@ def _session_identity_projection(
     are retained so the window's own coordinates stay honest.
     """
 
-    from polylogue.archive.hydration import archive_message_to_domain
+    from polylogue.archive.hydration import archive_block_to_domain, archive_message_to_domain
     from polylogue.surfaces.payloads import message_topology_from_domain
 
     return {
@@ -1195,7 +1197,9 @@ def _session_identity_projection(
                         "text": block.text,
                         "tool_name": block.tool_name,
                         "tool_id": block.tool_id,
-                        "tool_input": block.tool_input,
+                        # The column holds JSON text; expose the object the
+                        # shared hydrator decodes, as every other block read does.
+                        "tool_input": archive_block_to_domain(block).get("tool_input"),
                         "semantic_type": block.semantic_type,
                     }
                     for block in message.blocks

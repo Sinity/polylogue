@@ -1998,12 +1998,17 @@ def read_frame(
 
 
 @contextmanager
-def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iterator[sqlite3.Connection]:
+def connection_context(
+    path: str | Path,
+    *,
+    timeout: float = DB_TIMEOUT,
+    archive_root: str | Path | None = None,
+) -> Iterator[sqlite3.Connection]:
     """Context manager for a single-use read-write connection.
 
     Opens a connection with write pragmas, yields it, and closes on exit.
     """
-    conn = open_connection(path, timeout=timeout)
+    conn = open_connection(path, timeout=timeout, archive_root=archive_root)
     try:
         yield conn
     finally:

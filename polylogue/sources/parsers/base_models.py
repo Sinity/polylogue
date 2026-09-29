@@ -666,6 +666,12 @@ class ParsedSession(BaseModel):
     # validate and publish the source-bound digest without hashing the tree a
     # second time.  It is excluded from payloads and semantic identity.
     content_hash: str | None = Field(default=None, exclude=True, repr=False)
+    # Enrichment carrier: the digest of the retained evidence this session was
+    # enriched from (``session_enrichment_evidence_key``), stamped where the
+    # enrichment ran. The writer binds it only when the archive still holds
+    # that evidence, so a session enriched before its index or thread state
+    # arrived is re-derived rather than certified. Not session content.
+    enrichment_evidence_key: str | None = Field(default=None, exclude=True, repr=False)
     messages: list[ParsedMessage]
     # Parser-only admission proof. It is excluded from serialized payloads and
     # content hashes, but the storage writer validates it before lowering.
@@ -815,12 +821,6 @@ class RawSessionData(BaseModel):
     # Structural value identity for container members.  This is the replay
     # authority; source_index remains only a coordinate hint.
     content_identity: str | None = None
-    # Set when a declared ceiling forced ``content_identity`` to fall back to
-    # the payload's byte digest instead of its structural identity
-    # (polylogue-dhkuu Finding C). A skipped structural identity is not
-    # silently equivalent to a computed one, so the reason travels with the
-    # record rather than being dropped.
-    content_identity_skipped_reason: str | None = Field(default=None, exclude=True)
     file_mtime: str | None = None
     provider_hint: Provider | None = None
     blob_hash: str | None = None

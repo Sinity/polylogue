@@ -653,6 +653,8 @@ class AssertionCandidateCaptureRequest(_OperationPayload):
     kind: str = Field(min_length=1, max_length=64)
     refs: list[str] = Field(default_factory=list, max_length=64)
     scope_refs: list[str] = Field(default_factory=list, max_length=64)
+    # Bounded by the operation's request body size, not by a count.
+    evidence_refs: list[str] = Field(default_factory=list)
     cwd: str | None = None
     author_ref: str = Field(default="user:local", min_length=1, max_length=512)
     author_kind: str = Field(default="user", min_length=1, max_length=64)
@@ -663,7 +665,7 @@ class AssertionCandidateCaptureRequest(_OperationPayload):
     def nonblank_body_and_refs(self) -> AssertionCandidateCaptureRequest:
         if not self.body_text.strip():
             raise ValueError("note text cannot be empty")
-        if any(not value.strip() for value in (*self.refs, *self.scope_refs)):
+        if any(not value.strip() for value in (*self.refs, *self.scope_refs, *self.evidence_refs)):
             raise ValueError("refs must be nonempty")
         return self
 
@@ -806,7 +808,9 @@ class ResetRequest(_OperationPayload):
     auth: bool = False
     reset_all: bool = False
     confirm: bool = False
-    expected_targets: list[str] = Field(default_factory=list, max_length=10_000)
+    # Omitted means "no preview was asserted"; an explicit list, even an empty
+    # one, must equal the resolved targets.
+    expected_targets: list[str] | None = Field(default=None, max_length=10_000)
 
 
 class BlobPublicationsAbandonRequest(_OperationPayload):

@@ -312,3 +312,23 @@ def test_legacy_ingest_attempt_row_defaults_to_legacy_unknown(tmp_path: Path) ->
     finally:
         conn.close()
     assert row == (IngestOutcome.LEGACY_UNKNOWN.value, None)
+
+
+@pytest.mark.parametrize("stage", ["parse", "decode"])
+def test_a_value_bound_refusal_is_not_a_parser_defect(stage: str) -> None:
+    """An unstorable value is a permanent input refusal, not a bug to file.
+
+    Anti-vacuity (Codex P2, #5643): classify only pydantic validation errors
+    (parse) or ``ValueError`` (decode) and the refusal lands in the parser
+    defect bucket.
+    """
+    from polylogue.core.enums import IngestOutcome
+    from polylogue.pipeline.ingest_outcomes import classify_decode_exception, classify_parse_exception
+    from polylogue.sources.value_bounds import ValueBoundRefusedError
+
+    exc = ValueBoundRefusedError("string", 10, 5)
+    classify = classify_parse_exception if stage == "parse" else classify_decode_exception
+    disposition = classify(exc)
+
+    assert disposition.outcome is IngestOutcome.VALIDATION_REJECTED
+    assert disposition.evidence_ref == f"{stage}:value_bound_refused"
