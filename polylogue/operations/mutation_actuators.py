@@ -56,12 +56,36 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _session_exists(archive: ArchiveStore, session_id: str) -> bool:
-    try:
-        archive.resolve_session_id(session_id)
-    except KeyError:
-        return False
-    return True
+def _exact_session_ids(archive: ArchiveStore, session_ids: Sequence[str]) -> tuple[str, ...]:
+    """The recorded full session ids still stored exactly, in the given order.
+
+    Apply and recovery act on ids a PREPARE already resolved and recorded in
+    its plan, so existence is an exact-key question. ``resolve_session_id``
+    answers a different one: an id that is gone falls back to a prefix range,
+    which re-points a recorded ``codex:abc`` at a surviving ``codex:abcdef``
+    and would delete or rewrite the sibling instead.
+    """
+
+    found = archive.resolve_exact_session_ids(tuple(session_ids))
+    return tuple(sid for sid in dict.fromkeys(session_ids) if sid in found)
+
+
+def _require_exact_session_ids(archive: ArchiveStore, session_ids: Sequence[str]) -> tuple[str, ...]:
+    """Return the recorded ids unchanged, or raise ``KeyError`` for one no longer stored.
+
+    User-tier writers resolve their target through ``resolve_session_id``,
+    which widens a missing id to a prefix match. Checking the exact key first
+    means the writer only ever sees a stored id, which that resolver returns
+    verbatim. A recorded session the rebuildable index does not hold yet stays
+    a ``KeyError``, which recovery already defers rather than fails.
+    """
+
+    session_ids = tuple(session_ids)
+    present = set(_exact_session_ids(archive, session_ids))
+    for session_id in session_ids:
+        if session_id not in present:
+            raise KeyError(session_id)
+    return session_ids
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +121,10 @@ class SessionDeleteActuator(ConvergentReplay):
         # Re-resolve existence against live state: a session id the caller
         # already matched via a query result set may have been deleted (by
         # a concurrent actor) between query and delete -- prepare only
-        # plans the subset that still exists right now.
-        existing = tuple(sid for sid in dict.fromkeys(args.session_ids) if _session_exists(args.archive, sid))
+        # plans the subset that still exists right now. Every caller hands
+        # full ids it resolved once, so existence is exact: a vanished id
+        # never widens to another session sharing its prefix.
+        existing = _exact_session_ids(args.archive, args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="delete",
@@ -113,8 +139,11 @@ class SessionDeleteActuator(ConvergentReplay):
             raise ValueError("session delete plan contains a non-session target")
         planned = tuple(target_ref.removeprefix("session:") for target_ref in plan.target_refs)
         # A re-applied plan converges: a target an interrupted apply already
-        # removed is satisfied, and ``delete_sessions`` refuses an unknown id.
-        session_ids = tuple(sid for sid in planned if _session_exists(args.archive, sid))
+        # removed is satisfied. Only ids still stored exactly reach
+        # ``delete_sessions``, whose own resolver would widen a missing id to a
+        # prefix match and delete a different session (crash-recovery replay
+        # runs exactly this after the first apply removed the target).
+        session_ids = _exact_session_ids(args.archive, planned)
         deleted = args.archive.delete_sessions(session_ids) if session_ids else 0
         status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
         return MutationReceipt(
@@ -895,7 +924,7 @@ class TagAddActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: TagAddArgs) -> MutationReceipt:
-        session_id = str(plan.context["session_id"])
+        (session_id,) = _require_exact_session_ids(args.archive, (str(plan.context["session_id"]),))
         tag = str(plan.context["tag"])
         changed = args.archive.add_user_tags(
             (session_id,),
@@ -960,7 +989,7 @@ class TagRemoveActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: TagRemoveArgs) -> MutationReceipt:
-        session_id = str(plan.context["session_id"])
+        (session_id,) = _require_exact_session_ids(args.archive, (str(plan.context["session_id"]),))
         tag = str(plan.context["tag"])
         changed = args.archive.remove_user_tags((session_id,), (tag,))
         status: MutationTargetStatus = "applied" if changed else "already_satisfied"
@@ -1027,6 +1056,9 @@ class BulkTagActuator(ConvergentReplay):
         session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         tags: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("tags") or ()))
         requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        # Every planned id is written as recorded or the apply stops before
+        # its first write; none is re-resolved to a prefix sibling.
+        _require_exact_session_ids(args.archive, session_ids)
         affected = 0
         assertions = 0
         for session_id in session_ids:
@@ -1113,7 +1145,7 @@ class MetadataSetActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: MetadataSetArgs) -> MutationReceipt:
-        session_id = str(plan.context["session_id"])
+        (session_id,) = _require_exact_session_ids(args.archive, (str(plan.context["session_id"]),))
         key = str(plan.context["key"])
         value = plan.context["value"]
         changed = args.archive.set_user_metadata((session_id,), ((key, value),))
@@ -1186,6 +1218,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
         planned_pairs = cast("list[list[object]]", plan.context.get("pairs") or [])
         pairs: tuple[tuple[str, object], ...] = tuple((str(pair[0]), pair[1]) for pair in planned_pairs)
         requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        _require_exact_session_ids(args.archive, session_ids)
         affected = 0
         assertions = 0
         for session_id in session_ids:
@@ -1259,7 +1292,7 @@ class MetadataDeleteActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: MetadataDeleteArgs) -> MutationReceipt:
-        session_id = str(plan.context["session_id"])
+        (session_id,) = _require_exact_session_ids(args.archive, (str(plan.context["session_id"]),))
         key = str(plan.context["key"])
         changed = args.archive.delete_user_metadata(session_id, key)
         status: MutationTargetStatus = "applied" if changed else "already_satisfied"
@@ -2600,7 +2633,7 @@ class CorrectionRecordActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: CorrectionRecordArgs) -> MutationReceipt:
-        session_id = str(plan.context["session_id"])
+        (session_id,) = _require_exact_session_ids(args.archive, (str(plan.context["session_id"]),))
         kind = str(plan.context["kind"])
         payload = cast("dict[str, str]", plan.context["payload"])
         note = cast("str | None", plan.context["note"])
@@ -2667,7 +2700,7 @@ class CorrectionDeleteActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: CorrectionDeleteArgs) -> MutationReceipt:
-        session_id = str(plan.context["session_id"])
+        (session_id,) = _require_exact_session_ids(args.archive, (str(plan.context["session_id"]),))
         kind = str(plan.context["kind"])
         deleted = args.archive.delete_correction(session_id, kind)
         status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
@@ -2730,7 +2763,7 @@ class CorrectionsClearActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: CorrectionsClearArgs) -> MutationReceipt:
-        session_id = str(plan.context["session_id"])
+        (session_id,) = _require_exact_session_ids(args.archive, (str(plan.context["session_id"]),))
         cleared = args.archive.clear_corrections(session_id)
         status: MutationTargetStatus = "applied" if cleared else "already_satisfied"
         return MutationReceipt(
@@ -2750,8 +2783,8 @@ class CorrectionsClearActuator(ConvergentReplay):
 
     def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
         """Clear only the kinds the plan authorized, not any recorded since."""
-        session_id = str(plan.context["session_id"])
         try:
+            (session_id,) = _require_exact_session_ids(handles.archive, (str(plan.context["session_id"]),))
             cleared = sum(
                 bool(handles.archive.delete_correction(session_id, kind))
                 for kind in cast("list[str]", plan.context["kinds"])
@@ -3031,16 +3064,17 @@ def _partition_requested_session_ids(
     asked for. The declared plan context is a closed model
     (``machine_plan_context``), so the gap is carried on the receipt, which is
     where the terminal outcome is decided anyway.
+
+    A multi-target selection is a set of full session ids its caller already
+    resolved once (the CLI from its query, a facade caller from its own
+    reads), so membership is exact. An abbreviated or vanished id is named in
+    the gap; it is never widened to whichever session shares its prefix.
     """
 
-    resolved: list[str] = []
-    unresolved: list[str] = []
-    for session_id in dict.fromkeys(session_ids):
-        try:
-            resolved.append(archive.resolve_session_id(session_id))
-        except KeyError:
-            unresolved.append(session_id)
-    return tuple(resolved), tuple(unresolved)
+    requested = tuple(dict.fromkeys(session_ids))
+    resolved = _exact_session_ids(archive, requested)
+    present = set(resolved)
+    return resolved, tuple(sid for sid in requested if sid not in present)
 
 
 def _narrowed_plan_outcome(*, matched: int, unresolved: Sequence[str]) -> OutcomeEnvelope:

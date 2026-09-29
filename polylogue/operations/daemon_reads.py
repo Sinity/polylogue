@@ -459,6 +459,12 @@ def _query_payload(
         archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT, limit=limit, offset=offset
     )
     total = _archive_count_sessions_for_spec(archive, spec)
+    if spec.latest:
+        # ``--latest`` selects one session, so the selection's cardinality is
+        # at most one whatever the filter counts. Reporting the filter's count
+        # made ``next_offset`` continue page after page, and a client walking
+        # the complete selection (``delete --all``) collected every match.
+        total = min(total, 1)
     session_ids = [summary.session_id for summary in summaries]
     attached, attached_gaps = _attached_units_payload(session_ids, spec=spec, params=params, archive=archive)
     # Decided after the projection runs: the attached-unit row ceiling is one

@@ -773,6 +773,135 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
     assert all(not restarted.session_exists(session_id) for session_id in session_ids)
 
 
+def test_crash_recovery_replays_a_delete_on_exactly_the_recorded_id_not_a_prefix_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup replay of an interrupted delete acts on the recorded full id only.
+
+    The first daemon deletes the target and loses the outcome, so its run is
+    durably unknown. On restart the recovery replay finds the target gone.
+    Anti-vacuity: resolve existence through ``resolve_session_id`` (whose
+    prefix fallback maps the vanished ``...:ext-shared`` onto the surviving
+    ``...:ext-shared-sibling``) and the replay deletes the sibling -- which no
+    operator ever previewed -- so this test is red on the sibling assertion.
+    """
+    root = tmp_path / "archive"
+    target = sibling = ""
+
+    def seed(root: Path) -> None:
+        nonlocal target, sibling
+        builders = []
+        for native in ("shared", "shared-sibling"):
+            builder = (
+                SessionBuilder(root / "index.db", native)
+                .provider("codex")
+                .title("Prefix-sharing session")
+                .add_message(text=f"Synthetic session {native}.")
+            )
+            builder.save()
+            builders.append(builder)
+        target, sibling = (builder.native_session_id() for builder in builders)
+        assert sibling.startswith(target)
+        from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+        _clear_connection_cache()
+
+    original_apply = SessionDeleteActuator.apply
+
+    def apply_then_lose_outcome(
+        actuator: SessionDeleteActuator, plan: MutationPlan, args: SessionDeleteArgs
+    ) -> MutationReceipt:
+        return replace(original_apply(actuator, plan, args), status="unknown", detail="synthetic lost outcome")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SessionDeleteActuator, "apply", apply_then_lose_outcome)
+        with running_daemon_operations(root, seed_archive=seed) as first:
+            preview = first.client.operation_to_completion(
+                "mutation.session.delete.preview",
+                {"session_ids": [target]},
+                archive_root=str(root),
+                request_id="prefix-preview",
+            )
+            assert preview is not None
+            assert preview["result"]["session_count"] == 1
+            authorization = first.client.operation_to_completion(
+                "mutation.session.delete.authorize",
+                {"preview_refs": preview["result"]["preview_refs"]},
+                archive_root=str(root),
+                request_id="prefix-authorize",
+            )
+            assert authorization is not None
+            lost = first.client.operation_to_completion(
+                "mutation.session.delete.execute",
+                {"authorization_refs": authorization["result"]["authorization_refs"]},
+                archive_root=str(root),
+                request_id="prefix-execute",
+            )
+            assert lost is not None and lost["outcome"] == "indeterminate"
+            assert not first.session_exists(target)
+            assert first.session_exists(sibling)
+
+    # Startup recovery replays the unknown run with the real actuator.
+    with running_daemon_operations(root) as restarted:
+        assert not restarted.session_exists(target)
+        assert restarted.session_exists(sibling), "recovery replay deleted a session outside the recorded plan"
+
+
+def test_delete_preview_count_equals_the_applied_count_and_spares_prefix_siblings(tmp_path: Path) -> None:
+    """The daemon deletes exactly the ids its preview recorded.
+
+    Anti-vacuity: resolve a previewed id by prefix at execution and the
+    unselected ``...-sibling`` rows share the selected ids' prefixes, so the
+    applied count or the surviving set diverges from the preview.
+    """
+    root = tmp_path / "archive"
+    selected: list[str] = []
+    spared: list[str] = []
+
+    def seed(root: Path) -> None:
+        for number in range(3):
+            for suffix, bucket in (("", selected), ("-sibling", spared)):
+                builder = (
+                    SessionBuilder(root / "index.db", f"counted-{number}{suffix}")
+                    .provider("codex")
+                    .title("Counted session")
+                    .add_message(text=f"Synthetic counted session {number}{suffix}.")
+                )
+                builder.save()
+                bucket.append(builder.native_session_id())
+        from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+        _clear_connection_cache()
+
+    with running_daemon_operations(root, seed_archive=seed) as stack:
+        preview = stack.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": selected},
+            archive_root=str(root),
+            request_id="counted-preview",
+        )
+        assert preview is not None
+        prepared_count = preview["result"]["session_count"]
+        authorization = stack.client.operation_to_completion(
+            "mutation.session.delete.authorize",
+            {"preview_refs": preview["result"]["preview_refs"]},
+            archive_root=str(root),
+            request_id="counted-authorize",
+        )
+        assert authorization is not None
+        executed = stack.client.operation_to_completion(
+            "mutation.session.delete.execute",
+            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            archive_root=str(root),
+            request_id="counted-execute",
+        )
+        assert executed is not None
+        assert prepared_count == len(selected)
+        assert executed["result"]["affected_count"] == prepared_count
+        assert not any(stack.session_exists(session_id) for session_id in selected)
+        assert all(stack.session_exists(session_id) for session_id in spared)
+
+
 def test_restart_resumes_an_accepted_request_whose_daemon_died_before_its_first_part(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

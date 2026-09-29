@@ -709,14 +709,6 @@ class SessionQuerySpec:
     ) -> int:
         return await self.build_filter(config, vector_provider=vector_provider).count()
 
-    async def delete(
-        self,
-        config: Config,
-        *,
-        vector_provider: VectorProvider | None = None,
-    ) -> int:
-        return await self.build_filter(config, vector_provider=vector_provider).delete()
-
     def build_filter(
         self,
         config: Config,
