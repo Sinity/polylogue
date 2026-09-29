@@ -44,7 +44,7 @@ class _SyntheticRuntimeContext(Protocol):
     _relation_solver: RelationConstraintSolver
     _active_profile_tokens: tuple[str, ...]
     _active_record_bucket: tuple[str, str] | None
-    _max_array_items: int | None
+    _categorical_pools: dict[str, list[tuple[str, int]]]
     _coverage_branch_choices: dict[str, int]
     _coverage_type_choices: dict[str, str]
     _coverage_null_paths: set[str]
@@ -82,7 +82,7 @@ class _SyntheticRuntimeContext(Protocol):
         path: str = "$",
     ) -> list[JSONValue]: ...
 
-    def _generate_string(self, schema: SchemaRecord, rng: random.Random) -> str: ...
+    def _generate_string(self, schema: SchemaRecord, rng: random.Random, *, path: str = "$") -> str: ...
 
     def _generate_number(
         self,
@@ -113,7 +113,12 @@ def _schema_type(self: _SyntheticRuntimeContext, schema: SchemaRecord, rng: rand
             return selected_type
         if self._coverage_witness_mode and path in self._coverage_null_paths and "null" in schema_type:
             return "null"
-        non_null = [item for item in schema_type if isinstance(item, str) and item != "null"]
+        declared = [item for item in schema_type if isinstance(item, str)]
+        observed = _observed_type_weights(schema)
+        weighted = [(item, observed.get(item, 0)) for item in declared]
+        if any(weight for _, weight in weighted):
+            return rng.choices([item for item, _ in weighted], weights=[weight for _, weight in weighted], k=1)[0]
+        non_null = [item for item in declared if item != "null"]
         return rng.choice(non_null) if non_null else "null"
     return None
 
@@ -177,6 +182,94 @@ def _sample_observed_distribution(
     if isinstance(maximum, (int, float)) and not isinstance(maximum, bool):
         value = min(float(maximum), value)
     return value
+
+
+def _count_weights(value: SchemaValue | object) -> dict[str, int]:
+    record = _schema_record(value)
+    return {
+        str(key): count
+        for key, count in record.items()
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0
+    }
+
+
+def _observed_type_weights(schema: SchemaRecord) -> dict[str, int]:
+    """Observed type mix at this node, with null observations as the ``null`` weight."""
+    observed = _schema_record(schema.get("x-polylogue-observed-distribution"))
+    weights = _count_weights(observed.get("type_counts"))
+    nulls = observed.get("null_observations")
+    if isinstance(nulls, int) and not isinstance(nulls, bool) and nulls > 0:
+        weights["null"] = weights.get("null", 0) + nulls
+    return weights
+
+
+def _categorical_buckets(schema: SchemaRecord) -> list[tuple[int, int]] | None:
+    """Hashed value buckets for a field whose observed values repeat.
+
+    Inference keeps only hashed buckets, never raw values. A field is treated
+    as categorical when its values repeat: fewer occupied buckets than half the
+    bucket space, and at least twice as many observations as occupied buckets.
+    Otherwise it is free text and gets a fresh value per occurrence.
+    """
+    categorical = _observed_distribution(schema, "categorical")
+    histogram = categorical.get("bucket_histogram")
+    bucket_count = categorical.get("bucket_count")
+    if not isinstance(histogram, list) or not isinstance(bucket_count, int) or bucket_count <= 0:
+        return None
+    buckets = [
+        (item[0], item[1])
+        for item in histogram
+        if isinstance(item, list)
+        and len(item) == 2
+        and isinstance(item[0], int)
+        and isinstance(item[1], int)
+        and item[1] > 0
+    ]
+    observations = sum(count for _, count in buckets)
+    if not buckets or len(buckets) * 2 > bucket_count or observations < 2 * len(buckets):
+        return None
+    return buckets
+
+
+def _free_text(rng: random.Random, length: int, newlines: int) -> str:
+    """Synthetic text of exactly ``length`` characters with ``newlines`` line breaks."""
+    if length <= 0:
+        return ""
+    words: list[str] = []
+    size = 0
+    while size < length:
+        word = _WORDS[rng.randrange(len(_WORDS))]
+        words.append(word)
+        size += len(word) + 1
+    text = list(" ".join(words)[:length])
+    breaks = min(max(newlines, 0), length)
+    for position in sorted(rng.sample(range(length), breaks)) if breaks else ():
+        text[position] = "\n"
+    return "".join(text)
+
+
+_WORDS = (
+    "alpha",
+    "beta",
+    "gamma",
+    "delta",
+    "signal",
+    "vector",
+    "module",
+    "record",
+    "stream",
+    "packet",
+    "window",
+    "buffer",
+    "anchor",
+    "lattice",
+    "cursor",
+    "ledger",
+    "branch",
+    "kernel",
+    "shard",
+    "frame",
+)
 
 
 def _generate_from_schema(
@@ -270,8 +363,7 @@ def _generate_from_schema(
                 path=path,
             )
         case "string":
-            value = self._generate_string(schema, rng)
-            value = self._relation_solver.generate_string_with_length(path, rng, value)
+            value = self._generate_string(schema, rng, path=path)
             fmt = schema.get("x-polylogue-format")
             if fmt in {"uuid4", "uuid", "hex-id"}:
                 self._relation_solver.register_generated_id(path, value)
@@ -283,6 +375,10 @@ def _generate_from_schema(
         case "array":
             return self._generate_array(schema, rng, depth=depth, max_depth=max_depth, path=path)
         case "boolean":
+            counts = _count_weights(_observed_distribution(schema, "boolean_counts"))
+            true_count, false_count = counts.get("true", 0), counts.get("false", 0)
+            if true_count + false_count:
+                return rng.random() < true_count / (true_count + false_count)
             return rng.choice([True, False])
         case "null":
             return None
@@ -347,8 +443,10 @@ def _generate_object(
 
         freq_value = prop_schema.get("x-polylogue-frequency")
         freq = float(freq_value) if isinstance(freq_value, (int, float)) else 1.0
-        if prop_name not in selected_root_fields and freq < 1.0 and rng.random() > freq:
-            continue
+        if prop_name not in selected_root_fields and freq < 1.0:
+            freq = _conditional_presence(properties, prop_name, obj, freq)
+            if rng.random() > freq:
+                continue
         if prop_name in selected_root_fields and freq < 1.0:
             prop_schema = {**prop_schema, "x-polylogue-frequency": 1.0}
 
@@ -369,6 +467,21 @@ def _generate_object(
             obj[prop_name] = value
 
     additional_schema = _schema_record(schema.get("additionalProperties"))
+    if not self._coverage_witness_mode and additional_schema and not properties:
+        # A dynamic-key map (model ids, file paths, tool names as keys): draw
+        # the observed key count and fill each value from the value schema.
+        fanout = _sampled_length(schema, "object_fanout", rng)
+        for index in range(fanout if fanout is not None else 0):
+            key = f"key-{index:04d}"
+            value = self._generate_from_schema(
+                additional_schema,
+                rng,
+                depth=depth + 1,
+                max_depth=max_depth,
+                path=f"{path}.*",
+            )
+            if value is not None or _schema_allows_null(additional_schema):
+                obj[key] = value
     if self._coverage_witness_mode and additional_schema:
         extra_name = COVERAGE_EXTRA_KEY
         while extra_name in properties:
@@ -386,6 +499,32 @@ def _generate_object(
     return obj
 
 
+def _conditional_presence(
+    properties: SchemaRecord,
+    prop_name: str,
+    present: SyntheticRecord,
+    marginal: float,
+) -> float:
+    """P(field present | fields already generated), from observed co-occurrence.
+
+    Each already-present sibling records how many of its documents also carried
+    ``prop_name``. The most specific sibling (fewest documents) decides; with no
+    co-occurrence evidence the marginal frequency stands.
+    """
+    best: tuple[int, float] | None = None
+    for sibling in present:
+        sibling_schema = _schema_record(properties.get(sibling))
+        observed = _schema_record(sibling_schema.get("x-polylogue-observed-distribution"))
+        together = _schema_record(observed.get("co_occurring_fields")).get(prop_name, 0)
+        documents = observed.get("encountered_documents")
+        if not isinstance(documents, int) or isinstance(documents, bool) or documents <= 0:
+            continue
+        together_count = together if isinstance(together, int) and not isinstance(together, bool) else 0
+        if best is None or documents < best[0]:
+            best = (documents, together_count / documents)
+    return marginal if best is None else best[1]
+
+
 def _schema_allows_null(schema: SchemaRecord) -> bool:
     schema_type = schema.get("type")
     if schema_type == "null":
@@ -399,7 +538,18 @@ def _schema_allows_null(schema: SchemaRecord) -> bool:
     )
 
 
-def _generate_string(self: _SyntheticRuntimeContext, schema: SchemaRecord, rng: random.Random) -> str:
+def _sampled_length(schema: SchemaRecord, name: str, rng: random.Random) -> int | None:
+    sampled = _sample_observed_distribution(schema, name, rng)
+    return None if sampled is None else max(0, int(round(sampled)))
+
+
+def _generate_string(
+    self: _SyntheticRuntimeContext,
+    schema: SchemaRecord,
+    rng: random.Random,
+    *,
+    path: str = "$",
+) -> str:
     values = schema.get("x-polylogue-values")
     if isinstance(values, list) and values:
         return str(rng.choice(values))
@@ -423,10 +573,35 @@ def _generate_string(self: _SyntheticRuntimeContext, schema: SchemaRecord, rng: 
         case "base64":
             return rng.randbytes(24).hex()
 
+    buckets = _categorical_buckets(schema)
+    if buckets is not None:
+        # One stable synthetic value per observed hashed bucket, drawn with the
+        # observed bucket frequencies, so repeated values repeat as they did.
+        pool = self._categorical_pools.get(path)
+        if pool is None:
+            pool = []
+            for bucket, count in buckets:
+                value_rng = random.Random(f"{self.provider}|{path}|{bucket}")
+                length = _sampled_length(schema, "string_length", value_rng)
+                token = f"{path.rsplit('.', 1)[-1].strip('[*]') or 'value'}-{bucket:02x}"
+                pool.append((token if length is None else _fit(token, length, value_rng), count))
+            self._categorical_pools[path] = pool
+        return rng.choices([value for value, _ in pool], weights=[count for _, count in pool], k=1)[0]
+
+    length = _sampled_length(schema, "string_length", rng)
+    newlines = _sampled_length(schema, "newline_count", rng) or 0
+    if length is not None:
+        return _free_text(rng, length, newlines)
     if schema.get("x-polylogue-multiline"):
         return _text_for_role(rng, "assistant")
 
     return f"synthetic-{rng.randint(0, 99999)}"
+
+
+def _fit(token: str, length: int, rng: random.Random) -> str:
+    if len(token) >= length:
+        return token[:length]
+    return token + "-" + _free_text(rng, length - len(token) - 1, 0) if length - len(token) > 1 else token + "-"
 
 
 def _generate_number(
@@ -475,8 +650,6 @@ def _generate_array(
         n_items = rng.randint(1, 3)
     if self._coverage_witness_mode:
         n_items = 1
-    if self._max_array_items is not None:
-        n_items = min(n_items, self._max_array_items)
 
     item_type = item_schema.get("type")
     item_allows_null = item_type == "null" or (
@@ -500,6 +673,17 @@ def _generate_array(
     ]
     if not item_allows_null:
         items = [value for value in items if value is not None]
+    ordered = _observed_distribution(item_schema, "ordered_numeric_pairs")
+    rate = ordered.get("nondecreasing_rate")
+    if (
+        isinstance(rate, (int, float))
+        and not isinstance(rate, bool)
+        and items
+        and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in items)
+        and rng.random() < rate
+    ):
+        numeric = [value for value in items if isinstance(value, (int, float))]
+        items = [*sorted(numeric)]
     return items
 
 

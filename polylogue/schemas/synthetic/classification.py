@@ -142,7 +142,6 @@ _SUPPORTED_SYNTHETIC_ANNOTATIONS = frozenset(
         "x-polylogue-observed-distribution",
         "x-polylogue-range",
         "x-polylogue-semantic-role",
-        "x-polylogue-string-lengths",
         "x-polylogue-time-deltas",
         "x-polylogue-values",
     }
@@ -153,6 +152,12 @@ _SUPPORTED_FORMAT_VALUES = frozenset(
 _SUPPORTED_SEMANTIC_ROLE_VALUES = frozenset({"message_role", "message_body", "message_timestamp", "session_title"})
 _PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
     {
+        # Inference no longer emits the Gaussian string-length summary: per-field
+        # ``string_length`` histograms in x-polylogue-observed-distribution are
+        # the only length authority the runtime reads. Packages committed before
+        # that change still carry it; it is inert metadata until the next
+        # ``devtools schema commit`` regenerates them.
+        "x-polylogue-string-lengths",
         "x-polylogue-anchor-profile-family-id",
         "x-polylogue-artifact-kind",
         "x-polylogue-element-bundle-scope-count",
@@ -226,47 +231,106 @@ def _histogram_bucket_is_safe(index: int, log_base: int | float) -> bool:
     return math.isfinite(sampled_value)
 
 
-def _valid_observed_distribution(value: object) -> bool:
-    if not isinstance(value, Mapping) or not value:
+def _valid_histogram(distribution: Mapping[str, object]) -> bool:
+    """A log-bucketed histogram distribution, if it carries one, is well formed."""
+    histogram = distribution.get("histogram")
+    if histogram is None:
+        return True
+    log_base = _number(distribution.get("log_base"))
+    if not isinstance(histogram, list) or not histogram or log_base is None or log_base <= 1:
         return False
-    for distribution in value.values():
-        if not isinstance(distribution, Mapping):
+    if not all(
+        isinstance(bucket, list)
+        and len(bucket) == 2
+        and isinstance(bucket[0], int)
+        and not isinstance(bucket[0], bool)
+        and isinstance(bucket[1], int)
+        and not isinstance(bucket[1], bool)
+        and bucket[1] > 0
+        and _histogram_bucket_is_safe(bucket[0], float(log_base))
+        for bucket in histogram
+    ):
+        return False
+    values = tuple(_number(distribution.get(key)) for key in ("p0", "p50", "p90", "p95", "p99", "p100"))
+    present = tuple(item for item in values if item is not None)
+    minimum = _number(distribution.get("min"))
+    maximum = _number(distribution.get("max"))
+    if minimum is not None and maximum is not None and minimum > maximum:
+        return False
+    if any(left > right for left, right in zip(present, present[1:], strict=False)):
+        return False
+    if any((minimum is not None and item < minimum) or (maximum is not None and item > maximum) for item in present):
+        return False
+    for key in ("min", "max", "mean", "p0", "p50", "p90", "p95", "p99", "p100", "stddev"):
+        if key in distribution and _number(distribution[key]) is None:
             return False
-        histogram = distribution.get("histogram")
-        log_base = _number(distribution.get("log_base"))
-        if not isinstance(histogram, list) or not histogram or log_base is None or log_base <= 1:
-            return False
-        if not all(
+    stddev = _number(distribution.get("stddev"))
+    return stddev is None or stddev >= 0
+
+
+#: Distribution kinds the runtime samples, and the schema type that consumes each.
+_HISTOGRAM_DISTRIBUTIONS = frozenset({"numeric", "array_length", "string_length", "newline_count", "object_fanout"})
+_COUNT_DISTRIBUTIONS = frozenset({"type_counts", "boolean_counts", "co_occurring_fields"})
+_CONSUMED_DISTRIBUTIONS: dict[str, tuple[str, ...]] = {
+    "array": ("array_length",),
+    "boolean": ("boolean_counts",),
+    "integer": ("numeric",),
+    "number": ("numeric",),
+    "object": ("object_fanout",),
+    "string": ("string_length", "categorical"),
+}
+
+
+def _valid_counts(value: object) -> bool:
+    return isinstance(value, Mapping) and all(
+        isinstance(count, int) and not isinstance(count, bool) and count >= 0 for count in value.values()
+    )
+
+
+def _valid_categorical(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    buckets = value.get("bucket_histogram")
+    count = value.get("bucket_count")
+    return (
+        isinstance(count, int)
+        and not isinstance(count, bool)
+        and count > 0
+        and isinstance(buckets, list)
+        and all(
             isinstance(bucket, list)
             and len(bucket) == 2
-            and isinstance(bucket[0], int)
-            and not isinstance(bucket[0], bool)
-            and isinstance(bucket[1], int)
-            and not isinstance(bucket[1], bool)
+            and all(isinstance(part, int) and not isinstance(part, bool) for part in bucket)
+            and 0 <= bucket[0] < count
             and bucket[1] > 0
-            and _histogram_bucket_is_safe(bucket[0], float(log_base))
-            for bucket in histogram
-        ):
-            return False
-        values = tuple(_number(distribution.get(key)) for key in ("p0", "p50", "p90", "p95", "p99", "p100"))
-        present = tuple(item for item in values if item is not None)
-        minimum = _number(distribution.get("min"))
-        maximum = _number(distribution.get("max"))
-        if minimum is not None and maximum is not None and minimum > maximum:
-            return False
-        if any(left > right for left, right in zip(present, present[1:], strict=False)):
-            return False
-        if any(
-            (minimum is not None and item < minimum) or (maximum is not None and item > maximum) for item in present
-        ):
-            return False
-        for key in ("min", "max", "mean", "p0", "p50", "p90", "p95", "p99", "p100", "stddev"):
-            if key in distribution and _number(distribution[key]) is None:
+            for bucket in buckets
+        )
+    )
+
+
+def _valid_observed_distribution(value: object) -> bool:
+    """Every distribution kind the runtime reads is well formed; other entries are inference metadata."""
+    if not isinstance(value, Mapping) or not value:
+        return False
+    for name, distribution in value.items():
+        if name in _HISTOGRAM_DISTRIBUTIONS:
+            if not isinstance(distribution, Mapping) or not _valid_histogram(distribution):
                 return False
-        stddev = _number(distribution.get("stddev"))
-        if stddev is not None and stddev < 0:
+        elif name in _COUNT_DISTRIBUTIONS:
+            if not _valid_counts(distribution):
+                return False
+        elif name == "categorical" and not _valid_categorical(distribution):
             return False
     return True
+
+
+def _sampleable_distribution(value: Mapping[str, object], name: str) -> bool:
+    distribution = value.get(name)
+    if name == "categorical":
+        return _valid_categorical(distribution)
+    if name in _COUNT_DISTRIBUTIONS:
+        return _valid_counts(distribution) and bool(distribution)
+    return isinstance(distribution, Mapping) and isinstance(distribution.get("histogram"), list)
 
 
 def _schema_nodes_at_path(schema: SchemaRecord, path: object) -> tuple[SchemaRecord, ...]:
@@ -367,7 +431,6 @@ def _annotation_supported(key: str, value: object, root_schema: SchemaRecord) ->
         "x-polylogue-foreign-keys": ("source", "target"),
         "x-polylogue-time-deltas": ("field_a", "field_b"),
         "x-polylogue-mutually-exclusive": ("parent",),
-        "x-polylogue-string-lengths": ("path",),
     }.get(key)
     if required is None:
         return False
@@ -427,7 +490,6 @@ def _annotation_is_supported_at_node(
         "x-polylogue-foreign-keys",
         "x-polylogue-time-deltas",
         "x-polylogue-mutually-exclusive",
-        "x-polylogue-string-lengths",
     }:
         if key in {"x-polylogue-foreign-keys", "x-polylogue-time-deltas"}:
             return False
@@ -437,10 +499,14 @@ def _annotation_is_supported_at_node(
     if key == "x-polylogue-array-lengths":
         return _annotation_supported(key, value, root_schema) and ("array" in schema_types or union_path)
     if key == "x-polylogue-observed-distribution":
-        if schema_type not in {"array", "number", "integer"} or not isinstance(value, Mapping):
+        if not isinstance(value, Mapping) or not _annotation_supported(key, value, root_schema):
             return False
-        expected_distribution = "array_length" if schema_type == "array" else "numeric"
-        return expected_distribution in value and _annotation_supported(key, value, root_schema)
+        consumed = {name for kind in schema_types for name in _CONSUMED_DISTRIBUTIONS.get(kind, ())}
+        return (
+            any(_sampleable_distribution(value, name) for name in consumed)
+            or (len(schema_types) > 1 and _sampleable_distribution(value, "type_counts"))
+            or _sampleable_distribution(value, "co_occurring_fields")
+        )
     if key == "x-polylogue-range":
         return schema_type in {"number", "integer"} and _annotation_supported(key, value, root_schema)
     if key in {"x-polylogue-format", "x-polylogue-values", "x-polylogue-multiline"}:

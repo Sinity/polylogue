@@ -1,8 +1,7 @@
 """Relational constraint satisfaction for synthetic generation.
 
-Uses ``x-polylogue-foreign-keys``, ``x-polylogue-time-deltas``,
-``x-polylogue-mutually-exclusive``, and ``x-polylogue-string-lengths``
-annotations on schemas to produce structurally coherent synthetic data.
+Uses ``x-polylogue-foreign-keys``, ``x-polylogue-time-deltas`` and
+``x-polylogue-mutually-exclusive`` annotations on schemas to produce structurally coherent synthetic data.
 
 These constraints are read from the schema root and applied during the
 object-generation phase to enforce cross-field consistency.
@@ -69,17 +68,6 @@ class MutualExclusionGroup:
     field_names: frozenset[str]
 
 
-@dataclass
-class StringLengthConstraint:
-    """Length distribution constraint for a string field."""
-
-    path: str
-    min_length: int
-    max_length: int
-    avg_length: float
-    stddev: float
-
-
 class RelationConstraintSolver(RelationConstraintSolverRuntimeMixin):
     """Applies relational constraints from schema annotations during generation.
 
@@ -88,32 +76,27 @@ class RelationConstraintSolver(RelationConstraintSolverRuntimeMixin):
     consistency.
     """
 
-    def __init__(self, schema: SchemaRecord, *, max_string_length: int | None = None) -> None:
+    def __init__(self, schema: SchemaRecord) -> None:
         self.fk_graph = ForeignKeyGraph()
         self.time_deltas: list[TimeDeltaConstraint] = []
         self.mutual_exclusions: list[MutualExclusionGroup] = []
         self.mutual_exclusions_by_parent: dict[str, tuple[MutualExclusionGroup, ...]] = {}
-        self.string_lengths: dict[str, StringLengthConstraint] = {}
         self._time_delta_cls = TimeDeltaConstraint
         self._mutual_exclusion_cls = MutualExclusionGroup
-        self._string_length_cls = StringLengthConstraint
-        self._max_synthetic_string_length = max_string_length
 
         self._parse_foreign_keys(schema)
         self._parse_time_deltas(schema)
         self._parse_mutual_exclusions(schema)
-        self._parse_string_lengths(schema)
 
     @property
     def has_constraints(self) -> bool:
         """Whether any relational constraints were parsed."""
-        return bool(self.fk_graph.references or self.time_deltas or self.mutual_exclusions or self.string_lengths)
+        return bool(self.fk_graph.references or self.time_deltas or self.mutual_exclusions)
 
 
 __all__ = [
     "ForeignKeyGraph",
     "MutualExclusionGroup",
     "RelationConstraintSolver",
-    "StringLengthConstraint",
     "TimeDeltaConstraint",
 ]

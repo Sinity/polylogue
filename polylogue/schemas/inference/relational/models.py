@@ -41,18 +41,6 @@ class MutualExclusion:
     evidence: RelationEvidence = field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class StringLengthProfile:
-    """String length distribution for a field worth preserving."""
-
-    path: str
-    min_length: int
-    max_length: int
-    avg_length: float
-    stddev: float
-    evidence: RelationEvidence = field(default_factory=dict)
-
-
 @dataclass
 class RelationalAnnotations:
     """All detected relational annotations."""
@@ -60,7 +48,6 @@ class RelationalAnnotations:
     foreign_keys: list[ForeignKeyRelation] = field(default_factory=list)
     time_deltas: list[TimeDeltaRelation] = field(default_factory=list)
     mutual_exclusions: list[MutualExclusion] = field(default_factory=list)
-    string_lengths: list[StringLengthProfile] = field(default_factory=list)
 
 
 __all__ = [
@@ -68,6 +55,5 @@ __all__ = [
     "MutualExclusion",
     "RelationalAnnotations",
     "RelationEvidence",
-    "StringLengthProfile",
     "TimeDeltaRelation",
 ]

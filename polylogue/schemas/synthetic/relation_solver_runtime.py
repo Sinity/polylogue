@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from polylogue.schemas.synthetic.relations import (
         ForeignKeyGraph,
         MutualExclusionGroup,
-        StringLengthConstraint,
         TimeDeltaConstraint,
     )
 
@@ -45,16 +44,7 @@ class _MutualExclusionAnnotation:
     fields: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class _StringLengthAnnotation:
-    path: str
-    min_length: int
-    max_length: int
-    avg_length: float
-    stddev: float
-
-
-# Retain four annotation kinds for the ordinary and coverage schemas. The
+# Retain three annotation kinds for the ordinary and coverage schemas. The
 # content digest changes for both list edits and nested annotation mutations.
 _PARSED_ANNOTATIONS: OrderedDict[tuple[str, str], tuple[Any, ...]] = OrderedDict()
 _PARSED_ANNOTATIONS_LIMIT = 8
@@ -158,38 +148,13 @@ def _parse_mutual_exclusion_records(records: tuple[SchemaRecord, ...]) -> tuple[
     return tuple(annotations)
 
 
-def _string_length_annotations(schema: SchemaRecord) -> tuple[_StringLengthAnnotation, ...]:
-    return _parsed_annotations(schema, "x-polylogue-string-lengths", _parse_string_length_records)
-
-
-def _parse_string_length_records(records: tuple[SchemaRecord, ...]) -> tuple[_StringLengthAnnotation, ...]:
-    annotations: list[_StringLengthAnnotation] = []
-    for record in records:
-        path = str(record.get("path", "")).strip()
-        if not path:
-            continue
-        annotations.append(
-            _StringLengthAnnotation(
-                path=path,
-                min_length=_int_value(record.get("min"), 0),
-                max_length=_int_value(record.get("max"), 100),
-                avg_length=_float_value(record.get("avg"), 50.0),
-                stddev=_float_value(record.get("stddev"), 10.0),
-            )
-        )
-    return tuple(annotations)
-
-
 class RelationConstraintSolverRuntimeMixin:
     fk_graph: ForeignKeyGraph
     time_deltas: list[TimeDeltaConstraint]
     mutual_exclusions: list[MutualExclusionGroup]
     mutual_exclusions_by_parent: dict[str, tuple[MutualExclusionGroup, ...]]
-    string_lengths: dict[str, StringLengthConstraint]
     _time_delta_cls: type[TimeDeltaConstraint]
     _mutual_exclusion_cls: type[MutualExclusionGroup]
-    _string_length_cls: type[StringLengthConstraint]
-    _max_synthetic_string_length: int | None
 
     def _parse_foreign_keys(self, schema: SchemaRecord) -> None:
         for annotation in _foreign_key_annotations(schema):
@@ -219,16 +184,6 @@ class RelationConstraintSolverRuntimeMixin:
         self.mutual_exclusions_by_parent = {
             parent_path: tuple(groups) for parent_path, groups in groups_by_parent.items()
         }
-
-    def _parse_string_lengths(self, schema: SchemaRecord) -> None:
-        for annotation in _string_length_annotations(schema):
-            self.string_lengths[annotation.path] = self._string_length_cls(
-                path=annotation.path,
-                min_length=annotation.min_length,
-                max_length=annotation.max_length,
-                avg_length=annotation.avg_length,
-                stddev=annotation.stddev,
-            )
 
     def register_generated_id(self, path: str, value: str) -> None:
         self.fk_graph.register_id(path, value)
@@ -265,37 +220,6 @@ class RelationConstraintSolverRuntimeMixin:
                 result -= overlap
                 result.add(keeper)
         return result
-
-    def generate_string_with_length(
-        self,
-        path: str,
-        rng: random.Random,
-        base_text: str,
-    ) -> str:
-        constraint = self.string_lengths.get(path)
-        if constraint is None:
-            return base_text
-
-        target = int(rng.gauss(constraint.avg_length, constraint.stddev))
-        target = max(constraint.min_length, min(constraint.max_length, target))
-        limit = self._max_synthetic_string_length
-        if limit is not None:
-            target = min(target, limit)
-
-        if len(base_text) == 0:
-            return base_text
-
-        if len(base_text) >= target:
-            if target <= 3:
-                return base_text[:target]
-            truncated = base_text[:target]
-            last_space = truncated.rfind(" ")
-            if last_space > target // 2:
-                return truncated[:last_space]
-            return truncated
-        repetitions = (target // len(base_text)) + 1
-        extended = (base_text + " ") * repetitions
-        return extended[:target].rstrip()
 
     def path_matches(self, schema_path: str, annotation_path: str) -> bool:
         return schema_path == annotation_path

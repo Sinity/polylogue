@@ -25,7 +25,6 @@ def _relation_payloads(
 ) -> tuple[
     JSONDocumentList,
     JSONDocumentList,
-    JSONDocumentList,
 ]:
     return (
         [
@@ -42,16 +41,6 @@ def _relation_payloads(
                 "fields": _json_value(sorted(relation.field_names)),
             }
             for relation in relations.mutual_exclusions
-        ],
-        [
-            {
-                "path": relation.path,
-                "min": relation.min_length,
-                "max": relation.max_length,
-                "avg": round(relation.avg_length, 1),
-                "stddev": round(relation.stddev, 1),
-            }
-            for relation in relations.string_lengths
         ],
     )
 
@@ -134,13 +123,11 @@ def _attach_semantic_roles(
 
 
 def _attach_relational_annotations(schema: JSONDocument, relations: RelationalAnnotations) -> None:
-    foreign_keys, mutual_exclusions, string_lengths = _relation_payloads(relations)
+    foreign_keys, mutual_exclusions = _relation_payloads(relations)
     if foreign_keys:
         schema["x-polylogue-foreign-keys"] = _json_value(foreign_keys)
     if mutual_exclusions:
         schema["x-polylogue-mutually-exclusive"] = _json_value(mutual_exclusions)
-    if string_lengths:
-        schema["x-polylogue-string-lengths"] = _json_value(string_lengths)
 
 
 __all__ = ["annotate_semantic_and_relational"]

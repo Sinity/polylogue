@@ -30,10 +30,6 @@ if TYPE_CHECKING:
     from polylogue.schemas.synthetic.demo_themes import SessionTheme
 
 
-_DEFAULT_MAX_ARRAY_ITEMS = 32
-_DEFAULT_MAX_STRING_LENGTH = 4_096
-
-
 class SyntheticCorpus:
     """Generate synthetic provider data from annotated schemas."""
 
@@ -46,21 +42,14 @@ class SyntheticCorpus:
         package_version: str = "default",
         element_kind: str | None = None,
         workload_profile: SchemaRecord | None = None,
-        max_array_items: int | None = _DEFAULT_MAX_ARRAY_ITEMS,
-        max_string_length: int | None = _DEFAULT_MAX_STRING_LENGTH,
     ) -> None:
-        if max_array_items is not None and max_array_items < 1:
-            raise ValueError("max_array_items must be positive or None")
-        if max_string_length is not None and max_string_length < 1:
-            raise ValueError("max_string_length must be positive or None")
         self.schema = schema
         self.wire_format = wire_format
         self.provider = provider
         self.package_version = package_version
         self.element_kind = element_kind
         self.workload_profile = workload_profile
-        self._max_array_items = max_array_items
-        self._max_synthetic_string_length = max_string_length
+        self._categorical_pools: dict[str, list[tuple[str, int]]] = {}
         self._active_profile_tokens: tuple[str, ...] = ()
         self._active_record_bucket: tuple[str, str] | None = None
         self._coverage_branch_choices: dict[str, int] = {}
@@ -68,7 +57,7 @@ class SyntheticCorpus:
         self._coverage_null_paths: set[str] = set()
         self._coverage_witness_mode = False
         self._generation_state = SyntheticGenerationState(
-            relation_solver=RelationConstraintSolver(schema, max_string_length=max_string_length),
+            relation_solver=RelationConstraintSolver(schema),
             semantic_generator=None,
         )
 
@@ -79,8 +68,6 @@ class SyntheticCorpus:
         *,
         version: str = "default",
         element_kind: str | None = None,
-        max_array_items: int | None = _DEFAULT_MAX_ARRAY_ITEMS,
-        max_string_length: int | None = _DEFAULT_MAX_STRING_LENGTH,
     ) -> SyntheticCorpus:
         selection = select_synthetic_schema(
             provider,
@@ -89,19 +76,12 @@ class SyntheticCorpus:
             registry_factory=lambda: SchemaRegistry(),
             canonical_provider_resolver=canonical_schema_provider,
         )
-        return cls.from_selection(
-            selection,
-            max_array_items=max_array_items,
-            max_string_length=max_string_length,
-        )
+        return cls.from_selection(selection)
 
     @classmethod
     def from_selection(
         cls,
         selection: SyntheticSchemaSelection,
-        *,
-        max_array_items: int | None = _DEFAULT_MAX_ARRAY_ITEMS,
-        max_string_length: int | None = _DEFAULT_MAX_STRING_LENGTH,
     ) -> SyntheticCorpus:
         return cls(
             selection.schema,
@@ -110,8 +90,6 @@ class SyntheticCorpus:
             package_version=selection.package_version,
             element_kind=selection.element_kind,
             workload_profile=selection.workload_profile,
-            max_array_items=max_array_items,
-            max_string_length=max_string_length,
         )
 
     def _select_structural_variant(self, rng: random.Random) -> str | None:
@@ -507,8 +485,8 @@ class SyntheticCorpus:
             path=path,
         )
 
-    def _generate_string(self, schema: SchemaRecord, rng: random.Random) -> str:
-        return synthetic_runtime._generate_string(self, schema, rng)
+    def _generate_string(self, schema: SchemaRecord, rng: random.Random, *, path: str = "$") -> str:
+        return synthetic_runtime._generate_string(self, schema, rng, path=path)
 
     def _generate_tree_json(
         self,

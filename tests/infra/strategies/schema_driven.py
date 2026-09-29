@@ -30,9 +30,7 @@ Two generation modes, both driven by the same registry schemas
   Annotations seen in committed schema packages but NOT threaded here
   (follow-up material, not fabricated): ``x-polylogue-observed-distribution``
   (hash-bucketed histogram, no retained values to sample from),
-  ``x-polylogue-string-lengths`` (attached at the document root as a
-  JSONPath list rather than per-node, so consuming it needs a path-matching
-  pass), ``x-polylogue-mutually-exclusive`` / ``x-polylogue-foreign-keys``
+  ``x-polylogue-mutually-exclusive`` / ``x-polylogue-foreign-keys``
   (cross-field relational constraints, not single-node schema keywords),
   ``x-polylogue-dynamic-keys``, ``x-polylogue-semantic-role``,
   ``x-polylogue-time-deltas``, ``x-polylogue-exact-structure-ids``.

@@ -578,7 +578,6 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
     expected_annotations = {
         "x-polylogue-foreign-keys",
         "x-polylogue-mutually-exclusive",
-        "x-polylogue-string-lengths",
         "x-polylogue-time-deltas",
     }
     observed = {
@@ -1038,7 +1037,6 @@ def test_annotation_wrong_node_shape_or_path_fails_closed(
             "x-polylogue-time-deltas",
             [{"field_a": "$.a", "field_b": "$.b", "min_delta": 5, "max_delta": 2, "avg_delta": 3}],
         ),
-        ("x-polylogue-string-lengths", [{"path": "$.text", "min": 10, "max": 2, "avg": 4, "stddev": -1}]),
         (
             "x-polylogue-observed-distribution",
             {
@@ -1074,7 +1072,7 @@ def test_invalid_numeric_relation_or_partial_distribution_fails_closed(
     schema = registry.get_element_schema(provider, version=package_version, element_kind=element_kind)
     assert isinstance(schema, dict)
     mutated: dict[str, JSONValue] = dict(schema)
-    if annotation in {"x-polylogue-time-deltas", "x-polylogue-string-lengths"}:
+    if annotation == "x-polylogue-time-deltas":
         mutated[annotation] = value
     else:
         raw_properties = mutated.get("properties")
@@ -1102,10 +1100,6 @@ def test_invalid_numeric_relation_or_partial_distribution_fails_closed(
 @pytest.mark.parametrize(
     ("annotation", "value"),
     [
-        (
-            "x-polylogue-string-lengths",
-            [{"path": "not-a-generated-path", "min": 1, "max": 4, "avg": 2, "stddev": 1}],
-        ),
         (
             "x-polylogue-foreign-keys",
             [{"source": "$.missing", "target": "$.missing_id"}],

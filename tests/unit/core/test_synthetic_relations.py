@@ -1,7 +1,7 @@
 """Tests for relational constraint solving in the synthetic corpus system.
 
 Verifies that ForeignKeyGraph, TimeDeltaConstraint, MutualExclusionGroup,
-StringLengthConstraint, and RelationConstraintSolver correctly enforce
+and RelationConstraintSolver correctly enforce
 cross-field consistency during synthetic data generation.
 """
 
@@ -20,7 +20,6 @@ from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.relations import (
     ForeignKeyGraph,
     MutualExclusionGroup,
-    StringLengthConstraint,
     TimeDeltaConstraint,
 )
 from polylogue.schemas.synthetic.relations import (
@@ -48,12 +47,12 @@ def test_annotation_cache_releases_replaced_schema_lists() -> None:
     for _ in range(64):
         annotations = AnnotationList(
             [
-                {"path": "$.name", "min": 17, "max": 17, "avg": 17, "stddev": 0},
+                {"parent": "$.message", "fields": ["text", "parts"]},
             ]
         )
         discarded.append(weakref.ref(annotations))
-        solver = _solver({"x-polylogue-string-lengths": annotations})
-        assert len(solver.generate_string_with_length("$.name", random.Random(0), "seed")) == 17
+        solver = _solver({"x-polylogue-mutually-exclusive": annotations})
+        assert solver.mutual_exclusions[0].field_names == frozenset({"text", "parts"})
     gc.collect()
     assert discarded[0]() is None
 
@@ -162,26 +161,6 @@ class TestMutualExclusionGroup:
 
 
 # ---------------------------------------------------------------------------
-# StringLengthConstraint
-# ---------------------------------------------------------------------------
-
-
-class TestStringLengthConstraint:
-    def test_properties(self) -> None:
-        slc = StringLengthConstraint(
-            path="$.message.text",
-            min_length=10,
-            max_length=500,
-            avg_length=120.0,
-            stddev=30.0,
-        )
-        assert slc.min_length == 10
-        assert slc.max_length == 500
-        assert slc.avg_length == 120.0
-        assert slc.stddev == 30.0
-
-
-# ---------------------------------------------------------------------------
 # RelationConstraintSolver — parsing from schema annotations
 # ---------------------------------------------------------------------------
 
@@ -238,25 +217,6 @@ class TestRelationConstraintSolverParsing:
         }
         solver = _solver(schema)
         assert len(solver.mutual_exclusions) == 0
-
-    def test_parses_string_lengths(self) -> None:
-        schema = {
-            "x-polylogue-string-lengths": [
-                {
-                    "path": "$.message.text",
-                    "min": 5,
-                    "max": 1000,
-                    "avg": 200.0,
-                    "stddev": 80.0,
-                },
-            ],
-        }
-        solver = _solver(schema)
-        assert solver.has_constraints
-        assert "$.message.text" in solver.string_lengths
-        constraint = solver.string_lengths["$.message.text"]
-        assert constraint.min_length == 5
-        assert constraint.max_length == 1000
 
 
 # ---------------------------------------------------------------------------
@@ -454,10 +414,8 @@ class TestRelationConstraintSolverMutualExclusion:
         def instrumented_init(
             solver: _RelationConstraintSolver,
             schema: SchemaRecord,
-            *,
-            max_string_length: int | None = None,
         ) -> None:
-            original_init(solver, schema, max_string_length=max_string_length)
+            original_init(solver, schema)
             unrelated_group = next(group for group in solver.mutual_exclusions if group.parent_path == "$.unrelated_0")
             probe = _UnrelatedParentProbe()
             unrelated_group.parent_path = probe  # type: ignore[assignment]
@@ -491,64 +449,7 @@ class TestRelationConstraintSolverMutualExclusion:
 
 
 # ---------------------------------------------------------------------------
-# RelationConstraintSolver — string length operations
-# ---------------------------------------------------------------------------
-
-
-class TestRelationConstraintSolverStringLength:
-    def test_no_constraint_returns_base_text_unchanged(self) -> None:
-        solver = _solver({})
-        rng = random.Random(0)
-        assert solver.generate_string_with_length("$.any", rng, "hello world") == "hello world"
-
-    def test_truncates_long_text(self) -> None:
-        schema = {
-            "x-polylogue-string-lengths": [
-                {"path": "$.short", "min": 3, "max": 10, "avg": 7.0, "stddev": 1.0},
-            ],
-        }
-        solver = _solver(schema)
-        rng = random.Random(42)
-        result = solver.generate_string_with_length("$.short", rng, "this is a very long text string")
-        assert len(result) <= 10
-
-    def test_extends_short_text(self) -> None:
-        schema = {
-            "x-polylogue-string-lengths": [
-                {"path": "$.long", "min": 50, "max": 100, "avg": 75.0, "stddev": 5.0},
-            ],
-        }
-        solver = _solver(schema)
-        rng = random.Random(42)
-        result = solver.generate_string_with_length("$.long", rng, "hi")
-        assert len(result) >= 50
-
-    def test_empty_base_text_returned_unchanged(self) -> None:
-        schema = {
-            "x-polylogue-string-lengths": [
-                {"path": "$.x", "min": 10, "max": 100, "avg": 50.0, "stddev": 5.0},
-            ],
-        }
-        solver = _solver(schema)
-        rng = random.Random(0)
-        assert solver.generate_string_with_length("$.x", rng, "") == ""
-
-    @pytest.mark.parametrize("seed", range(20))
-    def test_result_within_min_max_bounds(self, seed: int) -> None:
-        schema = {
-            "x-polylogue-string-lengths": [
-                {"path": "$.text", "min": 10, "max": 50, "avg": 30.0, "stddev": 8.0},
-            ],
-        }
-        solver = _solver(schema)
-        rng = random.Random(seed)
-        result = solver.generate_string_with_length("$.text", rng, "some example text for testing purposes")
-        assert len(result) >= 10
-        assert len(result) <= 50
-
-
-# ---------------------------------------------------------------------------
-# RelationConstraintSolver — integration: all constraint types together
+# RelationConstraintSolver — integration
 # ---------------------------------------------------------------------------
 
 
@@ -569,9 +470,6 @@ class TestRelationConstraintSolverIntegration:
             ],
             "x-polylogue-mutually-exclusive": [
                 {"parent": "$.message", "fields": ["text", "parts"]},
-            ],
-            "x-polylogue-string-lengths": [
-                {"path": "$.message.body", "min": 20, "max": 500, "avg": 100.0, "stddev": 40.0},
             ],
         }
         solver = _solver(schema)
@@ -596,14 +494,6 @@ class TestRelationConstraintSolverIntegration:
         )
         assert len(filtered & {"text", "parts"}) == 1
         assert "metadata" in filtered
-
-        # String length
-        result = solver.generate_string_with_length(
-            "$.message.body",
-            rng,
-            "short",
-        )
-        assert len(result) >= 20
 
     def test_path_matches_exact(self) -> None:
         solver = _solver({})

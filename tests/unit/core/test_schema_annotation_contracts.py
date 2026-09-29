@@ -206,28 +206,6 @@ class TestAnnotateSemanticAndRelational:
         result_schema = _annotate_semantic_and_relational(schema, field_stats)
         assert isinstance(result_schema, dict)
 
-    def test_string_length_annotation_at_root(self) -> None:
-        """x-polylogue-string-lengths annotation at schema root."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "description": {"type": "string"},
-            },
-        }
-        field_stats = {
-            "$.description": FieldStats(
-                path="$.description",
-                string_lengths=[50, 100, 150, 200],
-                is_multiline=2,
-                newline_counts=[1, 2, 1, 2],
-                total_samples=4,
-                present_count=4,
-                value_count=4,
-            ),
-        }
-        result_schema = _annotate_semantic_and_relational(schema, field_stats)
-        assert isinstance(result_schema, dict)
-
     def test_nested_property_annotation(self) -> None:
         """Semantic annotations on nested properties."""
         schema = {
