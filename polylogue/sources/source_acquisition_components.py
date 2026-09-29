@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import time
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TypeAlias, cast
@@ -687,68 +688,47 @@ def _whole_member_provider(context: ZipEntryReadContext) -> Provider | None:
     return None
 
 
-def replay_zip_entry_acquisition_payloads(
+@contextlib.contextmanager
+def open_replayed_zip_unit(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
-) -> Iterable[SerializedSplitPayload]:
-    """Replay the exact payload units produced by ZIP acquisition.
+    *,
+    source_index: int | None,
+) -> Iterator[IO[bytes]]:
+    """Reopen the exact bytes of one unit ZIP acquisition retains.
 
-    A bundle member is acquired as one preserved artifact unless the
-    production splitter recognizes at least two session payloads. In that
-    case each emitted payload uses the splitter's source index and serialized
-    bytes. Backup verification uses this read-only replay instead of inventing
-    a JSON-array indexing rule.
+    A whole member (``source_index`` ``None``) streams from the archive; a
+    split element is re-split and yields only that element's serialized
+    bytes, which the splitter already bounds. The caller verifies the bytes
+    against the recorded blob identity.
     """
-    entry_provider_hint = _whole_member_provider(context)
-    if entry_provider_hint is not None:
+    if source_index is None:
         with open_bound_member(zf, context.entry, context.bound_provider) as handle:
-            payload_bytes = handle.read()
-            identity = payload_content_identity(payload_bytes)
-            yield SerializedSplitPayload(
-                provider=entry_provider_hint,
-                payload_bytes=payload_bytes,
-                source_index=None,
-                addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-                content_identity=identity,
-            )
+            yield handle
         return
-
     state = _ZipEntrySplitState()
-    split_payloads = _iter_zip_entry_split_payloads(zf, context, state)
-    try:
-        for payload in split_payloads:
-            state.did_split = True
-            yield payload
-    except ContentIdentityRefusal:
-        # A refused element is the member's recorded gap; every element that
-        # was acquired beside it stays a replay candidate.
-        if not state.did_split:
-            raise
-        return
-    if state.did_split:
-        return
-
-    # Preserve original ZIP entry bytes when it is metadata or a single
-    # session document, matching the ordinary acquisition fallback.
-    with open_bound_member(zf, context.entry, context.bound_provider) as handle:
-        payload_bytes = handle.read()
-        identity = payload_content_identity(payload_bytes)
-        yield SerializedSplitPayload(
-            provider=state.detected_provider,
-            payload_bytes=payload_bytes,
-            source_index=None,
-            addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-            content_identity=identity,
-        )
+    for payload in _iter_zip_entry_split_payloads(zf, context, state):
+        if payload.source_index == source_index:
+            yield io.BytesIO(payload.payload_bytes)
+            return
+    raise LookupError(f"ZIP member {context.entry.filename!r} no longer yields element {source_index}")
 
 
 @dataclass(frozen=True, slots=True)
 class ReplayedZipRevision:
-    """The revision and size of one payload unit ZIP acquisition retains."""
+    """The identities of one payload unit ZIP acquisition retains.
+
+    ``revision`` is the SHA-256 of the unit's bytes and ``content_identity``
+    the value identity acquisition records for it. A replayed unit carries
+    only these digests, never its bytes: a preserved member can be several
+    gigabytes, and a verification pass keeps every unit it replayed.
+    """
 
     source_index: int | None
     revision: str
     size_bytes: int
+    addressing_mode: MemberAddressingMode
+    content_identity: str
 
 
 class _HashingZipEntry:
@@ -832,11 +812,13 @@ def _stream_member_revision(
     # which is hashed for the revision as it is read.
     reader = _HashingZipEntry(zf, entry, location, checkpoint)
     try:
-        stream_payload_content_identity(cast(IO[bytes], reader), checkpoint=checkpoint)
+        identity = stream_payload_content_identity(cast(IO[bytes], reader), checkpoint=checkpoint)
         reader.drain()
     finally:
         reader.close()
-    return ReplayedZipRevision(None, reader.digest.hexdigest(), reader.hashed)
+    return ReplayedZipRevision(
+        None, reader.digest.hexdigest(), reader.hashed, MemberAddressingMode.WHOLE_MEMBER, identity
+    )
 
 
 def replay_zip_entry_acquisition_revisions(
@@ -845,11 +827,13 @@ def replay_zip_entry_acquisition_revisions(
     *,
     checkpoint: Callable[[], None] | None = None,
 ) -> Iterable[ReplayedZipRevision]:
-    """Replay the revisions of the units ZIP acquisition would retain.
+    """Replay the identities of the units ZIP acquisition would retain.
 
-    Same unit decisions as :func:`replay_zip_entry_acquisition_payloads`, but a
-    whole member is hashed in chunks, as acquisition streams it, instead of
-    being read into memory: an admitted member can be several gigabytes.
+    A member is one preserved unit unless the production splitter recognizes
+    at least two session payloads; then each split carries the splitter's
+    source index. A whole member is hashed in chunks, as acquisition streams
+    it, instead of being read into memory. A refused split element is raised
+    after its validated siblings were yielded, as acquisition records it.
     """
     if _whole_member_provider(context) is not None:
         yield _stream_member_revision(zf, context.entry, context.bound_provider, checkpoint)
@@ -857,8 +841,15 @@ def replay_zip_entry_acquisition_revisions(
     state = _ZipEntrySplitState()
     for payload in _iter_zip_entry_split_payloads(zf, context, state):
         state.did_split = True
+        identity = payload.content_identity
+        if identity is None:
+            identity = payload_content_identity(payload.payload_bytes)
         yield ReplayedZipRevision(
-            payload.source_index, hashlib.sha256(payload.payload_bytes).hexdigest(), len(payload.payload_bytes)
+            payload.source_index,
+            hashlib.sha256(payload.payload_bytes).hexdigest(),
+            len(payload.payload_bytes),
+            payload.addressing_mode,
+            identity,
         )
     if not state.did_split:
         yield _stream_member_revision(zf, context.entry, context.bound_provider, checkpoint)
@@ -978,7 +969,7 @@ __all__ = [
     "StatusCallback",
     "ZipEntryReadContext",
     "iter_entry_payloads",
-    "replay_zip_entry_acquisition_payloads",
+    "open_replayed_zip_unit",
     "replay_zip_entry_acquisition_revisions",
     "ReplayedZipRevision",
     "iter_zip_entry_raw_data",

@@ -303,7 +303,7 @@ def _route_zip_replay(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
     from polylogue.config import Source
     from polylogue.sources.source_acquisition_components import (
         ZipEntryReadContext,
-        replay_zip_entry_acquisition_payloads,
+        replay_zip_entry_acquisition_revisions,
     )
 
     archive = _archive(tmp_path)
@@ -318,7 +318,7 @@ def _route_zip_replay(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
             bound_provider=Provider.CLAUDE_CODE,
         )
         with pytest.raises(ForeignOriginContentError):
-            list(replay_zip_entry_acquisition_payloads(zf, context))
+            list(replay_zip_entry_acquisition_revisions(zf, context))
     return True
 
 

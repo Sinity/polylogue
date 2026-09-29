@@ -9,67 +9,59 @@ recorded; the hint only decides which candidate is tried first.
 
 from __future__ import annotations
 
-import hashlib
 import zipfile
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import IO
 
 from polylogue.config import Source
-from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, split_zip_member_text, zip_member_coordinate
 from polylogue.core.sources import origin_provider_fiber
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
-    replay_zip_entry_acquisition_payloads,
+    open_replayed_zip_unit,
+    replay_zip_entry_acquisition_revisions,
 )
 from polylogue.storage.blob_store import BlobStore
 
 
 @dataclass(frozen=True, slots=True)
 class MemberCandidate:
-    """One acquisition unit a container member can yield."""
+    """One acquisition unit a container member can yield, held by identity.
+
+    A reference is proven by digest, so a candidate keeps the unit's digests
+    and never its bytes: a preserved member can be gigabytes, and one
+    verification pass caches the candidates of every member it opens.
+    """
 
     addressing_mode: MemberAddressingMode
     element_index: int | None
-    payload_bytes: bytes
-    #: The identity acquisition replay already computed, when it did.
-    precomputed_identity: str | None = None
+    #: The value identity acquisition records for this unit.
+    content_identity: str
+    #: SHA-256 of the unit's bytes, for rows recorded without a value identity.
+    byte_identity: str
+    size_bytes: int
+    #: Reopens this unit's bytes as a stream, for a caller that must carry
+    #: them (backup recovery); never part of the candidate's identity.
+    open_payload: Callable[[], AbstractContextManager[IO[bytes]]] | None = field(
+        default=None, compare=False, repr=False
+    )
 
     @property
     def coordinate(self) -> tuple[str, int | None]:
         return (self.addressing_mode.value, self.element_index)
-
-    @property
-    def content_identity(self) -> str:
-        """Identify this unit by decoded content, not by serialization.
-
-        A unit that does not decode as JSON has no structure to compare, so
-        its bytes are its identity. Acquisition records identity through the
-        same function, so the two sides agree for every member size.
-        """
-        if self.precomputed_identity is not None:
-            return self.precomputed_identity
-        try:
-            return payload_content_identity(self.payload_bytes)
-        except ContentIdentityRefusal as refusal:
-            # Acquisition refuses such a unit, so no recorded identity names
-            # it; this never equals a 64-hex digest.
-            return f"refused:{refusal.token}"
-
-    @property
-    def byte_identity(self) -> str:
-        """Raw-byte identity for rows recorded without a content identity."""
-        return hashlib.sha256(self.payload_bytes).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
 class MemberResolution:
     """The outcome of resolving one recorded reference against a member."""
 
-    payload_bytes: bytes | None
+    candidate: MemberCandidate | None
     outcome: str
     error: str | None
 
@@ -98,14 +90,14 @@ def resolve_member_candidate(
         # candidates are still one logical item when they are the same
         # content; only genuinely different content is ambiguous.
         if len(candidates) == 1:
-            return MemberResolution(candidates[0].payload_bytes, "sole_candidate", None)
+            return MemberResolution(candidates[0], "sole_candidate", None)
         if len({candidate.content_identity for candidate in candidates}) == 1:
-            return MemberResolution(candidates[0].payload_bytes, "duplicate_observations", None)
+            return MemberResolution(candidates[0], "duplicate_observations", None)
         return MemberResolution(None, "ambiguous", "content_identity:unavailable")
 
     hinted = _hinted_candidate(candidates, hint_mode=hint_mode, hint_index=hint_index)
     if hinted is not None and _matches_expected(hinted, expected_digest, structural_only=expected_is_structural):
-        return MemberResolution(hinted.payload_bytes, "hint_verified", None)
+        return MemberResolution(hinted, "hint_verified", None)
 
     matching = [
         candidate
@@ -114,15 +106,11 @@ def resolve_member_candidate(
     ]
     if not matching:
         return MemberResolution(None, "unmatched", "content_identity:unmatched")
-    # Every match carries identical bytes, so the recovered value is the same
-    # whichever occurrence is returned. Several occurrences are duplicate
+    # Every match carries the recorded identity, so the proven value is the
+    # same whichever occurrence is returned. Several occurrences are duplicate
     # observations of one logical item, not a choice between conversations.
     outcome = "resolved_by_content" if len(matching) == 1 else "duplicate_observations"
-    return MemberResolution(matching[0].payload_bytes, outcome, None)
-
-
-def _digest(candidate: MemberCandidate) -> str:
-    return candidate.content_identity
+    return MemberResolution(matching[0], outcome, None)
 
 
 def _matches_expected(candidate: MemberCandidate, expected_digest: str, *, structural_only: bool = False) -> bool:
@@ -173,13 +161,33 @@ def _hinted_candidate(
     )
 
 
-def zip_reacquisition_payload(
+def _unit_opener(
+    zip_path: Path, context: ZipEntryReadContext, source_index: int | None
+) -> Callable[[], AbstractContextManager[IO[bytes]]]:
+    """Reopen one replayed unit from its container, holding nothing until asked."""
+
+    @contextmanager
+    def open_unit() -> Iterator[IO[bytes]]:
+        with (
+            zipfile.ZipFile(zip_path) as archive,
+            open_replayed_zip_unit(archive, context, source_index=source_index) as stream,
+        ):
+            yield stream
+
+    return open_unit
+
+
+def zip_reacquired_unit(
     row: Mapping[str, object],
     *,
     source_path: str,
     zip_payload_cache: MemberCandidateCache,
-) -> tuple[bytes | None, str | None]:
-    """Replay one ZIP member and return the recorded value it still holds."""
+) -> tuple[MemberCandidate | None, str | None]:
+    """Replay one ZIP member and return the recorded unit it still holds.
+
+    The member streams through acquisition's own unit decisions, so proving
+    a reference holds a few digests per unit whatever the member's size.
+    """
     coordinate = _zip_coordinate(row)
     hint_index = coordinate[1] if coordinate is not None else None
     hint_mode = _recorded_addressing_mode(row)
@@ -232,15 +240,25 @@ def zip_reacquisition_payload(
                     provider_hint=provider,
                     blob_store=BlobStore(zip_path.parent / "blob"),
                 )
-                candidates = tuple(
-                    MemberCandidate(
-                        addressing_mode=acquired.addressing_mode,
-                        element_index=acquired.source_index,
-                        payload_bytes=acquired.payload_bytes,
-                        precomputed_identity=acquired.content_identity,
-                    )
-                    for acquired in replay_zip_entry_acquisition_payloads(archive, context)
-                )
+                replayed: list[MemberCandidate] = []
+                try:
+                    for acquired in replay_zip_entry_acquisition_revisions(archive, context):
+                        replayed.append(
+                            MemberCandidate(
+                                addressing_mode=acquired.addressing_mode,
+                                element_index=acquired.source_index,
+                                content_identity=acquired.content_identity,
+                                byte_identity=acquired.revision,
+                                size_bytes=acquired.size_bytes,
+                                open_payload=_unit_opener(zip_path, context, acquired.source_index),
+                            )
+                        )
+                except ContentIdentityRefusal:
+                    # A refused element is the member's recorded gap; every
+                    # element acquired beside it stays a replay candidate.
+                    if not replayed:
+                        raise
+                candidates = tuple(replayed)
                 zip_payload_cache[cache_key] = candidates
     except Exception as exc:
         # Source replay is evidence, not a prerequisite for constructing
@@ -255,7 +273,7 @@ def zip_reacquisition_payload(
         hint_index=hint_index,
         expected_is_structural=structural_identity,
     )
-    return resolution.payload_bytes, resolution.error
+    return resolution.candidate, resolution.error
 
 
 def _acquisition_admits(
@@ -346,5 +364,5 @@ __all__ = [
     "MemberCandidateCache",
     "MemberResolution",
     "resolve_member_candidate",
-    "zip_reacquisition_payload",
+    "zip_reacquired_unit",
 ]

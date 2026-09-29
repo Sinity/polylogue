@@ -161,10 +161,11 @@ def test_a_refused_split_element_does_not_drop_the_elements_after_it(
         failure["path"] == f"{zip_path}:conversations.json" and "object key" in failure["error"] for failure in failures
     )
 
-    # Replay keeps every acquired element as a candidate beside the gap.
+    # Replay yields every acquired element beside the gap, then names the gap.
     from polylogue.sources.source_acquisition_components import (
+        ReplayedZipRevision,
         ZipEntryReadContext,
-        replay_zip_entry_acquisition_payloads,
+        replay_zip_entry_acquisition_revisions,
     )
 
     with zipfile.ZipFile(zip_path) as archive:
@@ -176,8 +177,11 @@ def test_a_refused_split_element_does_not_drop_the_elements_after_it(
             provider_hint=Provider.CHATGPT,
             blob_store=BlobStore(tmp_path / "replay-blob"),
         )
-        replayed = list(replay_zip_entry_acquisition_payloads(archive, context))
-    assert [payload.source_index for payload in replayed] == [0, 1, 3]
+        replayed: list[ReplayedZipRevision] = []
+        with pytest.raises(content_identity.ContentIdentityRefusal):
+            for unit in replay_zip_entry_acquisition_revisions(archive, context):
+                replayed.append(unit)
+    assert [unit.source_index for unit in replayed] == [0, 1, 3]
 
 
 def test_a_refused_grouped_element_still_takes_its_index(monkeypatch: pytest.MonkeyPatch) -> None:
