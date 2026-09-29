@@ -27,7 +27,6 @@ from typing import Any
 
 import pytest
 
-import polylogue.sources.live.cursor as cursor_module
 from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
@@ -239,10 +238,12 @@ async def test_sigkill_inside_the_first_index_write_recovers_exactly(workspace_e
 
 
 @pytest.mark.asyncio
-async def test_sigkill_inside_an_append_index_write_recovers_exactly(
-    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_sigkill_inside_an_append_index_write_recovers_exactly(workspace_env: dict[str, Path]) -> None:
     """A kill inside the append's index write loses no appended message.
+
+    Preparation is never abandoned at a deadline (polylogue-slc55), so the
+    restart's first page prepares the tail and admits it; later pages find
+    nothing owed.
 
     Anti-vacuity (polylogue-b8of0): recovery that trusts the retained,
     never-parsed append raws as already admitted reports the restart page
@@ -265,25 +266,11 @@ async def test_sigkill_inside_an_append_index_write_recovers_exactly(
     _kill_child_during_write(archive_root, source_root, kill_at=1, log_dir=log_dir)
     assert _message_rows(archive_root) == (3, 3, 1)
 
-    # Force the restart's first page to defer the tail's preparation: the
-    # worker cannot finish inside a 1 ms warm window. The deferral schedules a
-    # retry, and until that retry is due the tail is owed work, so no page may
-    # acknowledge it as DUPLICATE. Before the fix the second page did, and the
-    # appended messages were never materialized.
-    monkeypatch.setenv("POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS", "0.001")
-    restart_pages = await _admit_pages(archive_root, source_root, pages=3)
-    assert all(result.outcome is AdmissionOutcome.DEFERRED for page in restart_pages for result in page.values()), (
-        restart_pages
-    )
-    assert _message_rows(archive_root) == (3, 3, 1)
-
-    # Make the scheduled retry due at once so the next pages reach it.
-    monkeypatch.delenv("POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS")
-    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
-    CursorStore(archive_root / "index.db").defer_full_cursor_reconciliation(source_path)
-
     outcomes = await _admit(archive_root, source_root)
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.ADMITTED}, outcomes
-
     assert _message_rows(archive_root) == (6, 6, 1)
     assert _raw_parse_errors(archive_root, source_path) == []
+
+    settled = await _admit_pages(archive_root, source_root, pages=1)
+    assert {result.outcome for page in settled for result in page.values()} <= {AdmissionOutcome.DUPLICATE}, settled
+    assert _message_rows(archive_root) == (6, 6, 1)
