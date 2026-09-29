@@ -56,9 +56,14 @@ def _recorded_hermes_source_path(archive_root: Path) -> Path | None:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    """Open a SQLite connection with mapping-style rows for demo checks."""
+    """Open a read-only connection with mapping-style rows for demo checks.
 
-    conn = sqlite3.connect(db_path)
+    Verification reads; a plain ``sqlite3.connect`` is a writable open that
+    creates a missing tier file and contends with the daemon's writer.
+    """
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    conn = open_readonly_connection(db_path, validate_schema=False)
     conn.row_factory = sqlite3.Row
     return conn
 

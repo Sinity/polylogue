@@ -10,11 +10,10 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.maintenance import raw_authority
 
 
-def _submit(env: AppEnv, payload: dict[str, object]) -> dict[str, object]:
+def _submit(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
     from polylogue.cli.operation_kernel import OperationKernelError, configured_mutation_operation
     from polylogue.cli.shared.helpers import mutation_refusal
 
-    operation = "mutation.raw-authority-blocker.resolve"
     try:
         return configured_mutation_operation(env.config, operation, payload)
     except OperationKernelError as exc:
@@ -33,13 +32,17 @@ def raw_authority_frontier_command(
     env: AppEnv,
     output_format: str,
 ) -> None:
-    """Inspect and record the raw-authority frontier without applying plans."""
-    try:
-        payload = raw_authority.inspect_frontier(env.config).to_dict()
-    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
-        if isinstance(exc, click.ClickException):
-            raise
-        raise click.ClickException(str(exc)) from exc
+    """Record the raw-authority frontier census without applying plans.
+
+    The census publishes a durable blocker for every blocking plan, so it runs
+    as the daemon's ``maintenance.raw-authority-frontier`` operation; with no
+    daemon the command refuses rather than writing ``source.db`` itself.
+    """
+    submitted = _submit(env, "maintenance.raw-authority-frontier", {})
+    census = submitted.get("result")
+    if not isinstance(census, dict):
+        raise click.ClickException("daemon recorded the frontier census but returned no census")
+    payload = census
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -132,6 +135,7 @@ def raw_authority_blocker_resolve_command(
         raise click.ClickException("refusing to resolve a durable blocker without --yes")
     result = _submit(
         env,
+        "mutation.raw-authority-blocker.resolve",
         {
             "blocker_id": blocker_id,
             "resolution": reason,

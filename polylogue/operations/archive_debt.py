@@ -788,9 +788,12 @@ def _raw_materialization_debt_row(
         )
         actions = (
             ArchiveDebtActionPayload(
-                label="Inspect the raw-authority frontier",
+                label="Record the raw-authority frontier",
                 command=("polylogue", "ops", "maintenance", "raw-authority-frontier"),
-                description="Read the durable authority census for these raws; refinement is what unblocks replay.",
+                description=(
+                    "Have the daemon record the authority census and its blockers for these raws; "
+                    "refinement is what unblocks replay."
+                ),
             ),
             ArchiveDebtActionPayload(
                 label="List unresolved raw-authority blockers",

@@ -10,19 +10,9 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from polylogue.config import Config, active_archive_root
 from polylogue.core.json import JSONDocument
-
-if TYPE_CHECKING:
-    from polylogue.storage.raw_reconciler import RawAuthorityFrontierCensus
-
-
-def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:
-    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
-
-    return inspect_raw_authority_frontier(config)
 
 
 @contextlib.contextmanager
@@ -95,7 +85,6 @@ def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> J
 __all__ = [
     "ArchiveWriterRebuildExclusion",
     "archive_writer_rebuild_exclusion",
-    "inspect_frontier",
     "list_blockers",
     "materialization_generation_lease",
 ]

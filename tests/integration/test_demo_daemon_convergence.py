@@ -112,7 +112,7 @@ def _read_url(url: str) -> bytes:
         return cast(bytes, response.read())
 
 
-def _run_import_demo(daemon_url: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _run_import_demo(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -124,8 +124,6 @@ def _run_import_demo(daemon_url: str, env: dict[str, str]) -> subprocess.Complet
             "--timeout",
             "120",
             "--with-overlays",
-            "--daemon-url",
-            daemon_url,
         ],
         check=False,
         text=True,
@@ -243,11 +241,14 @@ async def test_import_demo_converges_through_live_daemon_path(
         try:
             await _wait_for_http(f"{daemon_url}/healthz/live", process=daemon)
 
-            result = await asyncio.to_thread(_run_import_demo, daemon_url, env)
+            result = await asyncio.to_thread(_run_import_demo, env)
             combined_output = result.stdout + result.stderr
             assert "Scheduled:" in result.stdout, combined_output
             assert "demo-fixture-world-source" in result.stdout
-            assert f"Daemon:       {daemon_url}" in result.stdout
+            # The ingest goes over the archive-scoped socket, not the HTTP API.
+            from polylogue.daemon.socket_path import daemon_socket_path
+
+            assert f"Daemon:       {daemon_socket_path(archive_root)}" in result.stdout
             assert "Operation:    ingest-demo-fixture-world-source" in result.stdout
             if result.returncode == 0:
                 assert "Demo archive verified" in result.stdout

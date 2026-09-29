@@ -155,6 +155,34 @@ def mutation_raw_authority_blocker_resolve(
     return _execute_named_mutation(request, context, audit, snapshot, BlockerResolveActuator(), args)
 
 
+def maintenance_raw_authority_frontier(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Publish the accepted-frontier census under the resident writer's admission.
+
+    The census writes a ``raw_authority_blockers`` row for every blocking plan
+    and tombstones the obligations current evidence disproves, so the daemon
+    runs it rather than a CLI process beside it.
+    """
+    del audit, snapshot
+    from polylogue.config import Config
+    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+
+    census = inspect_raw_authority_frontier(
+        Config(archive_root=context.archive_root, render_root=context.archive_root, sources=[])
+    )
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed",
+        "result": census.to_dict(),
+    }
+
+
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
 
 

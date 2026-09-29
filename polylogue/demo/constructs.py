@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -431,14 +430,16 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
 def evaluate_demo_constructs(archive_root: Path) -> tuple[DemoConstructCoverage, ...]:
     """Measure declared construct coverage against the demo index tier."""
 
-    conn = sqlite3.connect(archive_root / "index.db")
+    from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
+
+    conn = open_readonly_connection(archive_root / "index.db", validate_schema=False)
     try:
         embeddings_db = archive_root / "embeddings.db"
         if embeddings_db.exists():
-            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+            attach_readonly_database(conn, embeddings_db, alias="embeddings")
         source_db = archive_root / "source.db"
         if source_db.exists():
-            conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+            attach_readonly_database(conn, source_db, alias="source")
         rows: list[DemoConstructCoverage] = []
         for construct in DEMO_CONSTRUCTS:
             result_rows = conn.execute(construct.sql).fetchall()

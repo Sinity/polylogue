@@ -350,6 +350,29 @@ def test_json_analyze_portfolio_snapshot(
     assert output == snapshot
 
 
+def test_analyze_portfolio_of_an_empty_scope_is_an_empty_outcome(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+) -> None:
+    """A portfolio over a scope that matched nothing is ``empty`` and exits 2.
+
+    Anti-vacuity: drop ``portfolio_outcome`` from the route and the JSON
+    envelope has no ``outcome`` while the command exits 0 as a complete report.
+    """
+    import json as _json
+
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
+    result = runner.invoke(
+        cli,
+        ["--plain", "find", "repo:does-not-exist", "then", "analyze", "portfolio", "--format", "json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == OUTCOME_EXIT_CODES["empty"], result.output
+    payload = _json.loads(result.output)
+    assert payload["result"]["outcome"]["state"] == "empty"
+
+
 def test_markdown_analyze_portfolio_snapshot(
     runner: CliRunner,
     postmortem_seeded_env: Path,

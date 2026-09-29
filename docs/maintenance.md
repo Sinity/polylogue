@@ -205,8 +205,11 @@ writer is outpacing the index. Both are structural, not transient.
 
 ### Inspecting the raw-authority frontier
 
-`polylogue ops maintenance raw-authority-frontier` classifies every accepted
-frontier head and every terminal supersession in one pass:
+`polylogue ops maintenance raw-authority-frontier` asks the daemon to run the
+`maintenance.raw-authority-frontier` operation, which classifies every accepted
+frontier head and every terminal supersession in one pass. The census publishes
+durable blockers into `source.db`, so it runs under the daemon's writer and the
+command refuses when no daemon serves the archive:
 
 ```bash
 polylogue ops maintenance raw-authority-frontier --output-format json
@@ -283,7 +286,7 @@ and confirm.
 ### Raw-authority frontier ownership
 
 Nothing applies a frontier plan. `polylogue ops maintenance
-raw-authority-frontier` inspects and publishes obligations; it has no plan
+raw-authority-frontier` has the daemon inspect and publish obligations; it has no plan
 selector and no apply option, and what it records is the durable blocker set,
 not a census row. Raw materialization itself is owned by the canonical raw
 derivation (`polylogue/storage/derived/raw.py`) under the daemon writer

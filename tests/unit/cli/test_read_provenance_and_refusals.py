@@ -166,7 +166,42 @@ def test_every_verb_refuses_a_fresh_root_with_one_machine_envelope(
     assert isinstance(exc, ArchiveTierUnavailableError), f"{argv} raised {exc!r}"
     assert exc.tier == "index"
     assert exc.reason == "database file not found"
-    assert "polylogue ingest" in exc.guidance
+    from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE
+
+    assert exc.guidance == FIRST_RUN_INDEX_GUIDANCE
+
+
+def test_the_first_run_refusal_names_only_commands_that_exist() -> None:
+    """A cold agent can act on the fresh-root refusal without reading the manual.
+
+    The refusal used to say "run `polylogue ingest` ... or point --archive-root
+    at an existing one"; there is no ``ingest`` command and no
+    ``--archive-root`` option, so the first recovery attempt failed again with
+    "No such command" (polylogue-l65ry AC7). Every backticked command in the
+    guidance must resolve to a real command of the console script it names, and
+    the environment variable it names must be the one configuration reads.
+
+    Anti-vacuity: put ``polylogue ingest`` back into the guidance and the
+    command walk fails on ``ingest``.
+    """
+    import re
+
+    import click
+
+    from polylogue.cli.click_app import cli
+    from polylogue.config import config_inventory_by_key
+    from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE
+    from polylogue.daemon.cli import main as daemon_main
+
+    roots: dict[str, click.Group] = {"polylogue": cli, "polylogued": daemon_main}
+    commands = re.findall(r"`([^`]+)`", FIRST_RUN_INDEX_GUIDANCE)
+    assert commands, FIRST_RUN_INDEX_GUIDANCE
+    for command in commands:
+        program, verb, *_arguments = command.split()
+        group = roots[program]
+        assert group.get_command(click.Context(group), verb) is not None, command
+    archive_root_env = config_inventory_by_key()["archive_root"].env_var
+    assert archive_root_env and archive_root_env in FIRST_RUN_INDEX_GUIDANCE
 
 
 def test_the_first_run_refusal_is_the_storage_layers_own_wording(tmp_path: Path) -> None:

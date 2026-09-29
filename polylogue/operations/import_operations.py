@@ -42,7 +42,7 @@ class ImportRequest(SurfacePayloadModel):
     staged_path:
         Optional path the surface should treat as the actual byte source.
         Surfaces that copy/upload before processing (daemon HTTP ingest,
-        ``polylogue ingest --copy``) populate this; in-place surfaces
+        ``polylogue import``, which stages its input) populate this; in-place surfaces
         leave it ``None``.
     idempotency_key:
         Optional caller-supplied key so retries do not schedule duplicate

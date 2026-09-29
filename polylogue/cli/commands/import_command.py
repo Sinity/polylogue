@@ -52,12 +52,6 @@ if TYPE_CHECKING:
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 
 
-def _default_daemon_url() -> str:
-    from polylogue.config import load_polylogue_config
-
-    return load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
-
-
 def _clone_file(
     source: str | Path, destination: str | Path, *, before_publish: Callable[[], None] | None = None
 ) -> Path:
@@ -400,12 +394,6 @@ def _daemon_required(archive: object, *, operation: str) -> DaemonRequiredError:
     help="Generate and schedule the approved deterministic demo fixture world.",
 )
 @click.option(
-    "--daemon-url",
-    default=_default_daemon_url,
-    show_default=True,
-    help="Daemon API URL (env: POLYLOGUE_DAEMON_URL).",
-)
-@click.option(
     "--explain",
     is_flag=True,
     help="Explain detector/parser decisions without scheduling daemon import.",
@@ -442,7 +430,6 @@ def import_command(
     env: AppEnv,
     path: Path | None,
     demo: bool,
-    daemon_url: str,
     explain: bool,
     wait: bool,
     wait_timeout_s: float,
@@ -458,12 +445,9 @@ def import_command(
     actionable error. It never reports success without observable
     processing.
     """
-    # URL policy (mirrors ``polylogue status``, polylogue-2d8oq): the option and
-    # ``POLYLOGUE_DAEMON_URL`` are accepted, but this command no longer speaks
-    # the browser HTTP API — it submits the declared ``ingest`` operation over
-    # the archive-scoped daemon socket, so the URL selects nothing here.
-    del daemon_url
-
+    # The declared ``ingest`` operation goes over the archive-scoped daemon
+    # socket; the browser API URL (``POLYLOGUE_DAEMON_URL``) selects nothing
+    # here, so the command takes no URL option.
     if explain:
         from polylogue.sources.import_explain import explain_import_path
         from polylogue.surfaces.payloads import model_json_document

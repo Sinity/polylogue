@@ -43,6 +43,7 @@ from polylogue.core.stats import percentile
 if TYPE_CHECKING:
     from polylogue.analysis.transforms import SessionDigest
     from polylogue.archive.session.models import SessionProfile
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 PORTFOLIO_SCHEMA_VERSION = 2
 
@@ -289,6 +290,28 @@ def compile_portfolio_bundle(
     )
 
 
+def portfolio_outcome(bundle: PortfolioBundle) -> OutcomeEnvelope:
+    """Decide the terminal outcome of a portfolio from its coverage.
+
+    A matched session the portfolio dropped at the analysis cap, could not
+    profile, or could not digest for the pathology sweep is a named gap, so a
+    report over part of its scope never reads as the whole corpus. A scope that
+    matched nothing is ``empty``.
+    """
+
+    from polylogue.surfaces.outcome import decide_outcome
+
+    scope = bundle.scope
+    gaps: list[str] = []
+    if scope.truncated or scope.dropped_session_count:
+        gaps.append("match_cap_exceeded")
+    if scope.analyzed_session_count < scope.matched_session_count - scope.dropped_session_count:
+        gaps.append("session_profile_unavailable")
+    if bundle.pathologies.missing_digest_count:
+        gaps.append("session_digest_unavailable")
+    return decide_outcome(matched=scope.matched_session_count, degraded=gaps)
+
+
 def _fmt_usd(value: float) -> str:
     return f"${value:.2f}"
 
@@ -406,6 +429,7 @@ __all__ = [
     "OriginCountMetric",
     "PortfolioBundle",
     "compile_portfolio_bundle",
+    "portfolio_outcome",
     "render_portfolio_markdown",
     "render_portfolio_plain",
 ]

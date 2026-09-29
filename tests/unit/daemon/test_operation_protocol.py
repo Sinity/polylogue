@@ -260,6 +260,47 @@ def test_cli_delete_refuses_a_selection_that_drifted_after_authorization(
         assert _session_ids(stack.archive_root) == [surviving]
 
 
+def test_cli_delete_of_a_zero_match_selection_submits_no_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delete whose selection matched nothing sends no delete operation at all.
+
+    The query runs through the real daemon and matches no session; the verb
+    refuses with its typed empty-selection usage error and the archive is
+    unchanged. A delete request for an empty selection would be a request the
+    daemon can only refuse, and a preview over it would mint an authorization
+    for nothing.
+
+    Anti-vacuity: let the ``delete`` verb pass an empty selection on to
+    ``_emit_delete`` without its ``count == 0`` branch and the CLI submits
+    ``mutation.session.delete.preview`` for nothing.
+    """
+    import polylogue.cli.archive_query as archive_query
+    from polylogue.cli.click_app import cli
+
+    first, _second = _two_sessions(tmp_path / "capture-files")
+    with cli_daemon_archive(tmp_path / "archive", monkeypatch, session_derivation=True) as stack:
+        root = str(stack.archive_root)
+        imported = stack.client.operation_to_completion("ingest", {"path": str(first)}, archive_root=root)
+        assert imported is not None and imported["outcome"] == "completed", imported
+        before = _session_ids(stack.archive_root)
+        submit = archive_query._submit_mutation_operation
+        submitted: list[str] = []
+
+        def recording(config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+            submitted.append(operation)
+            return submit(config, operation, payload)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(archive_query, "_submit_mutation_operation", recording)
+        result = CliRunner().invoke(cli, ["find", "origin:chatgpt-export", "then", "delete", "--yes"])
+
+        from polylogue.cli.contextual_errors import EmptySelectionError
+
+        assert result.exit_code == EmptySelectionError.exit_code, (result.output, repr(result.exception))
+        assert submitted == []
+        assert _session_ids(stack.archive_root) == before
+
+
 def test_indeterminate_cli_write_reports_its_declared_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

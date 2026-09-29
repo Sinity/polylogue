@@ -50,7 +50,7 @@ from polylogue.cli.shared.helpers import load_effective_config, mutation_refusal
 from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.errors import ArchiveTierUnavailableError
+from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE, ArchiveTierUnavailableError
 from polylogue.logging import get_logger
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.outcome import (
@@ -1252,7 +1252,7 @@ def _missing_archive_refusal(
     # the structured envelope.  Two texts and two machine contracts for one
     # condition (polylogue-ry6g5); raising the same typed refusal the storage
     # layer raises collapses them.
-    guidance = "run `polylogue ingest` to create the archive, or point --archive-root at an existing one"
+    guidance = FIRST_RUN_INDEX_GUIDANCE
     if typo_hint is not None:
         guidance = f"{guidance}\n{typo_hint}"
     raise ArchiveTierUnavailableError(
@@ -1479,14 +1479,12 @@ def _emit_user_mutations(
 
 
 def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str, object]) -> None:
-    """Delete sessions through the shared OperationExecutor mutation authority.
+    """Delete sessions through the daemon's declared preview/authorize/execute operations.
 
-    Every surface that can permanently delete a session (this CLI route and
-    MCP ``write(operation='delete_session')`` in ``mcp/server_cutover.py``)
-    drives the same :class:`SessionDeleteActuator` through
-    :class:`OperationExecutor` (polylogue-t46.9/kwsb.2) instead of calling
-    ``ArchiveStore.delete_sessions`` directly, so preview/authorization/
-    receipt semantics cannot diverge between adapters.
+    The CLI renders the daemon's preview, asks for confirmation, and consumes
+    the exact authorization the daemon issued (``mutation.session.delete.*``);
+    the daemon's actuator performs the delete, so preview, authorization and
+    receipt semantics are the daemon's and cannot diverge from other clients.
     """
     from polylogue.surfaces.payloads import MutationResultPayload
 

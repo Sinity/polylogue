@@ -47,7 +47,7 @@ def test_a_stored_flag_outranks_the_provenance_fallback() -> None:
 def test_stored_evidence_supplies_absent_columns() -> None:
     """``session_profiles`` persists neither column; the payload holds both.
 
-    ``session_profile_insert_columns`` writes no ``cost_is_estimated`` and no
+    ``SESSION_PROFILE_INSERT_COLUMNS`` writes no ``cost_is_estimated`` and no
     ``cost_provenance``, so on the production ``SELECT * FROM session_profiles``
     path (rebuild and thread reads) both lookups above miss and every row -- a
     provider-reported charge included -- came back as an estimate. Portfolio and

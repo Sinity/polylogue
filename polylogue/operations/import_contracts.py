@@ -5,9 +5,9 @@ so adapters don't drift into separate write/control semantics.
 
 Entrypoint inventory (which surfaces consume this contract):
   - Canonical operation: ``ImportOperation`` consumed by daemon HTTP
-    ``_handle_ingest()`` and CLI ``polylogue ingest`` (#883, #902)
-  - Adapter: CLI ``ingest_command`` adapts daemon response through
-    ``ImportOperation.from_dict()``
+    ``_handle_ingest()`` and CLI ``polylogue import`` (#883, #902)
+  - Adapter: CLI ``import_command`` reports the daemon's accepted ``ingest``
+    operation in this shape
   - Low-level library: ``Polylogue.parse_file()`` / ``parse_sources()``
     are direct pipeline helpers, not scheduling operations
   - Adapted: the MCP ``maintenance()`` transaction (``mcp/server_cutover.py``,

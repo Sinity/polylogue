@@ -37,7 +37,7 @@ def _cost_is_estimated(row: sqlite3.Row, stated_evidence: SessionEvidencePayload
     figure is the sole thing that makes a cost known.
 
     ``session_profiles`` persists neither ``cost_is_estimated`` nor
-    ``cost_provenance`` (``session_profile_insert_columns``); the materializer
+    ``cost_provenance`` (``SESSION_PROFILE_INSERT_COLUMNS``); the materializer
     puts both in ``evidence_payload_json``. Falling back from one absent column
     to an equally absent sibling therefore relabelled every provider-reported
     charge as an estimate on the production read path. ``stated_evidence`` is

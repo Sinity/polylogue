@@ -45,6 +45,19 @@ class DatabaseError(PolylogueError):
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
+FIRST_RUN_INDEX_GUIDANCE = (
+    "no archive exists at this root yet: run `polylogue init` to detect sources, then `polylogued run` "
+    "to build the archive (`polylogue import PATH` adds an export while it runs); to read an existing "
+    "archive instead, point POLYLOGUE_ARCHIVE_ROOT at its root"
+)
+"""The next actions for a read of an archive whose index tier was never built.
+
+One owner for the storage open and the CLI's own pre-check, so the two cannot
+name different remedies -- they used to name a ``polylogue ingest`` command and
+an ``--archive-root`` option, neither of which exists (polylogue-l65ry AC7).
+"""
+
+
 class ArchiveTierUnavailableError(DatabaseError):
     """A required archive tier cannot be read at its resolved path."""
 

@@ -5,7 +5,6 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -1083,24 +1082,47 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
 
 
 def test_raw_authority_frontier_cli_inspects_without_applying_plans(
-    cli_workspace: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     cli_runner: CliRunner,
 ) -> None:
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "raw-authority-frontier",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
+    """The census is the daemon's ``maintenance.raw-authority-frontier`` operation.
 
-    assert result.exit_code == 0
+    It publishes durable blockers into ``source.db``, so the CLI submits it and
+    renders the census the daemon returned; the daemon-down matrix in
+    ``test_cli_operation_authority.py`` proves the command never writes
+    in-process. Anti-vacuity: run ``inspect_raw_authority_frontier`` in the CLI
+    again and the recorded submissions are empty.
+    """
+    import polylogue.cli.operation_kernel as operation_kernel
+    from tests.infra.daemon_operations import cli_daemon_archive
+
+    submitted: list[str] = []
+    configured = operation_kernel.configured_mutation_operation
+
+    def recording(config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        submitted.append(operation)
+        return configured(config, operation, payload)
+
+    monkeypatch.setattr(operation_kernel, "configured_mutation_operation", recording)
+    with cli_daemon_archive(tmp_path / "archive", monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "raw-authority-frontier",
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
+    assert submitted == ["maintenance.raw-authority-frontier"]
     payload = json.loads(result.stdout)
+    assert payload["schema"] == "polylogue.raw-authority-frontier-census.v1"
     assert payload["accepted_head_count"] == 0
     assert payload["plan_count"] == 0
     # polylogue-6kur: the census reports obligations, never an executable
@@ -1129,7 +1151,7 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
         catch_exceptions=False,
     )
     assert frontier_help.exit_code == 0
-    assert "Inspect and record the raw-authority frontier without applying plans." in frontier_help.output
+    assert "Record the raw-authority frontier census without applying plans." in frontier_help.output
     for removed in ("--apply-plan", "--preview-census", "--yes"):
         assert removed not in frontier_help.output
 
@@ -1156,21 +1178,6 @@ def test_raw_authority_frontier_cli_rejects_removed_apply_options(
     )
     assert rejected.exit_code == 2
     assert f"No such option {option!r}." in rejected.output
-
-
-def test_raw_authority_frontier_cli_refuses_durable_census_while_daemon_runs(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    """A census reconciles durable obligations, so it needs writer exclusion."""
-    with patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=123):
-        result = cli_runner.invoke(
-            cli,
-            ["--plain", "ops", "maintenance", "raw-authority-frontier", "--output-format", "json"],
-        )
-
-    assert result.exit_code == 1
-    assert "Refusing offline maintenance while polylogued PID 123 is running" in result.output
 
 
 def test_archive_read_cli_lists_archive_sessions(
