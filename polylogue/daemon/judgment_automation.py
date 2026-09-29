@@ -360,7 +360,7 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
     )
     from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 
-    conn = open_connection(user_db)
+    conn = open_connection(user_db, archive_root=root)
     conn.row_factory = sqlite3.Row
     ops_conn: sqlite3.Connection | None = None
     ops_db = root / "ops.db"
@@ -795,7 +795,7 @@ def run_judgment_automation_sweep_once(
         )
         return JudgmentAutomationSweepResult()
 
-    conn = open_connection(user_db)
+    conn = open_connection(user_db, archive_root=root)
     conn.row_factory = sqlite3.Row
     try:
         candidates = list_assertion_candidates(conn, limit=batch_limit)

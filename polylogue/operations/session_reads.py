@@ -68,7 +68,9 @@ def _transaction(request: PagedRequest) -> tuple[PagedRequest, QueryTransactionR
             return original, tx
         if request.limit > tx.page_size:
             raise QueryContinuationInvalidError("continuation cannot widen its bound window")
-        return request, replace(tx, page_size=request.limit)
+        # Only the window narrows. The selection and offset bound into the
+        # token stay; the new request's defaults must not replace them.
+        return original.model_copy(update={"limit": request.limit}), replace(tx, page_size=request.limit)
     arguments = request.model_dump(mode="json", exclude={"continuation", "limit", "offset"})
     return request, QueryTransactionRequest(
         operation=request.operation,

@@ -296,6 +296,7 @@ class ArchiveDelegationCard:
     parent_followup: tuple[ArchiveDelegationContextRow, ...]
     parent_followup_truncated: bool
     annotation_refs: tuple[str, ...]
+    annotation_refs_truncated: bool
     evidence_refs: tuple[str, ...]
 
 
@@ -488,6 +489,11 @@ def _delegation_instruction(payload: str | None) -> str | None:
                 return value
         return None
     return None
+
+
+#: Assertion refs the delegation card embeds directly. A declared page bound,
+#: not a refusal: a caller wanting the rest resolves ``target_ref`` itself.
+_DELEGATION_ANNOTATION_REFS_LIMIT = 50
 
 
 def _bounded_delegation_card_text(value: str | None, *, limit: int) -> tuple[str | None, bool]:
@@ -4340,6 +4346,7 @@ def get_delegation_card(
     )
 
     annotation_refs: tuple[str, ...] = ()
+    annotation_refs_truncated = False
     if self.user_db_path.exists():
         self._attach_user_tier_if_present()
         assertion_rows = self._conn.execute(
@@ -4348,10 +4355,12 @@ def get_delegation_card(
             FROM user_tier.assertions
             WHERE target_ref = ?
             ORDER BY updated_at_ms DESC, assertion_id
-            LIMIT 20
+            LIMIT ?
             """,
-            (delegation_ref,),
+            (delegation_ref, _DELEGATION_ANNOTATION_REFS_LIMIT + 1),
         ).fetchall()
+        annotation_refs_truncated = len(assertion_rows) > _DELEGATION_ANNOTATION_REFS_LIMIT
+        assertion_rows = assertion_rows[:_DELEGATION_ANNOTATION_REFS_LIMIT]
         annotation_refs = tuple(f"assertion:{row['assertion_id']}" for row in assertion_rows)
 
     evidence_refs: list[str] = []
@@ -4383,6 +4392,7 @@ def get_delegation_card(
         parent_followup=parent_followup,
         parent_followup_truncated=parent_followup_truncated,
         annotation_refs=annotation_refs,
+        annotation_refs_truncated=annotation_refs_truncated,
         evidence_refs=tuple(dict.fromkeys(evidence_refs)),
     )
 
