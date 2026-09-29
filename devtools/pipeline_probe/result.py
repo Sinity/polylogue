@@ -292,8 +292,6 @@ def _pipeline_workload_receipt(
         unavailable.append("peak_rss_children_bytes")
     if observed_total_ms is None:
         unavailable.append("wall_ms")
-    if observed_peak_rss_mb is None:
-        unavailable.append("peak_rss_bytes")
     provenance = summary.get("provenance", {})
     build_id_value = provenance.get("git_commit")
     build_id = f"git:{build_id_value}" if isinstance(build_id_value, str) and build_id_value else None
@@ -314,6 +312,10 @@ def _pipeline_workload_receipt(
         if observed_peak_rss_mb is not None
         else None
     )
+    # Decided after the components: a paired self+children observation is a
+    # peak even when no budget supplied an aggregate observation.
+    if peak_rss_bytes is None:
+        unavailable.append("peak_rss_bytes")
     receipt = WorkloadReceipt.from_observations(
         spec=spec,
         status=WorkloadRunStatus.FAILED if logical_failure else WorkloadRunStatus.SUCCEEDED,
