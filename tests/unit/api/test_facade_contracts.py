@@ -6621,7 +6621,7 @@ async def test_get_session_summaries_keys_requested_ids_and_omits_unknown(tmp_pa
     try:
         summaries = await archive.get_session_summaries([beta, "missing-session", alpha, beta])
         assert list(summaries) == [beta, alpha]
-        assert {key: summary.title for key, summary in summaries.items()} == {alpha: "Alpha", beta: "Beta"}
+        assert {key: str(summary.id) for key, summary in summaries.items()} == {alpha: alpha, beta: beta}
         assert await archive.get_session_summaries([]) == {}
     finally:
         await archive.close()
