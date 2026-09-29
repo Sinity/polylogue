@@ -205,6 +205,17 @@ class DaemonClient:
         finally:
             connection.close()
 
+    def _response_timeout_s(self, deadline_ms: int | None) -> float | None:
+        """The socket timeout that outlasts the server's execution deadline.
+
+        Never shorter than this client's own timeout; a connect to an absent
+        daemon still fails at once (``ENOENT``/``ECONNREFUSED``).
+        """
+        if deadline_ms is None:
+            return None
+        bound = deadline_ms / 1000 + 1.0
+        return bound if self.timeout_s is None else max(bound, self.timeout_s)
+
     def operation(
         self,
         operation: str,
@@ -233,7 +244,7 @@ class DaemonClient:
             expected_archive_identity=expected_archive_identity,
             expected_generation_id=expected_generation_id,
             request_id=request_id or uuid.uuid4().hex,
-            deadline_ms=deadline_ms or max(1, round(spec.deadline_s * 1000)),
+            deadline_ms=deadline_ms or max(1, round(_request_deadline_s(operation, payload or {}) * 1000)),
             cancellation_token=cancellation_token,
         )
         request = DaemonOperationRequest.from_dict(request.to_dict())
@@ -241,8 +252,10 @@ class DaemonClient:
         # the socket, an offline retry would make the actuator outcome
         # ambiguous, so the transport reports indeterminacy instead of absence.
         writes = spec.authority is not DaemonAuthority.READ
-        # The server owns the execution deadline. Allow its bounded response
-        # to arrive afterward without mutating a client shared by other calls.
+        # The server owns the execution deadline, reads included: a
+        # scan-shaped read runs for its whole declared deadline. Allow its
+        # bounded response to arrive afterward without mutating a client
+        # shared by other calls.
         deadline_ms = request.deadline_ms
         if writes and deadline_ms is None:
             raise DaemonOperationProtocolError("write operation request has no execution deadline")
@@ -251,7 +264,7 @@ class DaemonClient:
             "/api/operation",
             request.to_dict(),
             mutation=writes,
-            timeout_s=(deadline_ms / 1000 + 1.0) if writes and deadline_ms is not None else None,
+            timeout_s=self._response_timeout_s(deadline_ms),
         )
         if raw is None:
             return None
@@ -630,3 +643,10 @@ __all__ = [
     "DaemonOperationRejectedError",
     "DaemonSocketOwnershipError",
 ]
+
+
+def _request_deadline_s(operation: str, payload: Mapping[str, Any]) -> float:
+    """The request's own deadline: a scan-shaped read carries the scan deadline."""
+    from polylogue.operations.daemon_reads import operation_deadline_s
+
+    return operation_deadline_s(operation, payload)

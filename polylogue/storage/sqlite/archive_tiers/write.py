@@ -6943,6 +6943,7 @@ def _write_session_link(
         session = session.model_copy(update={"parent_session_provider_id": parent_native_id})
         if parent_native_id is None:
             return
+    _retire_stale_parser_assertions(conn, session_id, parent_native_id)
     hook_claim = _authoritative_parent_claim(
         conn,
         source_conn,
@@ -7097,6 +7098,225 @@ def _write_session_link(
             evidence_json=_json_dumps({**hook_evidence, "superseded_parser_parent": dst_native_id}),
             observed_at_ms=observed_at_ms,
         )
+
+
+def _retire_stale_parser_assertions(conn: sqlite3.Connection, session_id: str, parser_parent: str | None) -> None:
+    """Drop parser claims of a parent the child's current parse no longer asserts.
+
+    A full replace keeps hook-derived edges, and a contradicted edge is one of
+    them, so without this a parser revision A -> B under a contradicting hook
+    leaves the retired A claim beside the current B claim.
+    ``rederive_codex_spawn_parent_links`` recovers the parser's parent from
+    these rows, so a surviving A would come back, with its link type,
+    inheritance and branch point, the next time the hook parent moves. A
+    contradicted edge carries nothing but the parser's claim, so it goes; an
+    authoritative edge stays as hook evidence and loses only the claim.
+    """
+    conn.execute(
+        "DELETE FROM session_links WHERE src_session_id = ? AND method = ? AND dst_native_id IS NOT ?",
+        (session_id, HOOK_CONTRADICTED_LINK_METHOD, parser_parent),
+    )
+    conn.execute(
+        """
+        UPDATE session_links
+           SET evidence_json = json_remove(evidence_json, '$.parent_session_provider_id')
+         WHERE src_session_id = ? AND method = ? AND dst_native_id IS NOT ?
+           AND json_extract(evidence_json, '$.parent_session_provider_id') IS NOT NULL
+        """,
+        (session_id, HOOK_AUTHORITATIVE_LINK_METHOD, parser_parent),
+    )
+
+
+def _link_evidence(raw: object) -> dict[str, object]:
+    try:
+        evidence = json.loads(str(raw)) if raw is not None else {}
+    except json.JSONDecodeError:
+        return {}
+    return evidence if isinstance(evidence, dict) else {}
+
+
+#: Evidence keys a hook decision adds to a parser edge; stripped before the
+#: edge is re-decided against a revised spawn-edge projection.
+_HOOK_DECISION_EVIDENCE_KEYS = ("codex_thread_spawn_edge_parent", "contradiction")
+
+
+def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids: Iterable[str]) -> list[str]:
+    """Re-decide archived Codex children's parent edges from the current projection.
+
+    ``_write_session_link`` consults the spawn-edge projection only when the
+    child is saved. A child saved before the state export that names its
+    parent -- raw replay order, or a live child whose spawn edge the runtime
+    records after the transcript -- keeps the inferred parent or none, and no
+    later save of the unchanged transcript revisits it. The projection writer
+    calls this for every child whose projected parent changed, so topology
+    converges to the same edges whichever of the two arrives first.
+
+    The parser's claim is recovered from the child's stored edge (its
+    ``parent_session_provider_id`` evidence); the hook decision is then the
+    same one ``_write_session_link`` makes. A child the projection is silent
+    about is left as its save wrote it, exactly as a save would. Returns the
+    session ids whose edges were rewritten.
+
+    Each rewritten child's parent pointer is set as soon as its edges resolve,
+    because the next child's cycle check reads it; roots and branch types are
+    then refreshed once over the closure of every rewritten child and its
+    descendants.
+    """
+    origin = Origin.CODEX_SESSION.value
+    rewritten: list[str] = []
+    for child_native_id in sorted({value.strip() for value in child_native_ids if value and value.strip()}):
+        child_session_id = _existing_session_id_for_native(conn, origin, child_native_id)
+        if child_session_id is None:
+            continue
+        hook_claim = _codex_spawn_edge_parent_claim(conn, None, child_native_id=child_native_id)
+        if hook_claim is None or hook_claim.parent_native_id is None:
+            continue
+        hook_parent = hook_claim.parent_native_id
+        rows = conn.execute(
+            """
+            SELECT dst_native_id, link_type, method, status, branch_point_message_id,
+                   branch_point_content_address, inheritance, parent_tool_use_block_id, evidence_json
+            FROM session_links
+            WHERE src_session_id = ? AND dst_origin = ?
+            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_native_id, link_type
+            """,
+            (child_session_id, origin),
+        ).fetchall()
+        authoritative = [str(row[0]) for row in rows if row[2] == HOOK_AUTHORITATIVE_LINK_METHOD and row[3] is None]
+        if authoritative == [hook_parent]:
+            continue
+        parser_row = next(
+            (
+                row
+                for row in rows
+                if row[2] not in HOOK_DERIVED_LINK_METHODS
+                or row[2] == HOOK_CONTRADICTED_LINK_METHOD
+                or "parent_session_provider_id" in _link_evidence(row[8])
+            ),
+            None,
+        )
+        timing = conn.execute(
+            "SELECT COALESCE(updated_at_ms, created_at_ms, 0) FROM sessions WHERE session_id = ?",
+            (child_session_id,),
+        ).fetchone()
+        observed_at_ms = int(timing[0]) if timing is not None and timing[0] is not None else 0
+        if parser_row is None:
+            _supersede_stale_authoritative_links(
+                conn,
+                src_session_id=child_session_id,
+                link_type=LinkType.SUBAGENT.value,
+                winning_dst_native_id=hook_parent,
+                observed_at_ms=observed_at_ms,
+            )
+            _upsert_session_link(
+                conn,
+                src_session_id=child_session_id,
+                dst_origin=origin,
+                dst_native_id=hook_parent,
+                link_type=LinkType.SUBAGENT.value,
+                branch_point_message_id=None,
+                inheritance=None,
+                status=None,
+                parent_tool_use_block_id=None,
+                method=HOOK_AUTHORITATIVE_LINK_METHOD,
+                confidence=1.0,
+                evidence_json=_json_dumps({**hook_claim.evidence, "parser_parent": None}),
+                observed_at_ms=observed_at_ms,
+            )
+        else:
+            (
+                parser_parent,
+                link_type,
+                _method,
+                _status,
+                branch_point_message_id,
+                branch_point_content_address,
+                inheritance,
+                parent_tool_use_block_id,
+                raw_evidence,
+            ) = parser_row
+            evidence = {
+                key: value
+                for key, value in _link_evidence(raw_evidence).items()
+                if key not in _HOOK_DECISION_EVIDENCE_KEYS
+                and not key.startswith("superseded_")
+                and not (key == "resolution_reason" and value == "identity-contradiction")
+            }
+            evidence.update(hook_claim.evidence)
+            agreeing = parser_parent == hook_parent
+            if not agreeing:
+                evidence["contradiction"] = "authoritative hook evidence names a different parent"
+                evidence["resolution_reason"] = "identity-contradiction"
+            _supersede_stale_authoritative_links(
+                conn,
+                src_session_id=child_session_id,
+                link_type=link_type,
+                winning_dst_native_id=hook_parent,
+                observed_at_ms=observed_at_ms,
+            )
+            _upsert_session_link(
+                conn,
+                src_session_id=child_session_id,
+                dst_origin=origin,
+                dst_native_id=parser_parent,
+                link_type=link_type,
+                branch_point_message_id=branch_point_message_id,
+                branch_point_content_address=branch_point_content_address,
+                inheritance=inheritance,
+                status=None if agreeing else TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value,
+                parent_tool_use_block_id=parent_tool_use_block_id,
+                method=HOOK_AUTHORITATIVE_LINK_METHOD if agreeing else HOOK_CONTRADICTED_LINK_METHOD,
+                confidence=1.0,
+                evidence_json=_json_dumps(evidence),
+                observed_at_ms=observed_at_ms,
+            )
+            if not agreeing:
+                _upsert_session_link(
+                    conn,
+                    src_session_id=child_session_id,
+                    dst_origin=origin,
+                    dst_native_id=hook_parent,
+                    link_type=link_type,
+                    branch_point_message_id=branch_point_message_id,
+                    branch_point_content_address=branch_point_content_address,
+                    inheritance=inheritance,
+                    status=None,
+                    parent_tool_use_block_id=parent_tool_use_block_id,
+                    method=HOOK_AUTHORITATIVE_LINK_METHOD,
+                    confidence=1.0,
+                    evidence_json=_json_dumps({**hook_claim.evidence, "superseded_parser_parent": parser_parent}),
+                    observed_at_ms=observed_at_ms,
+                )
+        _resolve_outbound_session_links(conn, child_session_id, origin)
+        parent_link = _composing_parent_link(conn, child_session_id)
+        conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+            (str(parent_link[0]) if parent_link is not None else None, child_session_id),
+        )
+        rewritten.append(child_session_id)
+    if not rewritten:
+        return rewritten
+    # A rewritten child's descendants inherit its root, so the closure is
+    # refreshed in one pass: one seen set means each session, and each
+    # ancestor the refresh climbs to, is projected once.
+    impacted = [
+        str(row[0])
+        for row in conn.execute(
+            """
+            WITH RECURSIVE below(session_id) AS (
+                SELECT value FROM json_each(?)
+                UNION
+                SELECT s.session_id FROM sessions AS s JOIN below ON s.parent_session_id = below.session_id
+            )
+            SELECT session_id FROM below
+            """,
+            (json.dumps(rewritten),),
+        )
+    ]
+    seen: set[str] = set()
+    for session_id in impacted:
+        _refresh_session_projection(conn, session_id, seen=seen)
+    return rewritten
 
 
 def _session_target_resolution_reason(conn: sqlite3.Connection, origin: str, provider_value: str) -> str | None:
@@ -7683,11 +7903,9 @@ def _projected_session_kind(conn: sqlite3.Connection, session_id: str, branch_ty
     return admitted_session_kind(row[0], branch_type=cast("str | None", branch_type)).value
 
 
-def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
-    if session_id in seen:
-        return
-    seen.add(session_id)
-    parent_link = conn.execute(
+def _composing_parent_link(conn: sqlite3.Connection, session_id: str) -> tuple[object, object] | None:
+    """Return ``(resolved parent session id, link type)`` of the edge the projection composes."""
+    row = conn.execute(
         f"""
         SELECT resolved_dst_session_id, link_type
         FROM session_links
@@ -7698,6 +7916,14 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         """,
         (session_id,),
     ).fetchone()
+    return (row[0], row[1]) if row is not None else None
+
+
+def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
+    if session_id in seen:
+        return
+    seen.add(session_id)
+    parent_link = _composing_parent_link(conn, session_id)
     if parent_link is None:
         unresolved_link = conn.execute(
             """
@@ -10851,18 +11077,23 @@ def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
         return None
-    parent_session_id = archive_session_id(origin_value, parent_provider_id.strip())
+    return _existing_session_id_for_native(conn, origin_value, parent_provider_id)
+
+
+def _existing_session_id_for_native(conn: sqlite3.Connection, origin_value: str, provider_id: str) -> str | None:
+    """Return the archived session one exact provider session id names, if unambiguous."""
+    session_id = archive_session_id(origin_value, provider_id.strip())
     row = conn.execute(
         "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
-        (parent_session_id,),
+        (session_id,),
     ).fetchone()
     if row is not None:
-        return parent_session_id
+        return session_id
     row = conn.execute(
         """SELECT claimant_session_id FROM session_identity_claims
            WHERE origin = ? AND identity_namespace = 'provider-session'
              AND provider_value = ? ORDER BY claimant_session_id""",
-        (origin_value, parent_provider_id.strip()),
+        (origin_value, provider_id.strip()),
     ).fetchall()
     return str(row[0][0]) if len(row) == 1 else None
 
@@ -12061,6 +12292,7 @@ __all__ = [
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",
     "read_archive_session_envelope",
+    "rederive_codex_spawn_parent_links",
     "search_archive_blocks",
     "write_parsed_session_to_archive",
 ]

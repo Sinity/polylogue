@@ -46,7 +46,7 @@ class RepositoryArchiveSessionMixin:
         if not session_ids:
             return {}
         result: dict[str, list[str]] = {cid: [] for cid in session_ids}
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             for table in ("session_tags", "tags"):
                 table_cursor = await conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
@@ -406,7 +406,7 @@ class RepositoryArchiveSessionMixin:
         def _keyed(rows: list[Any]) -> dict[str, int]:
             return {row[0]: row[1] for row in rows if row[0]}
 
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             ids = session_ids  # None → global, list → scoped
 
             result["repos"] = _keyed(

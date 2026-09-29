@@ -415,6 +415,23 @@ class BlobStore:
             self._fsync_directory(self.root)
         return outcome
 
+    def publish_prepared_renewing(self, prepared: PreparedBlob) -> tuple[str, int]:
+        """Publish like :meth:`publish_prepared`, renewing an existing copy's age.
+
+        For a publisher outside the archive reservation protocol (a parse
+        worker without a write lease). Deduplicating against an old,
+        unreferenced copy would hand back bytes blob GC may reclaim at once;
+        touching the copy's mtime puts it back inside GC's minimum-age window
+        until the writer reserves it (``ArchiveBlobPublisher.adopt_published``
+        proves it present then). The prepared file is consumed either way.
+        """
+        try:
+            os.utime(self.blob_path(prepared.hash_hex))
+        except FileNotFoundError:
+            return self.publish_prepared(prepared)
+        self.discard_prepared(prepared)
+        return prepared.hash_hex, prepared.size_bytes
+
     def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:
         """Publish a prepared batch in input order, persisting each directory once.
 

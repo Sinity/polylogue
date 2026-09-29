@@ -834,6 +834,33 @@ AFTER DELETE ON sessions BEGIN
     DELETE FROM session_summary_bindings WHERE session_id = OLD.session_id;
 END;
 
+-- A session's retained enrichment evidence (``sources/revision_backfill.py``
+-- ``session_enrichment_evidence_key``): the digest of exactly the evidence its
+-- title and metadata were derived from, recorded by the writer that published
+-- it. Raw-observation inspection compares it with the evidence the archive
+-- holds now, so a session index, prompt history or thread-state export admitted
+-- after the session was written re-derives it through the canonical retained
+-- route, whatever order the bytes arrived in. A rewrite of the session row
+-- retires the binding; an absent binding cannot certify the session and is
+-- derived again, never assumed current.
+CREATE TABLE IF NOT EXISTS session_enrichment_bindings (
+    {TABLE_SPECS["session_enrichment_bindings"].ddl_body}
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS session_enrichment_binding_sessions_ai
+AFTER INSERT ON sessions BEGIN
+    DELETE FROM session_enrichment_bindings WHERE session_id = NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS session_enrichment_binding_sessions_au
+AFTER UPDATE OF content_hash, title ON sessions
+WHEN OLD.content_hash IS NOT NEW.content_hash OR OLD.title IS NOT NEW.title
+  OR OLD.session_id IS NOT NEW.session_id BEGIN
+    DELETE FROM session_enrichment_bindings WHERE session_id IN (OLD.session_id, NEW.session_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_enrichment_binding_sessions_ad
+AFTER DELETE ON sessions BEGIN
+    DELETE FROM session_enrichment_bindings WHERE session_id = OLD.session_id;
+END;
+
 CREATE TABLE IF NOT EXISTS blocks (
     {TABLE_SPECS["blocks"].ddl_body}
 ) STRICT;

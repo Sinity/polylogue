@@ -4624,7 +4624,14 @@ def test_live_append_chain_survives_post_ingest_compaction(
         assert all(row[4] is not None and row[5] is None for row in raw_rows)
         raw_by_id = {str(row[0]): row for row in raw_rows}
     final_file_mtime = datetime.fromtimestamp(raw_rows[-1][6] / 1000, UTC).isoformat()
-    expected_session = normalize_session_timestamps(expected_sessions[0], fallback_timestamp=final_file_mtime)
+    from polylogue.sources.assembly import get_assembly_spec
+
+    codex_assembly = get_assembly_spec(Provider.CODEX)
+    assert codex_assembly is not None
+    # Live intake publishes the retained-replay interpretation: provider
+    # assembly titles the session from its first authored prompt.
+    expected_session = codex_assembly.enrich_session(expected_sessions[0], {})
+    expected_session = normalize_session_timestamps(expected_session, fallback_timestamp=final_file_mtime)
     expected_session = expected_session.model_copy(
         update={"updated_at": final_file_mtime, "updated_at_provenance": "fallback"}
     )
@@ -4632,6 +4639,7 @@ def test_live_append_chain_survives_post_ingest_compaction(
     with sqlite3.connect(index_db) as conn:
         session_native_id, session_hash = conn.execute("SELECT native_id, content_hash FROM sessions").fetchone()
         assert session_native_id == "append-v1"
+        assert conn.execute("SELECT title FROM sessions").fetchone()[0] == "zero"
         assert {str(row[0]) for row in conn.execute("SELECT native_id FROM messages")} == {
             "message-0",
             "message-1",

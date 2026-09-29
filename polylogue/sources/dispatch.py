@@ -716,6 +716,23 @@ def _title_evidence_rank(session: ParsedSession) -> int:
     return 0
 
 
+def _later_chunk_title_winner(existing: ParsedSession, later: ParsedSession) -> ParsedSession:
+    """Resolve title evidence across two consecutive chunks of one stream.
+
+    Stronger evidence wins. Between equal provider records the later chunk
+    wins, as the whole-file parse keeps the latest rename or ai-title record;
+    a first-human-message heuristic (and absent evidence) keeps the earlier
+    chunk, whose first message it names.
+    """
+    existing_rank = _title_evidence_rank(existing)
+    later_rank = _title_evidence_rank(later)
+    if existing_rank != later_rank:
+        return existing if existing_rank > later_rank else later
+    if existing.title_source is TitleSource.ORIGIN:
+        return later
+    return existing
+
+
 def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
     """Merge repeated provider-native sessions produced by streaming chunks."""
 
@@ -829,7 +846,7 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
         # a later chunk of the same streamed session. All three title fields
         # move together so title_source/title_ref never point at a different
         # chunk's evidence than the title text they describe.
-        title_winner = existing if _title_evidence_rank(existing) >= _title_evidence_rank(session) else session
+        title_winner = _later_chunk_title_winner(existing, session)
         # A branch point names a message inside the parent, so it is only
         # carried forward from a chunk that asserts the parent that wins.
         parent_winner = existing if existing.parent_session_provider_id else session
@@ -1940,8 +1957,8 @@ def require_positive_conversational_evidence(
     own OriginSpec/``classify_artifact`` path-and-shape gate from
     polylogue-6mpy -- this filter catches the sibling case where the shape
     is recognized but the parsed *content* still carries no message), and
-    ``pipeline/services/archive_ingest.py`` (the one-shot importer behind
-    ``Polylogue.parse_file``/``parse_sources`` and the demo seeder).
+    ``operations/canonical_archive_ingest.py`` (the one-shot importer behind
+    the demo seeder).
 
     Measured against the live archive (2026-07-31, read-only query against
     ``index.db``/``source.db``): every verified zero-message

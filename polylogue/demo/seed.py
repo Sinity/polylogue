@@ -1268,7 +1268,7 @@ def _write_demo_hermes_sources(source_root: Path) -> None:
 def _materialize_session_insights(archive_root: Path, session_ids: list[str]) -> None:
     """Build the session-profile insight read models for *session_ids*.
 
-    ``parse_sources_archive`` writes the ``sessions``/``messages`` tree but does
+    ``ingest_one_shot_archive`` writes the ``sessions``/``messages`` tree but does
     not materialize the derived insight tables (``session_profiles`` and
     siblings); the daemon convergence path normally does that in a separate
     stage. The no-daemon demo seed must run the same rebuild so that the
@@ -1634,7 +1634,7 @@ def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
     """Apply deterministic demo-only enrichments after any ingest path.
 
     Fixture ingest alone -- whether through the direct seeder's
-    ``parse_sources_archive`` call or the live daemon's acquire/parse/
+    ``ingest_one_shot_archive`` call or the live daemon's acquire/parse/
     materialize/index pipeline behind ``polylogue import --demo --wait`` --
     produces only the parsed session/message tree. Provider usage injection,
     insight-table materialization, a canonical repo name, and synthetic

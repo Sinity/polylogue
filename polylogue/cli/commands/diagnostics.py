@@ -140,7 +140,7 @@ def pace_command(
         # a direct/standalone invocation (e.g. under test) has no parent,
         # and falling back to this command's OWN params would risk reading
         # a same-named local option as if it were the root filter.
-        session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx)))
+        session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx)), env=env, operation="analyze pace")
     run_coroutine_sync(_pace(env, session_id, limit, threshold))
 
 
@@ -216,7 +216,9 @@ def turns_command(ctx: click.Context, session_id: str | None, limit: int) -> Non
 
     env: AppEnv = ctx.obj
     if session_id is None:
-        session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx)))
+        session_id = resolve_session_id_from_root_params(
+            dict(find_root_params(ctx)), env=env, operation="analyze turns"
+        )
         if not session_id:
             fail("turns", "turns requires a session ID (positional or --latest/--origin)")
     run_coroutine_sync(_turns(env, session_id, limit))
@@ -307,6 +309,7 @@ def usage_command(
     """
     import json
 
+    from polylogue.cli.select import machine_output_requested
     from polylogue.cli.shared.insight_command_contracts import find_root_params
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
@@ -316,7 +319,12 @@ def usage_command(
         # a direct/standalone invocation has no parent, and this command's
         # own `--origin` audit filter must never be misread as the root
         # query `--origin` session-narrowing filter.
-        session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx)))
+        session_id = resolve_session_id_from_root_params(
+            dict(find_root_params(ctx)),
+            env=env,
+            operation="analyze usage",
+            machine_output=machine_output_requested(output_format),
+        )
     if session_id is not None:
         reconciliation = run_coroutine_sync(env.polylogue.session_usage_reconciliation(session_id))
         if output_format == "json":
@@ -574,11 +582,21 @@ def tools_command(
     every call unconditionally joined/materialized the whole archive
     (polylogue-zumd).
     """
+    from polylogue.cli.select import machine_output_requested
     from polylogue.cli.shared.insight_command_contracts import find_root_params
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
     env: AppEnv = ctx.obj
-    session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx))) if ctx.parent is not None else None
+    session_id = (
+        resolve_session_id_from_root_params(
+            dict(find_root_params(ctx)),
+            env=env,
+            operation="analyze tools",
+            machine_output=machine_output_requested(output_format),
+        )
+        if ctx.parent is not None
+        else None
+    )
     run_coroutine_sync(
         _tools(
             env,

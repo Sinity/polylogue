@@ -18,8 +18,7 @@ from click.shell_completion import CompletionItem
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
-    from polylogue.cli.select import SelectPrintField
-    from polylogue.config import Config
+    from polylogue.cli.select import SelectPrintField, SelectSessionRow
     from polylogue.surfaces.payloads import FacetsResponse
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
@@ -1461,7 +1460,15 @@ def read_verb(
         or exact_session_ref
         or not handler_metadata.accepts_query_set
     ):
-        session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
+        from polylogue.cli.select import machine_output_requested
+
+        session_id = _resolve_query_action_session_id(
+            env,
+            request,
+            operation="read",
+            first_only=first_only,
+            machine_output=machine_output_requested(output_format),
+        )
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
     projection_spec = _build_read_projection_spec(
         request,
@@ -1635,7 +1642,11 @@ def continue_verb(
         raise click.UsageError("--repo, --cwd, and --recent are only valid with continue --candidates.")
     if candidate_limit != _CONTINUE_CANDIDATE_DEFAULT_LIMIT:
         raise click.UsageError("--limit is only valid with continue --candidates.")
-    session_id = _resolve_query_action_session_id(env, request, operation="continue")
+    from polylogue.cli.select import machine_output_requested
+
+    session_id = _resolve_query_action_session_id(
+        env, request, operation="continue", machine_output=machine_output_requested(output_format)
+    )
     if session_id is None:
         raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
     session = run_coroutine_sync(env.polylogue.get_session(session_id))
@@ -2604,31 +2615,31 @@ def _is_direct_session_ref(ref: str | None) -> bool:
         return False
 
 
-def _resolve_target_session_id(request: RootModeRequest) -> str | None:
+def _resolve_target_session_id(
+    request: RootModeRequest,
+    *,
+    env: AppEnv | None = None,
+    operation: str = "read",
+    first_only: bool = False,
+    machine_output: bool = False,
+) -> str | None:
     """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
-    if request.query_terms:
-        from polylogue.cli.session_rows import query_session_ids
+    from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params, resolve_single_session_id
 
+    if request.query_terms:
         explicit = request.params.get("conv_id")
         if isinstance(explicit, str) and explicit:
             return explicit
         spec = request.query_spec()
         if _spec_is_exact_session_ref(spec):
             return cast("str", spec.session_id)
-        if not spec.latest and not spec.has_filters():
-            return None
-        session_ids = query_session_ids(_request_config(request), request, limit=1)
-        return session_ids[0] if session_ids else None
+        return resolve_single_session_id(
+            request, env=env, operation=operation, first_only=first_only, machine_output=machine_output
+        )
 
-    from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
-
-    return resolve_session_id_from_root_params(dict(request.params))
-
-
-def _request_config(request: RootModeRequest) -> Config:
-    """The configuration a resolution runs against."""
-
-    return cast("Config", request.config())
+    return resolve_session_id_from_root_params(
+        dict(request.params), env=env, operation=operation, first_only=first_only, machine_output=machine_output
+    )
 
 
 def _resolve_query_action_session_id(
@@ -2637,8 +2648,13 @@ def _resolve_query_action_session_id(
     *,
     operation: str,
     first_only: bool = False,
+    machine_output: bool = False,
 ) -> str | None:
-    """Resolve one query-action session with explicit ranked-result cardinality."""
+    """Resolve one query-action session with explicit ranked-result cardinality.
+
+    ``machine_output`` is the verb's own output contract: a JSON/JSONL format
+    refuses an ambiguous selection with its candidates even on a terminal.
+    """
     if request.query_terms:
         from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
         from polylogue.cli.session_rows import query_session_rows
@@ -2658,16 +2674,22 @@ def _resolve_query_action_session_id(
         session_ids = [row.session_id for row in rows]
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
         if len(session_ids) > 1 and not first_only:
-            from polylogue.cli.select import resolve_ambiguous_selection
+            from polylogue.cli.select import machine_output_requested, resolve_ambiguous_selection
+
+            def every_row() -> list[SelectSessionRow]:
+                # The probe bounds only the refusal's candidate display; the
+                # chooser offers the whole selection.
+                if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
+                    return list(rows)
+                return query_session_rows(env.config, request, limit=None)
 
             return resolve_ambiguous_selection(
                 env,
                 session_ids,
                 operation=operation,
                 multi_match_hint=multi_match_hint,
-                # The rows the chooser labels are the rows the ids came from, so
-                # the second read the facade route needed is gone.
-                rows_loader=lambda: rows,
+                rows_loader=every_row,
+                machine_output=machine_output or machine_output_requested(request.params.get("output_format")),
             )
         check_cardinality(
             len(session_ids),
@@ -2679,7 +2701,9 @@ def _resolve_query_action_session_id(
         )
         return session_ids[0] if session_ids else None
 
-    return _resolve_target_session_id(request)
+    return _resolve_target_session_id(
+        request, env=env, operation=operation, first_only=first_only, machine_output=machine_output
+    )
 
 
 def _resolve_query_action_session_ids(
@@ -2704,33 +2728,29 @@ def _resolve_query_action_session_ids(
     miss used to come back as a context image built from unrelated sessions
     and be handed to a resume/handoff as if it answered the query.
     """
-    if request.query_terms:
-        from polylogue.cli.session_rows import query_session_ids
-        from polylogue.cli.verb_cardinality import check_cardinality
+    from polylogue.cli.session_rows import query_session_ids
+    from polylogue.cli.verb_cardinality import check_cardinality
 
-        explicit = request.params.get("conv_id")
-        if isinstance(explicit, str) and explicit:
-            return [explicit]
-        spec = request.query_spec()
-        if _spec_is_exact_session_ref(spec):
-            return [cast("str", spec.session_id)]
-        if not spec.latest and not spec.has_filters():
-            # Query terms that narrow nothing are not a selection at all; the
-            # caller may still use the raw text as a relevance hint.
-            return []
-        session_ids = query_session_ids(env.config, request, limit=1 if first_only else limit)
-        # ``allow_all=True``: this is the multi-session route, so several
-        # matches are the normal case. Zero always raises regardless.
-        check_cardinality(
-            len(session_ids),
-            allow_all=True,
-            first_only=first_only,
-            operation="read the matched sessions",
-        )
-        return session_ids
-
-    single = _resolve_target_session_id(request)
-    return [single] if single else []
+    explicit = request.params.get("conv_id")
+    if isinstance(explicit, str) and explicit:
+        return [explicit]
+    spec = request.query_spec()
+    if _spec_is_exact_session_ref(spec):
+        return [cast("str", spec.session_id)]
+    if not spec.latest and not spec.has_filters():
+        # Query terms that narrow nothing are not a selection at all; the
+        # caller may still use the raw text as a relevance hint.
+        return []
+    session_ids = query_session_ids(env.config, request, limit=1 if first_only else limit)
+    # ``allow_all=True``: this is the multi-session route, so several
+    # matches are the normal case. Zero always raises regardless.
+    check_cardinality(
+        len(session_ids),
+        allow_all=True,
+        first_only=first_only,
+        operation="read the matched sessions",
+    )
+    return session_ids
 
 
 def _render_context_image_markdown(image: object, *, compact: bool = False) -> str:
