@@ -8,7 +8,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from polylogue.archive.query.execution_control import InterruptibleSQLiteRead, QueryExecutionContext
+from polylogue.archive.query.execution_control import (
+    InterruptibleSQLiteRead,
+    QueryCancelledError,
+    QueryExecutionContext,
+    QueryTimeoutError,
+    QueryWorkBudgetExceededError,
+)
 from polylogue.archive.query.search_contract import LaneFailure
 from polylogue.core.errors import DatabaseError
 from polylogue.operations.mutation_transaction import MutationPrincipal
@@ -175,6 +181,26 @@ def observe_embedding_mutation_authority(root: Path) -> OperationControlRead:
     return replace(snapshot, schema_versions=versions, degraded_components=tuple(degraded))
 
 
+def _abort_checkpoint(ctx: QueryExecutionContext) -> Callable[[], None]:
+    """A Python-level abort checkpoint for reads between SQL statements.
+
+    It raises the same typed errors the SQLite progress handler raises for
+    ``ctx.abort_reason()``, so the operation envelope reports ``cancelled`` or
+    ``timed-out`` instead of an unmapped exception.
+    """
+
+    def check() -> None:
+        reason = ctx.abort_reason()
+        if reason == "cancelled":
+            raise QueryCancelledError(f"archive read cancelled (call {ctx.call_id})")
+        if reason == "work_budget_exceeded":
+            raise QueryWorkBudgetExceededError(f"archive read exceeded SQLite work budget (call {ctx.call_id})")
+        if reason == "timed_out":
+            raise QueryTimeoutError(f"archive read exceeded deadline (call {ctx.call_id})")
+
+    return check
+
+
 @contextmanager
 def open_operation_read(
     root: Path,
@@ -234,6 +260,12 @@ def open_operation_read(
                 cleanup.callback(end_snapshot)
             if execution_context is not None:
                 cleanup.enter_context(InterruptibleSQLiteRead(execution_context).control_store(archive))
+                # Optional per-read checkpoint that read_view_lineage reads with
+                # getattr; ArchiveStore does not declare it, so it is attached
+                # dynamically. It raises the typed abort error for the reason.
+                setattr(  # noqa: B010
+                    archive, "operation_raise_if_aborted", _abort_checkpoint(execution_context)
+                )
             pin_snapshot = getattr(archive, "pin_operation_snapshot", None)
             # The read-result cache epoch is the announced index-content
             # revision, and it must describe the snapshot this read actually

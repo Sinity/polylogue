@@ -157,6 +157,8 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
     include_assertions = bool(payload.get("include_assertions", True))
     redact_paths = bool(payload.get("redact_paths", True))
     seed_session_ids = payload.get("seed_session_ids") or ()
+    if seed_session_ids:
+        seed_session_ids = tuple(seed_session_ids)[:max_sessions]
     seed_refs = (
         tuple(f"session:{session_id}" for session_id in seed_session_ids)
         if seed_session_ids

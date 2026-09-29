@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
     from polylogue.archive.models import Session
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.query.search_hits import SearchHitResults, SessionSearchHit
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats
     from polylogue.readiness import ReadinessCheck, ReadinessReport
@@ -707,9 +707,9 @@ def neighbor_candidates_payload(
 
 
 def session_search_result_payload(
-    hits: Sequence[SessionSearchHit],
+    hits: SearchHitResults,
     *,
-    total: int,
+    total: int | None,
     limit: int,
     offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
@@ -749,6 +749,7 @@ def session_search_result_payload(
         sort=sort,
         diagnostics=diag_payload,
         cursor=cursor,
+        execution=hits.execution,
     )
 
 

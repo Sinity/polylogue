@@ -51,7 +51,7 @@ def _row(
     source_path: str,
     *,
     payload: bytes,
-    source_index: int,
+    source_index: int | None,
     addressing_mode: str = "",
 ) -> dict[str, object]:
     return {
@@ -305,10 +305,10 @@ def test_split_elements_persist_structural_identity_for_replay(tmp_path: Path) -
 
 
 def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
-    """A row recorded as whole-member reads the member, not an element.
+    """A legacy NULL index resolves the preserved whole member at index zero.
 
-    Anti-vacuity: element resolution would look for index 0 in a member that
-    yields no elements and report the blob unrecoverable.
+    Anti-vacuity: returning ``None`` for the legacy split index would refuse
+    the valid member before reopening the ZIP.
     """
     zip_path = tmp_path / "single.zip"
     document = _session("only")
@@ -320,8 +320,8 @@ def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
         _row(
             recorded_path,
             payload=member_bytes,
-            source_index=0,
-            addressing_mode=MemberAddressingMode.WHOLE_MEMBER.value,
+            source_index=None,
+            addressing_mode="",
         ),
         source_path=recorded_path,
         zip_payload_cache={},

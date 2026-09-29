@@ -222,7 +222,7 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
         if object_ref.kind == "assertion":
             return _resolve_assertion_object_ref(root, ref, normalized_ref, object_ref)
         if object_ref.kind == "finding":
-            return _resolve_finding_object_ref(root, ref, normalized_ref, object_ref)
+            return _resolve_finding_object_ref(root, ref, normalized_ref, object_ref, archive.index_connection)
         if object_ref.kind == "annotation-batch":
             return _resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind == "delegation":
@@ -621,6 +621,7 @@ def _resolve_finding_object_ref(
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
+    index_conn: sqlite3.Connection | None,
 ) -> PublicRefResolutionPayload:
     from polylogue.operations.finding_evidence import evaluate_finding_evidence
     from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
@@ -639,9 +640,9 @@ def _resolve_finding_object_ref(
         )
     with closing(open_readonly_connection(user_db)) as conn:
         conn.row_factory = sqlite3.Row
-        provenance = compute_finding_provenance(conn, object_ref.object_id)
+        provenance = compute_finding_provenance(conn, object_ref.object_id, index_conn=index_conn)
         controls_document = _finding_controls_document(conn, object_ref.object_id)
-        integrity = None if provenance is None else evaluate_finding_evidence(conn, provenance)
+        integrity = None if provenance is None else evaluate_finding_evidence(conn, provenance, index_conn=index_conn)
     if provenance is None or integrity is None:
         return cast(
             PublicRefResolutionPayload,

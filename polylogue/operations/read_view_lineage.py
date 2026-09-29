@@ -7,6 +7,7 @@ from collections.abc import Mapping
 
 from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.surfaces.outcome import lineage_page_outcome
 
 
 def _int_field(payload: Mapping[str, object], name: str, default: int | None) -> int | None:
@@ -28,17 +29,36 @@ def execute_lineage_read(payload: Mapping[str, object], *, archive: ArchiveStore
     )
     if graph is None:
         raise KeyError(f"Session not found: {payload['session_id']}")
-    return {"view": "lineage", "payload": graph.model_dump(mode="json")}
+    result = graph.model_dump(mode="json")
+    # A page past offset 0 omits earlier rows just as a page with more after it
+    # omits later ones; either way this answer is not the whole graph.
+    nodes_partial = graph.node_page.has_more or (_int_field(payload, "node_offset", 0) or 0) > 0
+    edges_partial = graph.edge_page.has_more or (_int_field(payload, "edge_offset", 0) or 0) > 0
+    truncated = nodes_partial or edges_partial
+    reason = "nodes" if nodes_partial else "edges" if edges_partial else "cycle" if graph.cycle_detected else None
+    outcome = lineage_page_outcome(
+        matched=len(graph.nodes), complete=not truncated and not graph.cycle_detected, truncation_reason=reason
+    )
+    result["outcome"] = outcome.to_dict()
+    return {"view": "lineage", "payload": result}
 
 
 class _TopologySnapshot:
-    def __init__(self, archive: ArchiveStore) -> None:
+    def __init__(self, archive: ArchiveStore, raise_if_aborted: object = None) -> None:
         connection = archive.index_connection
         if connection is None:
             raise ValueError("topology requires an index snapshot")
         self.connection = connection
+        self.raise_if_aborted = raise_if_aborted
+
+    def check_cancelled(self) -> None:
+        # Raises the shared controller's typed QueryCancelledError /
+        # QueryTimeoutError so the operation envelope reports the real reason.
+        if callable(self.raise_if_aborted):
+            self.raise_if_aborted()
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
+        self.check_cancelled()
         from polylogue.storage.sqlite.queries.mappers import _row_to_session
         from polylogue.storage.sqlite.queries.sessions_reads import _SESSION_RECORD_SELECT
 
@@ -50,6 +70,7 @@ class _TopologySnapshot:
     async def list_session_links_for_session(
         self, session_id: str, *, limit: int | None = None
     ) -> list[dict[str, object]]:
+        self.check_cancelled()
         from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS
 
         bound = "" if limit is None else " LIMIT ?"
@@ -62,6 +83,7 @@ class _TopologySnapshot:
         return [dict(row) for row in cursor.fetchall()]
 
     async def list_session_links_to_session(self, session_id: str, *, limit: int) -> list[dict[str, object]]:
+        self.check_cancelled()
         from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS
 
         cursor = self.connection.execute(
@@ -81,9 +103,10 @@ def execute_topology_read(payload: Mapping[str, object], *, archive: ArchiveStor
         resolved = archive.resolve_session_id(session_id)
     except KeyError as exc:
         raise KeyError(f"Session not found: {session_id}") from exc
+    snapshot = _TopologySnapshot(archive, getattr(archive, "operation_raise_if_aborted", None))
     topology = asyncio.run(
         derive_session_topology_async(
-            _TopologySnapshot(archive),
+            snapshot,
             resolved,
             node_offset=_int_field(payload, "node_offset", 0) or 0,
             node_limit=_int_field(payload, "node_limit", 200) or 200,
@@ -94,7 +117,11 @@ def execute_topology_read(payload: Mapping[str, object], *, archive: ArchiveStor
         raise KeyError(f"Session not found: {session_id}")
     return {
         "view": "topology",
-        "payload": topology_public_envelope(topology, session_id=session_id),
+        "payload": topology_public_envelope(
+            topology,
+            session_id=resolved,
+            node_offset=_int_field(payload, "node_offset", 0) or 0,
+        ),
     }
 
 

@@ -11,8 +11,6 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias, cast
 
-from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
-
 
 @dataclass(frozen=True, slots=True)
 class SessionListProjection:
@@ -87,11 +85,6 @@ MCP_GET_SESSION_PROJECTION_NAMES = mcp_get_session_projection_names()
 # runtime tuple expansion as a type expression, but Python and Pydantic can.
 MCPReadView: TypeAlias = cast(Any, Literal.__getitem__(mcp_read_view_names())) | None  # type: ignore[valid-type]
 MCPGetSessionProjection: TypeAlias = cast(Any, Literal.__getitem__(mcp_get_session_projection_names())) | None  # type: ignore[valid-type]
-
-_UNDECLARED = set(SESSION_LIST_PROJECTIONS) - set(READ_VIEW_PROFILE_BY_ID)
-if _UNDECLARED:
-    raise RuntimeError(f"session projections not in the shared read-view vocabulary: {sorted(_UNDECLARED)}")
-
 
 __all__ = [
     "MCP_GET_SESSION_PROJECTION_NAMES",

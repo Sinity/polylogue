@@ -44,6 +44,8 @@ from polylogue.operations.mutation_actuators import (
     AnnotationSaveArgs,
     BlackboardPostActuator,
     BlackboardPostArgs,
+    BlobPublicationAbandonActuator,
+    BlobPublicationAbandonArgs,
     BlockerResolveActuator,
     BlockerResolveArgs,
     BulkMetadataSetActuator,
@@ -101,6 +103,8 @@ from polylogue.operations.mutation_transaction import (
     MutationTransactionError,
     OperationExecutor,
     PlanStaleError,
+    RecoveryDeferredError,
+    build_plan,
 )
 from polylogue.storage.accepted_marker_inputs import persist_pending_marker_input_sync, prepare_accepted_marker_input
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -109,6 +113,27 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
 )
+
+
+def test_blob_abandon_refuses_blocked_liveness_before_deleting_any_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: BLOCKED cannot be folded into the deletable unreferenced set."""
+    actuator = BlobPublicationAbandonActuator()
+    plan = build_plan(
+        operation=actuator.operation,
+        destructive_class=actuator.destructive_class,
+        target_refs=("source:blob-publication:blocked",),
+        affected_tiers=("source", "audit"),
+        reversible=False,
+        context={"requested": ["blocked"], "blocked": ["blocked"]},
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.blob_publication.abandon_blob_publication_receipts",
+        lambda *args, **kwargs: pytest.fail("blocked evidence must stop before deletion"),
+    )
+    with pytest.raises(RecoveryDeferredError, match="blocked"):
+        actuator.apply(plan, BlobPublicationAbandonArgs(tmp_path, ("blocked",)))
 
 
 def test_delete_batch_reports_non_value_error_after_a_committed_chunk(monkeypatch: pytest.MonkeyPatch) -> None:

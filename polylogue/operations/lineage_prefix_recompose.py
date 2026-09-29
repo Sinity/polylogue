@@ -259,6 +259,7 @@ def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
+        false_means_pending=True,
     )
 
 

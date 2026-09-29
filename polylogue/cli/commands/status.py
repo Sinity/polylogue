@@ -1010,12 +1010,14 @@ def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:
         return
     candidates = _safe_int(backlog.get("candidate_count"))
     missing = _safe_int(backlog.get("missing_blob_count"))
-    if candidates <= 0 and missing <= 0:
+    if candidates <= 0 and missing <= 0 and backlog.get("page_complete", True):
         return
     total_bytes = _safe_int(backlog.get("total_blob_bytes"))
     max_bytes = _safe_int(backlog.get("max_blob_bytes"))
     oversized = _safe_int(backlog.get("oversized_count"))
     line = f"  Raw replay backlog: [yellow]{candidates:,} raw row(s), {_fmt_bytes(total_bytes)} pending"
+    if not backlog.get("page_complete", True):
+        line += "; bounded page incomplete, additional backlog may remain"
     if max_bytes:
         line += f"; largest {_fmt_bytes(max_bytes)}"
     if missing:

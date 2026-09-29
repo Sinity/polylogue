@@ -67,7 +67,7 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
   other typed fact the archive records): `record_id = "{session_id}:{position}"`
 
 Records live in one of two **spaces** with different mutability contracts
-(semantics v4), each with its own strictly increasing `seq` starting at 0 —
+(semantics v5), each with its own strictly increasing `seq` starting at 0 —
 together this **is** the manifest's `sequence_rule`:
 
 **Head** (`head.ndjson`, reserved segment index `-1`) — the revision-mutable
@@ -98,6 +98,12 @@ every previously emitted one, while every fact that changes on growth
 (counts, aggregates, timestamps, titles) lives in the head, which is always
 current because it is always re-encoded. Mutable revision summaries never
 sit inside bytes whose contract is reuse.
+
+Each `message` record's `usage` object has nullable `input_tokens`,
+`output_tokens`, `cache_read_tokens`, `cache_write_tokens`, and `duration_ms`
+counters. A `null` counter means the source did not report a value; `0` means
+the source reported a measured zero. This distinction is part of semantics v5
+and is covered by the record digest.
 
 Tool call/result correlation is carried structurally: a `tool_use` block and
 its `tool_result` block share `tool_id`; `tool_outcome` on the result block is

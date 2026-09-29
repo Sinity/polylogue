@@ -19,23 +19,40 @@ from .seed import DEMO_SOURCE_DIRNAME
 
 
 def _expected_demo_session_ids(archive_root: Path) -> set[str]:
-    """Return the seeded ids, deriving Hermes identity from its fixture path.
+    """Return the seeded ids, deriving Hermes identity from retained seed evidence.
 
-    Hermes session ids include the profile qualifier computed from the source
-    install root.  The demo source is materialized beneath the archive root,
-    so derive the expected id through the same shared identity helpers used by
-    the parser instead of asserting the raw, pre-qualification id.
+    Hermes ids carry a profile qualifier hashed from the install root the
+    parser saw. The seeded raw row retains that source path, so an
+    inode-preserving archive relocation still derives the original qualifier,
+    and the archive's own session ids are never used as the oracle.
     """
 
-    hermes_snapshot = archive_root / DEMO_SOURCE_DIRNAME / "hermes" / "demo-00.json"
+    hermes_snapshot = _recorded_hermes_source_path(archive_root) or (
+        archive_root / DEMO_SOURCE_DIRNAME / "hermes" / "demo-00.json"
+    )
     hermes_id = qualified_session_id(
         DEMO_HERMES_SESSION_ID.removeprefix("hermes-session:"),
         profile_key(profile_root_for_artifact(hermes_snapshot)),
     )
     expected_ids = set(DEMO_SESSION_IDS)
     expected_ids.remove(DEMO_HERMES_SESSION_ID)
-    expected_ids.add(f"{DEMO_HERMES_SESSION_ID.split(':', maxsplit=1)[0]}:{hermes_id}")
+    expected_ids.add(f"hermes-session:{hermes_id}")
     return expected_ids
+
+
+def _recorded_hermes_source_path(archive_root: Path) -> Path | None:
+    """The one retained raw source path of the seeded Hermes snapshot, if unambiguous."""
+
+    source_db = archive_root / "source.db"
+    if not source_db.exists():
+        return None
+    suffix = f"/{DEMO_SOURCE_DIRNAME}/hermes/demo-00.json"
+    with _connect(source_db) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT source_path FROM raw_sessions WHERE substr(source_path, -length(?)) = ? LIMIT 2",
+            (suffix, suffix),
+        ).fetchall()
+    return Path(str(rows[0]["source_path"])) if len(rows) == 1 else None
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -126,6 +143,13 @@ def verify_demo_archive(
         )
         session_ids = {row.session_id for row in rows}
         query_hits = tuple(sorted(dict.fromkeys(hit.session_id for hit in hits)))
+        # Every archive read -- including the retained-path oracle, overlays
+        # and raw source paths -- stays inside this boundary so a corrupt or
+        # partial tier is a structured failure, never a crash.
+        expected_ids = _expected_demo_session_ids(archive_root)
+        overlay_count = _overlay_count(archive_root)
+        raw_source_paths = _raw_source_paths(archive_root) if check_source_path_leaks else ()
+        construct_coverage = evaluate_demo_constructs(archive_root) if check_constructs else ()
     except (OSError, sqlite3.Error) as exc:
         return DemoVerifyResult(
             archive_root=archive_root,
@@ -139,7 +163,6 @@ def verify_demo_archive(
             problems=(f"archive unreadable: {exc}",),
         )
 
-    expected_ids = _expected_demo_session_ids(archive_root)
     if session_ids != expected_ids:
         problems.append(f"expected demo sessions {sorted(expected_ids)}, found {sorted(session_ids)}")
     expected_session_count = len(DEMO_SESSION_IDS)
@@ -150,18 +173,16 @@ def verify_demo_archive(
     if DEMO_CLAUDE_CODE_SESSION_ID not in query_hits:
         problems.append(f"expected pytest query to include {DEMO_CLAUDE_CODE_SESSION_ID}, found {list(query_hits)}")
 
-    overlay_count = _overlay_count(archive_root)
     overlays_present = overlay_count >= 4
     if require_overlays and not overlays_present:
         problems.append("expected demo overlays, found none")
 
-    construct_coverage = evaluate_demo_constructs(archive_root) if check_constructs else ()
     if check_constructs:
         problems.extend(construct_problem_messages(construct_coverage))
 
     if check_source_path_leaks:
         demo_source_root = (archive_root / DEMO_SOURCE_DIRNAME).resolve()
-        for raw_path in _raw_source_paths(archive_root):
+        for raw_path in raw_source_paths:
             path = Path(raw_path)
             if path.is_absolute() and not path.resolve().is_relative_to(demo_source_root):
                 leaks.append(raw_path)
