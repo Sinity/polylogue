@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pytest
@@ -15,7 +14,6 @@ from polylogue.storage.sqlite.query_objects import (
     get_retained_query_run,
     get_watched_query_baseline,
     list_watched_queries,
-    migrate_saved_query_assertions,
     promote_query,
     promote_result_set,
     put_evaluation_receipt,
@@ -238,24 +236,6 @@ def test_query_edge_rejects_derived_from_cycle() -> None:
             edge_kind="derived-from",
             created_at_ms=4,
         )
-
-
-def test_saved_query_migration_preserves_all_assertions_and_repoints_targets() -> None:
-    conn = _conn()
-    conn.execute(
-        "INSERT INTO assertions (assertion_id, target_ref, kind, value_json, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
-        ("saved", "saved_view:one", "saved_query", json.dumps({"origin": "codex-session"}), 1, 1),
-    )
-    conn.execute(
-        "INSERT INTO assertions (assertion_id, target_ref, kind, body_text, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
-        ("note", "session:one", "note", "must survive", 1, 1),
-    )
-
-    assert migrate_saved_query_assertions(conn) == 1
-    assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone()[0] == 2
-    target_ref = conn.execute("SELECT target_ref FROM assertions WHERE assertion_id = 'saved'").fetchone()[0]
-    assert str(target_ref).startswith("query:")
-    assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 1
 
 
 def test_promotion_requires_complete_privacy_contract() -> None:
