@@ -16,7 +16,7 @@ from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntake
 from polylogue.sources.live import WatchSource, hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -175,9 +175,13 @@ async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
     page in a coordinator hold again) and ``observed`` records
     ``gate_held=True`` for the owner.
     """
-    index_db = tmp_path / "index.db"
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    source = tmp_path / "session.jsonl"
+    # Page admission's cursor-authority gate proves raw existence over both
+    # the source and index tiers (#5657), so the page needs a whole archive.
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    source = source_root / "session.jsonl"
     source.write_text('{"a": 1}\n')
 
     coordinator = _GateTrackingCoordinator()
@@ -192,9 +196,9 @@ async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
         session_observed.append((coordinator.held, tuple(session_ids)))
 
     watcher = live_watcher.LiveWatcher(
-        MagicMock(archive_root=tmp_path),
-        (WatchSource(name="projects", root=tmp_path),),
-        cursor=CursorStore(index_db),
+        MagicMock(archive_root=archive_root),
+        (WatchSource(name="projects", root=source_root),),
+        cursor=CursorStore(archive_root / "index.db"),
         write_coordinator=cast(Any, coordinator),
         embedding_owner=owner,
         session_profile_callback=session_owner,
@@ -220,7 +224,7 @@ async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
     monkeypatch.setattr(watcher, "_ingest_files", fake_ingest_files)
     monkeypatch.setattr(watcher, "classify_ingest_candidates", lambda paths: (tuple(paths), ()))
     adapter = FileIntakeAdapter(
-        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
         watcher._sources[0],
     )
     item = IntakeItem(item_id=f"file:{source}", class_name="projects", payload=source, estimated_cost=1)
