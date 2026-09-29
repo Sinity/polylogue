@@ -1894,26 +1894,22 @@ def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) 
         assert block_row["text"] == full_text, "blob publication must not disturb the FTS-indexed block text (AC2)"
 
 
-def test_a_session_referencing_an_excised_sidecar_is_refused_unrewritten(tmp_path: Path) -> None:
-    """A session whose sidecar bytes are excised is a typed refusal, never a rewrite.
+def test_write_session_counts_no_refused_sidecar_blob(tmp_path: Path) -> None:
+    """Sidecar bytes the flush refuses as excised are not counted as written.
 
-    Anti-vacuity: rewrite the matched TOOL_RESULT text (or drop the event's
-    ``blob_hash``) and the session is written with content that no longer
-    matches the identity bound to it (polylogue-bgnxh); keep the text and
-    the excised output reaches ``blocks.text``/FTS again.
+    Anti-vacuity: count sidecar blobs before the flush again and the batch
+    reports a published blob the flush discarded.
     """
-    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
-
     full_text = "excised sidecar output " * 200
     source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
     publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
-    session_id = "claude-code-session:sidecar-excised"
     with open_connection(tmp_path / "index.db") as conn:
-        with pytest.raises(ContentExcisedError):
-            _write_session(conn, _excised_sidecar_session(session_id, full_text), blob_publisher=publisher)
+        _changed, counts = _write_session(
+            conn, _excised_sidecar_session("claude-code-session:sidecar-excised", full_text), blob_publisher=publisher
+        )
         conn.commit()
-        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+    assert counts["sidecar_blobs_written"] == 0
+    assert counts["sidecar_blob_bytes_new"] == 0
 
 
 def _excised_sidecar_session(session_id: str, full_text: str) -> Any:
@@ -1941,74 +1937,6 @@ def _excised_sidecar_session(session_id: str, full_text: str) -> Any:
         ],
         action_tuples=[_sidecar_matched_event("toolu_1")],
     )
-
-
-def test_write_session_refuses_a_sidecar_excised_after_the_flush(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An excision committed after the publisher lock is released still refuses the session.
-
-    Anti-vacuity (Codex P1, #5696): consult only the flush's in-memory refusal
-    and the publication succeeded before the ledger entry, so the session is
-    written with the excised text.
-    """
-    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, record_excised_blob_hash
-
-    full_text = "sidecar output excised mid-ingest " * 200
-    root = tmp_path / "archive"
-    with ArchiveStore(root, initialize=True, read_only=False):
-        pass
-    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
-    original_flush = ArchiveBlobPublisher.flush
-
-    def flush_then_excise(self: ArchiveBlobPublisher) -> Any:
-        receipts = original_flush(self)
-        with sqlite3.connect(root / "source.db") as excision:
-            record_excised_blob_hash(
-                excision,
-                blob_hash=sha256(full_text.encode("utf-8")).digest(),
-                reason="synthetic excision",
-                actor="test",
-                excised_at_ms=1,
-            )
-        return receipts
-
-    monkeypatch.setattr(ArchiveBlobPublisher, "flush", flush_then_excise)
-    session_id = "claude-code-session:sidecar-raced"
-    with open_connection(tmp_path / "index.db") as conn, sqlite3.connect(root / "source.db") as source_conn:
-        with pytest.raises(ContentExcisedError):
-            _write_session(
-                conn, _excised_sidecar_session(session_id, full_text), blob_publisher=publisher, source_conn=source_conn
-            )
-        conn.commit()
-        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
-
-
-def test_a_prepared_session_with_an_excised_sidecar_is_a_typed_refusal(tmp_path: Path) -> None:
-    """A sealed prepared write that references an excised sidecar is refused.
-
-    Anti-vacuity (Codex P2, #5696): let it through and its prepared rows,
-    lowered before admission, publish the excised text.
-    """
-    from polylogue.pipeline.services.ingest_batch._core import _refuse_excised_sidecars
-    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
-
-    full_text = "excised sidecar output " * 200
-    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
-    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
-    session = _excised_sidecar_session("claude-code-session:sidecar-prepared", full_text).parsed_session
-    session_with_hash = session.model_copy(
-        update={
-            "session_events": [
-                event.model_copy(
-                    update={"payload": {**event.payload, "blob_hash": sha256(full_text.encode("utf-8")).hexdigest()}}
-                )
-                for event in session.session_events
-            ]
-        }
-    )
-    with sqlite3.connect(source_db) as source_conn, pytest.raises(ContentExcisedError):
-        _refuse_excised_sidecars(session_with_hash, publisher, source_conn=source_conn)
 
 
 def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: Path) -> None:
@@ -5021,96 +4949,6 @@ def test_a_skipped_excised_raw_keeps_its_refusal_reason() -> None:
     update = _skipped_raw_state_update(outcome=outcome, parsed_at="2026-01-01T00:00:00Z", validation_mode="advisory")  # type: ignore[arg-type]
 
     assert str(update.validation_error).startswith("content_excised")
-
-
-def test_publication_payloads_carry_no_excised_sidecar_text(tmp_path: Path) -> None:
-    """A session that references an excised sidecar is not published.
-
-    Anti-vacuity (Codex P1, #5696): encode ``cdata.parsed_session`` without
-    asking the ledger and the staged payload carries the excised tool output.
-    """
-    from polylogue.pipeline.services.ingest_batch._core import _prepare_publication_payloads
-    from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
-
-    full_text = "excised sidecar output bound for sinex " * 200
-    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
-    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
-    kept = "kept sidecar output " * 200
-    excised = _excised_sidecar_session("claude-code-session:sidecar-published", full_text)
-    clean = _excised_sidecar_session("claude-code-session:sidecar-clean", kept)
-    ir = IngestRecordResult(raw_id="raw-published", sessions=[excised, clean])
-
-    with sqlite3.connect(source_db) as source_conn:
-        payloads = _prepare_publication_payloads(
-            ir,
-            summary=_IngestBatchSummary(),
-            publication_mode=PublicationMode.MIRROR,
-            blob_publisher=publisher,
-            source_conn=source_conn,
-        )
-
-    staged = b"".join(segment for payload in payloads for _name, segment in payload.segments)
-    assert len(payloads) == 1
-    assert full_text.encode("utf-8") not in staged
-    assert kept.encode("utf-8") in staged
-
-
-def test_a_refused_sidecar_session_hands_its_receipts_to_the_batch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Blobs a refused session already published are handed over for consumption.
-
-    Anti-vacuity (Codex P2, #5696): raise the excision refusal before the
-    receipts reach ``pending_attachment_receipts`` and the attachment's
-    reservation is never consumed, keeping its blob GC-live.
-    """
-    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
-
-    full_text = "excised sidecar beside an attachment " * 200
-    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
-    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
-    session_id = "claude-code-session:sidecar-with-attachment"
-    sidecar = _excised_sidecar_session(session_id, full_text)
-    attachment = b"attachment bytes that published fine"
-    session = _session_data(
-        session_id,
-        content_hash=f"{session_id}-hash",
-        provider=Provider.CLAUDE_CODE,
-        message_tuples=[
-            _message_tuple(
-                "msg-1",
-                session_id,
-                role="assistant",
-                text="ran a command",
-                content_hash=f"{session_id}-msg-hash",
-                sort_key=1777636900.0,
-            )
-        ],
-        block_tuples=[
-            (
-                "msg-1",
-                ParsedContentBlock(
-                    type=BlockType.TOOL_RESULT, outcome_unknown_reason="not_reported", tool_id="toolu_1", text=full_text
-                ),
-            )
-        ],
-        action_tuples=[_sidecar_matched_event("toolu_1")],
-        attachment_tuples=[_attachment_tuple("att-1", inline_bytes=attachment)],
-        attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "msg-1")],
-    )
-    assert sidecar.session_id == session.session_id
-    pending: list[tuple[str, bytes]] = []
-
-    with (
-        open_connection(tmp_path / "index.db") as conn,
-        sqlite3.connect(source_db) as source_conn,
-        pytest.raises(ContentExcisedError),
-    ):
-        _write_session(
-            conn, session, blob_publisher=publisher, source_conn=source_conn, pending_attachment_receipts=pending
-        )
-
-    assert sha256(attachment).digest() in {blob_hash for _receipt, blob_hash in pending}
 
 
 def test_a_grouped_raw_with_one_excised_session_still_records_its_written_sibling(

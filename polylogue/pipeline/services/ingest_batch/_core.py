@@ -114,7 +114,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
     ContentExcisedError,
-    is_blob_hash_excised,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
@@ -674,88 +673,6 @@ def _incoming_write_carries_distinct_messages(
 #: function must give a durable content-addressed home. Both carry the same
 #: ``{acquisition_status, tool_use_id, content_replaced}`` payload shape.
 _SIDECAR_EVENT_TYPES = ("claude_tool_result_sidecar", "gemini_cli_tool_output_sidecar")
-
-
-#: Replaces a matched TOOL_RESULT block's text when its sidecar's publication
-#: was refused as excised bytes: a non-content-bearing terminal value, never
-#: the excised text itself even in truncated or summarized form.
-def _refuse_excised_sidecars(
-    session_to_write: ParsedSession,
-    blob_publisher: ArchiveBlobPublisher | None,
-    *,
-    source_conn: sqlite3.Connection | None = None,
-) -> None:
-    """Refuse a session that references an excised sidecar, as a typed excision.
-
-    ``apply_tool_result_sidecars``/``apply_gemini_tool_output_sidecars``
-    copied the sidecar's text into its TOOL_RESULT block at parse time, so
-    the session carries the excised bytes in hashed content. Rewriting that
-    text (or dropping the event's ``blob_hash``) here would change content
-    after its identity was bound (polylogue-bgnxh), so the session is not
-    written at all: :class:`ContentExcisedError` is its typed, permanent
-    refusal, and no excised byte reaches ``blocks.text`` or FTS.
-
-    Refusal is read from both authorities: this flush's refusals, and the
-    durable excision ledger at this write boundary, so an excision that
-    committed after the flush released its lock still refuses the session.
-    """
-
-    def refused(blob_hash: str) -> bool:
-        if blob_publisher is not None and publication_refused(blob_publisher, blob_hash):
-            return True
-        if source_conn is None:
-            return False
-        try:
-            return is_blob_hash_excised(source_conn, bytes.fromhex(blob_hash))
-        except ValueError:
-            return False
-
-    refused_hashes = sorted(
-        blob_hash
-        for event in session_to_write.session_events
-        if event.event_type in _SIDECAR_EVENT_TYPES
-        and isinstance(blob_hash := event.payload.get("blob_hash"), str)
-        and isinstance(event.payload.get("tool_use_id"), str)
-        and refused(blob_hash)
-    )
-    if refused_hashes:
-        raise ContentExcisedError(
-            blob_hash=bytes.fromhex(refused_hashes[0]), source_path=f"sidecar:{session_to_write.provider_session_id}"
-        )
-
-
-def _publishable_sessions(
-    ir: IngestRecordResult,
-    *,
-    blob_publisher: ArchiveBlobPublisher | None,
-    source_conn: sqlite3.Connection | None,
-) -> list[tuple[SessionWritePayload, ParsedSession]]:
-    """The sessions of *ir* that may leave the archive.
-
-    Publication encodes a session before its index write, so the excision
-    ledger decides here: a session that references an excised sidecar is not
-    published at all, just as its write is refused.
-    """
-    publishable: list[tuple[SessionWritePayload, ParsedSession]] = []
-    for cdata in ir.sessions:
-        session = cdata.parsed_session
-        texts = _replaced_sidecar_texts(session) if blob_publisher is not None or source_conn is not None else {}
-        if texts:
-            # The write names each sidecar by the hash of its bytes; name
-            # them the same way here, without publishing, to ask the ledger.
-            hashed = _with_sidecar_blob_hashes(
-                session,
-                {
-                    tool_use_id: hashlib.sha256(_sidecar_blob_bytes(text)).hexdigest()
-                    for tool_use_id, text in texts.items()
-                },
-            )
-            try:
-                _refuse_excised_sidecars(hashed, blob_publisher, source_conn=source_conn)
-            except ContentExcisedError:
-                continue
-        publishable.append((cdata, session))
-    return publishable
 
 
 def _preacquire_sidecar_blobs(
@@ -1531,15 +1448,6 @@ def _write_session(
         )
         blob_publisher.flush()
         counts.update(_sidecar_blob_counts(queued_sidecar_blobs, blob_publisher))
-        try:
-            _refuse_excised_sidecars(session_to_write, blob_publisher, source_conn=source_conn)
-        except ContentExcisedError:
-            # The attachment and sidecar blobs this session already published
-            # hold reservations; hand them to the batch's post-commit
-            # consumption so a refused session leaves none GC-live.
-            if pending_attachment_receipts is not None:
-                pending_attachment_receipts.extend(publication_receipts)
-            raise
     for attachment in session_to_write.attachments:
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
@@ -2487,8 +2395,6 @@ def _prepare_publication_payloads(
     *,
     summary: _IngestBatchSummary,
     publication_mode: PublicationMode = PublicationMode.OFF,
-    blob_publisher: ArchiveBlobPublisher | None = None,
-    source_conn: sqlite3.Connection | None = None,
 ) -> tuple[PublicationPayload, ...]:
     """Encode one raw record before any of its index rows are written.
 
@@ -2501,10 +2407,10 @@ def _prepare_publication_payloads(
         return ()
     payloads: list[PublicationPayload] = []
     payload_bytes = 0
-    for cdata, session in _publishable_sessions(ir, blob_publisher=blob_publisher, source_conn=source_conn):
+    for cdata in ir.sessions:
         remaining_bytes = _SINEX_STAGED_PAYLOAD_LIMIT_BYTES - summary.publication_payload_bytes - payload_bytes
         payload = encode_parsed_session_publication(
-            session,
+            cdata.parsed_session,
             session_id=cdata.session_id,
             max_payload_bytes=remaining_bytes,
         )
@@ -2560,8 +2466,6 @@ def _drain_ingest_result(
             ir,
             summary=summary,
             publication_mode=publication_mode,
-            blob_publisher=blob_publisher,
-            source_conn=source_conn,
         )
     except PublicationEncodingError as exc:
         logger.error(
