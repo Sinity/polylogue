@@ -398,7 +398,7 @@ class LiveWatcher:
         # (``LiveBatchProcessor._ingest_full_paths``), so it never contends
         # with an active writer thread for the GIL regardless of interpreter
         # build (see ``polylogue.sources.live.parse_prefetch`` for the full
-        # safety argument, identical in shape to ``DaemonParseStage``). An
+        # safety argument). An
         # explicit ``parse_stage`` always wins (tests / callers that want to
         # own the stage's lifecycle themselves); otherwise one is created
         # here, owned by this watcher, and shut down in ``stop()``.

@@ -378,7 +378,7 @@ Common runtime overrides:
 | `VOYAGE_API_KEY` | `voyage_api_key` | Voyage credential; redacted and spend-gated. |
 | `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | `embedding_enabled` | Enable daemon embedding convergence. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS` | `live_watcher_parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool. |
-| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `live_watcher_parse_stage_max_inflight_bytes` | In-flight payload budget for the watcher prefetch cache. |
+| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `live_watcher_parse_stage_max_inflight_bytes` | In-flight source-byte budget for watcher path preparation. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS` | `live_watcher_parse_stage_stall_report_seconds` | Stall-report interval for a watcher preparation. |
 
 `POLYLOGUE_SESSION_REF` is deliberately not a layered config key. It is

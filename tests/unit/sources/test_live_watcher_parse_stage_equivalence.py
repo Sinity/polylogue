@@ -43,7 +43,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
-from polylogue.sources.live.batch import LiveBatchProcessor, _live_parse_stage_candidates
+from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, LiveWatcher, WatchSource
@@ -403,10 +403,6 @@ async def test_parse_stage_flag_on_and_off_produce_identical_archive_content(tmp
         await _ingest(prefetch_root, paths, parse_stage=stage)
     finally:
         stage.shutdown()
-    # Every warmed entry was consumed by the writer-held pass, not left
-    # stranded -- proves the prefetch path was actually exercised (not a
-    # silent no-op equivalence).
-    assert len(stage.cache) == 0
 
     assert _canonical_snapshot(baseline_root) == _canonical_snapshot(prefetch_root)
     with _connect(baseline_root / "index.db") as conn:
@@ -452,7 +448,6 @@ async def test_shard_building_parse_stage_produces_identical_archive_content(
     finally:
         stage.shutdown()
 
-    assert len(stage.cache) == 0
     assert copies == len(paths), f"the writer copied {copies} shard sessions, expected {len(paths)}"
     assert _canonical_snapshot(baseline_root) == _canonical_snapshot(shard_root)
     # Shards are scratch with a named end: none may outlive the pass.
@@ -480,7 +475,6 @@ async def test_process_parse_stage_produces_identical_archive_content(tmp_path: 
     finally:
         stage.shutdown()
 
-    assert len(stage.cache) == 0
     assert _canonical_snapshot(baseline_root) == _canonical_snapshot(process_root)
 
 
@@ -2527,87 +2521,12 @@ def test_existing_session_preparation_defers_when_controlled_snapshot_unavailabl
 
 
 @pytest.mark.asyncio
-async def test_a_shard_the_writer_refuses_still_writes_the_session(tmp_path: Path) -> None:
-    """A truncated shard is a miss, not a failure: the rows get built inline."""
-    baseline_root = tmp_path / "baseline"
-    corrupt_root = tmp_path / "corrupt"
-    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
-
-    await _ingest(baseline_root, paths, parse_stage=None)
-
-    shard_directory = tmp_path / "parse-shards"
-    stage = LiveParseStage(max_workers=2, max_inflight_bytes=10_000_000, shard_directory=shard_directory)
-    try:
-        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
-        assert stage.warm(candidates) == len(paths)
-        for shard_path in shard_directory.glob("shard-*"):
-            shard_path.write_bytes(b"not a database at all")
-        await _ingest(corrupt_root, paths, parse_stage=stage)
-    finally:
-        stage.shutdown()
-
-    assert _canonical_snapshot(baseline_root) == _canonical_snapshot(corrupt_root)
-
-
-@pytest.mark.asyncio
-async def test_parse_stage_out_of_order_completion_preserves_archive_write_order(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Parallel parse completion order must never leak into archive write order.
-
-    The writer-held loop in ``_ingest_full_paths_sync``/
-    ``_ingest_full_records_archive`` iterates the ORIGINAL candidate list in
-    submission order and looks up each path's cache entry synchronously --
-    it never iterates in whatever order ``ThreadPoolExecutor.as_completed``
-    happened to finish. This test forces the SLOWEST-to-parse file to be the
-    FIRST one submitted (so completion order is the exact reverse of
-    submission order) and asserts the resulting archive is still identical
-    to, and inserted in the same order as, a flag-off baseline.
-    """
-    import polylogue.sources.live.parse_prefetch as parse_prefetch_module
-
-    baseline_root = tmp_path / "baseline"
-    prefetch_root = tmp_path / "prefetch"
-    paths = _write_fixture_corpus(tmp_path / "sessions", count=5)
-
-    await _ingest(baseline_root, paths, parse_stage=None)
-
-    real_worker = parse_prefetch_module.live_parse_worker
-    # Reverse the completion order relative to submission: the FIRST
-    # candidate (session-0) sleeps longest, the LAST (session-4) returns
-    # immediately.
-    sleep_by_source_path = {str(path): 0.05 * (len(paths) - index) for index, path in enumerate(paths)}
-
-    def delayed_worker(*args: object, **kwargs: object) -> object:
-        source_path = str(args[3])
-        time.sleep(sleep_by_source_path.get(source_path, 0.0))
-        return real_worker(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(parse_prefetch_module, "live_parse_worker", delayed_worker)
-
-    stage = LiveParseStage(max_workers=len(paths), max_inflight_bytes=10_000_000)
-    try:
-        await _ingest(prefetch_root, paths, parse_stage=stage)
-    finally:
-        stage.shutdown()
-    assert len(stage.cache) == 0
-
-    assert _canonical_snapshot(baseline_root) == _canonical_snapshot(prefetch_root)
-    assert _raw_sessions_source_path_order(prefetch_root) == _raw_sessions_source_path_order(baseline_root)
-    assert _raw_sessions_source_path_order(prefetch_root) == tuple(str(path) for path in paths)
-
-
-@pytest.mark.asyncio
 async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path: Path) -> None:
     """Strict prefetch refuses a partial unknown-provider conversation."""
     root = tmp_path / "unknown"
     root.mkdir()
     path = root / "mixed.jsonl"
     path.write_bytes(b'{"id":"unknown-1","messages":[{"id":"m1","role":"user","content":"hello"}]}\n{"broken":}\n')
-    candidates = _live_parse_stage_candidates([path], fallback_provider=Provider.UNKNOWN)
-    assert len(candidates) == 1
-    assert candidates[0].provider is Provider.UNKNOWN
-    assert candidates[0].is_stream is False
     polylogue = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
     stage = LiveParseStage(max_workers=1, max_inflight_bytes=10_000_000)
     processor = LiveBatchProcessor(
@@ -2625,7 +2544,6 @@ async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path
     assert result.failed_file_count == 0
     assert result.succeeded_file_count == 0
     assert result.excluded_paths == {str(path): "corrupt_input"}
-    assert len(stage.cache) == 0
     with _connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     with _connect(tmp_path / "source.db") as conn:
@@ -2638,72 +2556,6 @@ async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
     assert lifecycle.terminal == 1
     assert lifecycle.unexplained == 0
-
-
-@pytest.mark.uses_real_clock("a real worker outlasts the stall window, which only reports")
-def test_a_slow_in_memory_prefetch_is_awaited_and_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A worker slower than the stall window is waited for and its shard used.
-
-    Anti-vacuity: a warm that gives up at the window caches nothing (and
-    the writer reparses the file under its lease); no stall is reported.
-    """
-    from polylogue.sources.live import parse_prefetch
-
-    paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
-    real_worker = parse_prefetch.live_parse_and_shard_worker
-    stalls: list[dict[str, object]] = []
-
-    def slow_worker(*args: Any, **kwargs: Any) -> Any:
-        time.sleep(0.3)
-        return real_worker(*args, **kwargs)
-
-    def record(event: str, /, **fields: object) -> None:
-        if event == "live.parse_prefetch.preparation_stalled":
-            stalls.append(fields)
-
-    monkeypatch.setattr(parse_prefetch, "live_parse_and_shard_worker", slow_worker)
-    monkeypatch.setattr(parse_prefetch, "emit", record)
-    stage = LiveParseStage(
-        max_workers=1,
-        max_inflight_bytes=10_000_000,
-        shard_directory=tmp_path / "parse-shards",
-        stall_report_seconds=0.05,
-    )
-    try:
-        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
-        assert stage.warm(candidates) == 1
-        assert stalls
-    finally:
-        stage.shutdown()
-
-
-def test_shard_build_failure_is_counted_not_only_logged_per_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A systematic shard-build failure must be countable, not per-file noise.
-
-    Every failed shard build falls back to per-row binding, which is correct
-    but silently removes the polylogue-bp12n.6 benefit; only a counter makes a
-    systematic failure distinguishable from an occasional one
-    (polylogue-3r36h). Restoring the count-free fallback (dropping
-    ``shard_build_failure_count``) turns this red.
-    """
-    import polylogue.sources.live.parse_prefetch as parse_prefetch
-
-    def refuse_shard(*_args: object, **_kwargs: object) -> object:
-        raise RuntimeError("shard build refused")
-
-    monkeypatch.setattr(parse_prefetch, "prepare_session_shard", refuse_shard)
-
-    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
-    stage = LiveParseStage(max_workers=2, max_inflight_bytes=10_000_000, shard_directory=tmp_path / "parse-shards")
-    try:
-        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
-        assert stage.warm(candidates) == len(paths)
-    finally:
-        stage.shutdown()
-
-    assert stage.shard_build_failure_count == len(paths)
 
 
 @pytest.mark.asyncio

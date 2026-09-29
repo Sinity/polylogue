@@ -196,7 +196,7 @@ from polylogue.sources.live.metrics import (
     LiveFullIngestAggregate,
     split_offered_bytes,
 )
-from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage, ReadSnapshot
+from polylogue.sources.live.parse_prefetch import LiveParseStage, ReadSnapshot
 from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -627,33 +627,6 @@ def _retained_chain_prepared(
         if member is None or not member.current(archive):
             return False
     return True
-
-
-def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
-    """Build byte-backed JSONL candidates for legacy prefetch callers."""
-    candidates: list[LiveParseCandidate] = []
-    for path in paths:
-        if not is_jsonl_source_path(str(path)):
-            continue
-        provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
-        if not parse_as_session:
-            continue
-        try:
-            payload = path.read_bytes()
-        except OSError:
-            continue
-        source_path = str(path)
-        candidates.append(
-            LiveParseCandidate(
-                cache_key=source_path,
-                provider=provider,
-                payload=payload,
-                source_path=source_path,
-                fallback_id=path.stem,
-                is_stream=is_stream_record_provider(source_path, str(provider)),
-            )
-        )
-    return candidates
 
 
 def _live_parse_stage_path_candidates(
@@ -4751,13 +4724,12 @@ class LiveBatchProcessor:
                         else {}
                     )
                     if cached_sessions is not None:
-                        # polylogue-wf8a: this record's decode already ran
-                        # off the writer hold (``LiveParseStage.warm``,
-                        # re-verified byte-identical to what
-                        # ``blob_store.write_from_bytes`` just wrote --
-                        # see ``LiveParsePrefetchCache.pop``). Every branch
-                        # below is skipped; this is a pure shortcut of the
-                        # SAME parse, never a different one.
+                        # This record's decode already ran off the writer
+                        # hold: a sealed path preparation whose blob hash
+                        # ``LiveParseStage.pop_path`` checked against this
+                        # capture, or a session parsed earlier in this pass.
+                        # Every branch below is skipped; this is the same
+                        # parse, never a different one.
                         sessions = cached_sessions
                     elif provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
                         blob_store.blob_path(blob_hash), immutable=True
