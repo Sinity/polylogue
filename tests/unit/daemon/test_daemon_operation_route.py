@@ -1996,3 +1996,41 @@ def test_shutdown_waits_for_a_cancelled_staged_operation_to_finish_its_cleanup(
             release.set()
             releaser.cancel()
             caller.join(timeout=10)
+
+
+def test_tag_removal_uses_the_declared_daemon_authority(tmp_path: Path) -> None:
+    """Omitting archive.remove_tag denies the real remove actuator after admission."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal ids
+        ids = _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        added = stack.client.operation_to_completion(
+            "mutation.session.tag",
+            {"session_ids": list(ids), "tags": ["retained", "removed"]},
+            archive_root=str(stack.archive_root),
+        )
+        assert added is not None and added["outcome"] == "completed"
+        assert added["result"]["affected_count"] == 1
+        removed = stack.client.operation_to_completion(
+            "mutation.session.tag",
+            {"session_ids": list(ids), "remove_tags": ["removed"]},
+            archive_root=str(stack.archive_root),
+            request_id="remove-tag-authority",
+        )
+        assert removed is not None and removed["outcome"] == "completed"
+        assert removed["result"]["affected_count"] == 1
+        replay = stack.client.operation_to_completion(
+            "mutation.session.tag",
+            {"session_ids": list(ids), "remove_tags": ["removed"]},
+            archive_root=str(stack.archive_root),
+            request_id="remove-tag-authority",
+        )
+        assert replay is not None and replay["outcome"] == "completed"
+        assert replay["result"] == removed["result"]
+        with ArchiveStore.open_existing(stack.archive_root) as archive:
+            assert archive.list_user_tags() == {"retained": 1}

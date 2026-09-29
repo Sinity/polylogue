@@ -368,3 +368,29 @@ def test_bounding_topology_filters_helpers_and_preserves_page_offset() -> None:
     kept = {row["session_id"] for row in cast(list[dict[str, str]], bounded["nodes"])}
     assert bounded["continuation"] == "node-offset:502"
     assert all(set(cast(list[str], bounded[key])) <= kept for key in ("ancestors", "descendants", "siblings", "thread"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [0, 2])
+async def test_secondary_bound_resumes_at_the_first_withheld_node(workspace_env: dict[str, Path], offset: int) -> None:
+    """Keeping the source continuation skips nodes withheld by the wire bound."""
+    db_path = db_setup(workspace_env)
+    _seed_chain(db_path, width=8)
+    target = _native("root")
+    page = await _topology(db_path, workspace_env["archive_root"], target, node_limit=4, node_offset=offset)
+    assert page is not None and len(page.nodes) == 4
+    source = topology_public_envelope(page, node_offset=offset)
+    assert source["continuation"] == f"node-offset:{offset + 4}"
+
+    bounded = topology_public_envelope(page, node_limit=2, node_offset=offset)
+    assert bounded["continuation"] == f"node-offset:{offset + 2}"
+    assert _outcome(bounded)["state"] == "degraded"
+    assert _rows(bounded, "nodes") == _rows(source, "nodes")[:2]
+    assert bounded["nodes_complete"] is False
+
+    following_offset = int(str(bounded["continuation"]).removeprefix("node-offset:"))
+    following = await _topology(
+        db_path, workspace_env["archive_root"], target, node_limit=2, node_offset=following_offset
+    )
+    assert following is not None
+    assert [node.session_id for node in following.nodes] == [node.session_id for node in page.nodes[2:]]

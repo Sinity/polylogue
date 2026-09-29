@@ -2326,6 +2326,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         max_body_bytes=64 * 1024 * 1024,
         capability="archive.bulk_tag_sessions",
+        additional_capabilities=("archive.remove_tag",),
         deadline_s=120.0,
         request_contract="mutation.session.tag.request/v1",
         result_contract="mutation.result/v1",
