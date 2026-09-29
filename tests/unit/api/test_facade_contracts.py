@@ -1011,7 +1011,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         tags=("work",),
     )
     archive = SimpleNamespace(
-        list_summaries=lambda limit: [summary, summary],
+        iter_summaries=lambda limit=None, offset=0: iter([summary, summary]),
         _conn=None,
     )
 
@@ -6817,13 +6817,12 @@ async def test_facets_denominator_ignores_page_limit_and_names_truncation(
         assert response.complete_families
         assert response.family_errors == {}
 
-        monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
-        capped = await archive.facets(spec, include_idf=False, include_deferred=False)
+        monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.archive.SUMMARY_FETCH_BATCH", 1)
+        paged = await archive.facets(spec, include_idf=False, include_deferred=False)
 
-        assert capped.complete_families == ()
-        assert capped.family_errors, "a truncated scope must name the gap"
-        assert all(reason.startswith("facet_scope_truncated:") for reason in capped.family_errors.values())
-        assert capped.outcome.state == "degraded"
+        assert paged.total_sessions == 2, "a scope larger than one page must still be counted whole"
+        assert paged.complete_families
+        assert paged.outcome.state == "ok"
     finally:
         await archive.close()
 
@@ -6944,8 +6943,63 @@ async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) 
         )
 
         paged = store.list_session_cost_insights(status=priced_status, limit=1)
+        # A scan page smaller than the scope must still reach the match: the
+        # status filter pages through candidates instead of refusing.
+        from polylogue.storage.sqlite.archive_tiers import archive as archive_module
+
+        original_page = archive_module.COST_INSIGHT_FETCH_BATCH
+        archive_module.COST_INSIGHT_FETCH_BATCH = 1
+        try:
+            single_page = store.list_session_cost_insights(status=priced_status, limit=1)
+        finally:
+            archive_module.COST_INSIGHT_FETCH_BATCH = original_page
 
     assert [insight.session_id for insight in paged] == [priced_id]
+    assert [insight.session_id for insight in single_page] == [priced_id]
+
+
+def test_public_cost_insight_route_filters_enriched_status_before_the_page_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The facade route fills a ``status``/``model``-filtered page by scanning.
+
+    Both filters are decided on the enriched estimate, so the route cannot
+    push them into the store query. A newer non-matching session must not
+    empty a ``limit=1`` page whose match is older.
+
+    Anti-vacuity: fetch one store page of ``limit`` rows and filter it
+    afterwards, and ``status="priced", limit=1`` returns ``[]``; stop after the
+    first scan page and the one-row scan page never reaches the older match.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.analysis.archive import SessionCostInsightQuery
+    from polylogue.api import insights as insights_api
+
+    rows = [
+        SimpleNamespace(
+            session_id="newer", estimate=SimpleNamespace(status="unavailable", normalized_model="m", model_name="m")
+        ),
+        SimpleNamespace(
+            session_id="older", estimate=SimpleNamespace(status="priced", normalized_model="m", model_name="m")
+        ),
+    ]
+
+    class _Archive:
+        def iter_session_cost_insights(
+            self, *, limit: int | None, offset: int, **scope: object
+        ) -> Iterator[SimpleNamespace]:
+            page = rows[offset:] if limit is None else rows[offset : offset + limit]
+            yield from page
+
+    monkeypatch.setattr(insights_api, "enrich_session_cost_insight", lambda archive, insight: insight)
+
+    archive = cast("ArchiveStore", _Archive())
+    by_status = insights_api._session_cost_insight_page(archive, SessionCostInsightQuery(status="priced", limit=1))
+    by_model = insights_api._session_cost_insight_page(archive, SessionCostInsightQuery(model="m", limit=1, offset=1))
+
+    assert [insight.session_id for insight in by_status] == ["older"]
+    assert [insight.session_id for insight in by_model] == ["older"]
 
 
 def test_open_rejects_unknown_keyword_arguments(tmp_path: Path) -> None:

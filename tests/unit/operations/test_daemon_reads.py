@@ -348,20 +348,14 @@ class TestBoundedReadsDegradeByName:
             session_ids.append(f"claude-code-session:ext-{name}")
         return session_ids
 
-    def test_facets_route_reports_a_capped_scope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The daemon facets route names ``facet_scope_truncated`` like the API route.
+    def test_facets_route_counts_a_scope_larger_than_one_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The facets scope is paged, never truncated.
 
-        The cap is read through ``polylogue.api.archive``; both routes call the
-        same ``_archive_facet_buckets``, but this one dropped the ``scope_gaps``
-        collector, so only the API route reported it. The daemon route is the
-        one the CLI reads through, so the unreported answer was the one
-        operators saw.
-
-        Anti-vacuity: stop passing ``scope_gaps`` to either
-        ``_archive_facet_buckets`` call or to ``build_facets_response`` and the
-        capped read returns ``outcome.state == "ok"`` with every family still
-        in ``complete_families`` -- a one-session denominator for a two-session
-        archive, rendered as measured and complete.
+        Anti-vacuity: read only the first family chunk, or overwrite a
+        family's counts per chunk instead of summing them, and a one-session
+        chunk reports one session's families for a two-session archive.
         """
         self._seed_sessions(tmp_path, 2)
         params = {"query": "origin:claude-code-session"}
@@ -370,18 +364,25 @@ class TestBoundedReadsDegradeByName:
             assert cast(dict[str, Any], uncapped["outcome"])["state"] == "ok"
             assert uncapped["total_sessions"] == 2
 
-            monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
-            capped = execute_read_operation(
+            monkeypatch.setattr("polylogue.api.archive._FACET_FAMILY_CHUNK", 1)
+            paged = execute_read_operation(
                 "facets", {"params": {**params, "no_idf": True}}, archive=archive, serving_identity="test"
             )
 
-        outcome = cast(dict[str, Any], capped["outcome"])
-        family_errors = cast(dict[str, str], capped["family_errors"])
-        assert outcome["state"] == "degraded"
-        assert outcome["reason"] == "facet_scope_truncated:1"
-        assert capped["complete_families"] == []
-        assert family_errors
-        assert all(reason == "facet_scope_truncated:1" for reason in family_errors.values())
+        assert cast(dict[str, Any], paged["outcome"])["state"] == "ok"
+        assert paged["total_sessions"] == 2
+
+        # The scoped SQL families, aggregated one session per chunk, sum to
+        # the single-chunk aggregation.
+        from polylogue.api import archive as archive_api
+        from polylogue.archive.query.spec import SessionQuerySpec
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            chunked = archive_api._archive_facet_buckets(archive, SessionQuerySpec())
+            monkeypatch.setattr("polylogue.api.archive._FACET_FAMILY_CHUNK", 900)
+            whole = archive_api._archive_facet_buckets(archive, SessionQuerySpec())
+        assert chunked == whole
+        assert sum(whole.role_counts.values()) > 0 and whole.total_sessions == 2
 
     def test_query_envelope_degrades_when_the_attached_projection_is_cut(self, tmp_path: Path) -> None:
         """``with messages`` over a 250-message session degrades, it does not lie.

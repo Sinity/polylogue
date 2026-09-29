@@ -13,6 +13,11 @@
     ]
   },
   {
+    "file": "polylogue/api/archive.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/archive/session_revision_membership.py",
     "tiers": [],
     "authority": "scratch"
@@ -75,15 +80,15 @@
     ]
   },
   {
+    "file": "polylogue/operations/daemon_ingest.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/operations/facade_writers.py",
     "tiers": [
       "index"
     ]
-  },
-  {
-    "file": "polylogue/operations/daemon_ingest.py",
-    "tiers": [],
-    "authority": "scratch"
   },
   {
     "file": "polylogue/operations/ingest_inputs.py",
