@@ -562,6 +562,11 @@ def _write_parsed_precedence_result(
                 prepared_required=prepared_required,
                 prepared_write=prepared_write,
                 write_outcome=writer_outcomes,
+                # Lineage, hook-parent and dispatch-sidecar evidence live in
+                # the source tier. Live ingest hands the writer this handle; a
+                # replay of the same raws must too, or it rebuilds edges
+                # without the witnesses the first acquisition bound them by.
+                source_conn=store._ensure_source_conn(),
             )
             if not (writer_outcomes and writer_outcomes[-1].suppression_skipped):
                 _bind_retained_enrichment(store, session, session_id=session_id, raw_id=raw_id)
@@ -3590,22 +3595,25 @@ def apply_raw_revision_replay(
                 raise RuntimeError("one logical revision chain did not compose to exactly one session")
             composed_session = composed_sessions[0]
             winner = aggregate_sessions[0]
-            if already_indexed_upto >= 0 and (
-                composed_session.title,
-                composed_session.title_source,
-                composed_session.title_ref,
-            ) != (winner.title, winner.title_source, winner.title_ref):
-                # A tail write merges into the stored session, but title
-                # evidence is decided over the whole chain. Without this the
-                # newest chunk's own (weaker or equal) title replaced the
-                # chain winner a full replace would have stored.
-                composed_session = composed_session.model_copy(
-                    update={
-                        "title": winner.title,
-                        "title_source": winner.title_source,
-                        "title_ref": winner.title_ref,
-                    }
-                )
+            if already_indexed_upto >= 0:
+                # A tail write merges into the stored session, but the header
+                # is decided over the whole chain: the writer overwrites the
+                # stored title, reported totals, and declared models with the
+                # values it is given. Without this the newest chunk's own
+                # (weaker or equal) title replaced the chain winner, and the
+                # tail's own cost and duration replaced the chain totals --
+                # a $2 tail on a $1 session stored $2 and cleared the first
+                # model's cost share.
+                chain_header = {
+                    "title": winner.title,
+                    "title_source": winner.title_source,
+                    "title_ref": winner.title_ref,
+                    "reported_cost_usd": winner.reported_cost_usd,
+                    "reported_duration_ms": winner.reported_duration_ms,
+                    "models_used": winner.models_used,
+                }
+                if any(getattr(composed_session, name) != value for name, value in chain_header.items()):
+                    composed_session = composed_session.model_copy(update=chain_header)
             # Preacquired blobs use the attachment's acquisition key. A
             # prepared carrier preserves that key across separate row reads.
             composed_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] = {}

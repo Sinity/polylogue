@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sqlite3
 import stat
 import tempfile
 import threading
@@ -935,6 +936,31 @@ def get_blob_store() -> BlobStore:
         return _DEFAULT_STORE
 
 
+def blob_store_for_connection(conn: sqlite3.Connection) -> BlobStore:
+    """Return the blob store that belongs to the archive tier *conn* is open on.
+
+    Evidence recorded in, or read from, one archive's tier addresses that
+    archive's CAS. Defaulting to the process-wide configured store put rows
+    and bytes in different archives whenever ``conn`` was a scratch, probe,
+    replay or test tier -- so archive-local reads, backup, integrity checks
+    and GC could not treat the pair consistently, and private bytes leaked
+    into the operator's live archive. The root is derived from the
+    connection's own database file, unwinding a promoted index's generation
+    directory to the archive root next to ``blob/``; only a connection that has no file
+    (``:memory:``) falls back to the configured store.
+    """
+    from polylogue.storage.archive_identity import archive_root_for_index_path
+
+    for _seq, name, file_name in conn.execute("PRAGMA database_list"):
+        if str(name) != "main":
+            continue
+        path = str(file_name or "")
+        if not path or path == ":memory:" or path.startswith("file::memory:"):
+            break
+        return BlobStore(archive_root_for_index_path(Path(path).resolve()) / "blob")
+    return get_blob_store()
+
+
 def reset_blob_store() -> None:
     """Reset the singleton (for testing)."""
     global _DEFAULT_STORE
@@ -960,6 +986,7 @@ __all__ = [
     "BlobVerifyAllResult",
     "BlobVerifyFailure",
     "PreparedBlob",
+    "blob_store_for_connection",
     "get_blob_store",
     "load_raw_content",
     "reset_blob_store",

@@ -1,25 +1,25 @@
-"""Dispatch-sidecar resolution matches literally and refuses hostile sidecars.
+"""Dispatch-sidecar resolution matches exactly and refuses hostile sidecars.
 
-``_sidecar_dispatch_tool_ids`` runs in the synchronous database writer, and it
-selects ``raw_sessions`` rows without requiring a successful parse, a current
-revision or any size bound -- then reads the blob and decodes it. Three
-consequences, all reachable from an imported Claude Code export:
+``_sidecar_paths_dispatch_tool_ids`` runs in the synchronous database writer,
+and it selects ``raw_sessions`` rows without requiring a successful parse, a
+current revision or any size bound -- then reads the blob and decodes it.
+Three consequences, all reachable from an imported Claude Code export:
 
-- the child stem is provider-derived and went into a ``LIKE`` pattern
-  unescaped, so ``_`` matched any character and pulled a sibling session's
+- the child stem is provider-derived; a pattern match on it (an unescaped
+  ``LIKE``, where ``_`` matches any character) pulled a sibling session's
   sidecar in. More than one tool id is treated as a dispatch-identity
   contradiction, so the stray match does not mis-bind an edge -- it refuses a
-  correct one;
+  correct one. The lookup is now an exact ``source_path`` probe;
 - ``RecursionError`` is a ``RuntimeError``, not a ``ValueError``, so a deeply
   nested sidecar escaped the handler and aborted the session write. The raw row
   persists, so it aborted again on every later replay of the same lineage;
 - ZIP admission permits a 10 GiB member, and the writer agreed to ``read_all``
   whatever the row pointed at.
 
-Anti-vacuity: drop the ``ESCAPE``/``_escape_like`` pair and the first test sees
-both tool ids; drop ``RecursionError`` from the handler and the second test
-raises instead of returning; drop the ``blob_size`` bound and the third test's
-fake store is asked for the oversized blob.
+Anti-vacuity: match the sidecar path by pattern instead of equality and the
+first test sees both tool ids; drop ``RecursionError`` from the handler and the
+second test raises instead of returning; reinstate a byte ceiling and the third
+test's parent tool id is not resolved.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import polylogue.storage.sqlite.archive_tiers.write as write_mod
 from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import _sidecar_dispatch_tool_ids
+from polylogue.storage.sqlite.archive_tiers.write import _sidecar_paths_dispatch_tool_ids
 
 _ORIGIN = Origin.CLAUDE_CODE_SESSION.value
 
@@ -93,12 +93,12 @@ def test_a_sibling_stem_is_not_matched_through_a_like_wildcard(
             size=128,
         )
         store = _FakeBlobStore({wanted: _meta("toolu_wanted"), sibling: _meta("toolu_sibling")})
-        monkeypatch.setattr(write_mod, "get_blob_store", lambda: store)
-        tool_ids = _sidecar_dispatch_tool_ids(
+        monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: store)
+        tool_ids = _sidecar_paths_dispatch_tool_ids(
             conn,
             origin=_ORIGIN,
+            sidecar_paths={"/export/parent-1/subagents/agent-a_b.meta.json"},
             parent_values={"parent-1"},
-            child_values={"agent-a_b"},
         )
     finally:
         conn.close()
@@ -122,13 +122,13 @@ def test_a_deeply_nested_sidecar_is_refused_instead_of_aborting_the_write(
         # 200k is where CPython's JSON decoder actually overflows the stack in
         # this build; 20k decodes cleanly and would make this test vacuous.
         nested = b"[" * 200_000 + b"]" * 200_000
-        monkeypatch.setattr(write_mod, "get_blob_store", lambda: _FakeBlobStore({digest: nested}))
+        monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: _FakeBlobStore({digest: nested}))
         # No raise: the writer records a refusal and keeps going.
-        tool_ids = _sidecar_dispatch_tool_ids(
+        tool_ids = _sidecar_paths_dispatch_tool_ids(
             conn,
             origin=_ORIGIN,
+            sidecar_paths={"/export/parent-1/subagents/agent-deep.meta.json"},
             parent_values={"parent-1"},
-            child_values={"agent-deep"},
         )
     finally:
         conn.close()
@@ -158,12 +158,12 @@ def test_a_large_sidecar_is_streamed_to_its_dispatch_identity(
             size=len(payload),
         )
         store = _FakeBlobStore({digest: payload})
-        monkeypatch.setattr(write_mod, "get_blob_store", lambda: store)
-        tool_ids = _sidecar_dispatch_tool_ids(
+        monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: store)
+        tool_ids = _sidecar_paths_dispatch_tool_ids(
             conn,
             origin=_ORIGIN,
+            sidecar_paths={"/export/parent-1/subagents/agent-large.meta.json"},
             parent_values={"parent-1"},
-            child_values={"agent-large"},
         )
     finally:
         conn.close()
@@ -190,12 +190,12 @@ def test_a_scalar_sidecar_root_carries_no_dispatch_identity(
             digest=digest,
             size=len(payload),
         )
-        monkeypatch.setattr(write_mod, "get_blob_store", lambda: _FakeBlobStore({digest: payload}))
-        tool_ids = _sidecar_dispatch_tool_ids(
+        monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: _FakeBlobStore({digest: payload}))
+        tool_ids = _sidecar_paths_dispatch_tool_ids(
             conn,
             origin=_ORIGIN,
+            sidecar_paths={"/export/parent-1/subagents/agent-scalar.meta.json"},
             parent_values={"parent-1"},
-            child_values={"agent-scalar"},
         )
     finally:
         conn.close()

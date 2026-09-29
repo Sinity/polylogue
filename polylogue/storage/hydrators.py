@@ -23,7 +23,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.json import loads
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import MessageId
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import (
     AttachmentRecord,
     MessageRecord,
@@ -51,13 +51,17 @@ def _parse_json_blob(raw: object) -> object | None:
         return raw
 
 
-def attachment_from_record(record: AttachmentRecord) -> Attachment:
+def attachment_from_record(record: AttachmentRecord, *, blob_store: BlobStore | None = None) -> Attachment:
     """Hydrate an Attachment domain model from an AttachmentRecord."""
-    availability = resolve_attachment_availability(
-        blob_hash=record.blob_hash,
-        acquisition_status=record.acquisition_status,
-        verify=get_blob_store().verify_for_read,
-        exists=get_blob_store().exists,
+    availability = (
+        resolve_attachment_availability(
+            blob_hash=record.blob_hash,
+            acquisition_status=record.acquisition_status,
+            verify=blob_store.verify_for_read,
+            exists=blob_store.exists,
+        )
+        if blob_store is not None
+        else None
     )
     return Attachment(
         id=record.attachment_id,
@@ -79,6 +83,7 @@ def message_from_record(
     attachments: list[AttachmentRecord],
     *,
     origin: Origin | str | None = None,
+    blob_store: BlobStore | None = None,
 ) -> Message:
     """Hydrate a Message domain model from a MessageRecord and attachment records."""
     # Domain messages expose semantic content blocks, not storage row identity.
@@ -108,7 +113,7 @@ def message_from_record(
     return Message(
         **MESSAGES_SPEC.domain_kwargs(record),
         origin=normalized_origin,
-        attachments=[attachment_from_record(a) for a in attachments],
+        attachments=[attachment_from_record(a, blob_store=blob_store) for a in attachments],
         blocks=blocks,
     )
 
@@ -160,6 +165,7 @@ def session_from_records(
     session_events: list[SessionEventRecord] | None = None,
     *,
     tags: tuple[str, ...] = (),
+    blob_store: BlobStore | None = None,
 ) -> Session:
     """Hydrate a Session domain model from records.
 
@@ -185,6 +191,7 @@ def session_from_records(
             msg,
             att_map.get(msg.message_id, []),
             origin=conv_origin,
+            blob_store=blob_store,
         )
         for msg in messages
     ]

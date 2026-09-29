@@ -25,6 +25,7 @@ from polylogue.core.payload_coercion import optional_string
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.logging import WARNING, emit, get_logger
 
+from .chunk_positions import ChunkPositions
 from .decoders import _decode_json_bytes, _iter_json_stream
 from .detection import DetectionMode
 from .origin_specs import detector_registry
@@ -894,9 +895,25 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
             merged[session.provider_session_id] = session
             continue
 
+        chunks = []
+        offset = 0
+        for chunk in (existing, session):
+            positions = ChunkPositions(chunk.messages, offset)
+            chunks.append(
+                chunk.model_copy(
+                    update={
+                        "messages": [
+                            positions.message(message, ordinal) for ordinal, message in enumerate(chunk.messages)
+                        ],
+                        "attachments": [positions.attachment(attachment) for attachment in chunk.attachments],
+                        "session_events": [positions.event(event) for event in chunk.session_events],
+                    }
+                )
+            )
+            offset += len(chunk.messages)
+        existing, session = chunks
         messages = [*existing.messages, *session.messages]
         active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-        messages = [message.model_copy(update={"position": position}) for position, message in enumerate(messages)]
         # bd polylogue-2hwl: flag the active leaf by POSITION (the true last
         # message), never by comparing provider_message_id -- retries and
         # regenerated variants can legitimately reuse the same native id at

@@ -130,23 +130,28 @@ def _projection_value(row: Mapping[str, object], name: str) -> object:
 def provider_usage_event_identity(row: Mapping[str, object]) -> tuple[str, str, str, str] | None:
     """Return the strongest stable identity available for one usage event.
 
-    Provider usage rows currently have no native event-id column.  A resolved
-    source-message id is therefore the only durable anchor that can identify
-    the same observation across independent acquisitions; event type and model
-    keep a model switch from being merged into its predecessor.  Unanchored
-    rows deliberately return ``None``: their positional/temporal coordinates
+    Provider usage rows currently have no native event-id column.  The
+    provider's own id for the message the usage describes is therefore the
+    durable anchor that identifies the same observation across independent
+    acquisitions.  It is the id the writer resolves ``source_message_id``
+    from, and it is kept when that resolution fails, so an event recorded
+    before its message arrived and the same event recorded once it resolved
+    share one identity; keying the resolved form by the stored message id
+    would count that observation twice.  Event type and model keep a model
+    switch from being merged into its predecessor.  Rows without a message
+    anchor deliberately return ``None``: their positional/temporal coordinates
     are parser measurements, not proof of identity, so callers must reconcile
     them with an explicit bounded rule (or retain them as ambiguous evidence)
     rather than silently adding duplicate observations.
     """
-    source_message_id = _projection_value(row, "source_message_id")
-    if not source_message_id:
+    provider_message_id = str(_projection_value(row, "source_message_provider_id") or "").strip()
+    if not provider_message_id:
         return None
     event_type = str(_projection_value(row, "provider_event_type") or "")
     model_name = _normalize_model_name(_projection_value(row, "model_name"))
     if not event_type:
         return None
-    return ("source_message", str(source_message_id), event_type, model_name)
+    return ("provider_message", provider_message_id, event_type, model_name)
 
 
 def _projection_event_lanes(row: Mapping[str, object]) -> tuple[int, int, int, int]:

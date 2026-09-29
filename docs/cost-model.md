@@ -93,6 +93,15 @@ derived convergence and convergence-debt retry. A manual `polylogue ops reset --
 required to pick up a provider-usage materializer fix or a zero-token bug fix
 for existing sessions; it remains available as a fallback for a full rebuild.
 
+Re-derivation clears every row of the session and keeps a model row only while
+evidence still names it: a message, a provider usage event, or the parser's
+declaration (`session_model_usage.declared`, from `models_used`). A declared
+row is kept even when no message names its model, because a `token_count`
+without a model is attributed to the session's sole model row. An append
+carries the session-level totals of the whole chain (`reported_cost_usd`,
+`reported_duration_ms`, declared models), never the appended chunk's own, so
+an appended session stores what a whole-file ingest of the same bytes stores.
+
 ### Lineage chains: per-session counters, never chain deltas
 
 A fork / resume / subagent copy physically replays its parent's message prefix,

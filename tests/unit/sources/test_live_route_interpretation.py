@@ -12,6 +12,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -377,6 +378,82 @@ def test_live_append_takes_the_latest_rename(tmp_path: Path) -> None:
 
     assert [row[1] for row in _session_rows(appended_root)] == ["Name B"]
     assert _session_rows(appended_root) == _session_rows(whole_root)
+
+
+def _session_usage(archive_root: Path) -> tuple[tuple[object, ...], list[tuple[object, ...]]]:
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        header = conn.execute("SELECT reported_cost_usd, reported_duration_ms FROM sessions").fetchone()
+        models = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT model_name, provider_cost_usd, declared FROM session_model_usage ORDER BY model_name"
+            )
+        ]
+    return tuple(header), models
+
+
+def test_live_append_keeps_the_chain_cost_across_a_model_switch(tmp_path: Path) -> None:
+    """An appended turn adds to the session's reported cost; it does not replace it.
+
+    A $1 turn on model A is ingested, then a $2 turn on model B is appended.
+    The whole-file ingest of the same bytes is the reference.
+
+    Anti-vacuity: drop the chain header carry in ``apply_raw_revision_replay``'s
+    tail write and the append stores the tail's own $2 and 200 ms, and model
+    A's provider cost share is cleared.
+    """
+    session_id = "dddddddd-1111-2222-3333-444444444440"
+
+    def record(kind: str, **fields: object) -> bytes:
+        return json.dumps({"type": kind, "sessionId": session_id, **fields}).encode() + b"\n"
+
+    def assistant_turn(uuid: str, parent: str, *, model: str, cost: float, duration: int, at: str) -> bytes:
+        return record(
+            "assistant",
+            uuid=uuid,
+            parentUuid=parent,
+            timestamp=at,
+            costUSD=cost,
+            durationMs=duration,
+            message={"role": "assistant", "model": model, "content": [{"type": "text", "text": f"answer {uuid}"}]},
+        )
+
+    first = record(
+        "user",
+        uuid="u0",
+        timestamp="2026-07-20T10:00:00.000Z",
+        message={"role": "user", "content": "opening prompt"},
+    ) + assistant_turn("a0", "u0", model="synthetic-model-a", cost=1.0, duration=100, at="2026-07-20T10:01:00.000Z")
+    tail = record(
+        "user",
+        uuid="u1",
+        parentUuid="a0",
+        timestamp="2026-07-20T10:05:00.000Z",
+        message={"role": "user", "content": "later prompt"},
+    ) + assistant_turn("a1", "u1", model="synthetic-model-b", cost=2.0, duration=200, at="2026-07-20T10:06:00.000Z")
+
+    project = tmp_path / "live" / ".claude" / "projects" / "-cost-project"
+    project.mkdir(parents=True)
+    transcript = project / f"{session_id}.jsonl"
+    transcript.write_bytes(first)
+    appended_root = tmp_path / "appended"
+    _claude_ingest(appended_root, project, [transcript])
+    transcript.write_bytes(first + tail)
+    _claude_ingest(appended_root, project, [transcript])
+
+    whole_root = tmp_path / "whole"
+    _claude_ingest(whole_root, project, [transcript])
+
+    header, models = _session_usage(appended_root)
+    assert header == (pytest.approx(3.0), 300)
+    assert [(name, declared) for name, _cost, declared in models] == [
+        ("synthetic-model-a", 1),
+        ("synthetic-model-b", 1),
+    ]
+    costs = [cost for _name, cost, _declared in models]
+    assert all(isinstance(cost, float) for cost in costs), "every declared model carries a cost share"
+    assert sum(cast(float, cost) for cost in costs) == pytest.approx(3.0)
+    assert (header, models) == _session_usage(whole_root)
 
 
 def test_broken_pool_restart_after_shutdown_creates_no_new_pool(tmp_path: Path) -> None:

@@ -12,6 +12,9 @@ class AttachmentOwnerResolutionReason(StrEnum):
     PROVIDER_NEVER_LINKED = "provider_never_linked"
     SOURCE_OMITTED = "source_omitted"
     MESSAGE_MISSING = "message_missing"
+    #: The owning message is inherited from the parent session, whose row does
+    #: not reference this attachment, so no composed read can reach it.
+    INHERITED_OWNER_UNREFERENCED = "inherited_owner_unreferenced"
 
 
 __all__ = ["AttachmentOwnerResolutionReason"]
