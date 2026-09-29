@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         ArchiveFtsDriftSample,
         ArchiveSchemaDriftSample,
     )
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 
 @click.group("diagnostics", help="Run archive and daemon diagnostics.")
@@ -965,7 +966,7 @@ def latency_command(
     from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
     from polylogue.operations.route_observation import read_latency_report
-    from polylogue.surfaces.outcome import decide_outcome, outcome_exit_code, render_outcome_line
+    from polylogue.surfaces.outcome import decide_outcome, render_outcome_line
 
     env: AppEnv = ctx.obj
     config = load_effective_config(env)
@@ -983,7 +984,8 @@ def latency_command(
         else:
             env.ui.console.print("[yellow]No ops.db found -- no latency telemetry has been recorded yet.[/yellow]")
             click.echo(render_outcome_line(missing))
-        ctx.exit(outcome_exit_code(missing))
+        _exit_with_outcome(missing)
+        return
 
     with one_shot_diagnostic_read(ops_db) as conn:
         report = read_latency_report(conn, since_ms=since_ms, surface=surface)
@@ -993,13 +995,23 @@ def latency_command(
         payload = report.to_payload()
         payload["since_hours"] = since_hours
         click.echo(_json.dumps(payload, indent=2))
-        ctx.exit(outcome_exit_code(outcome))
+        _exit_with_outcome(outcome)
+        return
 
     _render_latency_text(env, report, since_hours=since_hours)
     line = render_outcome_line(outcome)
     if line is not None:
         click.echo(line)
-    ctx.exit(outcome_exit_code(outcome))
+    _exit_with_outcome(outcome)
+
+
+def _exit_with_outcome(outcome: OutcomeEnvelope) -> None:
+    """End the command with the exit code its terminal outcome decides."""
+    from polylogue.surfaces.outcome import outcome_exit_code
+
+    code = outcome_exit_code(outcome)
+    if code:
+        raise SystemExit(code)
 
 
 def _render_latency_text(env: AppEnv, report: RouteLatencyReport, *, since_hours: float) -> None:
