@@ -130,7 +130,6 @@ if TYPE_CHECKING:
     from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
-_WHALE_RECEIPT_ROOT: Path | None = None
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 #: Wall budget for back-to-back bounded session-derivation passes in one
 #: periodic convergence tick; the tick interval leaves the rest for the others.
@@ -1067,7 +1066,6 @@ async def _periodic_raw_materialization_convergence(
 
     async def once() -> None:
         raw_intake_wakeup.set()
-        await _drain_whale_receipt_outbox()
 
     await daemon_periodic_runner().run(
         "raw_observation_convergence",
@@ -1251,58 +1249,6 @@ async def _converge_raw_materialized_session_profiles(
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-
-
-async def _drain_whale_receipt_outbox(*, root: Path | None = None) -> int:
-    """Retry all durable whale receipts once; later ticks retry remaining rows."""
-    from polylogue.daemon import whale_outbox
-    from polylogue.daemon.events import emit_daemon_event
-
-    effective_root = root if root is not None else _WHALE_RECEIPT_ROOT
-    delivered = 0
-    for record in whale_outbox.list_pending(root=effective_root):
-        try:
-            coordinator = daemon_write_coordinator()
-            run_sync = getattr(coordinator, "run_sync", None)
-            event_args = (str(record["kind"]),)
-            event_kwargs = {
-                "operation_id": str(record["operation_id"]),
-                "idempotency_key": str(record["idempotency_key"]),
-                "payload": record["payload"],
-            }
-            if callable(run_sync):
-                await run_sync("whale.receipt.recovery", emit_daemon_event, *event_args, **event_kwargs)
-            else:
-                await asyncio.to_thread(
-                    emit_daemon_event,
-                    str(record["kind"]),
-                    operation_id=str(record["operation_id"]),
-                    idempotency_key=str(record["idempotency_key"]),
-                    payload=cast(dict[str, object], record["payload"]),
-                )
-        except TypeError as exc:
-            if "unexpected keyword argument" not in str(exc):
-                raise
-            await asyncio.to_thread(
-                emit_daemon_event,
-                str(record["kind"]),
-                payload=cast(dict[str, object], record["payload"]),
-            )
-        except Exception as exc:
-            emit(
-                "daemon.whale_receipt.recovery_deferred",
-                level=WARNING,
-                outcome="degraded",
-                reason="outbox_replay_failed",
-                kind=str(record["kind"]),
-                operation_id=str(record["operation_id"]),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            continue
-        await asyncio.to_thread(whale_outbox.acknowledge, record)
-        delivered += 1
-    return delivered
 
 
 def _browser_capture_spool_has_pending_files() -> bool:
@@ -2456,15 +2402,6 @@ async def _run_daemon_services_under_active_writer_lease(
             archive_owner.release()
         _daemon_lifecycle = None
         raise
-
-    # Whale receipts are durable filesystem-first recovery records. Drain them
-    # before any watcher-registration gate or schema-dependent maintenance loop so a
-    # restart does not leave terminal lifecycle state parked behind initial
-    # source ingestion. This is deliberately outside the ``watcher_blocked``
-    # branch: the outbox is independent of derived-tier readiness.
-    global _WHALE_RECEIPT_ROOT
-    _WHALE_RECEIPT_ROOT = archive_root_path
-    await _drain_whale_receipt_outbox(root=archive_root_path)
 
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched

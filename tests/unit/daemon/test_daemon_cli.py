@@ -3170,13 +3170,6 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_discovery(
     from polylogue.daemon import cli as daemon_cli
 
     wakeup = asyncio.Event()
-    drains = 0
-
-    async def drain_receipts() -> None:
-        nonlocal drains
-        drains += 1
-
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", drain_receipts)
 
     async def stop_after_one_tick(seconds: float) -> None:
         assert (
@@ -3189,7 +3182,6 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_discovery(
 
     with patch("asyncio.sleep", side_effect=stop_after_one_tick), pytest.raises(asyncio.CancelledError):
         asyncio.run(daemon_cli._periodic_raw_materialization_convergence(raw_intake_wakeup=wakeup))
-    assert drains == 1
 
 
 @pytest.mark.parametrize("watcher_initially_registered", [False, True])
@@ -3199,11 +3191,6 @@ def test_periodic_raw_materialization_respects_watcher_registration_gate(
 ) -> None:
     """Periodic raw maintenance starts only after watcher registration."""
     from polylogue.daemon import cli as daemon_cli
-
-    async def drain_receipts() -> None:
-        return None
-
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", drain_receipts)
 
     async def exercise() -> bool:
         watcher_registered = asyncio.Event()
@@ -3510,166 +3497,6 @@ def test_raw_source_refusal_is_retryable_and_does_not_starve_sibling(
     assert report.retried == 1
     assert report.isolated == 0
     assert admitted == ["healthy-raw"]
-
-
-def test_startup_drain_recovers_valid_recovery_receipt_and_acknowledges_after_publish(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Startup recovery delivers a readable quarantine receipt before removing it."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import whale_outbox
-
-    tmp_path.chmod(0o700)
-    target = whale_outbox.enqueue(
-        kind="whale.recovery",
-        idempotency_key="recovery-receipt",
-        operation_id="operation-recovery",
-        payload={"status": "completed"},
-        root=tmp_path,
-    )
-    recovery = target.with_name(f"{target.name}.recovery.0123456789abcdef0123456789abcdef.json")
-    target.rename(recovery)
-    assert whale_outbox.list_pending(root=tmp_path)[0]["_name"] == recovery.name
-
-    published: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
-    )
-
-    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
-        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
-        assert callback_result is None
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
-    delivered = asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path))
-
-    assert delivered == 1
-    assert published == [("whale.recovery", {"status": "completed"})]
-    assert not recovery.exists()
-    assert whale_outbox.list_pending(root=tmp_path) == []
-
-
-def test_second_order_recovery_race_remains_startup_drainable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A recovery receipt acknowledged during a second race remains recoverable."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import whale_outbox
-
-    tmp_path.chmod(0o700)
-    canonical = whale_outbox.enqueue(
-        kind="whale.recovery",
-        idempotency_key="second-order",
-        operation_id="operation-second-order",
-        payload={"status": "completed"},
-        root=tmp_path,
-    )
-    target = canonical.with_name(f"{canonical.name}.recovery.0123456789abcdef0123456789abcdef.json")
-    canonical.rename(target)
-    record = whale_outbox.list_pending(root=tmp_path)[0]
-    real_move = whale_outbox._rename_noreplace
-    real_rename = os.rename
-    replaced = False
-    inserted = False
-
-    def replace_before_move(source: str, destination: str, *, src_dir_fd: int = -1, dst_dir_fd: int = -1) -> None:
-        nonlocal replaced
-        if not replaced and source == target.name:
-            target.unlink()
-            target.write_bytes(
-                b'{"kind":"whale.recovery","idempotency_key":"second-order",'
-                b'"operation_id":"operation-second-order","payload":{"status":"replacement"}}'
-            )
-            target.chmod(0o600)
-            replaced = True
-        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-
-    def insert_before_restore(source: str, destination: str, *, directory_fd: int) -> None:
-        nonlocal inserted
-        if not inserted and source.endswith(".ack"):
-            target.write_bytes(b"replacement-at-restore")
-            target.chmod(0o600)
-            inserted = True
-        real_move(source, destination, directory_fd=directory_fd)
-
-    monkeypatch.setattr(os, "rename", replace_before_move)
-    monkeypatch.setattr(whale_outbox, "_rename_noreplace", insert_before_restore)
-    whale_outbox.acknowledge(record)
-    pending = whale_outbox.list_pending(root=tmp_path)
-    assert len(pending) == 1
-    assert pending[0]["_name"].startswith("second-order.json.recovery.")
-
-    published: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
-    )
-
-    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
-        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
-        assert callback_result is None
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
-    assert asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path)) == 1
-    assert published == [("whale.recovery", {"status": "replacement"})]
-    assert whale_outbox.list_pending(root=tmp_path) == []
-
-
-def test_recovery_name_exhaustion_leaves_fallback_receipt_startup_drainable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Forced recovery-name exhaustion keeps a valid fallback drainable."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import whale_outbox
-
-    tmp_path.chmod(0o700)
-    target = whale_outbox.enqueue(
-        kind="whale.recovery",
-        idempotency_key="exhaustion",
-        operation_id="operation-exhaustion",
-        payload={"status": "completed"},
-        root=tmp_path,
-    )
-    replacement = (
-        b'{"kind":"whale.recovery","idempotency_key":"exhaustion",'
-        b'"operation_id":"operation-exhaustion","payload":{"status":"fallback"}}'
-    )
-    real_rename = os.rename
-    replaced = False
-
-    def replace_before_move(source: str, destination: str, *, src_dir_fd: int = -1, dst_dir_fd: int = -1) -> None:
-        nonlocal replaced
-        if not replaced and source == target.name:
-            target.unlink()
-            target.write_bytes(replacement)
-            target.chmod(0o600)
-            replaced = True
-        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-
-    def exhausted(_source: str, _destination: str, *, directory_fd: int) -> None:
-        raise FileExistsError("forced recovery allocation exhaustion")
-
-    monkeypatch.setattr(os, "rename", replace_before_move)
-    monkeypatch.setattr(whale_outbox, "_rename_noreplace", exhausted)
-    record = whale_outbox.list_pending(root=tmp_path)[0]
-    whale_outbox.acknowledge(record)
-    pending = whale_outbox.list_pending(root=tmp_path)
-    assert len(pending) == 1
-    assert pending[0]["_name"].endswith(".ack")
-
-    published: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
-    )
-
-    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
-        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
-        assert callback_result is None
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
-    assert asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path)) == 1
-    assert published == [("whale.recovery", {"status": "fallback"})]
-    assert whale_outbox.list_pending(root=tmp_path) == []
 
 
 def _daemon_startup_stubs(

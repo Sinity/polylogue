@@ -622,8 +622,7 @@ The current composition has one scheduling edge for each long-lived owner:
 is an optional supervised process that depends on the API server. Fair intake
 owns file, remote, and raw admission; its completed passes feed the cold-build
 readiness decision. Periodic raw convergence wakes that same intake owner;
-prepared retained input admits oversized raw components through this route.
-The periodic loop also retries historical durable whale receipts.
+prepared retained input admits raw components of every size through this route.
 Status reads the services' observations and does not schedule replacement work.
 
 | Edge changed in this lifecycle pass | Previous behavior | Current behavior |
