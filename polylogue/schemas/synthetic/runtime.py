@@ -347,11 +347,8 @@ def _generate_from_schema(
     schema_type = _schema_type(self, schema, rng, path)
     if schema_type is not None and schema_type not in SCHEMA_CONSTRUCT_HANDLERS:
         return None
-    freq_value = schema.get("x-polylogue-frequency")
-    freq = float(freq_value) if isinstance(freq_value, (int, float)) else 1.0
-    if depth > 0 and freq < 1.0 and rng.random() > freq:
-        return None
-
+    # Field presence is decided once, by the owning object (co-occurrence
+    # aware); a union variant's frequency is its selection weight above.
     match schema_type:
         case "object":
             return self._generate_object(
@@ -447,8 +444,6 @@ def _generate_object(
             freq = _conditional_presence(properties, prop_name, obj, freq)
             if rng.random() > freq:
                 continue
-        if prop_name in selected_root_fields and freq < 1.0:
-            prop_schema = {**prop_schema, "x-polylogue-frequency": 1.0}
 
         child_path = f"{path}.properties.{prop_name}" if self._coverage_witness_mode else f"{path}.{prop_name}"
         ref = self._relation_solver.resolve_foreign_key(child_path, rng)
@@ -560,8 +555,8 @@ def _generate_string(
         case "hex-id":
             return rng.randbytes(12).hex()
         case "iso8601":
-            ts = rng.uniform(1670000000, 1760000000)
-            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+            moment = datetime.fromtimestamp(rng.uniform(1670000000, 1760000000), tz=timezone.utc)
+            return _iso8601_like(moment, _sampled_length(schema, "string_length", rng))
         case "unix-epoch" | "unix-epoch-str":
             return str(rng.uniform(1670000000, 1760000000))
         case "url":
@@ -596,6 +591,20 @@ def _generate_string(
         return _text_for_role(rng, "assistant")
 
     return f"synthetic-{rng.randint(0, 99999)}"
+
+
+def _iso8601_like(moment: datetime, length: int | None) -> str:
+    """The ISO 8601 spelling whose length matches the observed one (``Z`` and millis vary by source)."""
+    spellings = (
+        moment.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z",
+        moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        moment.replace(microsecond=0).isoformat(),
+        moment.isoformat(),
+    )
+    if length is None:
+        return moment.isoformat()
+    return min(spellings, key=lambda spelling: abs(len(spelling) - length))
 
 
 def _fit(token: str, length: int, rng: random.Random) -> str:
