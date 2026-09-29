@@ -384,7 +384,9 @@ class FacadeBlackboardPostRequest(_OperationPayload):
 
 class FacadeDeleteSessionRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
-    actor: str = Field(default="user:api", min_length=1)
+    # The caller's own ``mutation.session.delete.preview`` reference; the
+    # handler never prepares a preview on the caller's behalf.
+    preview_ref: str = Field(min_length=1)
 
 
 class FacadeWorkEventRequest(_OperationPayload):

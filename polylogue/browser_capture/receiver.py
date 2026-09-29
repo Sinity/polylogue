@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -964,6 +967,32 @@ def receiver_identity(config: BrowserCaptureReceiverConfig) -> str:
     return load_or_mint_receiver_identity()
 
 
+#: Domain separator for a receiver attestation MAC, so a proof can never be
+#: confused with any other HMAC keyed by the same bearer.
+RECEIVER_ATTESTATION_DOMAIN = "polylogue-browser-capture-receiver-attestation/v1"
+
+
+def receiver_attestation_proof(secret: str, receiver_id: str, challenge: str) -> str:
+    """Return the proof that the holder of ``secret`` answered ``challenge``.
+
+    HMAC-SHA256 keyed by the receiver bearer over the domain, the receiver
+    identity, and the caller's fresh challenge. A process that does not hold
+    the bearer cannot produce it, and the proof reveals nothing about the
+    bearer, so a client can authenticate a loopback receiver before it
+    releases or presents the durable credential.
+    """
+    message = f"{RECEIVER_ATTESTATION_DOMAIN}\n{receiver_id}\n{challenge}".encode()
+    digest = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def attest_receiver(config: BrowserCaptureReceiverConfig, challenge: str) -> str | None:
+    """Answer an attestation challenge, or ``None`` when auth is disabled."""
+    if config.auth_token is None:
+        return None
+    return receiver_attestation_proof(config.auth_token, receiver_identity(config), challenge)
+
+
 def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, object]:
     """Return JSON status for extension health checks."""
     return BrowserCaptureReceiverStatusPayload(
@@ -1187,6 +1216,7 @@ __all__ = [
     "BACKFILL_CHECKPOINT_MAX_BYTES",
     "BACKFILL_CHECKPOINT_MAX_FILES",
     "BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV",
+    "RECEIVER_ATTESTATION_DOMAIN",
     "RECEIVER_IDENTITY_HEX_CHARS",
     "RECEIVER_TOKEN_ENTROPY_BYTES",
     "BrowserCaptureReceiverConfig",
@@ -1195,6 +1225,7 @@ __all__ = [
     "CaptureConvergence",
     "SpoolUsage",
     "admit_staged_capture",
+    "attest_receiver",
     "backfill_checkpoint_root",
     "capture_artifact_ref",
     "capture_convergence",
@@ -1206,6 +1237,7 @@ __all__ = [
     "load_or_mint_receiver_identity",
     "load_or_mint_receiver_token",
     "read_backfill_checkpoint",
+    "receiver_attestation_proof",
     "receiver_identity",
     "receiver_status_payload",
     "resolve_receiver_auth_token",

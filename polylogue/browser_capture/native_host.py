@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import hmac
+import http.client
 import json
 import os
+import secrets
 import struct
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 
 from polylogue.browser_capture.models import BROWSER_CAPTURE_API_SCHEMA
-from polylogue.browser_capture.receiver import load_or_mint_receiver_identity, load_or_mint_receiver_token
+from polylogue.browser_capture.receiver import (
+    load_or_mint_receiver_identity,
+    load_or_mint_receiver_token,
+    receiver_attestation_proof,
+)
 
 NATIVE_HOST_NAME = "com.polylogue.browser_capture"
 
@@ -106,6 +113,52 @@ def _write_message(value: dict[str, object]) -> None:
     sys.stdout.buffer.flush()
 
 
+#: Seconds without progress on the loopback attestation exchange before the
+#: receiver counts as unauthenticated. It bounds each blocking socket step, not
+#: the whole exchange, and matches the extension's receiver health bound: a
+#: receiver that answers nothing cannot be told apart from an impostor that
+#: holds the port open, and the extension retries on its next health check.
+RECEIVER_ATTESTATION_IDLE_TIMEOUT_S = 5.0
+
+
+def _authenticate_receiver(endpoint: ParseResult, receiver_id: str, secret: str) -> str | None:
+    """Challenge the endpoint; ``None`` when it answers with the bearer-keyed proof.
+
+    Otherwise return the refusal code: ``receiver_unreachable`` when nothing
+    answered, ``receiver_authentication_failed`` when something else did. Only
+    the challenge crosses the socket, so an impostor listening on the receiver
+    port learns nothing it can use and cannot answer.
+    """
+    challenge = secrets.token_urlsafe(32)
+    path = endpoint.path.rstrip("/") + "/v1/receiver/attest"
+    connection = http.client.HTTPConnection(
+        endpoint.hostname or "", endpoint.port or 80, timeout=RECEIVER_ATTESTATION_IDLE_TIMEOUT_S
+    )
+    try:
+        connection.request(
+            "POST",
+            path,
+            body=json.dumps({"challenge": challenge}),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        raw = response.read()
+    except (OSError, http.client.HTTPException):
+        return "receiver_unreachable"
+    finally:
+        connection.close()
+    try:
+        body = json.loads(raw) if response.status == 200 else None
+    except ValueError:
+        body = None
+    proof = body.get("proof") if isinstance(body, dict) else None
+    if isinstance(proof, str) and hmac.compare_digest(
+        proof, receiver_attestation_proof(secret, receiver_id, challenge)
+    ):
+        return None
+    return "receiver_authentication_failed"
+
+
 def main() -> int:
     from polylogue.runtime import require_free_threaded_runtime
 
@@ -128,12 +181,20 @@ def main() -> int:
     if expected is not None and expected != receiver_id:
         _write_message({"ok": False, "error": "receiver_identity_mismatch", "receiver_id": receiver_id})
         return 1
+    # Loopback is not identity: whatever process owns the port would receive
+    # the bearer, and a fresh profile has no expected receiver id to compare.
+    # Release it only to an endpoint that proves it already holds it.
+    secret = load_or_mint_receiver_token()
+    refusal = _authenticate_receiver(parsed, receiver_id, secret)
+    if refusal is not None:
+        _write_message({"ok": False, "error": refusal, "receiver_id": receiver_id})
+        return 1
     _write_message(
         {
             "ok": True,
             "receiver_id": receiver_id,
             "api_schema": BROWSER_CAPTURE_API_SCHEMA,
-            "auth_token": load_or_mint_receiver_token(),
+            "auth_token": secret,
         }
     )
     return 0

@@ -493,6 +493,28 @@ class BrowserCapturePairingRedeemPayload(BaseModel):
     receiver_id: str
 
 
+#: A receiver attestation challenge: 32 random bytes, base64url without
+#: padding, so every accepted challenge carries the same fresh entropy.
+RECEIVER_ATTESTATION_CHALLENGE_PATTERN = r"^[A-Za-z0-9_-]{43}$"
+
+
+class BrowserCaptureReceiverAttestationRequest(BaseModel):
+    """A client's fresh challenge to a receiver it has not yet trusted."""
+
+    challenge: str = Field(pattern=RECEIVER_ATTESTATION_CHALLENGE_PATTERN)
+
+
+class BrowserCaptureReceiverAttestationPayload(BaseModel):
+    """Proof that this receiver holds the bearer, without revealing it."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    api_schema: str
+    receiver_id: str
+    proof: str
+
+
 #: Capture-health telemetry kinds the extension may report (polylogue-3v1).
 #: `capture_gap` is the completeness mismatch (page shows more messages than
 #: were captured); `capture_error` is a failed capture attempt; `spool_backlog`
@@ -896,11 +918,14 @@ __all__ = [
     "BrowserCaptureErrorPayload",
     "BrowserCaptureInterruption",
     "BrowserCaptureProvenance",
+    "BrowserCaptureReceiverAttestationPayload",
+    "BrowserCaptureReceiverAttestationRequest",
     "BrowserCaptureReceiverStatusPayload",
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
     "COMPACT_CHATGPT_BRIDGE_PROJECTION",
+    "RECEIVER_ATTESTATION_CHALLENGE_PATTERN",
     "envelope_has_native_provider_payload",
     "has_chatgpt_native_payload",
     "has_claude_ai_native_payload",

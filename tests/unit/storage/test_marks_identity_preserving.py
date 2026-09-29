@@ -22,6 +22,7 @@ import pytest
 from polylogue.api import Polylogue
 from polylogue.core.user_state_targets import identity_key
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.session_delete import delete_session_with_preview
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -195,7 +196,7 @@ async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
             ("mark", f"session:{session_id}"),
         ]
 
-        assert await poly.delete_session(session_id) is True
+        assert await delete_session_with_preview(poly, session_id) is True
         with sqlite3.connect(db_path) as conn:
             assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None
             assert conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is None
@@ -246,7 +247,7 @@ async def test_message_user_state_resolves_durable_alias_after_index_row_disappe
             )
             is True
         )
-        assert await poly.delete_session(session_id) is True
+        assert await delete_session_with_preview(poly, session_id) is True
 
         marks = await poly.list_marks(session_id=alias, mark_type="pin")
         annotations = await poly.list_annotations(session_id=alias)
@@ -274,7 +275,7 @@ async def test_durable_session_alias_matching_fails_closed_when_ambiguous(
     async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
         for session_id in session_ids:
             assert await poly.add_mark(session_id, "pin") is True
-            assert await poly.delete_session(session_id) is True
+            assert await delete_session_with_preview(poly, session_id) is True
         with pytest.raises(ValueError, match="ambiguous"):
             await poly.list_marks(session_id="ext-ambiguous", mark_type="pin")
 
@@ -306,7 +307,7 @@ async def test_marks_survive_session_delete_and_rebind_on_reimport(
         assert await poly.save_annotation("ann-1", session_id, "important") is True
 
         # Hard-delete the session; user state must remain.
-        assert await poly.delete_session(session_id) is True
+        assert await delete_session_with_preview(poly, session_id) is True
 
         marks_after_delete = await poly.list_marks(session_id=None, mark_type="star")
         annotations_after_delete = await poly.list_annotations()
@@ -363,7 +364,7 @@ async def test_message_target_marks_survive_reimport(workspace_env: dict[str, Pa
             )
             is True
         )
-        assert await poly.delete_session(session_id) is True
+        assert await delete_session_with_preview(poly, session_id) is True
 
     # Reimport the same session with the same message.
     SessionBuilder(db_path, "conv-id").provider("claude-code").add_message(
@@ -458,7 +459,7 @@ async def test_message_target_mark_survives_when_message_disappears(
             )
             is True
         )
-        assert await poly.delete_session(session_id) is True
+        assert await delete_session_with_preview(poly, session_id) is True
 
     # Reimport WITHOUT the original message — the mark is keyed by the stable
     # public message id and is not deleted just because the message is gone.

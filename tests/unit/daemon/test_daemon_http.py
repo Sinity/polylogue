@@ -303,6 +303,56 @@ def test_reset_session_scope_requires_a_session_id() -> None:
     assert payload["error"] == "invalid_request"
 
 
+def test_reset_session_scope_requires_a_presented_delete_preview() -> None:
+    """A bare session id never reaches the writer.
+
+    Anti-vacuity: the route previously called ``delete_session_safe`` with
+    only the session id, and the daemon prepared and self-authorized the
+    delete; without the ``preview_ref`` check this request reaches
+    ``_sync_run``, which raises here.
+    """
+    import json
+
+    handler, sent = _reset_handler(json.dumps({"scope": "session", "session_id": "session-a"}).encode())
+    handler._handle_reset()
+
+    status, payload = sent[0]
+    assert status is HTTPStatus.BAD_REQUEST
+    assert isinstance(payload, dict)
+    assert payload["error"] == "invalid_request"
+
+
+def test_reset_forwards_the_presented_preview_and_reports_its_refusal() -> None:
+    """The caller's preview reaches the delete, and a refused one is a typed 409.
+
+    Anti-vacuity: dropping ``preview_ref`` from the delete call, or answering
+    the refusal with the 200 ``ok`` envelope, turns this red.
+    """
+    import asyncio
+    import json
+
+    from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+
+    handler, sent = _reset_handler(
+        json.dumps({"scope": "session", "session_id": "session-a", "preview_ref": "preview:presented"}).encode()
+    )
+    calls: list[tuple[str, str]] = []
+
+    class _Facade:
+        async def delete_session_safe(self, session_id: str, *, preview_ref: str) -> object:
+            calls.append((session_id, preview_ref))
+            raise DaemonOperationRejectedError("preview_not_active", "preview is not authorizable")
+
+    handler._sync_run = lambda work: asyncio.run(work(_Facade()))
+    handler._handle_reset()
+
+    assert calls == [("session-a", "preview:presented")]
+    status, payload = sent[0]
+    assert status is HTTPStatus.CONFLICT
+    assert isinstance(payload, dict)
+    assert payload["error"] == "preview_not_active"
+
+
 def test_evidence_summary_reports_degraded_when_lineage_is_unreadable(tmp_path: Path) -> None:
     """polylogue-31h8l: an unreadable session_links is a gap, not "no lineage".
 

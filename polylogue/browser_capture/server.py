@@ -44,6 +44,7 @@ from polylogue.browser_capture.capture_stream import (
     summarize_capture_file,
 )
 from polylogue.browser_capture.models import (
+    BROWSER_CAPTURE_API_SCHEMA,
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserActionApprovalDecisionRequest,
     BrowserActionCapabilitiesPayload,
@@ -62,6 +63,8 @@ from polylogue.browser_capture.models import (
     BrowserCaptureHealthEventRequest,
     BrowserCapturePairingRedeemPayload,
     BrowserCapturePairingRedeemRequest,
+    BrowserCaptureReceiverAttestationPayload,
+    BrowserCaptureReceiverAttestationRequest,
 )
 from polylogue.browser_capture.pairing import (
     PairingCodeAlreadyUsedError,
@@ -76,6 +79,7 @@ from polylogue.browser_capture.receiver import (
     BrowserCaptureSpoolConflictError,
     SpoolQuotaExceededError,
     admit_staged_capture,
+    attest_receiver,
     capture_response_id,
     existing_capture_state,
     read_backfill_checkpoint,
@@ -685,6 +689,13 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if path == "/v1/pairing/redeem":
             self._pairing_redeem()
             return
+        # Attestation is unauthenticated for the opposite reason: a client
+        # must authenticate this receiver before it sends the bearer here.
+        # The answer is a MAC over the client's fresh challenge, never the
+        # bearer itself.
+        if path == "/v1/receiver/attest":
+            self._receiver_attest()
+            return
         if self._reject_token():
             return
         if path == "/v1/capture-health":
@@ -1137,6 +1148,29 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             BrowserCapturePairingRedeemPayload(
                 auth_token=token,
                 receiver_id=receiver_identity(self.server.config),
+            ).model_dump(mode="json"),
+        )
+
+    def _receiver_attest(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserCaptureReceiverAttestationRequest.model_validate(payload)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_attestation_request")
+            return
+        proof = attest_receiver(self.server.config, request.challenge)
+        if proof is None:
+            # With auth disabled there is no secret to prove possession of.
+            self._safe_error(HTTPStatus.CONFLICT, "receiver_auth_disabled")
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            BrowserCaptureReceiverAttestationPayload(
+                api_schema=BROWSER_CAPTURE_API_SCHEMA,
+                receiver_id=receiver_identity(self.server.config),
+                proof=proof,
             ).model_dump(mode="json"),
         )
 

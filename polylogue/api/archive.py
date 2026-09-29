@@ -158,6 +158,7 @@ if TYPE_CHECKING:
         AssertionEvidenceResolutionState,
         AssertionJudgmentResultPayload,
         BulkTagMutationResult,
+        DeleteSessionPreview,
         DeleteSessionResult,
         FacetsResponse,
         ImportExplainPayload,
@@ -5764,32 +5765,75 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             stable_order="tag",
         )
 
-    async def delete_session(self, session_id: str) -> bool:
-        """Permanently delete a session and all associated data.
+    async def prepare_delete_session(self, session_id: str) -> DeleteSessionPreview:
+        """Prepare a permanent delete of one session and return its preview.
+
+        The daemon records the preview under this caller's authenticated
+        principal through the same ``mutation.session.delete.preview``
+        operation the CLI ``delete`` verb uses. Nothing is deleted until the
+        caller presents ``preview_ref`` to :meth:`delete_session_safe`.
+        Returns ``outcome="not_found"`` with no reference for an unknown ID.
+        """
+        from polylogue.api.facade_client import submit_facade_operation
+        from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+        from polylogue.surfaces.payloads import DeleteSessionPreview
+
+        # The preview operation takes exact stored IDs; resolve the prefix and
+        # provider-alias forms the delete itself accepts first.
+        try:
+            canonical = await self._archive_resolve_session_id(session_id)
+        except SessionNotFoundError:
+            return DeleteSessionPreview(outcome="not_found", session_id=session_id)
+        try:
+            state = await submit_facade_operation(
+                self.config, "mutation.session.delete.preview", {"session_ids": [canonical or session_id]}
+            )
+        except DaemonOperationRejectedError as exc:
+            if exc.outcome == "selection_is_stale":
+                return DeleteSessionPreview(outcome="not_found", session_id=session_id)
+            raise
+        preview_ref = state.get("preview_ref")
+        sample = state.get("session_ids_sample")
+        expires_at_ms = state.get("expires_at_ms")
+        if (
+            not isinstance(preview_ref, str)
+            or not preview_ref
+            or state.get("preview_refs") != [preview_ref]
+            or not isinstance(sample, list)
+            or len(sample) != 1
+            or not isinstance(sample[0], str)
+            or type(expires_at_ms) is not int
+        ):
+            raise ValueError("daemon returned an invalid single-session delete preview")
+        return DeleteSessionPreview(
+            outcome="prepared", session_id=sample[0], preview_ref=preview_ref, expires_at_ms=expires_at_ms
+        )
+
+    async def delete_session(self, session_id: str, *, preview_ref: str) -> bool:
+        """Permanently delete a session under a presented delete preview.
 
         Returns ``True`` if something was deleted, ``False`` if the session
-        was not found. Routes through :meth:`ArchiveMutationsMixin
-        .delete_session_safe` so resolution and idempotency stay
-        centralized (#862).
+        was not found. See :meth:`delete_session_safe`.
         """
-        result = await self.delete_session_safe(session_id)
+        result = await self.delete_session_safe(session_id, preview_ref=preview_ref)
         return result.outcome == "deleted"
 
-    async def delete_session_safe(self, session_id: str, *, actor: str = "user:api") -> DeleteSessionResult:
+    async def delete_session_safe(self, session_id: str, *, preview_ref: str) -> DeleteSessionResult:
         """Typed delete that returns ``outcome="deleted"`` or ``"not_found"``.
 
-        Routes through :class:`~polylogue.operations.mutation_transaction
-        .OperationExecutor` and ``SessionDeleteActuator`` (polylogue-t46.9/
-        kwsb.2) so every session-delete adapter -- this API method (consumed
-        by MCP's ``write(operation='delete_session')``), and the CLI
-        ``delete`` verb's own actuator use in ``archive_query._emit_delete``
-        -- shares one preview/authorization/receipt contract instead of
-        calling ``ArchiveStore.delete_sessions`` independently.
+        ``preview_ref`` is the reference :meth:`prepare_delete_session`
+        returned to this caller. The daemon authorizes that exact preview and
+        consumes it once, so a missing, foreign, reused, expired, or stale
+        reference is refused (``DaemonOperationRejectedError``) and deletes
+        nothing. The audit receipt's ``bound_token`` strength therefore
+        records a plan this caller prepared and presented.
         """
         from polylogue.api.facade_client import submit_facade_writer
         from polylogue.surfaces.payloads import DeleteSessionResult
 
-        value = await submit_facade_writer(self.config, "delete_session", {"session_id": session_id, "actor": actor})
+        value = await submit_facade_writer(
+            self.config, "delete_session", {"session_id": session_id, "preview_ref": preview_ref}
+        )
         return DeleteSessionResult.model_validate(value)
 
     async def add_tag(

@@ -4014,6 +4014,23 @@ class DeleteSessionResult(SurfacePayloadModel):
         return self.outcome == "deleted"
 
 
+DeleteSessionPreviewOutcome: TypeAlias = Literal["prepared", "not_found"]
+
+
+class DeleteSessionPreview(SurfacePayloadModel):
+    """A prepared single-session delete its caller presents to apply it.
+
+    ``preview_ref`` is set only when ``outcome="prepared"``; it is bound to
+    the authenticated principal that prepared it and to this one session, and
+    it authorizes one delete before ``expires_at_ms``.
+    """
+
+    outcome: DeleteSessionPreviewOutcome
+    session_id: str
+    preview_ref: str | None = None
+    expires_at_ms: int | None = None
+
+
 class BulkTagMutationResult(SurfacePayloadModel):
     """Typed result for bulk tag mutations.
 
@@ -4558,6 +4575,8 @@ __all__ = [
     "MetadataMutationOutcome",
     "MetadataMutationResult",
     "DeleteSessionOutcome",
+    "DeleteSessionPreview",
+    "DeleteSessionPreviewOutcome",
     "DeleteSessionResult",
     "DelegationAncestryNodePayload",
     "DelegationAncestryPayload",
