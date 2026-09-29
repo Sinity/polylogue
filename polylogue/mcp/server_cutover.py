@@ -68,6 +68,14 @@ class _EmbeddingStatusEnv:
 _CANCEL_RETRY_INTERVAL_S = 0.05
 
 
+def _cancel_reference_unknown(envelope: object) -> bool:
+    """Whether a cancel was refused because the request id is not registered yet."""
+    if not isinstance(envelope, dict):
+        return False
+    error = envelope.get("error")
+    return isinstance(error, dict) and error.get("code") == "operation_reference_unknown"
+
+
 async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str, object]) -> str:
     """Submit a privileged request to the resident daemon only."""
     from polylogue.daemon.api_auth import resolve_api_auth_token
@@ -114,11 +122,12 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
         # caller still sees the cancellation.
         while not submission.done():
             try:
-                await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
+                cancelled = await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
             except Exception:
-                await asyncio.wait({submission}, timeout=_CANCEL_RETRY_INTERVAL_S)
-                continue
-            break
+                cancelled = None
+            if not _cancel_reference_unknown(cancelled) and cancelled is not None:
+                break
+            await asyncio.wait({submission}, timeout=_CANCEL_RETRY_INTERVAL_S)
         with suppress(Exception):
             await asyncio.shield(submission)
         with suppress(Exception):

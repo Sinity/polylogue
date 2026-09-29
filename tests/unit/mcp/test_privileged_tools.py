@@ -1243,7 +1243,9 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
 
         def cancel(self, request_id: str, *, archive_root: str) -> dict[str, object]:
             if not registered.is_set():
-                raise RuntimeError("operation_reference_unknown")
+                # The production daemon refuses an unregistered id with a
+                # typed envelope, not an exception.
+                return {"outcome": "rejected", "error": {"code": "operation_reference_unknown"}}
             calls.append(("operation.cancel", request_id))
             cancel_sent.set()
             return {"outcome": "completed"}
