@@ -276,7 +276,7 @@ def dispatch(
     ``daemon_only`` is retained for callers that explicitly require an
     immediate typed refusal when no socket answers.
     """
-    spec = request.spec
+    _ = request.spec  # refuses an undeclared operation before any transport choice
     operation = request.operation
     if archive_root is not None:
         root = archive_root
@@ -305,7 +305,7 @@ def dispatch(
 
     client = DaemonClient(
         daemon_socket_path(root),
-        timeout_s=(deadline_ms / 1000 if deadline_ms is not None else spec.deadline_s),
+        timeout_s=(deadline_ms / 1000 if deadline_ms is not None else _declared_deadline_s(request)),
         auth_token=lambda: resolve_api_auth_token(
             getattr(config, "api_auth_token", None),
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
@@ -313,7 +313,9 @@ def dispatch(
     )
 
     def _ask_daemon(call_request: OperationRequest) -> Mapping[str, Any] | None:
-        return client.operation(call_request.operation, dict(call_request.payload), archive_root=str(root))
+        return client.operation(
+            call_request.operation, dict(call_request.payload), archive_root=str(root), deadline_ms=deadline_ms
+        )
 
     try:
         return OperationKernel(_ask_daemon).execute(request)
@@ -544,3 +546,10 @@ __all__ = [
     "configured_read_operation",
     "dispatch",
 ]
+
+
+def _declared_deadline_s(request: OperationRequest) -> float:
+    """The socket timeout a request's own shape calls for (scan reads wait longer)."""
+    from polylogue.operations.daemon_reads import operation_deadline_s
+
+    return operation_deadline_s(request.operation, request.payload)

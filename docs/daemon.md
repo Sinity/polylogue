@@ -761,8 +761,9 @@ Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
-database page or a read-only mount (`polylogue/core/storage_faults.py`) -- is
-not a verdict on the input. The batch leaves the affected files' cursors and
+database page, a read-only mount, or attachment bytes a parse worker published
+that blob GC reclaimed before the writer reserved them
+(`polylogue/core/storage_faults.py`) -- is not a verdict on the input. The batch leaves the affected files' cursors and
 raw parse state untouched, closes its `ingest_attempts` row as
 `transient_error` with evidence `archive_write:storage_fault:<kind>`, and the
 page is refused at ERROR as `daemon.intake.page_refused` with reason

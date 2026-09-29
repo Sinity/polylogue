@@ -39,6 +39,7 @@ from .base import (
     mark_last_occurrence_as_active_leaf,
     parser_admission,
 )
+from .base_support import codex_unknown_wire_type
 
 logger = get_logger(__name__)
 _TimestampPair = tuple[datetime, str]
@@ -4859,7 +4860,7 @@ def _parse_records(
     return session.model_copy(update=updates) if updates else session
 
 
-@parser_admission("codex")
+@parser_admission("codex", scan=codex_unknown_wire_type)
 def parse(payload: Sequence[object], fallback_id: str) -> ParsedSession:
     return _parse_records(payload, fallback_id)
 

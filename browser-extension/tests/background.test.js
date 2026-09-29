@@ -2856,6 +2856,18 @@ describe("capture retry queue", () => {
     expect(stored.polylogueCaptureQueue.entries.at(-1).envelope.session.provider_session_id).toBe("conv-21");
   });
 
+  it("queues a capture whose stalled upload the receiver cancelled with 408", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "upload_stalled" }, { ok: false, status: 408 }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-stalled" } },
+    });
+
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
+    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-stalled");
+  });
+
   it("summarizes the retry queue for the popup without leaking full envelope internals", async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new TypeError("offline");

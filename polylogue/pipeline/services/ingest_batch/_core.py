@@ -1412,9 +1412,16 @@ def _write_session(
     if blob_publisher is not None:
         preacquired_attachment_blobs = {}
         for attachment in session_to_write.attachments:
-            if attachment.inline_bytes is None:
+            if attachment.inline_bytes is not None:
+                hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
+            elif attachment.precomputed_blob is not None:
+                # Bytes a parse worker already published (a streamed browser
+                # capture's spilled carriers, ChatGPT asset sidecars) are
+                # GC-eligible until referenced; reserve them like a write so
+                # the flush proves they are still present.
+                hash_hex, size = blob_publisher.adopt_published(*attachment.precomputed_blob)
+            else:
                 continue
-            hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
             receipt_id = blob_publisher.receipt_id(hash_hex)
             blob_hash = bytes.fromhex(hash_hex)
             preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
@@ -1425,13 +1432,12 @@ def _write_session(
         )
         counts.update(sidecar_blob_counts)
         blob_publisher.flush()
-    for attachment in session_to_write.attachments:
+    for attachment in session_to_write.attachments if blob_publisher is None else ():
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
         # asset acquisition) -- record the already-known hash/size directly
-        # rather than re-hashing. Independent of ``blob_publisher`` (no new
-        # write happens here) and skipped when ``inline_bytes`` already
-        # claimed this attachment above.
+        # rather than re-hashing. With a publisher the loop above already
+        # reserved and recorded it; this covers publisher-less callers.
         if attachment.inline_bytes is not None or attachment.precomputed_blob is None:
             continue
         if preacquired_attachment_blobs is None:

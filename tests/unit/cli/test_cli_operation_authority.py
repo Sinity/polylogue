@@ -9,7 +9,10 @@ run and the command that makes it runnable (``polylogued run``).
 Anti-vacuity: restoring a CLI-side writable ``ArchiveStore``, or adding a local
 fallback inside ``submit_cli_mutation``, makes every command here exit 0 and
 mutate ``user.db``, turning every test in this module red — both the exit-code
-assertion and the byte-identical ``user.db`` digest.
+assertion and the byte-identical ``user.db`` digest. The matrix rows also watch
+every ``sqlite3.connect`` in the process through the production interception
+seam, so a local writer of *any* archive tier (``index.db``, ``ops.db``,
+``embeddings.db``) is red even when its bytes happen to come out unchanged.
 """
 
 from __future__ import annotations
@@ -17,7 +20,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -63,6 +67,23 @@ def _user_tier_digest(archive_root: Path) -> str:
         digest.update(path.name.encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+@contextmanager
+def _recording_writable_tier_opens() -> Iterator[list[Path]]:
+    """Record every writable archive-tier open this process attempts.
+
+    Uses :func:`~polylogue.maintenance.offline_guard.refuse_writable_tier_opens`,
+    the seam the CLI's own ownership boundary installs, so "writable archive-tier
+    open" is storage's definition rather than one restated here. The recorder
+    does not raise: a command that writes is observed writing, not stopped
+    part-way into a different failure.
+    """
+    from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
+
+    opened: list[Path] = []
+    with refuse_writable_tier_opens(opened.append):
+        yield opened
 
 
 def _refusal_text(result: Result) -> str:
@@ -166,6 +187,7 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
     ("reset-identity", ("ops", "reset", "--session", _SESSION_ID, "--yes"), "mutation.identity-reset"),
     ("backup", ("ops", "backup", "--output-dir", "./backup-matrix"), "maintenance.backup"),
+    ("embed-backfill", ("ops", "embed", "backfill", "--yes"), "maintenance.embeddings.backfill"),
     ("scan-secrets", ("ops", "scan-secrets", "--session", _SESSION_ID), "maintenance.secret_scan"),
     (
         "embed-resolve-failure",
@@ -279,13 +301,15 @@ def test_daemon_down_refusal_names_polylogued_run_in_terminal_format(
     del name
     before = _user_tier_digest(authority_archive)
 
-    result = _run(authority_archive, *argv)
+    with _recording_writable_tier_opens() as opened:
+        result = _run(authority_archive, *argv)
 
     text = _refusal_text(result)
     assert result.exit_code != 0, result.output
     assert "polylogued run" in text, text
     assert "Traceback" not in result.output, result.output
     assert _user_tier_digest(authority_archive) == before
+    assert opened == [], f"{operation} opened writable archive tiers in the CLI process: {opened}"
 
 
 @pytest.mark.parametrize(
@@ -315,10 +339,11 @@ def test_daemon_down_refusal_is_typed_daemon_required_in_machine_format(
     assertion while the terminal test above stays green -- the exact asymmetry
     that let the gap survive.
     """
-    del name, operation
+    del name
     before = _user_tier_digest(authority_archive)
 
-    exit_code, payload = _run_machine(authority_archive, argv, monkeypatch, capsys)
+    with _recording_writable_tier_opens() as opened:
+        exit_code, payload = _run_machine(authority_archive, argv, monkeypatch, capsys)
 
     assert exit_code != 0, payload
     assert payload["status"] == "error", payload
@@ -327,3 +352,4 @@ def test_daemon_down_refusal_is_typed_daemon_required_in_machine_format(
     details = payload.get("details")
     assert isinstance(details, dict) and details.get("remedy") == "polylogued run", payload
     assert _user_tier_digest(authority_archive) == before
+    assert opened == [], f"{operation} opened writable archive tiers in the CLI process: {opened}"

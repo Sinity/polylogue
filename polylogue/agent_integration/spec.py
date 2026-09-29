@@ -505,6 +505,13 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("offset", "integer", False, "Offset into ranked candidates for decimal offset pagination."),
             _arg("recipient_ref", "string", False, "Recipient identity for delivery receipts."),
             _arg("assertion_ref", "string", False, "Assertion identity to include in context."),
+            _arg(
+                "segment_profile",
+                "string",
+                False,
+                "Segment compilation profile: default, or prose_with_refs for prose recaps carrying evidence refs.",
+                ("default", "prose_with_refs"),
+            ),
         ),
         examples=(
             _example(
@@ -522,7 +529,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         name="status",
         source_names=_STATUS_SOURCES,
-        purpose="Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.",
+        purpose="Report status by scope: aggregate archive statistics, one source's freshness, embedding readiness, coordination, Sinex publication, or operation readiness.",
         arguments=(
             _arg(
                 "scope",
@@ -536,10 +543,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         examples=(
             _example(
                 "status-archive",
-                "Establish archive authority before making a broad claim",
-                "Archive identity, selected source coverage, freshness/readiness state, and explicit degraded reasons.",
+                "Read aggregate archive statistics",
+                "Archive session/message counts and origin totals only. These aggregate statistics do not establish archive identity, source coverage, freshness, or readiness.",
                 scope="archive",
-                include=["identity", "coverage", "freshness", "readiness"],
             ),
         ),
         supports_continuation=False,

@@ -1,6 +1,6 @@
 """Comprehensive ingest instrument: time, CPU, memory, I/O, SQLite, stages.
 
-This probe drives a real archive write path (the full ``parse_sources_archive``
+This probe drives a real archive write path (the full ``ingest_one_shot_archive``
 pipeline for the corpus workload, or a single open ``ArchiveStore`` for the
 lineage workload — both using the WAL write profile) over a deterministic
 synthetic workload and captures, per run:
@@ -351,9 +351,9 @@ def _build_fixture_files(
 
 async def _ingest_batch(archive_root: Path, provider: str, source_file: Path) -> _BatchOutcome:
     from polylogue.config import Source
-    from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+    from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 
-    result = await parse_sources_archive(archive_root, [Source(name=provider, path=source_file)])
+    result = await ingest_one_shot_archive(archive_root, [Source(name=provider, path=source_file)])
     counts = {
         "sessions": int(result.counts.get("sessions", 0)),
         "messages": int(result.counts.get("messages", 0)),
@@ -657,8 +657,7 @@ def measure_ingest_throughput(
     report: dict[str, Any] | None = None
     receipt_args: dict[str, Any] = {}
     try:
-        from polylogue.operations.canonical_archive_ingest import scoped_one_shot_archive_owner
-        from polylogue.pipeline.services.archive_ingest import _admit_one_shot_root
+        from polylogue.operations.canonical_archive_ingest import admit_one_shot_root, scoped_one_shot_archive_owner
         from polylogue.storage.blob_store import reset_blob_store
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -667,7 +666,7 @@ def measure_ingest_throughput(
         # Bootstrap the archive file set up front so per-batch timings
         # exclude the one-time schema-DDL cost.
         with scoped_one_shot_archive_owner(archive_root):
-            _admit_one_shot_root(archive_root)
+            admit_one_shot_root(archive_root)
             ArchiveStore.open_existing(archive_root, read_only=False).close()
 
         source_files: list[Path] = []

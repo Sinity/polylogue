@@ -52,7 +52,14 @@ from .parsers.base import (
     mark_last_occurrence_as_active_leaf,
 )
 from .parsers.base_models import upgrade_chat_export_user_authorship
-from .parsers.base_support import iter_messages_from_list
+from .parsers.base_support import (
+    AdmissionObserver,
+    admit_parsed_sessions,
+    claude_code_unknown_wire_type,
+    codex_unknown_wire_type,
+    hermes_unknown_wire_type,
+    iter_messages_from_list,
+)
 from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
 from .parsers.claude.stream_scratch import ClaudeStreamScratch, SqliteStringSet
@@ -1075,6 +1082,10 @@ def _claude_code_multiway_parse_inner(
     sidecar_accumulators: dict[str, ToolResultIndexAccumulator] | None = {} if sidecar_scope is not None else None
 
     accumulators: dict[str, claude_code_parser._SessionAccumulator] = {}
+    # One admission observer per session group: an outer record belongs to
+    # exactly the session it folds into, so each session's ledger proves its
+    # own records rather than the whole multi-session stream.
+    observers: dict[str, AdmissionObserver] = {}
     group_order: list[str] = []
     provisional_groups: set[str] = set()
     pending_prefix: list[tuple[object, PayloadRecord | None]] = []
@@ -1105,6 +1116,14 @@ def _claude_code_multiway_parse_inner(
         # ``record`` is the caller's already-coerced view of ``item``. Coercing
         # walks the whole decoded record, so it happens once per record here,
         # not once per read of a field.
+        observer = observers.get(group_id)
+        if observer is None:
+            observer = observers[group_id] = AdmissionObserver(claude_code_unknown_wire_type)
+        # ``_fold_code_record`` silently drops a dict record whose ``type``
+        # is missing or not a string (logged, never folded into evidence);
+        # the admission ledger must not still count that as MATERIALIZED.
+        recognized = not (isinstance(item, dict) and not isinstance(item.get("type"), str))
+        observer.observe(item, source_index=index, recognized=recognized)
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:
@@ -1201,6 +1220,9 @@ def _claude_code_multiway_parse_inner(
 
     for group_id in group_order:
         session = claude_code_parser._finalize_code_session(accumulators[group_id])
+        session = observers.setdefault(group_id, AdmissionObserver(claude_code_unknown_wire_type)).apply(
+            session, "claude_code"
+        )
         if sidecar_accumulators is not None:
             # sidecar_accumulators is only set when the scope resolved, which
             # itself only happens when source_path is not None.
@@ -1787,6 +1809,18 @@ def parse_generic_messages_stream(
 
 
 def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
+    """Parse one lowered spec through the shared admission boundary.
+
+    Every production route passes here, including the ones that reach an
+    undecorated entry point (Hermes state/ATIF/verification, Antigravity
+    markdown, Codex streams); their single-session results get the same
+    outer-record ledger the decorated leaf parsers attach.
+    """
+    sessions = _parse_lowered_spec_unadmitted(spec, resolver)
+    return admit_parsed_sessions(spec.provider.value.replace("-", "_"), spec.payload, sessions)
+
+
+def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
     if spec.mode == "browser_capture":
         record = _payload_record(spec.payload)
         return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
@@ -1957,8 +1991,8 @@ def require_positive_conversational_evidence(
     own OriginSpec/``classify_artifact`` path-and-shape gate from
     polylogue-6mpy -- this filter catches the sibling case where the shape
     is recognized but the parsed *content* still carries no message), and
-    ``pipeline/services/archive_ingest.py`` (the one-shot importer behind
-    ``Polylogue.parse_file``/``parse_sources`` and the demo seeder).
+    ``operations/canonical_archive_ingest.py`` (the one-shot importer behind
+    the demo seeder).
 
     Measured against the live archive (2026-07-31, read-only query against
     ``index.db``/``source.db``): every verified zero-message
@@ -2279,20 +2313,36 @@ def parse_stream_payload(
             )
         )
     if runtime_provider is Provider.CODEX:
-        return [
-            codex.parse_stream(
-                payloads,
-                fallback_id,
-                message_sink=message_sink_factory() if message_sink_factory is not None else None,
-                event_sink=event_sink_factory() if event_sink_factory is not None else None,
-            )
-        ]
+        observer = AdmissionObserver(codex_unknown_wire_type)
+        session = codex.parse_stream(
+            observer.observing(payloads),
+            fallback_id,
+            message_sink=message_sink_factory() if message_sink_factory is not None else None,
+            event_sink=event_sink_factory() if event_sink_factory is not None else None,
+        )
+        return [observer.apply(session, "codex")]
     if runtime_provider is Provider.HERMES:
-        return hermes_spans.parse_atof_stream(
-            payloads,
+        observer = AdmissionObserver(hermes_unknown_wire_type)
+
+        def admitted(records: Iterable[object]) -> Iterator[object]:
+            # The parser's own recognition decides: a known-kind record it
+            # skips (no uuid, say) is refused, not counted as materialized.
+            for item in records:
+                record = _payload_record(item)
+                observer.observe(
+                    item,
+                    malformed=record is not None
+                    and hermes_unknown_wire_type(record) is None
+                    and not hermes_spans.looks_like_atof_payload(record),
+                )
+                yield item
+
+        sessions = hermes_spans.parse_atof_stream(
+            admitted(payloads),
             fallback_id,
             profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )
+        return observer.apply_each(sessions, "hermes")
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 

@@ -137,6 +137,7 @@ def build_finding_evidence_adapter(
     *,
     frame_hash: str | None,
     definition_hash: str | None,
+    incompatible_result_set_refs: frozenset[str] = frozenset(),
     max_nodes: int = FINDING_ANCESTRY_MAX_NODES,
     index_conn: sqlite3.Connection | None = None,
 ) -> FindingEvidenceAdapter:
@@ -193,6 +194,7 @@ def build_finding_evidence_adapter(
                     authority=_ref_authority(ref),
                     ref_state="ok" if resolvable else "missing",
                     frame_hash=frame_hash if resolvable else None,
+                    compatible=ref not in incompatible_result_set_refs,
                 )
             if len(nodes) >= max_nodes:
                 continue
@@ -254,11 +256,13 @@ def evaluate_finding_evidence(
 ) -> EvidenceIntegrityVerdict:
     """Return the shared evaluator's verdict for one finding's ancestry."""
     frame_hash, definition_hash = _frame_and_definition(conn, provenance)
+    incompatible_result_set_refs = _incompatible_result_set_refs(conn, provenance, definition_hash)
     adapter = build_finding_evidence_adapter(
         conn,
         provenance,
         frame_hash=frame_hash,
         definition_hash=definition_hash,
+        incompatible_result_set_refs=incompatible_result_set_refs,
         max_nodes=max_nodes,
         index_conn=index_conn,
     )
@@ -271,3 +275,24 @@ def evaluate_finding_evidence(
         detector_output_refs=frozenset({detector_ref}) if detector_ref else frozenset(),
         max_nodes=max_nodes,
     )
+
+
+def _incompatible_result_set_refs(
+    conn: sqlite3.Connection,
+    provenance: FindingProvenance,
+    definition_hash: str | None,
+) -> frozenset[str]:
+    """Identify declared result sets evaluated for a different query."""
+    if definition_hash is None:
+        return frozenset()
+    from polylogue.storage.sqlite.query_objects import get_result_set
+
+    incompatible: set[str] = set()
+    for ref in (provenance.result_set_ref, provenance.baseline_ref, provenance.current_ref):
+        object_id = _object_id_of_kind(ref, "result-set") if ref is not None else None
+        if object_id is None:
+            continue
+        manifest = get_result_set(conn, object_id)
+        if manifest is not None and manifest.query_hash != definition_hash and ref is not None:
+            incompatible.add(ref)
+    return frozenset(incompatible)

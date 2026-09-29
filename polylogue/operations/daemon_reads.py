@@ -211,6 +211,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_chronicle import execute_chronicle_read
 
         result = execute_chronicle_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+    elif name == "read.compact":
+        from polylogue.operations.read_view_compact import execute_compact_read
+
+        result = execute_compact_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
     elif name == "read.effective_context":
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
@@ -326,12 +330,62 @@ def _is_relative_date_bound(value: object) -> bool:
     return False
 
 
+#: Deadline of a declared read that a request's own shape makes archive-scan
+#: work; matches the declared deadline of the daemon's other scan operations.
+READ_SCAN_DEADLINE_S = 120.0
+
+
+def read_is_archive_scan(name: str, payload: Mapping[str, object]) -> bool:
+    """Whether this read request must read every candidate, decided before it runs.
+
+    A chronicle page ordered by a composed count hydrates every matching
+    session whatever its page size, so it is admitted as scan work rather
+    than against the capacity and deadline reserved for interactive reads.
+    """
+    if name != "read.chronicle":
+        return False
+    from polylogue.core.errors import PolylogueError
+    from polylogue.operations.read_view_chronicle import chronicle_payload_is_scan
+
+    try:
+        return chronicle_payload_is_scan(payload)
+    except (ValueError, TypeError, PolylogueError):
+        # An invalid request (a bad sort is a ``QuerySpecError``) is refused
+        # by execution with its typed error, never by this classifier.
+        return False
+
+
+def operation_deadline_s(name: str, payload: Mapping[str, object]) -> float:
+    """The execution deadline one request carries, decided from its shape.
+
+    The declared spec deadline, except a read that is archive-scan work, which
+    gets the scan deadline. Clients and the runtime read the same value, so a
+    client never sends (or waits with) a deadline shorter than the one the
+    runtime admits the request under.
+    """
+    from polylogue.operations.daemon_protocol import DaemonAuthority, daemon_operation_spec
+
+    spec = daemon_operation_spec(name)
+    if spec is None:
+        raise ValueError(f"operation is not declared: {name}")
+    if spec.authority is DaemonAuthority.READ and read_is_archive_scan(name, payload):
+        return READ_SCAN_DEADLINE_S
+    return spec.deadline_s
+
+
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
-    if name not in {"cli.query", "read.temporal", "read.chronicle"}:
+    if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
         return False
-    spec = _cli_query_spec(_params(payload))
+    from polylogue.core.errors import PolylogueError
+
+    try:
+        spec = _cli_query_spec(_params(payload))
+    except (ValueError, TypeError, PolylogueError):
+        # Like ``read_is_archive_scan``: an invalid request is refused by
+        # execution with its typed error, never by this pre-dispatch check.
+        return False
     return bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid")
 
 
@@ -400,7 +454,7 @@ def _query_payload(
     # Decided after the projection runs: the attached-unit row ceiling is one
     # of this operation's own facts, and an envelope carrying a cut projection
     # is not an ``ok`` answer about those sessions.
-    outcome = decide_outcome(matched=total, degraded=attached_gaps)
+    outcome = decide_outcome(matched=len(summaries), degraded=attached_gaps)
     lineage_edges = _lineage_edges_payload(session_ids, spec=spec, archive=archive)
     return {
         "outcome": outcome.to_dict(),

@@ -121,10 +121,22 @@ class CompactionBudgetTooSmallError(ValueError):
         self.envelope_tokens = envelope_tokens
 
 
+#: Ordinary words (up to ``_ONE_WORD_MAX_CHARS``) count as one estimated word.
+#: A longer unbroken run (``"!" * 100000``, a hash, a base64 blob) is weighted
+#: by its length at ``_CHARS_PER_ESTIMATED_WORD`` instead of collapsing into one.
+_ONE_WORD_MAX_CHARS = 16
+_CHARS_PER_ESTIMATED_WORD = 8
+
+
+def _estimated_words(run: str) -> int:
+    return 1 if len(run) <= _ONE_WORD_MAX_CHARS else -(-len(run) // _CHARS_PER_ESTIMATED_WORD)
+
+
 def estimate_tokens(text: str) -> int:
     """Stable prose proxy used by both context and compact renderers."""
 
-    return max(1, int(len(text.split()) * 1.3)) if text.strip() else 0
+    words = sum(_estimated_words(run) for run in text.split())
+    return max(1, int(words * 1.3)) if words else 0
 
 
 def estimate_serialized_tokens(serialized: str) -> int:
@@ -256,7 +268,9 @@ def compact_sessions(
                 reason = "filtered_material_origin"
             if origin == "tool_result":
                 is_error, exit_code = _tool_outcome(message)
-                if is_error is False and (exit_code is None or int(cast(int | str, exit_code)) == 0):
+                # Archive block rows carry the flag as an integer, so 0 is success.
+                succeeded = is_error is not None and not is_error
+                if succeeded and (exit_code is None or int(cast(int | str, exit_code)) == 0):
                     reason = "successful_tool_spam"
             message_id = str(_get(message, "id", _get(message, "message_id", "")))
             if branch and message_id == branch:

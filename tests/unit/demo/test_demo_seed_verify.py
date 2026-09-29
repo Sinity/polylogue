@@ -21,8 +21,8 @@ from polylogue.demo.seed import (
     demo_source_specs,
     materialize_demo_source,
 )
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.operations.canonical_archive_ingest import ingest_sources_archive as canonical_ingest
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
@@ -214,7 +214,7 @@ async def test_seed_materializes_session_profiles_for_postmortem(tmp_path: Path)
 
     Without it ``analyze --postmortem`` (and the session-digest surfaces) render
     an empty bundle on the demo archive because the postmortem aggregator fetches
-    profiles that ``parse_sources_archive`` never wrote. Guards the #2196 fix.
+    profiles that ``ingest_one_shot_archive`` never wrote. Guards the #2196 fix.
     """
 
     archive_root = tmp_path / "archive"
@@ -339,7 +339,7 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
     ``apply_demo_post_ingest_augmentation`` runs standalone.
 
     Simulates the shape of a daemon-driven ingest: materialize the fixture
-    world and ingest it via ``parse_sources_archive`` directly, skipping
+    world and ingest it via ``ingest_one_shot_archive`` directly, skipping
     ``seed_demo_archive``'s inline augmentation calls, then apply the shared
     post-ingest augmentation function standalone -- exactly what
     ``polylogue import --demo --wait`` does after daemon convergence. The
@@ -349,7 +349,7 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
     archive_root = tmp_path / "archive"
     source_root = materialize_demo_source(archive_root, force=True)
     monkeypatch.chdir(source_root)
-    result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
+    result = await ingest_one_shot_archive(archive_root, demo_source_specs(source_root))
     assert result.counts["sessions"] > 0
 
     # Base ingest alone (no augmentation yet) never materializes session

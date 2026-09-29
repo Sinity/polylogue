@@ -23,7 +23,7 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
@@ -42,10 +42,10 @@ def _message(native_id: str, role: Role, text: str) -> ParsedMessage:
 
 
 def _seed(db_path: Path) -> None:
+    _seed_tiers(db_path)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="compaction-pathology",
@@ -81,6 +81,17 @@ def _clear_boundary_range(db_path: Path) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def _seed_tiers(db_path: Path) -> None:
+    """Initialize every synthetic tier used by the resolver's read boundary."""
+    for tier in ArchiveTier:
+        conn = sqlite3.connect(db_path.parent / archive_tier_spec(tier).filename)
+        try:
+            initialize_archive_tier(conn, tier)
+            conn.commit()
+        finally:
+            conn.close()
 
 
 async def _stale_context_findings(archive_root: Path, db_path: Path) -> list[PathologyFinding]:
@@ -120,3 +131,80 @@ async def test_compaction_finding_disappears_without_the_stored_range(
     _clear_boundary_range(db_path)
 
     assert await _stale_context_findings(workspace_env["archive_root"], db_path) == []
+
+
+@pytest.mark.asyncio
+async def test_compaction_snapshot_ref_resolves_from_production_relation(workspace_env: dict[str, Path]) -> None:
+    """Published compaction refs resolve through the same source query route.
+
+    Anti-vacuity: routing resolution back through ``read_session`` without
+    hydrating session events makes the emitted ref unresolved.
+    """
+    from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql
+
+    db_path = workspace_env["archive_root"] / "index.db"
+    _seed(db_path)
+    with sqlite3.connect(db_path) as conn:
+        ref = conn.execute(
+            f"{context_snapshot_relation_sql()} "
+            "SELECT snapshot_ref FROM context_snapshots WHERE boundary = 'compaction'"
+        ).fetchone()[0]
+
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        resolved = await polylogue.resolve_ref(ref)
+    finally:
+        await polylogue.close()
+    assert resolved.resolved is True
+    assert resolved.kind == "context-snapshot"
+
+
+@pytest.mark.asyncio
+async def test_compaction_snapshot_includes_parent_prefix_evidence(workspace_env: dict[str, Path]) -> None:
+    """A child compaction range resolves to the parent's physically stored rows.
+
+    Anti-vacuity: removing the lineage branch-point arm from
+    ``source_compaction_snapshots`` returns only the child fallback ref.
+    """
+    from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql
+
+    db_path = workspace_env["archive_root"] / "index.db"
+    _seed_tiers(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="compaction-parent",
+        messages=[_message("p0", Role.USER, "parent prefix"), _message("p1", Role.ASSISTANT, "parent answer")],
+    )
+    write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="compaction-child",
+        parent_session_provider_id="compaction-parent",
+        messages=[_message("p0", Role.USER, "parent prefix"), _message("p1", Role.ASSISTANT, "parent answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="compaction",
+                boundary_start_position=0,
+                boundary_end_position=1,
+                payload={"type": "compaction"},
+            )
+        ],
+    )
+    write_parsed_session_to_archive(conn, child)
+    conn.commit()
+    try:
+        row = conn.execute(
+            f"{context_snapshot_relation_sql()} "
+            "SELECT session_id, evidence_refs_json FROM context_snapshots WHERE boundary = 'compaction'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["session_id"] == "codex-session:compaction-child"
+    assert row["evidence_refs_json"] == (
+        '["codex-session:compaction-parent::codex-session:compaction-parent:n:p0",'
+        '"codex-session:compaction-parent::codex-session:compaction-parent:n:p1"]'
+    )

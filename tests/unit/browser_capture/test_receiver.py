@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import shutil
+import socket
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPResponse
@@ -40,7 +42,6 @@ from polylogue.browser_capture.route_contracts import (
     browser_capture_route_contract_for,
 )
 from polylogue.browser_capture.server import (
-    MAX_BROWSER_CAPTURE_BODY_BYTES,
     make_server,
     mission_control_archive_facts,
 )
@@ -238,20 +239,6 @@ class TestSpoolGovernor:
         write_capture_envelope(
             BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-1")), spool_path=tmp_path
         )
-
-        with pytest.raises(SpoolQuotaExceededError):
-            write_capture_envelope(
-                BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-2")), spool_path=tmp_path
-            )
-
-    def test_new_session_over_byte_quota_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        import polylogue.browser_capture.receiver as receiver_mod
-        from polylogue.browser_capture.receiver import SpoolQuotaExceededError
-
-        write_capture_envelope(
-            BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-1")), spool_path=tmp_path
-        )
-        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_BYTES", 1)
 
         with pytest.raises(SpoolQuotaExceededError):
             write_capture_envelope(
@@ -1056,24 +1043,74 @@ def test_receiver_rejects_malformed_capture_payloads(
     assert list(tmp_path.rglob("*.json")) == []
 
 
-def test_receiver_body_limit_allows_native_conversation_payloads_but_still_caps(
-    tmp_path: Path,
+def test_receiver_streams_captures_past_the_control_bound_byte_identically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert MAX_BROWSER_CAPTURE_BODY_BYTES >= 64 * 1024 * 1024
+    """A capture is staged in bounded reads and published as the exact body.
 
+    Anti-vacuity: routing captures back through ``_read_json_body`` refuses
+    this body (it exceeds the shrunken control bound), and a whole-body read
+    of the capture makes the largest recorded read the body size instead of
+    the chunk.
+    """
+    import polylogue.browser_capture.capture_stream as capture_stream
+    import polylogue.browser_capture.server as server
+
+    chunk = 64
+    monkeypatch.setattr(server, "MAX_CONTROL_BODY_BYTES", 256)
+    monkeypatch.setattr(capture_stream, "CAPTURE_READ_CHUNK_BYTES", chunk)
+    reads: list[int] = []
+    original_stage = capture_stream.stage_capture_body
+
+    def recording_stage(read: Callable[[int], bytes], length: int, *, spool_root: Path) -> object:
+        def recording_read(size: int) -> bytes:
+            reads.append(size)
+            return read(size)
+
+        return original_stage(recording_read, length, spool_root=spool_root)
+
+    monkeypatch.setattr(server, "stage_capture_body", recording_stage)
+    payload = _payload()
+    session = cast(dict[str, object], payload["session"])
+    session["turns"] = [
+        {"provider_turn_id": f"u{index}", "role": "user", "text": "long turn " * 40} for index in range(20)
+    ]
+    raw = json.dumps(payload, indent=2).encode("utf-8")
+    assert len(raw) > 256 * 10
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "POST", "/v1/browser-captures", body=raw, origin=_EXTENSION_ORIGIN)
+        accepted = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.ACCEPTED
+    assert max(reads) == chunk
+    assert sum(reads) == len(raw)
+    assert accepted.content_hash == hashlib.sha256(raw).hexdigest()
+    assert (tmp_path / accepted.artifact_ref).read_bytes() == raw
+    assert accepted.provider_session_id == "conv-123"
+    assert not list(tmp_path.rglob(".*.tmp"))
+
+
+def test_receiver_refuses_a_body_shorter_than_its_declared_length(tmp_path: Path) -> None:
+    """A truncated upload is refused and leaves neither artifact nor staging file."""
+    raw = json.dumps(_payload()).encode("utf-8")
     with _running_receiver(tmp_path) as (host, port):
         conn = HTTPConnection(host, port)
         conn.putrequest("POST", "/v1/browser-captures")
         conn.putheader("Origin", _EXTENSION_ORIGIN)
-        conn.putheader("Content-Length", str(MAX_BROWSER_CAPTURE_BODY_BYTES + 1))
+        conn.putheader("Content-Length", str(len(raw) + 100))
         conn.endheaders()
+        assert conn.sock is not None
+        conn.sock.sendall(raw)
+        conn.sock.shutdown(socket.SHUT_WR)
         response = conn.getresponse()
         error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
         conn.close()
 
     assert response.status == HTTPStatus.BAD_REQUEST
-    assert error.error == "invalid_body_size"
+    assert error.error == "incomplete_body"
     assert list(tmp_path.rglob("*.json")) == []
+    assert not list(tmp_path.rglob(".*.tmp"))
 
 
 def test_receiver_auth_allows_cors_preflight_without_bearer_token(tmp_path: Path) -> None:
@@ -1179,6 +1216,158 @@ def test_receiver_rejects_wrong_token(tmp_path: Path) -> None:
 
     assert response.status == HTTPStatus.UNAUTHORIZED
     assert error.error == "unauthorized"
+
+
+@pytest.mark.parametrize("fallocate_errno", [errno.ENOSPC, errno.EOPNOTSUPP])
+def test_capture_space_is_reserved_before_the_body_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallocate_errno: int
+) -> None:
+    """A body the spool filesystem cannot hold is refused before any byte is read.
+
+    Covers both reservation routes: ``posix_fallocate`` reporting ENOSPC, and
+    a filesystem without allocation falling back to free space. Anti-vacuity:
+    staging without a reservation reads and writes the body first, so
+    ``reads`` is non-empty, and a check that ignores the incoming length
+    admits it into the one free byte.
+    """
+    import os
+
+    import polylogue.browser_capture.capture_stream as capture_stream
+
+    def failing_fallocate(fd: int, offset: int, length: int) -> None:
+        raise OSError(fallocate_errno, os.strerror(fallocate_errno))
+
+    monkeypatch.setattr(os, "posix_fallocate", failing_fallocate, raising=False)
+    monkeypatch.setattr(capture_stream, "_available_bytes", lambda _directory: 1)
+    reads: list[int] = []
+
+    def read(size: int) -> bytes:
+        reads.append(size)
+        return b"x" * size
+
+    with pytest.raises(capture_stream.SpoolStorageExhaustedError) as refused:
+        capture_stream.stage_capture_body(read, 4096, spool_root=tmp_path)
+
+    assert refused.value.requested_bytes == 4096
+    assert reads == []
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+
+
+def test_receiver_answers_an_unreservable_capture_with_retryable_pressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The HTTP route maps the physical refusal to 507 and publishes nothing.
+
+    Anti-vacuity: an untyped refusal surfaces as ``write_failed`` (500).
+    """
+    import os
+
+    def full_disk(fd: int, offset: int, length: int) -> None:
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    monkeypatch.setattr(os, "posix_fallocate", full_disk, raising=False)
+    raw = json.dumps(_payload()).encode("utf-8")
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "POST", "/v1/browser-captures", body=raw, origin=_EXTENSION_ORIGIN)
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.INSUFFICIENT_STORAGE
+    assert error.error == "spool_storage_exhausted"
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def _post_capture_raw(host: str, port: int, *, content_length: str, body: bytes) -> tuple[int, dict[str, object]]:
+    """Send a capture request whose declared length the body need not match."""
+    with socket.create_connection((host, port), timeout=10) as sock:
+        sock.sendall(
+            (
+                "POST /v1/browser-captures HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                f"Origin: {_EXTENSION_ORIGIN}\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {content_length}\r\n\r\n"
+            ).encode("ascii")
+            + body
+        )
+        response = HTTPResponse(sock)
+        response.begin()
+        return response.status, json.loads(response.read())
+
+
+def test_receiver_answers_an_unrepresentable_body_length_with_the_physical_refusal(tmp_path: Path) -> None:
+    """A length past what a file offset can hold is the typed 507, before any read.
+
+    Anti-vacuity: ``posix_fallocate`` raises ``OverflowError`` for it, which
+    escapes the staging route's ``OSError`` handling and drops the response.
+    """
+    import polylogue.browser_capture.capture_stream as capture_stream
+
+    with _running_receiver(tmp_path) as (host, port):
+        status, body = _post_capture_raw(host, port, content_length=str(2**63), body=b"{}")
+
+    assert status == HTTPStatus.INSUFFICIENT_STORAGE
+    assert body["error"] == "spool_storage_exhausted"
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+
+
+@pytest.mark.parametrize("content_length", ["+2", "0_2"])
+def test_receiver_refuses_a_content_length_that_is_not_ascii_digits(tmp_path: Path, content_length: str) -> None:
+    """``Content-Length`` is ``1*DIGIT``; a spelling ``int`` merely tolerates is refused.
+
+    Anti-vacuity: ``int()`` reads ``+2`` and ``0_2`` as 2, so the two body
+    bytes would be staged as a valid length.
+    """
+    with _running_receiver(tmp_path) as (host, port):
+        status, body = _post_capture_raw(host, port, content_length=content_length, body=b"{}")
+
+    assert status == HTTPStatus.BAD_REQUEST
+    assert body["error"] == "invalid_content_length"
+
+
+@pytest.mark.uses_real_clock("the receiver's socket idle deadline is wall-clock")
+def test_receiver_cancels_a_stalled_upload_and_releases_its_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upload that stops sending is answered 408 and its staged space released.
+
+    Anti-vacuity: without the idle deadline the handler blocks in ``read``
+    holding the reserved staging file, so no response arrives and the
+    staging directory keeps the file.
+    """
+    import polylogue.browser_capture.capture_stream as capture_stream
+    import polylogue.browser_capture.server as capture_server
+
+    monkeypatch.setattr(capture_server, "CAPTURE_BODY_IDLE_TIMEOUT_S", 0.2)
+    with _running_receiver(tmp_path) as (host, port):
+        status, body = _post_capture_raw(host, port, content_length="4096", body=b'{"polylogue')
+
+    assert status == HTTPStatus.REQUEST_TIMEOUT
+    assert body["error"] == "upload_stalled"
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+
+
+def test_receiver_startup_reaps_abandoned_staging_but_not_live_uploads(tmp_path: Path) -> None:
+    """A staging file no upload holds is removed at startup; a held one stays.
+
+    Anti-vacuity: without the startup reap the abandoned file survives, and a
+    reap that ignored the upload lock would delete the live upload's file.
+    """
+    import io
+
+    import polylogue.browser_capture.capture_stream as capture_stream
+
+    staging = tmp_path / capture_stream.STAGING_DIRNAME
+    staging.mkdir(parents=True)
+    abandoned = staging / ".capture-abandoned.tmp"
+    abandoned.write_bytes(b"half an upload")
+    live = capture_stream.stage_capture_body(io.BytesIO(b"{}").read, 2, spool_root=tmp_path)
+    try:
+        server = make_server("127.0.0.1", 0, spool_path=tmp_path)
+        server.server_close()
+        assert not abandoned.exists()
+        assert live.path.exists()
+    finally:
+        live.discard()
 
 
 @pytest.mark.uses_real_clock("starts the real UDS operation stack; wall-clock events bound its writer handoff")

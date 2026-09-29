@@ -278,7 +278,7 @@ def test_projection_uses_stored_edges_and_excludes_inherited_calls() -> None:
             ),
         ),
     )
-    evidence = build_session_orchestration(session, topology)
+    evidence = build_session_orchestration(str(session.id), topology, messages=session.messages)
     assert [row["session_id"] for row in evidence.children] == ["codex-session:child"]
     assert evidence.launches == []
     assert evidence.bead_mentions == []
@@ -309,7 +309,7 @@ def test_topology_truncation_keeps_every_edge_endpoint() -> None:
     )
     session = Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection(messages=[]))
 
-    evidence = build_session_orchestration(session, topology)
+    evidence = build_session_orchestration(str(session.id), topology, messages=session.messages)
     payload = evidence.topology
     assert payload is not None
     nodes = cast(list[dict[str, object]], payload["nodes"])
@@ -355,7 +355,7 @@ def test_topology_truncation_keeps_unresolved_edges_of_retained_children() -> No
     )
     session = Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection(messages=[]))
 
-    payload = build_session_orchestration(session, topology).topology
+    payload = build_session_orchestration(str(session.id), topology, messages=session.messages).topology
 
     assert payload is not None
     edges = cast(list[dict[str, object]], payload["edges"])
@@ -407,7 +407,7 @@ def test_unmeasured_token_lanes_are_a_distinct_bucket_from_measured_zero() -> No
         ),
     )
 
-    evidence = build_session_orchestration(session, None)
+    evidence = build_session_orchestration(str(session.id), None, messages=session.messages)
 
     usage = evidence.usage
     assert usage["message_tokens_lower_bound"] == {"input_tokens": 15, "output_tokens": 7}
@@ -444,8 +444,81 @@ def test_all_measured_lanes_report_no_unmeasured_bucket() -> None:
         ),
     )
 
-    evidence = build_session_orchestration(session, None)
+    evidence = build_session_orchestration(str(session.id), None, messages=session.messages)
 
     assert evidence.usage["messages_with_unmeasured_token_lanes"] == 0
     assert evidence.usage["unmeasured_token_lane_messages"] is None
     assert "message_token_lanes_unmeasured" not in evidence.gaps
+
+
+@pytest.mark.asyncio
+async def test_orchestration_streams_own_records_without_hydrating_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded projection must not load the whole session to build itself.
+
+    Anti-vacuity: route ``get_session_orchestration`` back through
+    ``repository.get`` (the full lineage-composed transcript, attachments and
+    events) and the patched hydrator fails the call. A page size of two forces
+    every keyset stream across several pages, so a cursor that skips or
+    repeats a row changes the counted sections.
+    """
+    import polylogue.operations.orchestration as orchestration_reads
+
+    monkeypatch.setattr(orchestration_reads, "_PAGE_SIZE", 2)
+    root = tmp_path / "archive"
+    session_id = _seed(root)
+    owner = Polylogue(archive_root=root)
+
+    async def refuse_full_session(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("orchestration evidence hydrated the full session")
+
+    monkeypatch.setattr(owner.repository, "get", refuse_full_session)
+    evidence = await owner.get_session_orchestration(session_id)
+    assert evidence is not None
+    payload = evidence.model_dump(mode="json")
+    assert payload["coverage"]["message_count"] == 2
+    assert payload["coverage"]["event_count"] == 3
+    assert payload["coverage"]["section_counts"] == {
+        "children": 0,
+        "launches": 2,
+        "model_segments": 2,
+        "bead_mentions": 1,
+        "rate_limits": 1,
+        "usage_observations": 3,
+    }
+    assert payload["usage"]["tokens"] == {"input_tokens": 120, "output_tokens": 10}
+    assert len(payload["usage"]["observations"]) == 3
+    assert {row["bead_id"] for row in payload["bead_mentions"]} == {"example-a12.3"}
+    assert {row["basis"] for row in payload["launches"]} == {"tool_request", "native_spawn_event"}
+    assert await owner.get_session_orchestration("codex-session:missing") is None
+
+
+def test_streamed_sections_keep_full_counts_but_bounded_rows() -> None:
+    """A long stream is counted in full while each section retains ``_LIMIT`` rows."""
+    from collections.abc import Iterator
+
+    from polylogue.analysis.orchestration_evidence import _LIMIT, build_session_orchestration
+    from polylogue.archive.message.models import Message
+
+    session_id = "codex-session:long"
+    total = _LIMIT + 5
+
+    def messages() -> Iterator[Message]:
+        for index in range(total):
+            yield Message(
+                id=f"{session_id}:n:m{index}",
+                role=Role.ASSISTANT,
+                model_name=f"model-{index % 2}",
+                blocks=[{"type": "tool_use", "tool_name": "Agent", "block_id": f"b{index}", "tool_input": {}}],
+            )
+
+    evidence = build_session_orchestration(session_id, None, messages=messages())
+    section_counts = cast(dict[str, int], evidence.coverage["section_counts"])
+    assert evidence.coverage["message_count"] == total
+    assert section_counts["launches"] == total
+    assert section_counts["model_segments"] == total
+    assert len(evidence.launches) == _LIMIT
+    assert len(evidence.model_segments) == _LIMIT
+    assert set(cast(list[str], evidence.coverage["truncated_sections"])) == {"launches", "model_segments"}
+    assert "observation_limit" in evidence.gaps

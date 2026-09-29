@@ -33,7 +33,14 @@ class FakeStore:
         return [SimpleNamespace(summary=SimpleNamespace(id="claude-code-session:s1", title="Topic"), rank=1)][:limit]
 
     async def search_similar(self, text: str, limit: int = 10, vector_provider: Any = None) -> list[Any]:
-        return [SimpleNamespace(id="claude-code-session:s2", title="Semantic topic")][:limit]
+        return [
+            SimpleNamespace(
+                id="claude-code-session:s2",
+                origin="claude-code-session",
+                title="Semantic topic",
+                messages=[SimpleNamespace(text="must not escape", id="m4")],
+            )
+        ][:limit]
 
     async def get(self, session_id: str) -> Any:
         return self.session if session_id == str(self.session.id) else None
@@ -61,10 +68,21 @@ async def test_topic_pack_runs_without_vectors_and_reports_reason_and_hash_citat
 async def test_topic_pack_vector_lane_is_provider_general_and_bounded() -> None:
     provider = object()
     result = await build_topic_pack(
-        cast(Any, FakeStore()), TopicPackRequest("topic", vector_provider=cast(Any, provider), max_sessions=1)
+        cast(Any, FakeStore()), TopicPackRequest("topic", vector_provider=cast(Any, provider), max_sessions=2)
     )
 
     assert result.metadata["vector_status"] == "ready"
+    assert cast(dict[str, int], result.metadata["bounds"])["max_sessions"] == 2
+    assert {item.reason for item in result.evidence} == {"fts", "embedding"}
+    assert all(not hasattr(item, "messages") for item in result.sessions)
+
+
+@pytest.mark.asyncio
+async def test_topic_pack_skips_the_vector_lane_when_fts_fills_the_session_budget() -> None:
+    result = await build_topic_pack(
+        cast(Any, FakeStore()), TopicPackRequest("topic", vector_provider=cast(Any, object()), max_sessions=1)
+    )
+
     assert cast(dict[str, int], result.metadata["bounds"])["max_sessions"] == 1
     assert {item.reason for item in result.evidence} == {"fts"}
     assert "embedding" not in cast(list[str], result.metadata["retrieval_channels_attempted"])
