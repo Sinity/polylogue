@@ -3230,8 +3230,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         on_pass_complete=refresh_cold_build_progress if cold_build is not None else None,
                     )
                     supervisor.start("fair_intake", intake_service.run)
-                    watch_roots = watcher.prepare_watch_roots() if enable_watch else []
-                    if enable_watch and not watch_roots:
+                    if enable_watch and not watcher.prepare_watch_roots():
                         # A watcher with nothing to watch is unavailable, not
                         # a watch that completed. Fair intake's idle pass
                         # still discovers files once a root appears.
@@ -3242,7 +3241,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             watcher_registered_gate_event.set()
                     elif enable_watch:
                         watcher_registered = getattr(watcher, "watcher_ready", None)
-                        supervisor.start("watcher", functools.partial(watcher.run, watch_roots))
+                        supervisor.start("watcher", watcher.run)
                         if watcher_registered_gate_event is not None and watcher_registered is not None:
                             supervisor.start(
                                 "watcher_registered_bridge",

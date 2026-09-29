@@ -1151,7 +1151,8 @@ def _rollback_journal_header_is_zeroed(journal: Path) -> bool:
 
 
 def _refuse_immutable_over_live_state(path: str | Path) -> None:
-    database = Path(path)
+    # SQLite opens the symlink target, so its sidecars sit beside the target.
+    database = Path(path).resolve()
     for suffix in ("-wal", "-journal"):
         sidecar = database.with_name(database.name + suffix)
         try:

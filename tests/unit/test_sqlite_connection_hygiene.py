@@ -141,6 +141,29 @@ def test_immutable_read_accepts_an_inactive_persistent_journal(versioned_db: Pat
         _sqlite_user_version(versioned_db)
 
 
+def test_immutable_read_checks_the_wal_beside_a_symlink_target(versioned_db: Path, tmp_path: Path) -> None:
+    """Sidecars are judged beside the resolved target, not beside the symlink.
+
+    Anti-vacuity: checking ``<link>-wal`` finds nothing and the immutable open
+    silently skips the target's committed WAL row.
+    """
+    from polylogue.storage.sqlite.connection_profile import LiveGenerationImmutableError
+    from polylogue.storage.sqlite.migration_runner import _sqlite_user_version
+
+    link = tmp_path / "linked.db"
+    link.symlink_to(versioned_db)
+    writer = sqlite3.connect(versioned_db)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("PRAGMA user_version = 8")
+        writer.commit()
+        with pytest.raises(LiveGenerationImmutableError):
+            _sqlite_user_version(link)
+    finally:
+        writer.close()
+
+
 def test_cli_paths_read_user_version_closes_connection(monkeypatch: pytest.MonkeyPatch, versioned_db: Path) -> None:
     from polylogue.cli.commands.paths import _read_user_version
 

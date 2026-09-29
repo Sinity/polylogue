@@ -490,12 +490,8 @@ class LiveWatcher:
                 source.root.mkdir(parents=True, exist_ok=True)
         return self._existing_source_roots()
 
-    async def run(self, roots: list[Path] | None = None) -> None:
-        # The daemon passes the roots it already checked, so a root removed
-        # between that check and this task cannot turn "unavailable" into a
-        # FAIL_DAEMON exit.
-        if roots is None:
-            roots = self.prepare_watch_roots()
+    async def run(self) -> None:
+        roots = self.prepare_watch_roots()
         if not roots:
             # Reachable only when every root vanished after the daemon's own
             # check. Returning would read as a completed watch, so raise and
