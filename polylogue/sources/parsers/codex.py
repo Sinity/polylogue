@@ -696,7 +696,7 @@ def _validate_record(item: object, *, index: int, context: str = "record") -> Co
             "parser.codex.record_skipped",
             level=DEBUG,
             outcome="degraded",
-            reason="record failed CodexRecord validation",
+            reason="codex_record_validation_failed",
             context=context,
             index=index,
             errors=_redacted_validation_errors(exc),

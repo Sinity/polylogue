@@ -764,7 +764,7 @@ def _emit_write_hold_spent_during_acquisition(exc: WriteHoldBudgetError) -> None
         "live.ingest.write_hold_spent_during_acquisition",
         level=WARNING,
         outcome="degraded",
-        reason="acquired files publish with their cursors; the rest stay backlog",
+        reason="acquired_files_finish",
         error_detail=str(exc),
     )
 
@@ -1872,7 +1872,7 @@ class LiveBatchProcessor:
                         level=WARNING,
                         outcome="degraded",
                         source_id=source_name,
-                        reason="writer hold spent after the archive commit; the batch ends with its cursors recorded",
+                        reason="cursors_recorded_before_unit_end",
                     )
                     break
             # A held revision the loop ended before reaching was never
@@ -2797,7 +2797,7 @@ class LiveBatchProcessor:
                         "live.ingest.hook_paste_enrichment_failed",
                         level=WARNING,
                         outcome="error",
-                        reason="hook paste enrichment raised; the affected sessions carry convergence debt",
+                        reason="hook_paste_enrichment_raised",
                         count=len(paste_session_ids),
                         error_type=type(exc).__name__,
                         error_detail=str(exc),
@@ -4459,7 +4459,7 @@ class LiveBatchProcessor:
                             "live.ingest.write_hold_spent_mid_pass",
                             level=WARNING,
                             outcome="degraded",
-                            reason="remaining records stay backlog with their cursors intact",
+                            reason="remaining_records_stay_backlog",
                             error_detail=str(exc),
                         )
                         result.write_hold_exhausted = True
@@ -5449,7 +5449,7 @@ class LiveBatchProcessor:
                 "live.ingest.write_hold_spent_after_archive_commit",
                 level=WARNING,
                 outcome="degraded",
-                reason="the committed batch records its cursor before ending the unit",
+                reason="cursor_recorded_before_unit_end",
                 error_detail=str(exc),
             )
             result.write_hold_exhausted = True
