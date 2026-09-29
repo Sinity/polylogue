@@ -3867,7 +3867,7 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
     from polylogue.core.durable_fs import DurableFilesystemError
     from polylogue.daemon.intake_adapters import classify_cold_build_settlement_failure
     from polylogue.maintenance.candidate_capacity import ArchiveCapacityError
-    from polylogue.sources.live.cold_build import ColdBuildCoverageError
+    from polylogue.operations.cold_build_coverage import ColdBuildCoverageError
     from polylogue.sources.live.production_baseline import (
         ProductionBaselineError,
         ProductionBaselineReadUnavailableError,
@@ -4019,7 +4019,8 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     roots the candidate covers every served session and promotes.
 
     Anti-vacuity: deleting the ``require_active_coverage`` call from
-    ``ColdBuildGeneration.promote`` promotes the one-session candidate, and
+    ``promote_cold_build_covering_active_index`` (or settling through
+    ``generation.promote`` directly) promotes the one-session candidate, and
     the active index loses ``codex-session:cold-imported``.
     """
     from polylogue import Polylogue as RealPolylogue

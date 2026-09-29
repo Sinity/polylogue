@@ -39,9 +39,9 @@ from polylogue.daemon.intake import (
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
+from polylogue.operations.cold_build_coverage import ColdBuildCoverageError, promote_cold_build_covering_active_index
 from polylogue.sources.live.batch import CursorAuthorityBlockedError
 from polylogue.sources.live.cold_build import (
-    ColdBuildCoverageError,
     ColdBuildGeneration,
     active_cold_build_generation,
     active_index_generation_is_empty,
@@ -64,6 +64,7 @@ from polylogue.storage.archive_identity import ArchiveLocationError
 _T = TypeVar("_T")
 
 __all__ = [
+    "ColdBuildCoverageError",
     "ColdBuildGeneration",
     "DaemonIntakeContext",
     "DaemonIntakeService",
@@ -78,6 +79,7 @@ __all__ = [
     "clear_cold_build_generation",
     "active_cold_build_generation",
     "discover_pending_raw_ids",
+    "promote_cold_build_covering_active_index",
     "register_cold_build_generation",
 ]
 

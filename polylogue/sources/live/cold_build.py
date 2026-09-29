@@ -21,16 +21,11 @@ crash mid-build leaves an inactive generation that is discarded rather than
 recovered, because ``source.db`` and the blob store are durable and the
 re-ingest is idempotent by content hash.
 
-The cold build engages on its own only while the *active* index generation
-holds no sessions. That is also what makes the daemon's other derived-tier
-owners (FTS, embeddings, session profiles) safe to leave running: they converge
-the active generation, which has nothing in it, and converge the promoted one
-afterwards. An explicit ``polylogued run --cold-build-index`` also builds over a
-populated active generation; its promotion then refuses with
-:class:`ColdBuildCoverageError` while the candidate lacks any session the
-active generation serves from a raw that ``source.db`` still retains, so a
-build that never saw that raw (a manual import, a transcript deleted from its
-source root) cannot drop it from every read.
+The cold build is licensed only while the *active* index generation holds no
+sessions. That is also what makes the daemon's other derived-tier owners
+(FTS, embeddings, session profiles) safe to leave running: they converge the
+active generation, which has nothing in it, and converge the promoted one
+afterwards.
 """
 
 from __future__ import annotations
@@ -105,7 +100,6 @@ def _typed_promotion_io_failure(exc: Exception) -> bool:
 
 
 __all__ = [
-    "ColdBuildCoverageError",
     "ColdBuildGeneration",
     "active_cold_build_generation",
     "active_index_generation_is_empty",
@@ -113,30 +107,6 @@ __all__ = [
     "is_transient_cold_storage_errno",
     "register_cold_build_generation",
 ]
-
-
-#: Active sessions compared per round trip. A paging size only: every active
-#: session is compared, whatever the archive holds.
-_COVERAGE_PAGE_SIZE = 512
-
-
-class ColdBuildCoverageError(RuntimeError):
-    """The candidate lacks sessions the active generation serves from retained raws.
-
-    Promotion replaces what every reader resolves, so a candidate missing a
-    session whose raw ``source.db`` still retains would drop that session from
-    every read with no route re-deriving it. The refusal leaves the candidate
-    inactive and the active generation serving; it is re-evaluated when the
-    candidate or the source evidence changes.
-    """
-
-    def __init__(self, *, missing_count: int, first_missing_session_id: str) -> None:
-        self.missing_count = missing_count
-        self.first_missing_session_id = first_missing_session_id
-        super().__init__(
-            f"cold-build candidate lacks {missing_count} session(s) the active index serves from retained raws "
-            f"(first: {first_missing_session_id})"
-        )
 
 
 def _cold_build_owner_id() -> str:
@@ -1065,7 +1035,6 @@ class ColdBuildGeneration:
         with self.open_writer() as archive:
             archive.run_generation_readiness_pass()
         self.source_baseline.verify(self.archive_root / "source.db")
-        self.require_active_coverage()
         # Measured here and nowhere else: after the readiness pass the
         # candidate carries its rows, its deferred indexes and its FTS.
         # This samples final candidate allocation before pointer promotion;
@@ -1110,95 +1079,6 @@ class ColdBuildGeneration:
             reason=self.reason,
         )
         return promoted
-
-    def require_active_coverage(self) -> None:
-        """Refuse a candidate that would drop a session the active generation serves.
-
-        Compares every active session whose ``raw_id`` is still retained in
-        ``source.db`` with the candidate, by ``session_id`` (``origin`` plus
-        native id), so a newer revision of the same source that the candidate
-        accepted still covers the session. A session whose raw is no longer
-        retained has no durable evidence any build could replay, so it is not
-        a coverage obligation. The active generation is read inside one
-        transaction, a consistent snapshot, and compared a page at a time.
-
-        Both index files are opened without schema validation: this reads only
-        ``sessions.session_id`` and ``sessions.raw_id``, and an explicit cold
-        build is how an active generation at an older derived identity is
-        replaced, so that generation's identity must not refuse the comparison.
-        """
-        from polylogue.storage.archive_identity import resolve_active_index_path
-
-        active_path = resolve_active_index_path(self.archive_root)
-        candidate_path = Path(self.generation.index_path)
-        if not active_path.exists():
-            return
-        if active_path.resolve() == candidate_path.resolve():
-            raise RuntimeError("unpromoted cold-build candidate is the active index")
-        missing_count = 0
-        first_missing: str | None = None
-        with (
-            closing(
-                open_readonly_connection(
-                    active_path, tier=ArchiveTier.INDEX, validate_schema=False, timeout_class="background-read"
-                )
-            ) as active,
-            closing(
-                open_readonly_connection(
-                    candidate_path, tier=ArchiveTier.INDEX, validate_schema=False, timeout_class="background-read"
-                )
-            ) as candidate,
-            closing(
-                open_readonly_connection(
-                    self.archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-                )
-            ) as source,
-        ):
-            active.execute("BEGIN")
-            after = ""
-            while True:
-                rows = active.execute(
-                    "SELECT session_id, raw_id FROM sessions "
-                    "WHERE session_id > ? AND raw_id IS NOT NULL ORDER BY session_id LIMIT ?",
-                    (after, _COVERAGE_PAGE_SIZE),
-                ).fetchall()
-                if not rows:
-                    break
-                after = str(rows[-1][0])
-                raw_ids = tuple(dict.fromkeys(str(row[1]) for row in rows))
-                retained = {
-                    str(row[0])
-                    for row in source.execute(
-                        f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
-                        raw_ids,
-                    )
-                }
-                owed = tuple(str(row[0]) for row in rows if str(row[1]) in retained)
-                if not owed:
-                    continue
-                present = {
-                    str(row[0])
-                    for row in candidate.execute(
-                        f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' for _ in owed)})",
-                        owed,
-                    )
-                }
-                for session_id in owed:
-                    if session_id not in present:
-                        missing_count += 1
-                        if first_missing is None:
-                            first_missing = session_id
-            active.execute("COMMIT")
-        if first_missing is not None:
-            emit(
-                "daemon.cold_build.coverage_refused",
-                level=WARNING,
-                outcome="degraded",
-                reason="active_coverage_incomplete",
-                generation_id=self.generation_id,
-                sessions=missing_count,
-            )
-            raise ColdBuildCoverageError(missing_count=missing_count, first_missing_session_id=first_missing)
 
     def reconcile_promoted(self) -> IndexGeneration:
         """Finish a failed receipt tail only after confirming the active pointer."""
