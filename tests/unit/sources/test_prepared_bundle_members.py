@@ -256,10 +256,10 @@ def test_bundle_member_with_an_unstorable_ignored_field_keeps_the_collecting_rou
 ) -> None:
     import polylogue.sources.value_bounds as value_bounds
 
-    member = _conversation(6)
+    member = _conversation(9)
     member["ignored_blob"] = "x" * 4096
     source = tmp_path / "bundle.json"
-    source.write_text(json.dumps([member, {**_conversation(4), "uuid": "second"}]), encoding="utf-8")
+    source.write_text(json.dumps([member, {**_conversation(10), "uuid": "second"}]), encoding="utf-8")
     expected = _expected(Provider.CLAUDE_AI, source)
     monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 1024)
     collected = _collected_members(monkeypatch)
@@ -380,7 +380,7 @@ def _retained(tmp_path: Path, payload: object, provider: Provider, source_path: 
 def test_retained_bundle_streams_members_and_keeps_artifact_taxonomy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    payload = [_conversation(20), {**_conversation(6), "uuid": "second"}]
+    payload = [_conversation(20), {**_conversation(9), "uuid": "second"}]
     source_path = tmp_path / "claude" / "conversations.json"
     expected = require_positive_conversational_evidence(
         parse_payload(Provider.CLAUDE_AI, payload, source_path.stem),
