@@ -187,8 +187,8 @@ def test_claude_ai_object_future_wire_type_keeps_parser_admission(
     assert isinstance(messages, list)
     messages[2]["metadata"] = {"kind": "future_metadata"}
     messages[5]["type"] = "future_turn"
-    envelope = claude_ai_object_envelope(BytesIO(json.dumps(payload).encode()))
-    assert envelope is not None and envelope["__admission_future_type"] == "future_metadata"
+    claude_object = claude_ai_object_envelope(BytesIO(json.dumps(payload).encode()))
+    assert claude_object is not None and claude_object[0]["__admission_future_type"] == "future_metadata"
     source = tmp_path / "future.json"
     source.write_text(json.dumps(payload), encoding="utf-8")
     expected = _expected(payload, source)

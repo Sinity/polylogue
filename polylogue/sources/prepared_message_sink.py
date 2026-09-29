@@ -1181,7 +1181,6 @@ class ClaudeAttachmentScratch:
             "CREATE TABLE claude_attachment (ordinal INTEGER PRIMARY KEY, attachment_id TEXT NOT NULL UNIQUE, "
             "name TEXT, mime_type TEXT, attachment_json TEXT NOT NULL)"
         )
-        conn.execute("CREATE INDEX claude_attachment_descriptor ON claude_attachment(name, mime_type)")
 
     def get(self, provider_attachment_id: str) -> ParsedAttachment | None:
         row = self._conn.execute(
@@ -1197,12 +1196,22 @@ class ClaudeAttachmentScratch:
             (attachment.provider_attachment_id, attachment.name, attachment.mime_type, _attachment_json(attachment)),
         )
 
-    def unique_by_descriptor(self, name: str, mime_type: str | None) -> ParsedAttachment | None:
-        rows = self._conn.execute(
-            "SELECT attachment_json FROM claude_attachment WHERE name = ? AND mime_type IS ? LIMIT 2",
-            (name, mime_type),
-        ).fetchall()
-        return _attachment_from_json(rows[0][0]) if len(rows) == 1 else None
+    def descriptor_owners(self) -> Callable[[str, str | None], str | None]:
+        conn = self._conn
+        conn.execute("DROP TABLE IF EXISTS claude_attachment_owner")
+        conn.execute(
+            "CREATE TABLE claude_attachment_owner AS SELECT attachment_id, name, mime_type FROM claude_attachment"
+        )
+        conn.execute("CREATE INDEX claude_attachment_owner_descriptor ON claude_attachment_owner(name, mime_type)")
+
+        def owner(name: str, mime_type: str | None) -> str | None:
+            rows = conn.execute(
+                "SELECT attachment_id FROM claude_attachment_owner WHERE name = ? AND mime_type IS ? LIMIT 2",
+                (name, mime_type),
+            ).fetchall()
+            return str(rows[0][0]) if len(rows) == 1 else None
+
+        return owner
 
     def __iter__(self) -> Iterator[ParsedAttachment]:
         last = -1
@@ -1218,6 +1227,7 @@ class ClaudeAttachmentScratch:
 
     def close(self) -> None:
         self._conn.execute("DROP TABLE claude_attachment")
+        self._conn.execute("DROP TABLE IF EXISTS claude_attachment_owner")
 
 
 class ChatGPTNodeMapping(Mapping[str, object]):

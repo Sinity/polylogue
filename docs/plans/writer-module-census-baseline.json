@@ -186,6 +186,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/sources/parsers/claude/lineage_graph.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/parsers/claude/stream_scratch.py",
     "tiers": [],
     "authority": "scratch"
