@@ -49,7 +49,7 @@ from polylogue.context.scheduler import (
     read_context_ledger,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
-from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, SchemaRefusalError
 from polylogue.core.json import JSONDocument
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
@@ -1253,12 +1253,16 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
     if not path.exists():
         return ReadinessCheck(name, VerifyStatus.WARNING, summary=f"missing: {path}")
     try:
-        conn = open_readonly_connection(path, timeout_class="interactive-read")
+        conn = open_readonly_connection(path, tier=tier, timeout_class="interactive-read")
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             version = int(row[0] or 0) if row is not None else 0
         finally:
             conn.close()
+    except SchemaRefusalError as exc:
+        # The open's own admission check is the diagnosis: it covers both a
+        # version skew and a derived-identity mismatch at the same version.
+        return ReadinessCheck(name, VerifyStatus.ERROR, summary=f"{exc}: {path}")
     except (OSError, sqlite3.Error) as exc:
         return ReadinessCheck(name, VerifyStatus.ERROR, summary=str(exc))
 
@@ -1664,19 +1668,34 @@ def _archive_list_assertion_candidate_reviews(
     kinds: Sequence[str | AssertionKind] | None = None,
     statuses: Sequence[str | AssertionStatus] | None = None,
     limit: int | None = None,
-) -> list[Any]:
-    """Return candidate-review rows from ``user.db`` without active claims."""
+) -> tuple[list[ArchiveAssertionCandidateReviewEnvelope], int]:
+    """Read one review page and its unpaginated count from the same snapshot."""
 
-    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidate_reviews
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ASSERTION_CANDIDATE_JUDGMENT_KINDS,
+        count_assertion_claims,
+        list_assertion_candidate_reviews,
+    )
 
     with _readable_user_tier(config) as conn:
-        return list_assertion_candidate_reviews(
+        conn.execute("BEGIN")
+        # Reviews deliberately include expired claims; this scalar count has
+        # the same kind, status and target selection without hydrating every
+        # claim or fetching every claim's latest judgment.
+        matched = count_assertion_claims(
+            conn,
+            kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
+            target_ref=target_ref,
+            statuses=statuses,
+        )
+        rows = list_assertion_candidate_reviews(
             conn,
             target_ref=target_ref,
             kinds=kinds,
             statuses=statuses,
             limit=limit,
         )
+        return rows, matched
 
 
 def _archive_list_assertion_candidates(
@@ -3158,20 +3177,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         )
 
         candidate_statuses = ASSERTION_CANDIDATE_REVIEW_STATUSES if statuses is None else statuses
-        review_rows = cast(
-            list["ArchiveAssertionCandidateReviewEnvelope"],
-            _archive_list_assertion_candidate_reviews(
-                self.config,
-                target_ref=target_ref,
-                kinds=kinds,
-                statuses=candidate_statuses,
-                limit=limit,
-            ),
-        )
-        matched = len(
-            _archive_list_assertion_candidate_reviews(
-                self.config, target_ref=target_ref, kinds=kinds, statuses=candidate_statuses, limit=None
-            )
+        review_rows, matched = _archive_list_assertion_candidate_reviews(
+            self.config,
+            target_ref=target_ref,
+            kinds=kinds,
+            statuses=candidate_statuses,
+            limit=limit,
         )
         evidence_previews: dict[str, tuple[AssertionEvidencePreviewPayload, ...]] = {}
         for review in review_rows:

@@ -44,7 +44,7 @@ def raw_authority_frontier_command(
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
     click.echo(
-        f"Frontier {payload['pass_id']}: accepted={payload['accepted_head_count']} obligations={payload['plan_count']}"
+        f"Frontier {payload['pass_id']}: accepted={payload['accepted_head_count']} plans={payload['plan_count']}"
     )
     click.echo(f"States: {json.dumps(payload['state_counts'], sort_keys=True)}")
     click.echo("Blocking items are published as durable blockers; list them with raw-authority-blockers.")
