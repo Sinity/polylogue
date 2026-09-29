@@ -916,7 +916,9 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
                     sibling, tier=tier, validate_schema=False, timeout_class="background-read"
                 )
                 try:
-                    _assert_schema_supported(sibling_conn, sibling, tier)
+                    # An attached sibling keeps the absent-tier read answer; a
+                    # writer that mutates a tier opens that tier directly.
+                    _assert_schema_supported(sibling_conn, sibling, tier, allow_uninitialized_read=True)
                 finally:
                     sibling_conn.close()
             attach_database(conn, sibling, alias=schema_name)
@@ -977,7 +979,7 @@ def _assert_schema_supported(
         # caller fails on the missing table it asked for, which is a truthful
         # not-provisioned answer, where skew would misreport corruption.
         return
-    if allow_uninitialized_read and resolved_tier is ArchiveTier.INDEX and found == 0:
+    if resolved_tier is ArchiveTier.INDEX and found == 0:
         return
     if found != expected:
         raise SchemaSkew(
@@ -1025,7 +1027,9 @@ def assert_tier_schema_supported(
     derived identity is what the stamp is for and is checked here rather than
     on every ordinary open.
     """
-    _assert_schema_supported(conn, path, tier)
+    # Its callers inspect a tier over a read-only handle or one they just
+    # stamped; neither is a writer admitting SQL against a bare file.
+    _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
     _assert_derived_identity_supported(conn, tier if tier is not None else _archive_tier_for_path(path))
 
 
@@ -1471,7 +1475,7 @@ def open_sealed_staging_connection(
     conn = connect_measured(database_uri, uri=True, timeout=profile.timeout_seconds)
     try:
         if validate_schema:
-            _assert_schema_supported(conn, path, tier)
+            _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
         # Apply only this bounded profile's setup statements.  In particular,
         # do not copy READ_CONNECTION_PROFILE here: its query_only=ON is
         # exactly what prevents TEMP staging.
@@ -1946,11 +1950,12 @@ class ReadFrame:
         never advances or rewinds the position to make one fit.
         """
         if self.expired or (
-            self._profile.generation_identity == "live"
-            and (self._conn.in_transaction or self.streaming or not self.revalidate())
+            self._profile.generation_identity == "live" and (self._conn.in_transaction or self.streaming)
         ):
-            # data_version inside a held read transaction describes its old
-            # snapshot. End it before proving an anchor against current rows.
+            # A held read transaction (or an in-flight stream) pins the old
+            # snapshot, and data_version inside it reports that snapshot, so
+            # an anchor proven there says nothing about current rows. End it
+            # first; a stream in flight makes rebind refuse with a typed error.
             self.rebind()
         unchanged = (
             continuation.generation == self._generation and continuation.epoch == self._epoch and self.revalidate()

@@ -171,7 +171,10 @@ def checkpoint_wal(
         elapsed_s=round(time.perf_counter() - started, 6),
         error=error,
         blocking_processes=blocking_processes,
-        blocking_read_frames=pinning_frames if busy > 0 or checkpointed < log else (),
+        # A frame is named a blocker only when the checkpoint left work behind
+        # (busy pages, undrained log, or a failed attempt); a drained WAL had
+        # no blocker, whatever was reading at the time.
+        blocking_read_frames=pinning_frames if busy > 0 or checkpointed < log or error is not None else (),
     )
 
 

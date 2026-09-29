@@ -127,9 +127,7 @@ def test_session_subscription_fallback_normalizes_provider_qualified_models(tmp_
 
 
 @pytest.mark.parametrize("configured_tier", [None, "max_20x"])
-def test_session_subscription_amount_is_dollars_not_raw_credits(
-    tmp_path: Path, configured_tier: str | None
-) -> None:
+def test_session_subscription_amount_is_dollars_not_raw_credits(tmp_path: Path, configured_tier: str | None) -> None:
     """The old projection put the raw stored credit count into a USD field."""
     from polylogue.archive.semantic.subscription_pricing import credits_to_usd
     from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
@@ -146,5 +144,28 @@ def test_session_subscription_amount_is_dollars_not_raw_credits(
         expected = credits_to_usd(credits, tier=configured_tier or "pro")
         assert expected != credits
         assert cost.subscription_equivalent_usd == pytest.approx(expected)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("stored_tier", [None, "tier-removed-from-catalog"])
+def test_session_subscription_amount_is_unknown_without_a_rate_or_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored_tier: str | None
+) -> None:
+    """Anti-vacuity: an unrated model or a durable tier setting the current
+    catalog no longer declares formerly converted to a reported $0.00
+    subscription equivalent instead of an unknown one."""
+    from polylogue.storage import usage
+
+    conn = _conn(tmp_path)
+    try:
+        model = "claude-sonnet-4-5" if stored_tier is not None else "claude-unrated-future-model"
+        session_id = write_parsed_session_to_archive(conn, _session("unknown-credit", model))
+        conn.execute("UPDATE session_model_usage SET cost_credits = NULL WHERE session_id = ?", (session_id,))
+        if stored_tier is not None:
+            monkeypatch.setattr(usage, "_resolve_subscription_tier_setting", lambda _root: stored_tier)
+        cost = session_usage_costs_for_connection(conn, [session_id])[session_id]
+        assert cost.input_tokens == 1_000
+        assert cost.subscription_equivalent_usd is None
     finally:
         conn.close()

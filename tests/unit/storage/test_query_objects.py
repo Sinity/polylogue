@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from polylogue.core.query_identity import JsonValue
 from polylogue.security.query_excision import apply_query_excision, plan_query_excision
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -559,7 +560,7 @@ def test_put_query_returns_existing_promotion_contract() -> None:
     """A repeat put must not replace durable promotion metadata with defaults."""
     conn = _conn()
     try:
-        plan = {"field": "origin", "value": "codex-session"}
+        plan: dict[str, JsonValue] = {"field": "origin", "value": "codex-session"}
         original = put_query(conn, plan, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=1)
         promoted = promote_query(
             conn,

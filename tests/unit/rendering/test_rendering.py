@@ -737,13 +737,13 @@ def test_markdown_uses_remote_attachment_urls_without_a_local_path() -> None:
     from polylogue.archive.attachment.models import Attachment
 
     message = make_msg(id="message-with-remote-attachment", role="user", text="See attached.")
-    message.attachments = [Attachment(
-        id="remote-message-file", name="message.txt", source_url="https://example.test/message.txt"
-    )]
+    message.attachments = [
+        Attachment(id="remote-message-file", name="message.txt", source_url="https://example.test/message.txt")
+    ]
     session = _make_conv([message])
-    session.attachments = [Attachment(
-        id="remote-session-file", name="session.txt", source_url="https://example.test/session.txt"
-    )]
+    session.attachments = [
+        Attachment(id="remote-session-file", name="session.txt", source_url="https://example.test/session.txt")
+    ]
     markdown = format_session_markdown(session)
     assert "https://example.test/message.txt" in markdown
     assert "https://example.test/session.txt" in markdown

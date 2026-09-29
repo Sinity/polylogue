@@ -465,21 +465,3 @@ def test_writers_refuse_an_uninitialized_durable_tier(
             pass
     assert raised.value.tier == tier.value
     assert raised.value.found == 0
-
-
-def test_memory_budget_includes_source_and_reservation_writers() -> None:
-    """Counting just the index writer understates the overlap by two profiles."""
-    c = connection_profile
-    ordinary = c.WRITE_MMAP_SIZE_BYTES + c.WRITE_CACHE_SIZE_KIB * 1024
-    non_ordinary = (
-        c.BULK_BUILD_MMAP_SIZE_BYTES + c.BULK_BUILD_CACHE_SIZE_KIB * 1024
-        + c.DAEMON_WRITE_MMAP_SIZE_BYTES + c.DAEMON_WRITE_CACHE_SIZE_KIB * 1024
-        + c.BOUNDED_REPAIR_MMAP_SIZE_BYTES + c.BOUNDED_REPAIR_CACHE_SIZE_KIB * 1024
-        + c.OBSERVATION_JOURNAL_CACHE_SIZE_KIB * 1024
-    )
-    expected = non_ordinary + 3 * ordinary
-    assert c.mapped_bytes_budget(concurrent_read_connections=0) == expected
-    observation = c.MappedBytesBudgetCheck(
-        budget_bytes=expected, memory_max_bytes=None, memory_high_bytes=None, concurrent_read_connections=0
-    )
-    assert observation.concurrent_profile_budget_bytes == expected

@@ -27,8 +27,10 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.archive.semantic.subscription_pricing import (
     SUBSCRIPTION_CATALOG_EFFECTIVE_DATE,
     SUBSCRIPTION_CATALOG_PROVENANCE,
+    SUBSCRIPTION_TIERS,
     compute_credit_cost,
     credits_to_usd,
+    get_credit_rate,
     models_without_credit_rate,
 )
 from polylogue.core.enums import Origin, Provider
@@ -1309,7 +1311,7 @@ def origin_usage_report_from_connection(
                 ),
                 provider_cumulative_lanes=ProviderUsageLanes.from_counters(
                     provider_cumulative_usage,
-                    reported=not provider_cumulative_usage.is_zero(),
+                    reported=_int(events.get("cumulative_counter_event_count")) > 0,
                     input_includes_cache=coverage.provider == Provider.CODEX.value,
                     output_includes_reasoning=coverage.provider == Provider.CODEX.value,
                 ),
@@ -2206,10 +2208,13 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     ]
     last_cols = _counter_columns(columns, prefix="last")
     total_cols = _counter_columns(columns, prefix="total")
-    request_present = " OR ".join(f"{expr} IS NOT NULL" for expr in last_cols.values() if expr != "0")
-    select_parts.append(
-        f"COALESCE(SUM(CASE WHEN {request_present or '0'} THEN 1 ELSE 0 END), 0) AS request_counter_event_count"
-    )
+    # A lane is reported by an event that carries one of its counters, even
+    # an explicit zero; an event carrying only the other lane says nothing.
+    for lane, cols in (("request", last_cols), ("cumulative", total_cols)):
+        present = " OR ".join(f"{expr} IS NOT NULL" for expr in cols.values() if expr != "0")
+        select_parts.append(
+            f"COALESCE(SUM(CASE WHEN {present or '0'} THEN 1 ELSE 0 END), 0) AS {lane}_counter_event_count"
+        )
     counter_exprs = (*last_cols.values(), *total_cols.values())
     zero_predicate = " AND ".join(f"COALESCE({expr}, 0) = 0" for expr in counter_exprs)
     present_predicate = " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs if expr != "0")
@@ -2238,6 +2243,7 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
         result[str(row["origin"])] = {
             "provider_event_count": _int(row["provider_event_count"]),
             "request_counter_event_count": _int(row["request_counter_event_count"]),
+            "cumulative_counter_event_count": _int(row["cumulative_counter_event_count"]),
             "provider_event_session_count": _int(row["provider_event_session_count"]),
             "token_count_event_count": _int(row["token_count_event_count"]),
             "message_usage_event_count": _int(row["message_usage_event_count"]),
@@ -2329,6 +2335,8 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
         )
         if any(value is not None for value in raw_values[:6]):
             counts["request_counter_event_count"] += 1
+        if any(value is not None for value in raw_values[6:]):
+            counts["cumulative_counter_event_count"] += 1
         if any(value is not None for value in raw_values) and not any((*last_values, *total_values)):
             counts["zero_token_event_count"] += 1
         last_totals = last_totals_by_origin[origin_name]
@@ -2340,6 +2348,7 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
         result[origin_name] = {
             "provider_event_count": counts["provider_event_count"],
             "request_counter_event_count": counts["request_counter_event_count"],
+            "cumulative_counter_event_count": counts["cumulative_counter_event_count"],
             "provider_event_session_count": len(sessions_by_origin[origin_name]),
             "token_count_event_count": counts["token_count_event_count"],
             "message_usage_event_count": counts["message_usage_event_count"],
@@ -2979,9 +2988,7 @@ def session_usage_costs_for_connection(
     subscription_tier = None
     for database in conn.execute("PRAGMA database_list"):
         if str(database[1]) == "main" and database[2]:
-            subscription_tier = _resolve_subscription_tier_setting(
-                archive_root_for_index_path(Path(str(database[2])))
-            )
+            subscription_tier = _resolve_subscription_tier_setting(archive_root_for_index_path(Path(str(database[2]))))
             break
     bind_limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
     if bind_limit < 1:
@@ -3021,16 +3028,26 @@ def session_usage_costs_for_connection(
             f"FROM session_model_usage WHERE session_id IN ({placeholders})",
             batch,
         ).fetchall()
-        credits_by_session: dict[str, float] = {}
+        # ``None`` marks a session holding a token-bearing row whose model has
+        # no declared credit rate: its credit total is unknown, not zero.
+        credits_by_session: dict[str, float | None] = {}
         for model_row in credit_rows:
             session_id = str(model_row["session_id"])
-            credits_by_session[session_id] = credits_by_session.get(session_id, 0.0) + compute_credit_cost(
-                _normalize_model(str(model_row["model_name"])),
+            normalized_model = _normalize_model(str(model_row["model_name"] or ""))
+            lanes = (
                 int(model_row["input_tokens"] or 0),
                 int(model_row["output_tokens"] or 0),
                 int(model_row["cache_read_tokens"] or 0),
                 int(model_row["cache_write_tokens"] or 0),
             )
+            running = credits_by_session.get(session_id, 0.0)
+            if running is None or not any(lanes):
+                credits_by_session.setdefault(session_id, running)
+                continue
+            if get_credit_rate(normalized_model) is None:
+                credits_by_session[session_id] = None
+                continue
+            credits_by_session[session_id] = running + compute_credit_cost(normalized_model, *lanes)
         for row in rows:
             session_id = str(row["session_id"])
             model_count = int(row["model_count"] or 0)
@@ -3085,8 +3102,11 @@ def session_usage_costs_for_connection(
                 cache_write_tokens=cache_write_tokens,
                 provider_reported_usd=provider_money,
                 catalog_api_equivalent_usd=catalog_cost,
+                # An unrecognized configured tier has no conversion; it is not $0.
                 subscription_equivalent_usd=(
-                    None if credits is None else credits_to_usd(credits, tier=subscription_tier or "pro")
+                    None
+                    if credits is None or (subscription_tier or "pro") not in SUBSCRIPTION_TIERS
+                    else credits_to_usd(credits, tier=subscription_tier or "pro")
                 ),
                 availability=availability,
                 provenance=provenance,

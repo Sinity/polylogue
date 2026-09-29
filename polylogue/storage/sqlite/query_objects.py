@@ -139,7 +139,8 @@ def put_query(
     # An existing definition may have been promoted since its first insert.
     # Return its durable forgetting contract, not constructor defaults.
     stored = get_query(conn, query_hash)
-    assert stored is not None
+    if stored is None:
+        raise RuntimeError(f"query definition {query_hash} is absent after its idempotent insert")
     return stored
 
 

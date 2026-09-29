@@ -455,6 +455,21 @@ def test_resume_releases_a_held_snapshot_before_proving_the_anchor(index_db: Pat
             frame.resume(continuation)
 
 
+def test_resume_refuses_while_a_stream_pins_the_snapshot(index_db: Path) -> None:
+    """Anti-vacuity: proving the anchor beside an in-flight stream reads the
+    stream's snapshot, so a concurrently deleted anchor row was accepted."""
+    with read_frame(index_db) as frame:
+        continuation = frame.bind(ReadContinuation(position=5, anchor_sql=_ANCHOR, anchor_params=(5,)))
+        rows = frame.stream("SELECT * FROM rows_ ORDER BY position")
+        try:
+            assert next(rows)[0] == 1
+            _commit(index_db, "DELETE FROM rows_ WHERE position = 5")
+            with pytest.raises(ReadFrameExpiredError, match="stream is in flight"):
+                frame.resume(continuation)
+        finally:
+            rows.close()
+
+
 def test_stream_can_be_closed_after_its_frame(index_db: Path) -> None:
     """Pre-fix generator finalization closes a cursor on an already closed DB."""
     with read_frame(index_db) as frame:

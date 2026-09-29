@@ -206,6 +206,9 @@ async def get_attachment_library_page(
             "WHEN a.byte_count > 8388608 THEN 'too-large' ELSE 'available' END) = ?"
         )
         args.append(state_filter)
+    # Newest session first, then transcript order. Within one message the
+    # session read orders by attachment ID; ``attachment_refs.position`` is an
+    # identity coordinate, not a display ordinal.
     cursor = await conn.execute(
         f"""
         SELECT a.attachment_id, a.media_type AS mime_type, a.byte_count AS size_bytes,
@@ -220,7 +223,7 @@ async def get_attachment_library_page(
         LEFT JOIN messages m ON m.message_id = r.message_id
         WHERE {" AND ".join(clauses)}
         ORDER BY s.sort_key_ms DESC, s.session_id,
-                 m.position, m.variant_index, r.position, a.attachment_id, r.ref_id
+                 m.position, m.variant_index, a.attachment_id, r.ref_id
         LIMIT ? OFFSET ?
         """,
         [*args, max(0, limit), max(0, offset)],

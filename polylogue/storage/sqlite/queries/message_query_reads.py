@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import sqlite3
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -205,6 +206,53 @@ async def get_messages(conn: aiosqlite.Connection, session_id: str) -> list[Mess
     return messages
 
 
+#: The newest compaction that ends before ``at_position``. A row with no
+#: recorded end is still the newest boundary: it is selected so that its
+#: incompleteness refuses the summary, rather than being filtered out so an
+#: older, complete boundary silently stands in for it.
+_EFFECTIVE_CONTEXT_BOUNDARY_SQL = """
+    SELECT boundary_start_position, boundary_end_position, boundary_message_id
+    FROM session_events
+    WHERE session_id = ? AND event_type = 'compaction'
+      AND (boundary_end_position IS NULL OR boundary_end_position < ?)
+    ORDER BY position DESC
+    LIMIT 1
+"""
+
+
+def effective_context_window(
+    messages: Sequence[MessageRecord],
+    boundary: Sequence[object] | None,
+    at_position: int | None,
+) -> list[MessageRecord]:
+    """Decide the messages visible to the model at ``at_position``.
+
+    The one owner of this decision for every effective-context route.
+    ``messages`` is the lineage-composed transcript and ``at_position`` an
+    index into it: a prefix-sharing child's own rows restart at position zero,
+    while a compaction's recorded range counts the whole replayed transcript.
+    ``boundary`` is the row :data:`_EFFECTIVE_CONTEXT_BOUNDARY_SQL` selected.
+    Any incomplete or inconsistent boundary yields the plain prefix.
+    """
+    position = len(messages) - 1 if at_position is None else at_position
+    prefix = list(messages[: max(0, position + 1)])
+    if boundary is None:
+        return prefix
+    start, end, summary_id = boundary[0], boundary[1], boundary[2]
+    if not isinstance(start, int) or not isinstance(end, int) or summary_id is None:
+        return prefix
+    if not 0 <= start <= end < len(prefix):
+        return prefix
+    summary_index = next(
+        (index for index, message in enumerate(prefix) if str(message.message_id) == str(summary_id)),
+        None,
+    )
+    if summary_index is None or summary_index <= end:
+        return prefix
+    summary = prefix[summary_index]
+    return [summary] + [message for message in prefix[end + 1 :] if message is not summary]
+
+
 async def get_effective_context(
     conn: aiosqlite.Connection,
     session_id: str,
@@ -212,9 +260,8 @@ async def get_effective_context(
 ) -> list[MessageRecord]:
     """Apply a local compaction to the lineage-composed transcript prefix.
 
-    ``at_position`` is a zero-based position in the composed transcript, not
-    the child's physical tail (which starts at position zero again). An
-    incomplete newest compaction cannot authorize reuse of an older summary.
+    Messages and the boundary are read in one snapshot; see
+    :func:`effective_context_window` for the decision.
     """
     if not conn.in_transaction:
         await conn.execute("BEGIN DEFERRED")
@@ -224,39 +271,41 @@ async def get_effective_context(
             await conn.execute("ROLLBACK")
     resolved = await _resolve_session_id(conn, session_id)
     messages = await get_messages(conn, resolved)
-    if at_position is None:
-        at_position = len(messages) - 1
-    prefix = messages[: max(0, at_position + 1)]
-    boundary = await (
-        await conn.execute(
-            """
-            SELECT boundary_start_position, boundary_end_position, boundary_message_id
-            FROM session_events
-            WHERE session_id = ? AND event_type = 'compaction'
-              AND (boundary_end_position IS NULL OR boundary_end_position < ?)
-            ORDER BY position DESC
-            LIMIT 1
-            """,
-            (resolved, at_position),
+    position = len(messages) - 1 if at_position is None else at_position
+    cursor = await conn.execute(_EFFECTIVE_CONTEXT_BOUNDARY_SQL, (resolved, position))
+    boundary = await cursor.fetchone()
+    return effective_context_window(messages, None if boundary is None else tuple(boundary), position)
+
+
+def get_effective_context_sync(
+    conn: sqlite3.Connection,
+    session_id: str,
+    at_position: int | None = None,
+) -> list[MessageRecord]:
+    """Synchronous twin of :func:`get_effective_context` over a pinned snapshot.
+
+    Composes the transcript from the same plan the envelope reads use, then
+    applies the shared :func:`effective_context_window` decision.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan
+
+    messages: list[MessageRecord] = []
+    for segment in _composed_transcript_plan(conn, session_id).segments:
+        bound = ""
+        params: tuple[object, ...] = (segment.session_id,)
+        if segment.upto_position is not None and segment.upto_variant_index is not None:
+            bound = " AND (m.position, m.variant_index) <= (?, ?)"
+            params = (segment.session_id, segment.upto_position, segment.upto_variant_index)
+        cursor = conn.execute(
+            f"SELECT {_MESSAGE_RECORD_SELECT} FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+            f"WHERE m.session_id = ?{bound} ORDER BY {_TRANSCRIPT_ORDER}",
+            params,
         )
-    ).fetchone()
-    if boundary is None:
-        return prefix
-    start_position = boundary["boundary_start_position"]
-    end_position = boundary["boundary_end_position"]
-    summary_id = boundary["boundary_message_id"]
-    if start_position is None or end_position is None or summary_id is None:
-        return prefix
-    if not 0 <= int(start_position) <= int(end_position) < len(prefix):
-        return prefix
-    summary_position = next(
-        (index for index, message in enumerate(prefix) if str(message.message_id) == str(summary_id)),
-        None,
-    )
-    if summary_position is None or summary_position <= int(end_position):
-        return prefix
-    summary = prefix[summary_position]
-    return [summary] + [message for message in prefix[int(end_position) + 1 :] if message is not summary]
+        decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
+        messages.extend(decode(row) for row in cursor.fetchall())
+    position = len(messages) - 1 if at_position is None else at_position
+    boundary = conn.execute(_EFFECTIVE_CONTEXT_BOUNDARY_SQL, (session_id, position)).fetchone()
+    return effective_context_window(messages, None if boundary is None else tuple(boundary), position)
 
 
 async def get_messages_with_lineage_completeness(
@@ -796,6 +845,9 @@ async def iter_messages(
 
 
 __all__ = [
+    "effective_context_window",
+    "get_effective_context",
+    "get_effective_context_sync",
     "get_lineage_completeness",
     "get_messages",
     "get_messages_batch",
