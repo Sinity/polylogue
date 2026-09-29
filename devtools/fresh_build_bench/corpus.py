@@ -3,8 +3,8 @@
 A corpus directory holds ``home/`` (a stand-in ``$HOME`` whose typed default
 source roots -- ``.claude/projects``, ``.codex/sessions``, ``.gemini/tmp`` --
 the daemon discovers exactly as it does in production), optionally
-``exports/<name>/`` roots for export archives (ChatGPT, Claude.ai) that the
-run configures as additional source roots, and ``manifest.json``.
+``exports/<name>/`` directories for export archives (ChatGPT, Claude.ai) that
+the run stages into the scratch archive's inbox, and ``manifest.json``.
 
 The manifest seals the input: every file's relative path, size and SHA-256,
 its origin family, and one digest over the sorted triples. Two receipts are

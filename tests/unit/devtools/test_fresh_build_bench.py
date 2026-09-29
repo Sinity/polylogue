@@ -1200,16 +1200,55 @@ def test_component_scratch_inside_the_corpus_is_refused(tmp_path: Path) -> None:
     refuse_scratch_inside_corpus(tmp_path / "scratch", corpus)
 
 
-def test_configured_export_sources_are_attributed_to_their_origin() -> None:
-    """Anti-vacuity (Codex P2, #5678): map only fixed source labels and the
-    ``configured-0`` export root's timing is dropped from the projection."""
-    manifest = {
+def test_inbox_time_is_attributed_to_a_single_export_origin() -> None:
+    """Anti-vacuity (Codex P2, #5678): map only the typed watch sources and the
+    inbox's export timing is dropped from the projection; map it for several
+    export origins and one origin's time prices another."""
+    one = {
         "by_origin": {"chatgpt": {"files": 1, "bytes": 1 << 20}},
         "parameters": {"population": {"chatgpt": {"files": 10, "bytes": 10 << 20}}},
     }
-    result = projection(manifest, {"configured-0": {"groups": 1, "files": 1, "seconds": 2.0}}, 2.0)
+    result = projection(one, {"inbox": {"groups": 1, "files": 1, "seconds": 2.0}}, 2.0)
+    assert result["by_origin"]["chatgpt"]["projected_s"] == 20.0
+    assert result["complete"]
 
-    assert "chatgpt" in str(result)
+    two = {
+        "by_origin": {"chatgpt": {"files": 1, "bytes": 1 << 20}, "claude-ai": {"files": 1, "bytes": 1 << 20}},
+        "parameters": {
+            "population": {"chatgpt": {"files": 10, "bytes": 10 << 20}, "claude-ai": {"files": 5, "bytes": 5 << 20}}
+        },
+    }
+    result = projection(two, {"inbox": {"groups": 1, "files": 2, "seconds": 2.0}}, 2.0)
+    assert result["by_origin"] == {}
+    assert result["unmeasured_origins"] == ["chatgpt", "claude-ai"]
+
+
+def test_exports_are_staged_into_the_archive_inbox_as_copies(tmp_path: Path) -> None:
+    """Anti-vacuity: configure export directories as ``[sources] roots`` and the
+    daemon's config loader refuses the key, so no export is ever measured; link
+    instead of copying and the sealed file's ctime moves under the manifest."""
+    from devtools.fresh_build_bench import run
+
+    corpus = tmp_path / "corpus"
+    (corpus / "home").mkdir(parents=True)
+    for origin in ("chatgpt", "claude-ai"):
+        (corpus / "exports" / origin).mkdir(parents=True)
+        (corpus / "exports" / origin / "conversations.json").write_text(f'["{origin}"]', encoding="utf-8")
+    sealed = corpus / "exports" / "chatgpt" / "conversations.json"
+    before = sealed.stat().st_ctime_ns
+    config = RunConfig(corpus=corpus, work=tmp_path / "work", candidate=tmp_path, python="p", label="l")
+
+    paths = run._prepare_paths(config)
+
+    inbox = paths["archive"] / "inbox"
+    assert sorted(path.name for path in inbox.iterdir()) == [
+        "chatgpt-conversations.json",
+        "claude-ai-conversations.json",
+    ]
+    assert (inbox / "chatgpt-conversations.json").read_text(encoding="utf-8") == '["chatgpt"]'
+    assert (inbox / "chatgpt-conversations.json").stat().st_ino != sealed.stat().st_ino
+    assert sealed.stat().st_ctime_ns == before
+    assert "sources" not in paths["config"].read_text(encoding="utf-8")
 
 
 def test_a_refresh_over_changed_evidence_does_not_qualify(tmp_path: Path) -> None:

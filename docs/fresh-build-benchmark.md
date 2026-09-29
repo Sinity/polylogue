@@ -10,8 +10,10 @@ is terminal. It measures the product route, not a harness around its parts.
 
 A corpus is a directory with `home/` (a stand-in `$HOME`: the daemon's typed
 default sources resolve `~/.claude/projects`, `~/.codex/sessions` and
-`~/.gemini/tmp` inside it), optional `exports/<name>/` roots configured as
-additional sources, and `manifest.json`, which seals every file's path, size
+`~/.gemini/tmp` inside it), optional `exports/<name>/` directories whose
+files each run copies into the scratch archive's inbox before the daemon
+starts (the route `polylogue import` stages exports through), and
+`manifest.json`, which seals every file's path, size
 and SHA-256 under one digest, plus the mtime of each parser sidecar
 (`tool-results/`, `tool-outputs/`), which parsing turns into the sidecar
 event's timestamp; sampling keeps the source mtimes. Every run and component
@@ -110,4 +112,5 @@ CPU and I/O totals keep the counters of worker processes that exited.
 Receipts record the host's load average at start. Wall time on a shared host
 moves with load; CPU seconds, writer holds and per-stage timers move less.
 The intake projection scales per-origin rates to the population and says so;
-promotion and derived convergence are reported as measured, not scaled.
+every export shares the inbox watch source, so a corpus with exports of more
+than one origin leaves those origins unmeasured in the projection. Promotion and derived convergence are reported as measured, not scaled.

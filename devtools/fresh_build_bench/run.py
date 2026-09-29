@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -658,24 +659,30 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     for name in ("config", "data", "state", "cache", "runtime"):
         (paths["xdg"] / name).mkdir(parents=True)
     (paths["xdg"] / "runtime").chmod(0o700)
-    # Export archives (ChatGPT, Claude.ai) are not typed default sources; the
-    # operator declares their directories as additional roots, and so does
-    # this config. Embeddings are external API work and stay off.
+    # Export archives (ChatGPT, Claude.ai) have no watched location of their
+    # own: the operator stages them into the archive inbox with ``polylogue
+    # import``, the one route that admits them. The run stages each sealed
+    # export file there before the daemon starts, as a copy (a hard link would
+    # move the sealed file's ctime and read as a corpus write).
     exports = config.corpus / "exports"
-    roots: list[str] = []
     if exports.is_dir():
+        inbox = paths["archive"] / "inbox"
         for path in sorted(exports.iterdir()):
             # Only sealed, real export directories are sources: a symlink
             # (or unknown child) would point the daemon at unsealed files the
             # manifest never hashed.
             if path.is_symlink() or not path.is_dir() or path.name not in EXPORT_ORIGINS:
                 raise ValueError(f"corpus export root is not a sealed export directory: {path}")
-            roots.append(str(path))
+            for file in sorted(path.iterdir()):
+                if file.is_symlink() or not file.is_file():
+                    raise ValueError(f"corpus export is not a sealed regular file: {file}")
+                inbox.mkdir(mode=0o700, exist_ok=True)
+                # The origin prefix keeps two origins' same-named exports apart.
+                shutil.copyfile(file, inbox / f"{path.name}-{file.name}")
     config_path = paths["xdg"] / "config" / "polylogue" / "polylogue.toml"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text(
-        "[sources]\nroots = " + json.dumps(roots) + "\n\n[embedding]\nenabled = false\n", encoding="utf-8"
-    )
+    # Embeddings are external API work and stay off.
+    config_path.write_text("[embedding]\nenabled = false\n", encoding="utf-8")
     paths["config"] = config_path
     return paths
 

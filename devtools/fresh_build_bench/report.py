@@ -508,8 +508,6 @@ _SOURCE_ORIGIN = {
     "claude-code": "claude-code",
     "codex": "codex",
     "gemini-cli": "gemini-cli",
-    "chatgpt": "chatgpt",
-    "claude-ai": "claude-ai",
 }
 
 
@@ -530,14 +528,16 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
     rows: dict[str, Any] = {}
     serial_sample = 0.0
     serial_projected = 0.0
-    # Export roots are configured sources named ``configured-<n>`` in the
-    # order the run lists them (sorted export directories).
+    # Exports enter through the archive inbox, one watch source for every
+    # export origin. Its time is one origin's only when the sample holds a
+    # single export origin; with several, the inbox's time cannot be split and
+    # those origins stay unmeasured instead of borrowing each other's rate.
     from devtools.fresh_build_bench.corpus import EXPORT_ORIGINS
 
-    export_origins = sorted(origin for origin in sampled if origin in EXPORT_ORIGINS)
-    configured = {f"configured-{index}": origin for index, origin in enumerate(export_origins)}
+    export_origins = [origin for origin in sampled if origin in EXPORT_ORIGINS]
+    inbox = {"inbox": export_origins[0]} if len(export_origins) == 1 else {}
     for source, stats in (by_source or {}).items():
-        origin = _SOURCE_ORIGIN.get(source) or configured.get(source)
+        origin = _SOURCE_ORIGIN.get(source) or inbox.get(source)
         if origin is None or origin not in sampled or not sampled[origin]["bytes"]:
             continue
         sample_mib = sampled[origin]["bytes"] / 2**20
