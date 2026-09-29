@@ -11,14 +11,7 @@ let
 
   settingsLib = import ./lib/settings.nix { inherit lib pkgs; };
 
-  watch = settingsLib.effectiveWatch {
-    settings = cfg.settings;
-    discoverSources = cfg.discoverSources;
-  };
-
-  effectiveSettings = cfg.settings // {
-    daemon = cfg.settings.daemon // { inherit watch; };
-  };
+  effectiveSettings = cfg.settings;
 
   storeConfigFile = settingsLib.renderConfigFile effectiveSettings;
 
@@ -65,8 +58,6 @@ in
     };
 
     configLocation = settingsLib.configLocationOption;
-
-    discoverSources = settingsLib.discoverSourcesOption;
 
     settings = settingsLib.settingsOptions;
 

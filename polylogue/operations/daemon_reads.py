@@ -89,9 +89,17 @@ def vector_binding_from_config(config: Config) -> VectorReadBinding | None:
     )
 
 
+def never_aborted() -> None:
+    """The abort checkpoint of a read no execution context controls."""
+
+
 @dataclass(frozen=True, slots=True)
 class DaemonReadDependencies:
     """Explicit non-SQL dependencies resolved by the daemon operation context.
+
+    ``raise_if_aborted`` is the read's Python-level abort checkpoint between
+    SQL statements; the daemon binds it to the read's execution context, and
+    it raises that context's typed cancelled / timed-out / over-budget error.
 
     ``vector_failure`` records a failed/unavailable provider construction so a
     hybrid query retains its lexical answer with a named gap.  Provider
@@ -103,6 +111,7 @@ class DaemonReadDependencies:
     vector_connection: sqlite3.Connection | None = None
     vector_failure: LaneFailure | None = None
     runtime_status: Mapping[str, object] | None = None
+    raise_if_aborted: Callable[[], None] = never_aborted
     status_now_ms: int | None = None
     status_config: Config | PolylogueConfig | None = None
 
@@ -211,6 +220,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_chronicle import execute_chronicle_read
 
         result = execute_chronicle_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+    elif name == "read.compact":
+        from polylogue.operations.read_view_compact import execute_compact_read
+
+        result = execute_compact_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
     elif name == "read.effective_context":
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
@@ -222,7 +235,7 @@ def execute_read_operation(
     elif name == "read.topology":
         from polylogue.operations.read_view_lineage import execute_topology_read
 
-        result = execute_topology_read(payload, archive=archive)
+        result = execute_topology_read(payload, archive=archive, raise_if_aborted=dependencies.raise_if_aborted)
     elif name == "read.neighbors":
         from polylogue.operations.read_view_extras import execute_neighbor_read
 
@@ -303,7 +316,26 @@ def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
     if name == "facets":
         return True
     if name == "cli.query":
-        return not requires_vector_snapshot(name, payload)
+        params = _params(payload)
+        spec = _cli_query_spec(params)
+        return (
+            not requires_vector_snapshot(name, payload)
+            and spec.sample is None
+            and spec.sort != "random"
+            and not any(_is_relative_date_bound(getattr(spec, field)) for field in ("since", "until"))
+        )
+    return False
+
+
+def _is_relative_date_bound(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    from datetime import datetime
+
+    try:
+        datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return True
     return False
 
 
@@ -353,7 +385,7 @@ def operation_deadline_s(name: str, payload: Mapping[str, object]) -> float:
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
-    if name not in {"cli.query", "read.temporal", "read.chronicle"}:
+    if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
         return False
     from polylogue.core.errors import PolylogueError
 
@@ -431,7 +463,7 @@ def _query_payload(
     # Decided after the projection runs: the attached-unit row ceiling is one
     # of this operation's own facts, and an envelope carrying a cut projection
     # is not an ``ok`` answer about those sessions.
-    outcome = decide_outcome(matched=total, degraded=attached_gaps)
+    outcome = decide_outcome(matched=len(summaries), degraded=attached_gaps)
     lineage_edges = _lineage_edges_payload(session_ids, spec=spec, archive=archive)
     return {
         "outcome": outcome.to_dict(),
@@ -633,22 +665,24 @@ def _search_payload(
             ),
         )
     plan = fetch_spec.to_plan(vector_provider=vector_provider)
-    pairs, resolved_lane = archive_search_hits(
+    result = archive_search_hits(
         plan,
         archive_root=archive.archive_root,
         config=None,
         archive=archive,
+        vector_failure=vector_failure,
     )
+    resolved_lane = result.retrieval_lane
     query_text = (
         " ".join((*fetch_spec.query_terms, *fetch_spec.contains_terms)).strip() or fetch_spec.similar_text or ""
     )
-    hits = project_search_hits(plan, pairs, resolved_lane, vector_failure=vector_failure)
+    hits = project_search_hits(plan, result)
     hit_payloads = tuple(
         SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
     )
     # Vector backends deliberately expose a bounded nearest-neighbour page, not
     # an archive-wide cardinality.  ``None`` is the canonical honest total.
-    if needs_vector:
+    if needs_vector or fetch_spec.retrieval_lane == "actions":
         total: int | None = None
     else:
         from polylogue.api.archive import _archive_count_sessions_for_spec
@@ -675,7 +709,7 @@ def _search_payload(
             resolve_default_root_filter(fetch_spec.root, boolean_predicate=fetch_spec.boolean_predicate)
         ),
         limit=display_limit,
-        offset=spec.offset,
+        offset=cursor.r if cursor is not None else spec.offset,
         query=query_text,
         retrieval_lane=resolved_lane,
         sort=spec.sort,
@@ -1499,10 +1533,18 @@ def _session_messages_payload(
             ),
         )
 
-    window = read_transcript_window_sync(archive, request, read=read)
+    # A projection is part of the continuation identity only when one was
+    # requested, so a default-projection token resumes across surfaces while
+    # a token minted under a different projection is still refused.
+    window = read_transcript_window_sync(
+        archive,
+        request,
+        read=read,
+        extra_arguments={"projection": dict(raw_projection)} if raw_projection else None,
+    )
     result: dict[str, object] = {
         "outcome": lineage_page_outcome(
-            matched=window.total,
+            matched=len(window.rows),
             complete=window.lineage_complete,
             truncation_reason=window.lineage_truncation_reason,
         ).to_dict(),

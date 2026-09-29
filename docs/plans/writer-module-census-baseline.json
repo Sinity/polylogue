@@ -196,6 +196,16 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/sources/parsers/drive.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/otel_genai.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/prepared_jsonl.py",
     "tiers": [],
     "authority": "scratch"

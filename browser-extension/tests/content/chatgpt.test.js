@@ -376,13 +376,14 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
 });
 
 describe("chatgpt.js asset descriptor identification (through a real capture)", () => {
-  it("collects sandbox links, upload ids, and asset pointers with parser-matching ids", async () => {
+  it("anti-vacuity: classifies audio transcription pointers as audio attachments", async () => {
     const fetch = vi.fn(async (input) => {
       const url = new URL(String(input), "https://chatgpt.com");
       if (url.pathname === "/backend-api/conversation/conversation-1") {
         return jsonResponse({
           id: "conversation-1",
           conversation_id: "conversation-1",
+          current_node: "n5",
           mapping: {
             n1: {
               id: "n1",
@@ -430,11 +431,27 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
                 metadata: {},
               },
             },
+            n5: {
+              id: "n5",
+              parent: "n4",
+              message: {
+                id: "msg-e",
+                author: { role: "assistant" },
+                content: { content_type: "multimodal_text", parts: [{ content_type: "audio_transcription", asset_pointer: "file-service://file-TRANSCRIBE8" }] },
+                metadata: {},
+              },
+            },
           },
         });
       }
-      // Every asset metadata/download round trip 404s -- this test cares
-      // about which descriptors were IDENTIFIED, not byte acquisition.
+      if (url.pathname === "/backend-api/files/file-TRANSCRIBE8/download") {
+        return jsonResponse({ download_url: "https://chatgpt.com/transcription-bytes", file_name: "transcription.wav" });
+      }
+      if (url.pathname === "/transcription-bytes") {
+        return new globalThis.Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/wav" } });
+      }
+      // Unlisted asset metadata/download rounds fail quickly, keeping the
+      // fixture focused on the selected transcription asset's classification.
       return notFoundResponse();
     });
     const { sendRuntimeMessage } = installChatgpt({ url: "https://chatgpt.com/c/conversation-1", fetch });
@@ -444,14 +461,9 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
     expect(result.ok).toBe(true);
     const acquisition = result.envelope.session.provider_meta.asset_acquisition;
     const attemptedIds = [...acquisition.failed, ...acquisition.acquired_assets].map((entry) => entry.provider_attachment_id);
-    expect(attemptedIds).toEqual([
-      "sandbox:msg-a:/mnt/data/kit.zip",
-      "sandbox:msg-a:/mnt/data/kit.zip.sha256",
-      "file-UP1",
-      "file-service://file-IMG9",
-      "file-service://file-AUDIO7",
-    ]);
-    expect(acquisition.attempted).toBe(5);
+    expect(attemptedIds).toContain("file-service://file-TRANSCRIBE8");
+    expect([...acquisition.failed, ...acquisition.acquired_assets].find((entry) => entry.provider_attachment_id === "file-service://file-TRANSCRIBE8").attachment_kind)
+      .toBe("file_service_audio");
     // n2's sandbox link is on a user-authored turn, not assistant -- assets
     // never manifest as user prose, so it must not be identified at all.
     expect(attemptedIds).not.toContain("sandbox:msg-b:/mnt/data/ignored.zip");

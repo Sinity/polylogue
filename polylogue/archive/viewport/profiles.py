@@ -384,6 +384,20 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("empty result set", "sessions without authored prose"),
         successor_handoff=True,
     ),
+    SessionViewProfile(
+        view_id="compact",
+        label="Compact",
+        owner="polylogue.cli.read_views.compact.run_read_compact",
+        purpose="Token-budgeted, evidence-anchored corpus pack for an external analyst.",
+        input_scope="query result set or exact session id",
+        included_kinds=("scored messages", "evidence anchors", "omissions", "drop manifest"),
+        lossiness="filtered",
+        evidence_policy="required",
+        privacy_policy="omits generated context, successful tool output, and replayed lineage prefixes by default",
+        formats=("markdown", "json"),
+        machine_payload="CorpusCompactionPack",
+        degraded_states=("empty result set", "budget drops recorded in the manifest", "lineage_unresolved"),
+    ),
 )
 
 READ_VIEW_PROFILE_BY_ID: dict[str, SessionViewProfile] = {profile.view_id: profile for profile in READ_VIEW_PROFILES}

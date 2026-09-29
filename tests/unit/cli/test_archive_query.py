@@ -283,10 +283,18 @@ def test_emit_stats_includes_convergence_warning(capsys: pytest.CaptureFixture[s
         origins={"codex-session": 3},
     )
 
-    with patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning):
+    # Totals over a converging archive are a named gap: the command renders
+    # them, marks the outcome degraded, and exits nonzero.
+    with (
+        patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning),
+        pytest.raises(SystemExit) as exited,
+    ):
         _emit_stats(stats, output_format="plaintext", origin=None, query="", fields=None)
 
-    assert capsys.readouterr().out.splitlines()[:2] == [warning, "Sessions: 3"]
+    assert exited.value.code != 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("outcome: DEGRADED")
+    assert lines[1:3] == [warning, "Sessions: 3"]
 
 
 def test_emit_stats_json_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
@@ -300,10 +308,16 @@ def test_emit_stats_json_includes_convergence_warning(capsys: pytest.CaptureFixt
         origins={"codex-session": 3},
     )
 
-    with patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning):
+    with (
+        patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning),
+        pytest.raises(SystemExit) as exited,
+    ):
         _emit_stats(stats, output_format="json", origin=None, query="", fields=None)
 
+    assert exited.value.code != 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"]["state"] == "degraded"
+    assert payload["outcome"]["reason"] == "archive_not_converged"
     assert payload["archive_converging"] is True
     assert payload["convergence_warning"] == warning
     assert payload["total_sessions"] == 3

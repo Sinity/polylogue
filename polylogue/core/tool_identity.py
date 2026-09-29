@@ -48,9 +48,48 @@ def sql_coalesced_json_extract(column: str, keys: tuple[str, ...]) -> str:
 
     Generated columns and the FTS projection are built from this so the stored
     authority cannot carry a narrower key set than the Python readers.
+
+    The stored JSON keeps a lone surrogate as an exact ``\\uXXXX`` escape,
+    but ``json_extract`` would decode it into text that is not valid UTF-8, and
+    reading that column then fails. Such a string is projected in its escaped
+    JSON spelling instead; the JSON column stays the exact authority.
     """
-    extracts = ", ".join(f"json_extract({column}, '$.{key}')" for key in keys)
+    extracts = ", ".join(_sql_text_projection(column, key) for key in keys)
     return f"COALESCE({extracts})" if len(keys) > 1 else extracts
+
+
+def _sql_text_projection(column: str, key: str) -> str:
+    path = f"'$.{key}'"
+    quoted = f"({column} -> {path})"
+    return (
+        f"CASE WHEN json_type({column}, {path}) = 'text' AND {quoted} GLOB '*\\u[dD][89a-fA-F]*' "
+        f"THEN json_extract({_sql_escape_surrogate_escapes(quoted)}, '$') "
+        f"ELSE json_extract({column}, {path}) END"
+    )
+
+
+def _sql_escape_surrogate_escapes(json_string: str) -> str:
+    """Rewrite a JSON string literal so decoding it keeps surrogates spelled out.
+
+    SQLite's own JSON decoder then handles every other escape (short forms,
+    ``\\u00XX`` controls) and leaves every literal character, U+FFFF
+    included, untouched. Escaped backslashes are first respelled as
+    ``\\u005c`` so each remaining backslash starts a real escape; each
+    ``\\uD`` escape then gains an escaped backslash, which decodes to the
+    literal text ``\\uDxxx`` instead of text that is not valid UTF-8.
+
+    Three flat ``replace`` calls, not one per surrogate prefix: a deeply
+    nested expression overflows the parser stack of older SQLite builds
+    (3.45), which would make the generated columns uncreatable. Matching
+    ``\\uD`` rather than only ``\\uD800``-``\\uDFFF`` is exact for the
+    archive's JSON: ``_json_dumps`` writes non-ASCII text literally
+    (``ensure_ascii=False``) and escapes only lone surrogates, so no stored
+    ``\\uD000``-``\\uD7FF`` escape exists to be left spelled out.
+    """
+    rewritten = f"replace({json_string}, '\\\\', '\\u005c')"
+    for prefix in ("\\ud", "\\uD"):
+        rewritten = f"replace({rewritten}, '{prefix}', '\\\\{prefix[1:]}')"
+    return rewritten
 
 
 @dataclass(frozen=True, slots=True)

@@ -281,7 +281,7 @@ class DefinitionIdentity:
     def compatible_with(self, other: DefinitionIdentity) -> bool:
         """Definitions are compatible only when kind, protocol, and content agree."""
 
-        return self.canonical_payload == other.canonical_payload
+        return hash_payload(self.canonical_payload) == hash_payload(other.canonical_payload)
 
     def require_compatible_with(self, other: DefinitionIdentity) -> None:
         if not self.compatible_with(other):
@@ -325,10 +325,15 @@ class EvaluationWorld:
     def __post_init__(self) -> None:
         for name in ("source_generation", "user_generation", "index_generation", "runtime_build_ref"):
             object.__setattr__(self, name, _text(getattr(self, name), name))
-        _protocol_version(self.world_protocol_version)
+        object.__setattr__(self, "world_protocol_version", _protocol_version(self.world_protocol_version))
         object.__setattr__(self, "resolved_bounds", _canonical(self.resolved_bounds))
         object.__setattr__(self, "embedding_refs", _refs(self.embedding_refs, field_name="embedding_refs"))
         object.__setattr__(self, "model_refs", _refs(self.model_refs, field_name="model_refs"))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EvaluationWorld):
+            return NotImplemented
+        return hash_payload(self.canonical_payload) == hash_payload(other.canonical_payload)
 
     @property
     def canonical_payload(self) -> dict[str, object]:
@@ -372,6 +377,8 @@ class RelationManifest:
         if self.relation_ref.kind not in {"relation", "result-set", "cohort", "query-run", "match-set"}:
             raise AnalysisContractError("relation_ref must identify a relation-shaped object")
         _text(self.grain, "grain")
+        if self.coverage.grain != self.grain:
+            raise AnalysisContractError("coverage grain must match relation grain")
         if self.enumeration not in _ENUMERATIONS:
             raise AnalysisContractError(f"unsupported enumeration status: {self.enumeration!r}")
         authorities = tuple(dict.fromkeys(self.measurement_authority))
@@ -524,7 +531,13 @@ class TypedReceiptEnvelope:
             and not (self.promoted or self.cited or (self.definition.promoted or self.definition.cited))
         ):
             raise AnalysisContractError("sensitive receipt requires explicit promotion or citation")
-        if (self.promoted or self.cited) and (not self.retention_policy or not self.excision_link):
+        # Any durable promoted/cited receipt needs a forgetting contract, like
+        # DefinitionIdentity above, whatever its privacy class.
+        if (
+            self.durability in {"user", "audit"}
+            and (self.promoted or self.cited or self.definition.promoted or self.definition.cited)
+            and (not self.retention_policy or not self.excision_link)
+        ):
             raise AnalysisContractError("promoted/cited receipt requires retention and excision")
         object.__setattr__(self, "evidence_refs", _refs(self.evidence_refs, field_name="evidence_refs"))
 
@@ -662,6 +675,8 @@ class BasketPointer:
     def __post_init__(self) -> None:
         if self.workspace_ref.kind != "workspace":
             raise AnalysisContractError("basket workspace_ref must have workspace kind")
+        if self.relation_ref.kind not in {"relation", "result-set", "cohort", "query-run", "match-set"}:
+            raise AnalysisContractError("basket relation_ref must identify a relation-shaped object")
         _text(self.relation_version, "relation_version")
         object.__setattr__(self, "evidence_refs", _refs(self.evidence_refs, field_name="evidence_refs"))
 

@@ -158,6 +158,12 @@ async def periodic_embedding_backlog_check(
                 elif result.report is not None and result.report.done:
                     pass_span.ok(messages=int(result.report.done))
                     return PassOutcome.PROGRESSED
+                elif result.report is not None and (result.report.pending or result.report.failed):
+                    pass_span.degraded(
+                        "backlog_not_drained",
+                        pending=int(result.report.pending),
+                        failed=int(result.report.failed),
+                    )
                 else:
                     pass_span.empty(messages=0)
                     return PassOutcome.DRAINED
@@ -303,7 +309,13 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
         return None
 
 
-def _archive_embedding_catchup_estimated_cost_this_month(ops_db: Path) -> float:
+def _archive_embedding_catchup_estimated_cost_this_month(ops_db: Path) -> float | None:
+    """Return this month's recorded embedding spend, or ``None`` when unreadable.
+
+    An absent ops tier or run table is a genuine zero. A failed read is not:
+    the cap cannot be enforced against a spend nobody measured, so callers
+    must refuse the pass rather than grant the whole budget (polylogue-oulj2).
+    """
     if not ops_db.exists():
         return 0.0
     try:
@@ -328,7 +340,7 @@ def _archive_embedding_catchup_estimated_cost_this_month(ops_db: Path) -> float:
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return 0.0
+        return None
 
 
 def _upsert_archive_embedding_catchup_run(

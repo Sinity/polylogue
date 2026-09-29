@@ -26,6 +26,23 @@ def test_run_machine_entry_plain_success_calls_cli_once() -> None:
     assert called == ["plain"]
 
 
+def test_run_machine_entry_propagates_click_returned_failure_status() -> None:
+    """Non-standalone Click returns ctx.exit's code instead of raising it.
+
+    Anti-vacuity: ignoring the callable result makes an exit(1) command look
+    successful to the installed entry point.
+    """
+
+    def exits_with_code(*, standalone_mode: bool = False) -> int:
+        assert standalone_mode is False
+        return 1
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_machine_entry(exits_with_code, ["demo", "verify", "--format", "json"])
+
+    assert exc_info.value.code == 1
+
+
 def test_run_machine_entry_json_bad_parameter_with_tuple_param_hint_emits_invalid_argument_envelope(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

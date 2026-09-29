@@ -193,3 +193,15 @@ def test_compaction_refuses_a_budget_below_its_envelope() -> None:
     with pytest.raises(CompactionBudgetTooSmallError) as refusal:
         compact_sessions([], spec=CompactProjectionSpec(max_tokens=1))
     assert refusal.value.envelope_tokens > 1
+
+
+def test_long_unbroken_runs_are_weighted_by_their_size() -> None:
+    """Anti-vacuity: counting a run as one word estimates ``"!" * 100000`` at
+    one token, so a tiny budget would accept it.
+    """
+    from polylogue.surfaces.compaction import estimate_serialized_tokens, estimate_tokens
+
+    run = "!" * 100_000
+    assert estimate_tokens(run) >= 10_000
+    assert estimate_serialized_tokens(f'{{"text":"{run}"}}') >= 10_000
+    assert estimate_tokens("one two three") == 3

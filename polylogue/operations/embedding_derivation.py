@@ -10,7 +10,7 @@ from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter, EmbeddingTextProvider
 from polylogue.storage.embeddings.materialization import EmbeddingWriteAdmission
 from polylogue.storage.source_sessions import session_ids_for_source_paths
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 __all__ = [
     "embedding_session_ids_for_paths",
@@ -46,7 +46,7 @@ def select_embedding_session_window(
     with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
         embeddings_path = archive_root / "embeddings.db"
         if embeddings_path.exists():
-            conn.execute("ATTACH DATABASE ? AS embedding_tier", (str(embeddings_path),))
+            attach_readonly_database(conn, embeddings_path, alias="embedding_tier")
         rows = select_pending_archive_session_window(
             conn,
             status_table="embedding_tier.embedding_status" if embeddings_path.exists() else "",
@@ -57,8 +57,6 @@ def select_embedding_session_window(
             max_messages=max_messages,
             min_messages=min_messages,
         )
-    if min_messages is not None:
-        rows = [row for row in rows if row.message_count >= min_messages]
     session_limit_reached = max_sessions is not None and len(rows) > max_sessions
     selected = rows if max_sessions is None else rows[:max_sessions]
     return tuple(row.session_id for row in selected), session_limit_reached

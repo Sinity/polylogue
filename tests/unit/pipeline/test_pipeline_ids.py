@@ -8,6 +8,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, WebConstructType
 from polylogue.core.hashing import hash_payload
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
+from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import (
     _EXCLUDED_FIELDS,
     _HASHED_FIELDS,
@@ -99,6 +100,23 @@ def test_session_content_hash_accepts_provider_session_aliases() -> None:
     with_alias = session.model_copy(update={"provider_session_aliases": ["legacy-conv-1"]})
 
     assert session_content_hash(session) == session_content_hash(with_alias)
+
+
+def test_session_content_hash_uses_canonical_origin_for_provider_aliases() -> None:
+    session = _parsed_session(
+        "conv-1",
+        "Test",
+        [_parsed_message("msg-1", "user", "Hello", "2024-01-01T00:00:00Z")],
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+    )
+    gemini = session.model_copy(update={"source_name": Provider.GEMINI})
+    drive = session.model_copy(update={"source_name": Provider.DRIVE})
+
+    assert session_id(gemini.source_name, gemini.provider_session_id) == session_id(
+        drive.source_name, drive.provider_session_id
+    )
+    assert session_content_hash(gemini) == session_content_hash(drive)
 
 
 def test_message_none_vs_empty_timestamp_changes_session_hash() -> None:
@@ -413,7 +431,7 @@ def test_session_revision_projection_golden_hashes() -> None:
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "9dcaa76c36d7f1264f3d26ff495d580b7fb0a076cccd738f89de91f29c7bbb3c"
+    assert projection.session_hash.hex() == "4722164f2a73a28d22772d80452e4a753d4f1bdd1730becd5d455a20c5288ecc"
     assert [h.hex() for h in projection.message_hashes] == [
         "d35e1908842525f07b9709bf80ddbf115b58b7adb7e8da4b0bbe01759029c161",
         "8af37515a68ab1e225bb4d2b11c48a3b7c9708561b01aaefaf1855f28e8e7742",
@@ -497,9 +515,12 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
             session_events=independent_event_payloads,
         )
         | {
-            "semantic_session_fields": _model_hash_payload(
-                session, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
-            )
+            "semantic_session_fields": {
+                **_model_hash_payload(
+                    session, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
+                ),
+                "source_name": _normalize_for_hash(origin_from_provider(session.source_name).value),
+            }
         }
     )
 

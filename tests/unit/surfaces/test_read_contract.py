@@ -43,6 +43,13 @@ def test_normalizer_preserves_already_lowered_selection() -> None:
     assert request.selection.filter_has_paste is True
 
 
+def test_normalizer_lowers_project_filters_into_archive_selection() -> None:
+    request = ReadRequest.normalize({"project_path": "/workspace/repo", "project_repo": "repo"})
+
+    assert request.selection.cwd_prefix == "/workspace/repo"
+    assert request.selection.repo_names == ("repo",)
+
+
 def test_preset_catalog_and_schema_are_derived_from_the_registry() -> None:
     catalog = read_preset_catalog()
     schema = read_contract_schema()

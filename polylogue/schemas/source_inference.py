@@ -36,7 +36,11 @@ from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_jso
 from polylogue.core.schema_subjects import inference_exclusion_reason, subject_admits_member
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.generation.evidence import SchemaEvidence
-from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
+from polylogue.schemas.observation import (
+    declared_structured_observation_config,
+    extract_schema_units_from_payload,
+    resolve_provider_config,
+)
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
 from polylogue.schemas.source_document_identity import DOCUMENT_UPDATE_FIELDS, native_document_identity
 from polylogue.schemas.source_recipe import (
@@ -978,21 +982,12 @@ def _collect_payload_evidence(
             # an admission cohort here: each record is classified through the
             # strong path rule below, preserving the sidecar family even when
             # its values happen to resemble a transcript.
-            rule = artifact_rule_for_path(provider, str(candidate.path))
-            if rule is None or rule.observation_strategy not in {
-                "structured-records",
-                "structured-documents",
-            }:
+            structured_config = declared_structured_observation_config(provider, candidate.path, config)
+            if structured_config is None:
                 payload_replay.close()
                 return (), 0, (), False
             artifact_scoped_identity = True
-            # A JSON sidecar is one structured document even when its provider
-            # happens to use a record-stream config (for example Claude's
-            # sessions-index.json). Keeping the document envelope here makes
-            # additive fields observable instead of accidentally sampling only
-            # nested objects such as ``sessions[]``.
-            if rule.observation_strategy == "structured-documents" and candidate.path.suffix.lower() == ".json":
-                config = replace(config, sample_granularity="document", record_type_key=None)
+            config = structured_config
         else:
             admitted_artifact_kind = artifact.cohort
         for record in payload_replay:

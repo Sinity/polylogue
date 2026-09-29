@@ -10,43 +10,12 @@
 let
   inherit (lib) mkOption types;
 
-  # Canonical source-root paths for known providers. Used by the
-  # ``discoverSources`` convenience option so downstreams don't have
-  # to memorize agent storage layouts.
-  knownProviderRoots = {
-    claude = "$HOME/.claude/projects";
-    claude-code = "$HOME/.claude/projects";
-    codex = "$HOME/.codex/sessions";
-    gemini = "$HOME/.gemini/tmp";
-    antigravity = "$HOME/.gemini/antigravity";
-    hermes = "$HOME/.hermes/sessions";
-  };
-
-  providerNames = lib.attrNames knownProviderRoots;
-
   settingsOptions = {
     archive = {
       root = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "Archive root directory.";
-      };
-    };
-
-    daemon = {
-      watch = mkOption {
-        type = types.nullOr (types.listOf types.str);
-        default = null;
-        description = ''
-          Additional source roots for live ingestion. Rendered as
-          ``[sources] roots`` in polylogue.toml and merged with any
-          paths produced by ``discoverSources``.
-        '';
-      };
-      debounce-s = mkOption {
-        type = types.nullOr types.number;
-        default = null;
-        description = "Live watcher debounce in seconds (polylogue default: 2.0).";
       };
     };
 
@@ -141,11 +110,6 @@ let
     };
 
     logging = {
-      level = mkOption {
-        type = types.nullOr (types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ]);
-        default = null;
-        description = "Log level.";
-      };
       force-plain = mkOption {
         type = types.nullOr types.bool;
         default = null;
@@ -158,11 +122,6 @@ let
         type = types.nullOr (types.enum [ "dark" "light" "auto" ]);
         default = null;
         description = "Semantic theme mode.";
-      };
-      slow-query-notice-seconds = mkOption {
-        type = types.nullOr types.number;
-        default = null;
-        description = "Threshold for slow-query user notices.";
       };
     };
 
@@ -256,20 +215,6 @@ let
     };
   };
 
-  discoverSourcesOption = mkOption {
-    type = types.listOf (types.enum providerNames);
-    default = [ ];
-    example = [ "claude-code" "codex" "gemini" ];
-    description = ''
-      Convenience: select one or more known provider names and the
-      module will add their canonical source paths to
-      ``settings.daemon.watch`` automatically. Use this instead of
-      hand-spelling paths like ``$HOME/.claude/projects``.
-
-      Recognized values: ${lib.concatStringsSep ", " providerNames}.
-    '';
-  };
-
   configLocationOption = mkOption {
     type = types.enum [ "xdg" "store" ];
     default = "xdg";
@@ -305,10 +250,7 @@ let
       );
 
       daemon = maybe "daemon" (
-        (if settings.daemon.debounce-s != null then {
-          watch = { debounce_s = settings.daemon.debounce-s; };
-        } else { })
-        // lib.optionalAttrs (
+        lib.optionalAttrs (
           settings.daemon-api.host != null
           || settings.daemon-api.port != null
           || settings.daemon-api.auth-token != null
@@ -338,10 +280,6 @@ let
         }
       );
 
-      sources = maybe "sources" (dropNulls {
-        roots = settings.daemon.watch;
-      });
-
       embedding = maybe "embedding" (dropNulls {
         enabled = settings.embedding.enabled;
         model = settings.embedding.model;
@@ -351,13 +289,11 @@ let
       });
 
       logging = maybe "logging" (dropNulls {
-        level = settings.logging.level;
         force_plain = settings.logging.force-plain;
       });
 
       ui = maybe "ui" (dropNulls {
         theme = settings.ui.theme;
-        slow_query_notice_seconds = settings.ui.slow-query-notice-seconds;
       });
 
       schema = maybe "schema" (dropNulls {
@@ -410,28 +346,10 @@ let
         }
       );
     in
-    archive // daemon // sources // embedding // logging // ui // schema // notifications // health // cost;
+    archive // daemon // embedding // logging // ui // schema // notifications // health // cost;
 
   renderConfigFile = settings:
     (pkgs.formats.toml { }).generate "polylogue.toml" (renderSettings settings);
-
-  # Translate ``discoverSources = [ ... ]`` into a list of watch
-  # paths. Returned unchanged when the input is empty so callers can
-  # safely concatenate.
-  expandDiscoverSources = discoverSources:
-    map (name: knownProviderRoots.${name}) discoverSources;
-
-  # Compose the effective ``sources.roots`` list by combining the
-  # explicit setting (if any) with the discover-sources expansion.
-  effectiveWatch = { settings, discoverSources }:
-    let
-      explicit = settings.daemon.watch or null;
-      discovered = expandDiscoverSources discoverSources;
-    in
-    if explicit == null && discovered == [ ] then
-      null
-    else
-      (if explicit == null then [ ] else explicit) ++ discovered;
 
   # systemd Service directive block built from service.* options.
   # Returns an attrset suitable for ``serviceConfig`` (system) or
@@ -448,14 +366,9 @@ in
   inherit
     settingsOptions
     serviceOptions
-    discoverSourcesOption
     configLocationOption
     renderSettings
     renderConfigFile
-    expandDiscoverSources
-    effectiveWatch
     serviceDirectives
-    knownProviderRoots
-    providerNames
     ;
 }

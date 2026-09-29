@@ -450,3 +450,18 @@ def test_explicit_read_timeout_bounds_the_lock_wait_even_at_the_default_value(tm
     assert busy_ms(timeout_class="background-read") == 30_000
     assert busy_ms(timeout_class="background-read", timeout=5.0) == 5_000
     assert busy_ms(timeout=0.2) == 200
+
+
+@pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
+@pytest.mark.parametrize("tier", [ArchiveTier.USER, ArchiveTier.SOURCE, ArchiveTier.EMBEDDINGS])
+def test_writers_refuse_an_uninitialized_durable_tier(
+    tmp_path: Path, factory: Callable[..., sqlite3.Connection], tier: ArchiveTier
+) -> None:
+    """The former shared read exemption returned a writable zero-schema handle."""
+    path = tmp_path / f"{tier.value}.db"
+    path.touch()
+    with pytest.raises(SchemaSkew) as raised:
+        with factory(path):
+            pass
+    assert raised.value.tier == tier.value
+    assert raised.value.found == 0

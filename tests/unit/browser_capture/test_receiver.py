@@ -550,6 +550,7 @@ def test_receiver_declares_durable_browser_backfill_ack_contract(tmp_path: Path)
     assert response.status == HTTPStatus.OK
     assert response.getheader("X-Request-ID")
     assert body.durable_ack_fields == ("receiver_request_id", "content_hash")
+    assert body.assertion_candidates is True
 
 
 def test_receiver_rejects_extra_web_origin_without_token(tmp_path: Path) -> None:
@@ -797,6 +798,41 @@ def test_mission_control_archive_facts_read_a_real_archive(empty_archive_templat
     assert cost == {"status": "unknown", "total_usd": None, "provenance": []}
     assert assertions["status"] == "available"
     assert assertions["items"] == []
+
+
+def test_mission_control_reads_only_judged_session_assertions_in_one_bounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: candidates must not reach this projection, and it must not issue one read per message."""
+
+    import polylogue
+
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    class FakePolylogue:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def list_session_cost_insights(self, _query: object) -> list[object]:
+            return []
+
+        async def list_assertion_claim_payloads(
+            self,
+            *,
+            statuses: tuple[str, ...],
+            limit: int,
+            target_ref: str | None = None,
+        ) -> list[object]:
+            calls.append((str(target_ref), statuses))
+            return []
+
+    monkeypatch.setattr(polylogue, "Polylogue", FakePolylogue)
+    result = mission_control_archive_facts(tmp_path, "chatgpt:conversation")
+
+    assert result is not None
+    assert calls == [
+        ("session:chatgpt:conversation", ("active",)),
+    ]
 
 
 def test_mission_control_archive_facts_degrade_on_an_unreadable_archive(tmp_path: Path) -> None:

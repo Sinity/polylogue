@@ -16,6 +16,18 @@ work). Unclaimed read-ahead that outlives its lifetime is reaped the same way.
 A finished read-ahead releases its charge at once but pays its full artifact
 digest only when a warm claims it.
 
+A worker process lost under a preparation is charged to the one file whose
+task it held. Each task marks its parent-assigned attempt directory when a
+worker takes it and when the worker lets go, so the tasks held at a pool break
+are exactly those started and not finished. One held task is charged; several
+are all deferred uncharged, and each is then prepared alone until a worker
+comes back from it, so every later loss names a single file. Required work
+has no wall-clock deadline, but a process worker whose attempt directory has
+not grown for its hang bound (a floor far beyond any healthy parse, scaled by
+source size) is stopped by the same pool restart that reaps read-ahead, and
+charged. Losses on one unchanged observation of a file escalate to a terminal
+failure the writer records, instead of a deferral retried for the whole build.
+
 Publication order is enforced once, in reconciliation: a warm reconciles its
 paths in intake order against a snapshot taken after every earlier
 publication, admits at most one path per canonical session, and returns the
@@ -87,6 +99,19 @@ _DEFAULT_STALL_REPORT_SECONDS = 60.0
 _PREEMPT_GRACE_SECONDS = 10.0
 #: How often a waiting warm re-reads its preparations' progress.
 _PROGRESS_POLL_SECONDS = 5.0
+#: Consecutive worker losses on one unchanged observation of a file before
+#: its preparation is a terminal failure rather than another deferral. A
+#: preparation stopped at its hang bound counts as a loss.
+_MAX_WORKER_LOSSES_PER_OBSERVATION = 3
+#: A process worker whose attempt directory has not grown for this long,
+#: plus the source size at the floor throughput below, is presumed hung. Both
+#: sit far outside any healthy parse, so slow work that advances is never
+#: stopped; only work that has stopped advancing is.
+_PREPARATION_HANG_BASE_SECONDS = 600.0
+_PREPARATION_HANG_FLOOR_BYTES_PER_SECOND = 256 * 1024
+
+#: A source file's (size, mtime_ns, inode) when its preparation was submitted.
+SourceObservation = tuple[int, int, int]
 
 # The dispatcher's per-pass byte budget already caps one admitted page at
 # 64 MiB, so the adaptive budget below only needs to cover one page's worth
@@ -249,6 +274,46 @@ class LiveParsedEntry:
 
     sessions: list[ParsedSession]
     shard_path: Path | None
+
+
+#: Written by a worker as its first act on a task, so a parent whose pool
+#: just broke can tell a task a worker held from one still queued.
+_WORKER_STARTED_MARKER = ".worker-started"
+#: Written when the task returns or raises. A worker that wrote it was alive
+#: at the end of its task, so it cannot have died holding it.
+_WORKER_FINISHED_MARKER = ".worker-finished"
+
+
+def _run_holding_attempt(
+    worker: Callable[..., LivePathPreparation],
+    /,
+    *args: Any,
+    attempt_directory: str,
+    **kwargs: Any,
+) -> LivePathPreparation:
+    """Run one path task inside the executor, marking when it is held."""
+    attempt = Path(attempt_directory)
+    (attempt / _WORKER_STARTED_MARKER).touch()
+    try:
+        return worker(*args, attempt_directory=attempt_directory, **kwargs)
+    finally:
+        (attempt / _WORKER_FINISHED_MARKER).touch()
+
+
+def _worker_held_task(attempt_directory: Path | None) -> bool:
+    if attempt_directory is None:
+        return False
+    return (attempt_directory / _WORKER_STARTED_MARKER).exists() and not (
+        attempt_directory / _WORKER_FINISHED_MARKER
+    ).exists()
+
+
+def _observe(source_path: str) -> SourceObservation | None:
+    try:
+        observed = Path(source_path).stat()
+    except OSError:
+        return None
+    return (observed.st_size, observed.st_mtime_ns, observed.st_ino)
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +622,8 @@ class LiveParseStage:
         shard_directory: Path | None = None,
         use_processes: bool = False,
         preempt_grace_seconds: float = _PREEMPT_GRACE_SECONDS,
+        hang_base_seconds: float = _PREPARATION_HANG_BASE_SECONDS,
+        hang_floor_bytes_per_second: float = _PREPARATION_HANG_FLOOR_BYTES_PER_SECOND,
     ) -> None:
         # polylogue-bp12n.6. Where a worker's sealed shard goes, or ``None``
         # to keep row binding on the writer thread. Path workers receive a
@@ -600,7 +667,21 @@ class LiveParseStage:
         #: warm.
         self._publish_lock = threading.Lock()
         self._active_cancel: threading.Event | None = None
-        self._path_sizes: dict[str, int] = {}
+        #: Each running preparation's source observation at submission; its
+        #: size is the preparation's charge against the byte budget.
+        self._path_observations: dict[str, SourceObservation] = {}
+        #: Each running preparation's attempt-directory size and the
+        #: monotonic time it last grew: the hang signal.
+        self._path_progress: dict[str, tuple[int, float]] = {}
+        self._hang_base_seconds = hang_base_seconds
+        self._hang_floor_bytes_per_second = max(1.0, hang_floor_bytes_per_second)
+        #: source path -> (observation, consecutive worker losses on it).
+        #: Rewritten content starts a new streak; a worker that comes back
+        #: from the file, with any result, ends it.
+        self._path_worker_losses: dict[str, tuple[SourceObservation, int]] = {}
+        #: Paths a worker held when the pool broke. Each is prepared alone
+        #: until a worker comes back from it, so its next loss is attributable.
+        self._path_solo_suspects: set[str] = set()
         self._path_attempt_dirs: dict[str, Path] = {}
         self._path_inflight_bytes = 0
         self._closing = False
@@ -806,7 +887,9 @@ class LiveParseStage:
         forward progress signal. Worker death still ends a wait
         (``BrokenProcessPool`` at collection), shutdown terminates stragglers,
         and a set ``cancelled`` ends the wait at the next poll with nothing
-        recorded for what remains.
+        recorded for what remains. The same signal, per path, bounds a hang:
+        a process worker that has not advanced for its hang bound is stopped
+        and charged (``_reap_hung_preparations``).
 
         Capacity held by unclaimed read-ahead is the one thing a warm does
         not wait out: when a required path does not fit, that read-ahead is
@@ -835,6 +918,7 @@ class LiveParseStage:
             done, _pending = wait(waiting, timeout=self._next_wait_seconds(), return_when=FIRST_COMPLETED)
             self._collect_finished()
             self._reap_due_preemptions()
+            self._reap_hung_preparations()
             now = time.monotonic()
             advanced = self._attempt_bytes(wanted)
             if done or advanced > progress:
@@ -932,35 +1016,54 @@ class LiveParseStage:
             reason=reason,
             paths=len(paths),
         )
-        reaped = set(paths)
+        reaped = frozenset(paths)
         if isinstance(self._executor, ProcessPoolExecutor):
-            affected = tuple(self._path_futures)
-            self._restart_broken_process_pool(
-                reason="worker pool restarted to reap read-ahead", discard=frozenset(reaped)
-            )
-            if self._cleanup_blocked:
-                return
-            for source_path in affected:
-                self._preempt_at.pop(source_path, None)
-                result = self._path_results.get(source_path)
-                if source_path in reaped or (
-                    source_path in self._speculative and (result is None or result.error is not None)
-                ):
-                    self._speculative.pop(source_path, None)
-                    self._unverified.discard(source_path)
-                    if result is not None:
-                        self._path_results.pop(source_path).discard()
-                elif result is not None and result.error is not None and result.deferred:
-                    self._path_results.pop(source_path).discard()
+            self._stop_process_workers(reason="worker pool restarted to reap read-ahead", reaped=reaped)
             return
         for source_path in reaped:
-            future = self._path_futures.pop(source_path, None)
+            future = self._path_futures.get(source_path)
             if future is None:
                 continue
-            self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)
-            self._orphans[future] = self._path_attempt_dirs.pop(source_path, None)
+            self._orphans[future] = self._release_slot(source_path)[0]
             self._speculative.pop(source_path, None)
             self._preempt_at.pop(source_path, None)
+
+    def _stop_process_workers(self, *, reason: str, reaped: frozenset[str] = frozenset()) -> None:
+        """Restart the process pool on purpose and settle its collateral.
+
+        ``reaped`` read-ahead is dropped without a digest. Other unclaimed
+        read-ahead that did not finish is dropped too. Required work the
+        restart interrupted loses its restart deferral, so a waiting warm
+        resubmits it. A success that sealed just before the stop is kept.
+        """
+        affected = tuple(self._path_futures)
+        self._restart_broken_process_pool(reason=reason, discard=reaped)
+        if self._cleanup_blocked:
+            return
+        for source_path in affected:
+            self._preempt_at.pop(source_path, None)
+            result = self._path_results.get(source_path)
+            if source_path in reaped or (
+                source_path in self._speculative and (result is None or result.error is not None)
+            ):
+                self._speculative.pop(source_path, None)
+                self._unverified.discard(source_path)
+                if result is not None:
+                    self._path_results.pop(source_path).discard()
+            elif result is not None and result.error is not None and result.deferred:
+                self._path_results.pop(source_path).discard()
+
+    def _release_slot(self, source_path: str) -> tuple[Path | None, SourceObservation | None]:
+        """Forget a running preparation's bookkeeping and release its charge.
+
+        Returns its attempt directory and its submission observation.
+        """
+        self._path_futures.pop(source_path, None)
+        self._path_progress.pop(source_path, None)
+        observation = self._path_observations.pop(source_path, None)
+        if observation is not None:
+            self._path_inflight_bytes -= observation[0]
+        return self._path_attempt_dirs.pop(source_path, None), observation
 
     def _attempt_bytes(self, paths: set[str]) -> int:
         """Bytes the running preparations of ``paths`` have written so far."""
@@ -1060,17 +1163,35 @@ class LiveParseStage:
         it then, instead of inheriting a transient failure.
         """
         next_wave: list[tuple[str, Provider, bool]] = []
+        suspects = self._path_solo_suspects
+        if suspects and not speculative:
+            # A suspect is offered before anything else, so a suspect that
+            # cannot run yet is known to be waiting before others are admitted.
+            candidates = sorted(candidates, key=lambda candidate: candidate[0] not in suspects)
+        suspect_waiting: bool | None = None
         for source_path, provider, is_stream in candidates:
             if source_path in self._path_results or source_path in self._path_futures:
                 continue
+            if suspects:
+                if suspect_waiting is None and source_path not in suspects:
+                    suspect_waiting = not speculative and any(
+                        path in suspects and path not in self._path_results and path not in self._path_futures
+                        for path, _provider, _is_stream in candidates
+                    )
+                if self._solo_preparation_blocks(
+                    source_path, speculative=speculative, suspect_waiting=bool(suspect_waiting)
+                ):
+                    next_wave.append((source_path, provider, is_stream))
+                    continue
             try:
-                source_bytes = Path(source_path).stat().st_size
+                observed = Path(source_path).stat()
             except OSError as exc:
                 if not speculative:
                     self._path_results[source_path] = LivePathPreparation(
                         None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
                     )
                 continue
+            source_bytes = observed.st_size
             pending_count = len(self._path_futures)
             # Read-ahead never takes the last worker: required work always has
             # an executor slot, even beside an orphaned thread. With a single
@@ -1085,6 +1206,7 @@ class LiveParseStage:
                 attempt_directory = self._new_attempt_directory()
                 if speculative:
                     future = self._executor.submit(
+                        _run_holding_attempt,
                         live_lookahead_path_worker,
                         provider.value,
                         source_path,
@@ -1095,7 +1217,8 @@ class LiveParseStage:
                     )
                 else:
                     future = self._executor.submit(
-                        carry_context(live_parse_path_worker),
+                        carry_context(_run_holding_attempt),
+                        live_parse_path_worker,
                         provider.value,
                         source_path,
                         Path(source_path).stem,
@@ -1117,7 +1240,8 @@ class LiveParseStage:
             if submitted is not None:
                 submitted.append(source_path)
             self._path_attempt_dirs[source_path] = attempt_directory
-            self._path_sizes[source_path] = source_bytes
+            self._path_observations[source_path] = (observed.st_size, observed.st_mtime_ns, observed.st_ino)
+            self._path_progress[source_path] = (0, time.monotonic())
             self._path_inflight_bytes += source_bytes
         return next_wave
 
@@ -1310,17 +1434,17 @@ class LiveParseStage:
             source_path in self._speculative
             and self._stage_calls - self._speculative[source_path] >= _SPECULATIVE_LIFETIME_CALLS
         )
-        self._path_futures.pop(source_path, None)
-        self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)
-        attempt_directory = self._path_attempt_dirs.pop(source_path, None)
+        attempt_directory, observation = self._release_slot(source_path)
         try:
             result = future.result()
         except BrokenProcessPool:
-            result = LivePathPreparation(None, None, None, "worker process died during preparation", deferred=True)
-            if not self._closing:
-                self._restart_broken_process_pool(failed_attempt=attempt_directory)
+            result = self._attribute_pool_death(source_path, attempt_directory, observation)
         except Exception as exc:
+            # The worker came back from this file, whatever it raised.
+            self._end_loss_streak(source_path)
             result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500], deferred=True)
+        else:
+            self._end_loss_streak(source_path)
         if attempt_directory is not None:
             if result.error is None:
                 try:
@@ -1387,6 +1511,181 @@ class LiveParseStage:
             old.discard()
         self._path_results[source_path] = result
 
+    def _end_loss_streak(self, source_path: str) -> None:
+        self._path_worker_losses.pop(source_path, None)
+        self._path_solo_suspects.discard(source_path)
+
+    def _solo_preparation_running(self) -> bool:
+        return any(source_path in self._path_solo_suspects for source_path in self._path_futures)
+
+    def _solo_preparation_blocks(self, source_path: str, *, speculative: bool, suspect_waiting: bool) -> bool:
+        """Whether submitting ``source_path`` now would share the pool with a suspect.
+
+        A suspect runs only on an otherwise idle pool and nothing joins it.
+        While a suspect waits for the pool to drain, no other required path is
+        admitted, so the drain finishes instead of starving it; the waiting
+        warm preempts read-ahead as it does for any blocked path. A suspect is
+        never read ahead.
+        """
+        if self._solo_preparation_running():
+            return True
+        if source_path in self._path_solo_suspects:
+            return speculative or bool(self._path_futures)
+        return suspect_waiting
+
+    def _attribute_pool_death(
+        self,
+        source_path: str,
+        attempt_directory: Path | None,
+        observation: SourceObservation | None,
+    ) -> LivePathPreparation:
+        """Charge a pool break to the one preparation a worker held, if unique.
+
+        A broken pool completes every outstanding future with
+        ``BrokenProcessPool``, not only the one whose worker died. The tasks
+        held at the break are those whose attempt directory is marked started
+        and not finished; queued and finished tasks are not the cause. One
+        held task is charged. Several are deferred uncharged. Every held task
+        becomes a solo suspect.
+        """
+        if self._closing:
+            return LivePathPreparation(None, None, None, "worker pool stopped during shutdown", deferred=True)
+        if self._cleanup_blocked:
+            # An earlier stop was never verified, so this break may be the
+            # same one, seen again through another future: charge nothing.
+            return LivePathPreparation(
+                None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
+            )
+        held: list[tuple[str, SourceObservation | None]] = []
+        if _worker_held_task(attempt_directory):
+            held.append((source_path, observation))
+        for sibling_path, sibling in self._path_futures.items():
+            if sibling.done() and not sibling.cancelled() and sibling.exception() is None:
+                continue
+            if _worker_held_task(self._path_attempt_dirs.get(sibling_path)):
+                held.append((sibling_path, self._path_observations.get(sibling_path)))
+        cause = "worker process died during preparation"
+        self._path_solo_suspects.update(path for path, _observation in held)
+        if len(held) > 1:
+            emit(
+                "live.parse_prefetch.worker_death_ambiguous",
+                level=WARNING,
+                outcome="degraded",
+                reason="worker_death_ambiguous",
+                path=source_path,
+                attempts=len(held),
+            )
+            reason = f"{cause}; {len(held)} preparations were running, retrying each alone to attribute it"
+        else:
+            reason = "worker pool restarted after another preparation's worker died"
+        culprit = held[0] if len(held) == 1 else None
+        if culprit is not None and culprit[0] == source_path:
+            result = self._charge_worker_loss(source_path, observation, cause)
+        elif any(path == source_path for path, _observation in held):
+            result = LivePathPreparation(None, None, None, reason, deferred=True)
+        else:
+            result = LivePathPreparation(
+                None, None, None, "worker pool broke while this preparation was not running", deferred=True
+            )
+        # Every sibling the restart interrupts is deferred uncharged; a
+        # sibling that is the one culprit is charged after it.
+        self._restart_broken_process_pool(failed_attempt=attempt_directory, reason=reason)
+        if culprit is not None and culprit[0] != source_path and not self._cleanup_blocked:
+            culprit_path, culprit_observation = culprit
+            old = self._path_results.pop(culprit_path, None)
+            if old is not None:
+                old.discard()
+            self._path_results[culprit_path] = self._charge_worker_loss(culprit_path, culprit_observation, cause)
+        return result
+
+    def _charge_worker_loss(
+        self, source_path: str, observation: SourceObservation | None, cause: str
+    ) -> LivePathPreparation:
+        """Count one lost worker against this exact observation of the file.
+
+        Below the bound the loss is deferred, like any interrupted
+        preparation. At the bound it is not: the writer records a parse
+        failure, and the cursor's finite failure budget quarantines the file
+        with a visible reason instead of retrying it every pass. A loss with
+        no observation cannot be bound to a revision and is only deferred.
+        """
+        if observation is None:
+            return LivePathPreparation(None, None, None, cause, deferred=True)
+        previous = self._path_worker_losses.get(source_path)
+        losses = previous[1] + 1 if previous is not None and previous[0] == observation else 1
+        self._path_worker_losses[source_path] = (observation, losses)
+        if losses < _MAX_WORKER_LOSSES_PER_OBSERVATION:
+            return LivePathPreparation(None, None, None, cause, deferred=True)
+        emit(
+            "live.parse_prefetch.worker_death_escalated",
+            level=WARNING,
+            outcome="refused",
+            reason="worker_died_repeatedly",
+            path=source_path,
+            attempts=losses,
+            error_detail=cause,
+        )
+        return LivePathPreparation(
+            None,
+            None,
+            None,
+            f"{cause}; worker lost on {losses} consecutive preparations of this file",
+            deferred=False,
+            failed_observation=observation,
+        )
+
+    def _reap_hung_preparations(self) -> None:
+        """Stop required preparations that stopped advancing; charge only them.
+
+        Unclaimed read-ahead has its own lifetime and preemption. A thread
+        cannot be stopped, so only a process pool is reaped. The restart
+        frees every slot; interrupted siblings are resubmitted uncharged.
+        """
+        if self._closing or self._cleanup_blocked or not isinstance(self._executor, ProcessPoolExecutor):
+            return
+        now = time.monotonic()
+        hung: list[tuple[str, SourceObservation | None, float]] = []
+        for source_path, future in self._path_futures.items():
+            if future.done() or source_path in self._speculative:
+                continue
+            written = self._attempt_bytes({source_path})
+            last_written, advanced_at = self._path_progress.get(source_path, (written, now))
+            if written > last_written or source_path not in self._path_progress:
+                self._path_progress[source_path] = (written, now)
+                continue
+            observation = self._path_observations.get(source_path)
+            size = 0 if observation is None else observation[0]
+            idle = now - advanced_at
+            if idle > self._hang_base_seconds + size / self._hang_floor_bytes_per_second:
+                hung.append((source_path, observation, idle))
+        if not hung:
+            return
+        for source_path, _observation, idle in hung:
+            emit(
+                "live.parse_prefetch.preparation_hung",
+                level=WARNING,
+                outcome="degraded",
+                reason="no_forward_progress_within_hang_bound",
+                path=source_path,
+                wait_ms=round(idle * 1000),
+            )
+        self._stop_process_workers(reason="worker pool restarted to stop a hung preparation")
+        if self._cleanup_blocked:
+            return
+        for source_path, observation, _idle in hung:
+            if (result := self._path_results.get(source_path)) is not None and result.error is None:
+                # It sealed as it was stopped: a success, kept by the restart.
+                self._end_loss_streak(source_path)
+                continue
+            if result is not None:
+                self._path_results.pop(source_path).discard()
+            # A hang is attributed exactly; running it alone would only hold
+            # the whole pool for its next hang bound.
+            self._path_solo_suspects.discard(source_path)
+            self._path_results[source_path] = self._charge_worker_loss(
+                source_path, observation, "worker preparation made no progress within its hang bound"
+            )
+
     def _new_attempt_directory(self) -> Path:
         if self._attempt_root is None:
             raise RuntimeError("path preparation has no owned scratch root")
@@ -1450,9 +1749,7 @@ class LiveParseStage:
         if failed_attempt is not None:
             self._remove_attempt_directory(failed_attempt)
         for pending_path, future in pending:
-            attempt_directory = self._path_attempt_dirs.pop(pending_path, None)
-            self._path_futures.pop(pending_path, None)
-            self._path_inflight_bytes -= self._path_sizes.pop(pending_path, 0)
+            attempt_directory, _observation = self._release_slot(pending_path)
             # A sibling may have sealed successfully just before the pool
             # broke. Its result is still useful and retains its own carrier.
             if future.done() and not future.cancelled():
@@ -1478,6 +1775,9 @@ class LiveParseStage:
                             result.verify_files(full=True, stop=self._cancel_predicate())
                         result = replace(result, attempt_directory=attempt_directory)
                         self._path_results[pending_path] = result
+                        # A worker came back from this file: as a collected
+                        # success does, that ends its loss streak.
+                        self._end_loss_streak(pending_path)
                         continue
                     except (OSError, ValueError, VerificationCancelledError):
                         pass
@@ -1509,6 +1809,14 @@ class LiveParseStage:
                 self._discard_retained_path(source_path)
                 result.discard()
                 return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
+            if result.failed_observation is not None and _observe(source_path) != result.failed_observation:
+                # A lost worker never hashed the bytes it failed on. The file
+                # unchanged since that preparation was submitted is the proof
+                # the capture holds the same revision; anything else is new.
+                result.discard()
+                return LivePathPreparation(
+                    None, None, None, "captured source changed after the failed preparation", deferred=True
+                )
             return result
         if result.blob_hash != blob_hash:
             self._discard_retained_path(source_path)

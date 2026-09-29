@@ -105,7 +105,8 @@ def _fail_first_index_write(monkeypatch: pytest.MonkeyPatch, failure: BaseExcept
 
 
 def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> None:
-    original = ArchiveBlobPublisher.write_from_path
+    # Captures stream through the acquisition boundary into write_from_fileobj.
+    original = ArchiveBlobPublisher.write_from_fileobj
     calls = 0
 
     def fail_once(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> tuple[str, int]:
@@ -115,7 +116,7 @@ def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> 
             raise failure
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", fail_once)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", fail_once)
 
 
 @pytest.fixture
@@ -446,7 +447,8 @@ async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
     discard the first file's temporary remains after every retry."""
     archive, watcher, source_path = storage_env
     _write_session(source_path.parent / "second.jsonl", "storage-fault-2")
-    original = ArchiveBlobPublisher.write_from_path
+    # Captures stream through the acquisition boundary into write_from_fileobj.
+    original = ArchiveBlobPublisher.write_from_fileobj
     calls = 0
 
     def fail_second(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> tuple[str, int]:
@@ -456,7 +458,7 @@ async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
             raise OSError(errno.ENOSPC, "No space left on device")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", fail_second)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", fail_second)
     try:
         outcomes = await _admit(watcher)
         assert calls == 2

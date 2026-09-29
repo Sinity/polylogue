@@ -82,6 +82,9 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_model_usage": frozenset(),
     # Completed arms must agree on outstanding profile work and the recipe
     # seed that produced it. A pending demand is not a finished build.
+    # The scope a materialized lineage child's stored IDs follow; derived
+    # from the child and its parent's transcript alone.
+    "session_identity_scopes": frozenset(),
     "session_profile_demand": frozenset(),
     "session_profile_demand_state": frozenset(),
     "session_profiles": frozenset({"materialized_at"}),

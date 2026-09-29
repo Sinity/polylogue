@@ -364,13 +364,12 @@ class TitleSource(PolylogueStrEnum):
     ``UNKNOWN`` was a second, redundant spelling of "no title evidence" on an
     already-nullable column (every read site branching on ``title_source``
     treated ``NULL`` and ``'unknown'`` identically) -- deleted in favor of
-    ``NULL`` alone. ``PATH`` is retained for compatibility with legacy rows,
-    but current read-time display-label projection leaves ``title_source``
-    NULL when a session has no provider title.
+    ``NULL`` alone. ``PATH`` had no producer either: read-time display-label
+    projection leaves ``title_source`` NULL when a session has no provider
+    title -- deleted.
     """
 
     ORIGIN = "origin"
-    PATH = "path"
     HEURISTIC = "heuristic"
 
 

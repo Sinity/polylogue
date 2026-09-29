@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import polylogue.operations.daemon_workload_probe as workload_probe
+from polylogue.core.evidence import Measured
 from polylogue.operations.daemon_workload_probe import (
     REPORT_VERSION,
     UNKNOWN_TABLE_COUNT,
@@ -95,6 +96,31 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
         cursor_fingerprint_read_bytes=0,
     )
     return attempt_id
+
+
+def test_cost_bearing_profile_count_reads_canonical_usage_lanes() -> None:
+    """Removed profile mirrors cannot hide cost evidence from the workload probe.
+
+    Anti-vacuity: a provider cost lane must count even when session_profiles
+    has no cost columns.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
+            CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL, provider_cost_usd REAL,
+                catalog_cost_usd REAL, cost_credits REAL
+            );
+            INSERT INTO session_profiles VALUES ('s1'), ('s2');
+            INSERT INTO session_model_usage VALUES ('s1', 0.0, NULL, NULL);
+            INSERT INTO session_model_usage VALUES ('s2', NULL, NULL, NULL);
+            """
+        )
+        assert workload_probe._cost_bearing_profile_count(conn) == Measured(1)
+    finally:
+        conn.close()
 
 
 def _minimal_compare_payload() -> dict[str, Any]:
@@ -875,18 +901,18 @@ def test_daemon_workload_probe_reports_weighted_raw_replay_backlog(tmp_path: Pat
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                raw_id, origin, detected_provider, native_id, source_path, blob_hash, blob_size,
                 parsed_at_ms, validation_status, acquired_at_ms
-            ) VALUES ('raw-small', 'codex-session', 'native-small', '/src/small.jsonl', ?, ?, 1, 'passed', 1)
+            ) VALUES ('raw-small', 'codex-session', 'codex', 'native-small', '/src/small.jsonl', ?, ?, 1, 'passed', 1)
             """,
             (bytes.fromhex(small_hash), small_size),
         )
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                raw_id, origin, detected_provider, native_id, source_path, blob_hash, blob_size,
                 parsed_at_ms, validation_status, acquired_at_ms
-            ) VALUES ('raw-large', 'codex-session', 'native-large', '/src/large.jsonl', ?, ?, 1, 'passed', 2)
+            ) VALUES ('raw-large', 'codex-session', 'codex', 'native-large', '/src/large.jsonl', ?, ?, 1, 'passed', 2)
             """,
             (bytes.fromhex(large_hash), large_size),
         )
@@ -1429,17 +1455,35 @@ def test_an_unavailable_debt_ledger_is_not_zero_debt() -> None:
     assert backlog["state"] == "unknown"
 
     diff = workload_probe.compare(
-        {"report_version": workload_probe.REPORT_VERSION, "ok": True, "convergence_debt": unavailable},
+        {
+            "report_version": workload_probe.REPORT_VERSION,
+            "ok": True,
+            "convergence_debt": unavailable,
+            "automatic_convergence_backlog": {
+                "retry_debt_available": False,
+                "counts": {"retry_debt_unresolved": None},
+            },
+        },
         {
             "report_version": workload_probe.REPORT_VERSION,
             "ok": True,
             "convergence_debt": {"available": True, "failed_count": 3, "deferred_count": 1, "unresolved_count": 4},
+            "automatic_convergence_backlog": {
+                "retry_debt_available": True,
+                "counts": {"retry_debt_unresolved": 4},
+            },
         },
     )
     debt = diff["convergence_debt"]
     assert diff["ok"] is False
     assert debt["available_before"] is False
     assert debt["unresolved_count"] == {"before": None, "after": 4, "delta": None, "measured": False}
+    assert diff["automatic_convergence_backlog"]["counts"]["retry_debt_unresolved"] == {
+        "before": None,
+        "after": 4,
+        "delta": None,
+        "measured": False,
+    }
 
 
 def test_unavailable_debt_is_rendered_unknown_and_cli_fails_closed(

@@ -136,7 +136,12 @@ def put_query(
         """,
         (query_hash, _json(canonical_plan), grain, lane, rank_policy, definition_protocol_version, created_at_ms),
     )
-    return QueryObject(query_hash, canonical_plan, grain, lane, rank_policy, definition_protocol_version)
+    # An existing definition may have been promoted since its first insert.
+    # Return its durable forgetting contract, not constructor defaults.
+    stored = get_query(conn, query_hash)
+    if stored is None:
+        raise RuntimeError(f"query definition {query_hash} is absent after its idempotent insert")
+    return stored
 
 
 def _promotion_values(
@@ -433,6 +438,15 @@ def watched_query_baseline_updated_at_ms(conn: sqlite3.Connection, query_hash: s
     return None if row is None else int(row[0])
 
 
+def watched_query_activated_at_ms(conn: sqlite3.Connection, query_hash: str) -> int | None:
+    """Latest activation time among currently watched names for this query."""
+    row = conn.execute(
+        "SELECT MAX(updated_at_ms) FROM query_names WHERE query_hash = ? AND watch = 1",
+        (query_hash,),
+    ).fetchone()
+    return None if row is None or row[0] is None else int(row[0])
+
+
 def put_watched_query_baseline(
     conn: sqlite3.Connection,
     *,
@@ -652,4 +666,5 @@ __all__ = [
     "promote_result_set",
     "put_watched_query_baseline",
     "watched_query_baseline_updated_at_ms",
+    "watched_query_activated_at_ms",
 ]

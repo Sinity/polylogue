@@ -218,7 +218,7 @@ async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
         )
 
     monkeypatch.setattr(watcher, "_ingest_files", fake_ingest_files)
-    monkeypatch.setattr(watcher, "select_ingest_candidates", lambda paths: tuple(paths))
+    monkeypatch.setattr(watcher, "classify_ingest_candidates", lambda paths: (tuple(paths), ()))
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
         watcher._sources[0],

@@ -263,3 +263,31 @@ def test_load_records_skips_blanks_and_non_issue_rows() -> None:
     text = as_jsonl([issue(ROOT)]) + "\n" + json.dumps({"_type": "memory"}) + "\n"
     records = load_records(text.splitlines())
     assert [record["id"] for record in records] == [ROOT]
+
+
+@pytest.mark.parametrize("prerequisite_status", ["open", "closed"])
+def test_readiness_uses_edges_attached_to_the_prerequisite_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], prerequisite_status: str
+) -> None:
+    """Readiness reads the same global prerequisite index as closure membership.
+
+    Anti-vacuity: deriving readiness from edges whose ``issue_id`` equals the
+    containing record drops ``syn-task -> syn-prerequisite`` (exported under
+    ``syn-prerequisite``) and reports ``syn-task`` unblocked while it is open.
+    """
+    records: list[dict[str, object]] = [
+        issue(ROOT, blocks_on=("syn-task",)),
+        issue("syn-task"),
+        issue("syn-prerequisite", status=prerequisite_status, disposition="implementation-residual"),
+    ]
+    records[2]["dependencies"] = [{"issue_id": "syn-task", "depends_on_id": "syn-prerequisite", "type": "blocks"}]
+    export = tmp_path / "graph.jsonl"
+    export.write_text(as_jsonl(records), encoding="utf-8")
+
+    exit_code = main(["--root", ROOT, "--export", str(export), "--json"])
+    report = json.loads(capsys.readouterr().out)
+    task = next(member for member in report["members"] if member["id"] == "syn-task")
+
+    assert task["unblocked"] is (prerequisite_status == "closed")
+    assert task["open_prerequisites"] == ([] if prerequisite_status == "closed" else ["syn-prerequisite"])
+    assert exit_code == (1 if prerequisite_status == "closed" else 0)

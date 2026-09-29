@@ -6,11 +6,12 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
@@ -3187,42 +3188,35 @@ class TestReplacementHistoryConservation:
         assert [item["content"] for item in contexts] == [ENVIRONMENT_CONTEXT]
         assert contexts[0]["occurrences"] == 2
 
-    def test_oversized_replacement_text_is_digest_only_and_source_reconstructible(
+    def test_large_replacement_text_is_stored_once_through_the_archive_write(
         self, workspace_env: Mapping[str, Path]
     ) -> None:
-        """A compaction whale must not become a second durable transcript copy.
+        """Size never demotes replacement-only text to a digest.
 
-        Anti-vacuity: removing the size guard makes the parsed session retain
-        the 256 KiB+ value and this assertion fails.  The omission event is
-        typed and points back to the retained source blob, so skipping the
-        derived copy is not silent data loss.
+        Anti-vacuity: reinstate a per-value size ceiling and the stored event
+        lacks the text, so the archive row does not contain it.
         """
-        oversized = "repeated context " + ("x" * (256 * 1024 + 1))
+        large = "repeated context " + ("x" * (256 * 1024 + 1))
         result = parse(
             [
                 {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
-                _compaction(_history_entry(oversized), message="summarized"),
+                _compaction(_history_entry(large), message="summarized"),
+                _compaction(_history_entry(large), message="summarized again"),
             ],
             "fallback",
         )
 
-        omitted = [event for event in result.session_events if event.event_type == "codex_replacement_context_omitted"]
-        assert len(omitted) == 1
-        payload = omitted[0].payload
-        assert payload["content_policy"] == "omitted_oversized_reembedded_text"
-        assert payload["content_chars"] == len(oversized)
-        assert payload["content_sha256"] == hashlib.sha256(oversized.encode()).hexdigest()
-        assert payload["reconstruction"] == "source_blob"
-        assert "content" not in payload
-        assert all(oversized not in repr(event.payload) for event in result.session_events)
+        contexts = _replacement_contexts(result)
+        assert [item["content"] for item in contexts] == [large]
+        assert contexts[0]["occurrences"] == 2
 
         with open_connection(db_setup(workspace_env)) as conn:
             write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
-            row = conn.execute(
-                "SELECT payload_json FROM session_events WHERE event_type = 'codex_replacement_context_omitted'"
-            ).fetchone()
-        assert row is not None
-        assert oversized not in str(row["payload_json"])
+            rows = conn.execute(
+                "SELECT payload_json FROM session_events WHERE event_type = 'codex_replacement_context'"
+            ).fetchall()
+        assert len(rows) == 1
+        assert large in str(rows[0]["payload_json"])
 
     def test_replacement_only_content_survives_the_archive_write(self, workspace_env: Mapping[str, Path]) -> None:
         """The production write route, not just the parse, must keep it."""
@@ -3420,3 +3414,293 @@ def test_world_state_state_keys_are_stored_or_declared_exempt() -> None:
     assert stored | _WORLD_STATE_INSTRUCTION_TEXT_KEYS >= set(state)
     assert stored & _WORLD_STATE_INSTRUCTION_TEXT_KEYS == set()
     assert {"environments", "permissions", "collaboration_mode"} <= stored
+
+
+def test_replacement_candidates_hold_their_text_once_under_fixed_size_keys() -> None:
+    """A large replacement-only value costs one scratch copy, keyed by digest.
+
+    Anti-vacuity: key the scratch tables by the pickled text again and the
+    key, lookup-value and context columns each hold another full copy.
+    """
+    import sqlite3
+    import unicodedata
+
+    from polylogue.sources.parsers.codex import _CodexLookaheadIndex, _CodexTextConservation
+
+    connection = sqlite3.connect(":memory:")
+    conservation = _CodexTextConservation(_CodexLookaheadIndex(connection))
+    large = "é" + "x" * 200_000
+    key, new = conservation.add(large)
+    assert new and key is not None and len(key) == 32
+    conservation.add_context(key, insert_at=1, timestamp=None, source_index=0, entry_type=None, role=None, phase=None)
+    assert conservation.add(large) == (key, False)
+    assert conservation._candidate(unicodedata.normalize("NFC", large)) == key
+    assert conservation._candidate("x" * 200_001) is None
+
+    scratch = connection.execute(
+        """SELECT
+               (SELECT SUM(length(key) + length(text)) FROM codex_replacement_texts),
+               (SELECT SUM(length(value) + length(candidate_key)) FROM codex_replacement_keys),
+               (SELECT SUM(length(key)) FROM codex_replacement_contexts)"""
+    ).fetchone()
+    texts_bytes, keys_bytes, contexts_bytes = scratch
+    assert texts_bytes < len(large.encode()) + 1024
+    assert keys_bytes == 4 * 32 and contexts_bytes == 32
+
+
+def test_replacement_context_annotations_keep_a_lone_surrogate() -> None:
+    """Anti-vacuity: bind the annotations as scratch TEXT again and a lone
+    surrogate raises ``UnicodeEncodeError`` before the event is built."""
+    import sqlite3
+
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.parsers.codex import _CodexLookaheadIndex, _CodexTextConservation
+
+    conservation = _CodexTextConservation(_CodexLookaheadIndex(sqlite3.connect(":memory:")))
+    key, _new = conservation.add("replacement value")
+    assert key is not None
+    conservation.add_context(
+        key, insert_at=1, timestamp=None, source_index=0, entry_type="t\ud800", role="r\ud800", phase=None
+    )
+    events = [ParsedSessionEvent(event_type="compaction", payload={})]
+    conservation.finish_replacement_contexts(events)
+
+    (context,) = [event for event in events if event.event_type == "codex_replacement_context"]
+    assert (context.payload["entry_type"], context.payload["role"]) == ("t\ud800", "r\ud800")
+
+
+def test_candidate_digest_is_windowed_and_never_rereads_the_stored_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: pickle the whole text to hash it, or unpickle the stored
+    text on every lookup, and the guarded ``pickle`` calls fail."""
+    import sqlite3
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "_DIGEST_WINDOW_CHARS", 7)
+    conservation = codex_module._CodexTextConservation(codex_module._CodexLookaheadIndex(sqlite3.connect(":memory:")))
+    large = "x\ud800" * 50
+    key, _new = conservation.add(large)
+    assert key == codex_module._text_digest(large) and len(key) == 32
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the full candidate was materialized again")
+
+    import pickle
+
+    monkeypatch.setattr(pickle, "loads", refuse)
+    assert conservation._candidate(large) == key
+    assert conservation.add(large) == (key, False)
+
+
+def test_candidate_lookup_normalizes_only_after_the_exact_probe_misses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: build the NFC copy before probing the exact digest and the
+    guarded ``normalize`` is called for a text registered verbatim."""
+    import sqlite3
+    import unicodedata
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    conservation = codex_module._CodexTextConservation(codex_module._CodexLookaheadIndex(sqlite3.connect(":memory:")))
+    decomposed = "é" * 50
+    key, _new = conservation.add(decomposed)
+    real = unicodedata.normalize
+
+    def guarded(form: Any, value: str) -> str:
+        assert value != decomposed, "normalized a text whose exact digest matches"
+        return real(form, value)
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "polylogue.sources.parsers.codex.unicodedata",
+        SimpleNamespace(normalize=guarded, combining=unicodedata.combining),
+    )
+    assert conservation._candidate(decomposed) == key
+
+
+def test_js_literal_escaped_surrogate_pair_is_one_character() -> None:
+    """Anti-vacuity: keep the two code units and the stored JSON escapes them
+    adjacently, which every JSON reader combines into U+1F600."""
+    from polylogue.sources.parsers.codex import _parse_js_literal
+
+    value, ok = _parse_js_literal('"a\\uD83D\\uDE00b \\uD800"')
+    assert ok and value == "a\U0001f600b \ud800"
+
+
+def test_sink_restores_surrogates_inside_the_owner_coordinate() -> None:
+    """Anti-vacuity: restore only strings, dicts and lists and the owner
+    coordinate's stable key keeps the random surrogate marker."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.message_owner import MessageOwnerCoordinate
+    from polylogue.sources.parsers.base import ParsedMessage
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
+
+    message = ParsedMessage(provider_message_id="m\ud800", role=Role.USER, text="t\ud800")
+    message = message.model_copy(update={"owner_coordinate": MessageOwnerCoordinate(stable_key="s\ud800")})
+    restored = _from_text_json(ParsedMessage, _message_json(message))
+    assert restored.owner_coordinate is not None
+    assert restored.owner_coordinate.stable_key == "s\ud800"
+    assert restored.text == "t\ud800"
+
+
+def test_a_cesu8_pair_in_provider_bytes_decodes_to_one_character() -> None:
+    """Anti-vacuity: keep the two surrogatepass code units and the stored
+    escaped JSON re-reads as a different value."""
+    from polylogue.core.json import decode_provider_utf8
+
+    assert decode_provider_utf8(b"a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80") == "a\U0001f600 \ud800"
+
+
+def test_nfc_candidate_digest_streams_without_a_full_normalized_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: normalize the whole candidate to hash its NFC form and the
+    guarded ``normalize`` sees a window larger than the digest window."""
+    import unicodedata
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "_DIGEST_WINDOW_CHARS", 7)
+    text = "é" * 40
+    expected = codex_module._text_digest(unicodedata.normalize("NFC", text))
+    real = unicodedata.normalize
+
+    def bounded(form: Any, value: str) -> str:
+        assert len(value) <= 16, "normalized more than one window at once"
+        return real(form, value)
+
+    from types import SimpleNamespace
+
+    proxy = SimpleNamespace(normalize=bounded, combining=unicodedata.combining)
+    monkeypatch.setattr("polylogue.sources.parsers.codex.unicodedata", proxy)
+    assert codex_module._nfc_text_digest(text) == expected
+
+
+def test_streamed_jsonl_decoder_reads_a_cesu8_pair_as_one_character() -> None:
+    """Anti-vacuity: leave the streamed decoder on the lenient guess and the
+    record is skipped or its pair split."""
+    import io
+
+    from polylogue.sources.decoders import _iter_json_stream
+
+    line = b'{"type": "note", "text": "a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80"}\n'
+    (record,) = list(_iter_json_stream(io.BytesIO(line), "rollout.jsonl"))
+    assert record["text"] == "a\U0001f600 \ud800"  # type: ignore[index,call-overload]
+
+
+def test_core_loads_still_reads_a_utf8_bom_document() -> None:
+    """Anti-vacuity: hand a BOM-prefixed document to the provider decoder and
+    the stdlib parse of the resulting string rejects the leading U+FEFF."""
+    from polylogue.core.json import loads
+
+    assert loads(b'\xef\xbb\xbf{"a": 1}') == {"a": 1}
+    assert loads(b'{"a": "x\xed\xa0\xbd\xed\xb8\x80"}') == {"a": "x\U0001f600"}
+
+
+def test_a_starter_free_run_keeps_its_nfc_key_in_bounded_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run of combining marks longer than the unsettled limit spills to disk.
+
+    Anti-vacuity: give up the key past the limit and repeated U+0344 no longer
+    matches its canonically equivalent U+0308 U+0301 spelling; carry the run
+    unbounded and one normalization call sees all of it.
+    """
+    import unicodedata
+    from types import SimpleNamespace
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "_DIGEST_WINDOW_CHARS", 7)
+    monkeypatch.setattr(codex_module, "_NFC_UNSETTLED_LIMIT_CHARS", 28)
+    real = unicodedata.normalize
+
+    def bounded(form: Any, value: str) -> str:
+        # A canonical decomposition is at most four characters per character.
+        assert len(value) <= 4 * (28 + 7), "normalized an unsettled run whole"
+        return real(form, value)
+
+    proxy = SimpleNamespace(normalize=bounded, combining=unicodedata.combining)
+    for text, equivalent in [
+        ("\u0344" * 200, "\u0308\u0301" * 200),
+        ("e" + "\u0301" + "\u0327" * 90 + "x", "\u0229" + "\u0327" * 89 + "\u0301x"),
+    ]:
+        expected = codex_module._text_digest(real("NFC", text))
+        with monkeypatch.context() as scoped:
+            scoped.setattr("polylogue.sources.parsers.codex.unicodedata", proxy)
+            assert codex_module._nfc_text_digest(text) == expected
+            assert codex_module._nfc_text_digest(equivalent) == expected
+
+
+def test_core_loads_still_reads_bomless_utf16_and_utf32() -> None:
+    """Anti-vacuity: hand valid UTF-8-decodable wide bytes to the provider decode
+    and the NUL-bearing string is rejected by the stdlib parse."""
+    from polylogue.core.json import loads
+
+    for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+        assert loads('{"a": 1}'.encode(encoding)) == {"a": 1}
+
+
+def test_core_loads_reads_utf16_bytes_the_provider_decode_also_accepts() -> None:
+    """Anti-vacuity: trust the provider decode once it succeeds and a BOM-less
+    UTF-16LE document holding an ``ED A0 80`` triple is refused."""
+    from polylogue.core.json import loads
+
+    document = '{"a":"ꃭ\u0080"}'
+    raw = document.encode("utf-16-le")
+    assert b"\xed\xa0\x80" in raw
+    assert loads(raw) == {"a": "ꃭ\u0080"}
+
+
+def test_provider_decode_consumes_a_bom_before_a_surrogate() -> None:
+    """Anti-vacuity: keep U+FEFF on the surrogatepass path and the document
+    fails every later ``json.loads``."""
+    from polylogue.core.json import decode_provider_utf8, loads
+
+    raw = b'\xef\xbb\xbf{"a":"\xed\xa0\x80"}'
+    assert decode_provider_utf8(raw) == '{"a":"\ud800"}'
+    assert loads(raw) == {"a": "\ud800"}
+
+
+def test_provider_decode_pairs_cesu8_in_one_decode() -> None:
+    """Encoded pairs are combined while decoding, by the registered error
+    handler, so a whale record is never held as a surrogatepass string and a
+    second, combined copy.
+
+    Anti-vacuity: leave the pair to ``surrogatepass`` and the result holds two
+    code units instead of U+1F600; treat any encoded surrogate as malformed and
+    the lone one raises.
+    """
+    from polylogue.core import json as core_json
+
+    raw = b'{"a": "' + b"x" * 4096 + b'\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80"}'
+    assert core_json.decode_provider_utf8(raw) == '{"a": "' + "x" * 4096 + '\U0001f600 \ud800"}'
+
+
+def test_js_literal_pairs_surrogates_as_consumed_across_runs() -> None:
+    """Plain runs are consumed whole, and a pair formed by an escaped high half
+    and the following low half is still one character.
+
+    Anti-vacuity: stop pairing as the low half is consumed and the escaped
+    ``\\uD83D`` before ``\\uDE00`` stays two code units; pair across a plain
+    run and ``\\uD83D`` before ``x\\uDE00`` wrongly becomes one character.
+    """
+    from polylogue.sources.parsers.codex import _parse_js_literal
+
+    value, ok = _parse_js_literal('"plain run \\uD83D\\uDE00 then \\uD83Dx\\uDE00 end"')
+    assert ok and value == "plain run \U0001f600 then \ud83dx\ude00 end"
+    template, ok = _parse_js_literal("`cost $5 \\uD83D\\uDE00`")
+    assert ok and template == "cost $5 \U0001f600"
+
+
+def test_markdown_rendering_escapes_a_lone_surrogate() -> None:
+    """A session holding a lone surrogate still renders to UTF-8.
+
+    Anti-vacuity: render the exact code point and encoding the Markdown for a
+    UTF-8 destination raises ``UnicodeEncodeError``.
+    """
+    from polylogue.rendering.semantic_card_models import SemanticTranscript, SemanticTranscriptEntry, TranscriptProse
+    from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
+
+    prose = TranscriptProse(message_id="m1", role="user", message_type="message", text="edit \ud800 here")
+    rendered = render_semantic_transcript_markdown(
+        SemanticTranscript(session_id="s1", entries=(SemanticTranscriptEntry(prose=prose),))
+    )
+    rendered.encode("utf-8")
+    assert "\\ud800" in rendered

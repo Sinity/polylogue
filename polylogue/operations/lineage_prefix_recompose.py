@@ -1,12 +1,11 @@
 """Owner for the ``lineage_prefix_recompose`` convergence-debt backlog.
 
 ``storage/sqlite/archive_tiers/write.py`` records one convergence-debt row per
-child whose recomposed lineage prefix this archive lost -- either because a
-provider-session identity contradiction invalidated the edge that carried it,
-or because a parent re-parse dropped the message the child had pinned as its
-branch point. Both losses are named on one stage,
-``IDENTITY_INVALIDATION_DEBT_STAGE``, because they have one remedy: re-derive
-the child's inherited prefix from retained source evidence.
+child whose recomposed lineage prefix a provider-session identity
+contradiction invalidated. The remedy is to re-derive the child's inherited
+prefix from retained source evidence once the contradiction clears. A parent
+re-parse never lands here: the writer keeps every inheriting child's composed
+transcript intact in the same write (``_settle_inherited_prefixes``).
 
 This module is that remedy's owner. It is deliberately **subject-scoped**: it
 only ever inspects the sessions the debt ledger names. An archive-wide
@@ -36,11 +35,6 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 #: The stage name the writer records its lineage-prefix losses under. Imported,
 #: never restated: one spelling owns both the producer and this drain.
 LINEAGE_PREFIX_RECOMPOSE_STAGE = IDENTITY_INVALIDATION_DEBT_STAGE
-
-#: Payload budget for one child's retained raw component. A component larger
-#: than this refuses with a named reason instead of replaying unbounded bytes
-#: inside a convergence pass.
-_RECOMPOSE_MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
 
 #: SQLite parameter chunk for the keyed debt lookup.
 _SUBJECT_CHUNK = 256
@@ -189,7 +183,6 @@ def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: s
             archive_root,
             active_index_path=index_path,
             selected_raw_ids=list(raw_ids),
-            max_payload_bytes=_RECOMPOSE_MAX_PAYLOAD_BYTES,
         )
     except Exception as exc:
         return f"replaying retained raw evidence failed: {type(exc).__name__}: {exc}"
@@ -266,6 +259,7 @@ def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
+        false_means_pending=True,
     )
 
 

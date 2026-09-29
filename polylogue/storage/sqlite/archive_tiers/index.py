@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.archive.topology.edge import topology_status_composes_sql, topology_status_excluded_sql
+from polylogue.core.tool_identity import sql_coalesced_json_extract
 from polylogue.storage.derived.session.input_binding import (
     SESSION_ATTACHMENT_PROJECTION_COLUMNS,
     SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS,
@@ -212,10 +213,9 @@ def _profile_demand_sql(session_id: str) -> str:
 #    read site branching on title_source already treated NULL and 'unknown'
 #    identically), so parsers now leave title_source unset instead of
 #    stamping UNKNOWN. TitleSource.USER is deleted too (zero producers,
-#    write- or read-time). TitleSource.PATH is KEPT for compatibility with
-#    legacy rows, but current read-time display-label projection leaves
-#    title_source NULL when a session has neither a real title nor a display
-#    name.
+#    write- or read-time). TitleSource.PATH was later deleted for the same
+#    reason: read-time display-label projection leaves title_source NULL when
+#    a session has neither a real title nor a display name.
 #  - session_links.link_type drops LinkType.REPAIRED (zero producers, and a
 #    same-string collision with the unrelated TopologyEdgeStatus.REPAIRED on
 #    the `status` column of the same table). FORK and RESUME are kept
@@ -345,9 +345,8 @@ def _profile_demand_sql(session_id: str) -> str:
 # v61 (polylogue-resk): drops session_model_usage.priced_with/priced_at_ms
 # and narrows the CHECK that referenced priced_with -- both were write-only
 # outside tests (zero production SELECTs), and the FK target price_catalogs
-# is dropped in the same change via the index-tier benign-DDL registry (see
-# index_convergence.py). CONSTRAINT_ONLY/dead-column-removal, same shape as
-# v33/v36/v38/v41/v44: no raw reparse, existing session_model_usage rows
+# is dropped in the same change. CONSTRAINT_ONLY/dead-column-removal, same
+# shape as v33/v36/v38/v41/v44: no raw reparse, existing session_model_usage rows
 # copy-forward on every other column via the fast-forward executor's
 # REPLACE_TABLE path. Does NOT touch session_profiles.priced_with/
 # priced_at_ms, a different pair of columns with a real production reader
@@ -590,6 +589,10 @@ def _profile_demand_sql(session_id: str) -> str:
 # DDL/schema identity requires the normal daemon reconvergence before a
 # generation is served.
 INDEX_SCHEMA_VERSION = 1
+
+#: The surrogate-safe projection the tool columns use: a lone-surrogate
+#: escape in ``tool_input.model`` must not materialize invalid UTF-8.
+_REQUESTED_MODEL_SQL = sql_coalesced_json_extract("a.tool_input", ("model",))
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
@@ -1442,11 +1445,10 @@ CREATE INDEX IF NOT EXISTS idx_paste_spans_session
 ON paste_spans(session_id);
 
 -- model_prices and session_reported_costs were dropped (polylogue-v2mg):
--- zero-consumer tables converged away by the index-tier same-version
--- benign-DDL registry (archive_tiers/index_convergence.py) rather than kept
--- in canonical DDL. price_catalogs was dropped the same way (polylogue-resk,
--- v61): v2mg's stated justification for keeping it ("session_model_usage.
--- priced_with FK, active_price_catalog_id" are genuine reads) measured false
+-- zero-consumer tables removed from canonical DDL. price_catalogs was
+-- dropped the same way (polylogue-resk, v61): v2mg's stated justification
+-- for keeping it ("session_model_usage.priced_with FK,
+-- active_price_catalog_id" are genuine reads) measured false
 -- in all three particulars -- priced_with/priced_at_ms had zero production
 -- SELECTs (write-only outside tests), and active_price_catalog_id's only
 -- caller was a test. Cost computation resolves per-model rates from the
@@ -1471,6 +1473,10 @@ CREATE TABLE IF NOT EXISTS session_provider_usage_events (
 -- which is also how a session with no usage at all stays representable.
 CREATE TABLE IF NOT EXISTS session_usage_rollup_bindings (
     {TABLE_SPECS["session_usage_rollup_bindings"].ddl_body}
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS session_identity_scopes (
+    {TABLE_SPECS["session_identity_scopes"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_provider_usage_events_session
@@ -1971,6 +1977,14 @@ CREATE TABLE IF NOT EXISTS delegation_facts (
 
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_parent_order
 ON delegation_facts(parent_session_id, instruction_message_id, delegation_id);
+-- The query_delegations order and keyset, expression for expression, so a
+-- keyset page seeks to its position instead of sorting a parent's cohort.
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_query_order
+ON delegation_facts(
+    parent_session_id,
+    COALESCE(instruction_tool_use_block_id, child_session_id, ''),
+    (instruction_tool_use_block_id IS NULL)
+);
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_state
 ON delegation_facts(mapping_state, parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_model
@@ -2001,7 +2015,7 @@ WITH dispatch_actions AS (
         a.is_error                             AS result_is_error,
         a.exit_code                            AS result_exit_code,
         m.model_name                           AS dispatch_turn_model,
-        json_extract(a.tool_input, '$.model')  AS requested_model
+        {_REQUESTED_MODEL_SQL}  AS requested_model
     FROM actions a
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'

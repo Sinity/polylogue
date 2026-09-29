@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
@@ -33,6 +34,8 @@ import pytest
 
 from polylogue.daemon.metrics import (
     PROMETHEUS_CONTENT_TYPE,
+    _collect_group,
+    _emit_unmeasured_probe,
     format_metrics,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -105,6 +108,31 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
 
 _HELP_RE = re.compile(r"^# HELP (\S+) ")
 _TYPE_RE = re.compile(r"^# TYPE (\S+) (counter|gauge|histogram|summary|untyped)$")
+
+
+def test_independent_unmeasured_collectors_share_one_metric_header() -> None:
+    """Two failing probes still form valid shared Prometheus metadata.
+
+    Anti-vacuity: remove global header deduplication from ``_collect_group``
+    and both collectors append their own HELP/TYPE declarations.
+    """
+    lines: list[str] = []
+    states: list[tuple[dict[str, str], int]] = []
+
+    def collector(probe: str) -> Callable[[list[str]], None]:
+        def collect(pending: list[str]) -> None:
+            _emit_unmeasured_probe(pending, probe)
+
+        return collect
+
+    _collect_group(lines, states, "hooks", collector("hook_statuses"))
+    _collect_group(lines, states, "index", collector("convergence_debt"))
+
+    assert states == [({"group": "hooks", "reason": "none"}, 1), ({"group": "index", "reason": "none"}, 1)]
+    assert sum(line.startswith("# HELP polylogue_probe_unmeasured ") for line in lines) == 1
+    assert sum(line == "# TYPE polylogue_probe_unmeasured gauge" for line in lines) == 1
+    assert 'polylogue_probe_unmeasured{probe="hook_statuses"} 1' in lines
+    assert 'polylogue_probe_unmeasured{probe="convergence_debt"} 1' in lines
 
 
 def _parse_exposition(body: str) -> dict[str, dict[str, object]]:
@@ -681,7 +709,7 @@ class TestFormatMetricsReadsArchiveState:
         # pre-run pending window.  Planned is therefore omitted instead of
         # duplicating processed and implying a false 100% run.
         assert 'polylogue_embedding_latest_catchup_sessions{state="planned"}' not in body
-        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 2' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 3' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="skipped"} 0' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="failed"} 1' in body
@@ -755,7 +783,7 @@ class TestFormatMetricsReadsArchiveState:
                 status="completed",
                 started_at_ms=1_767_225_700_000,
                 finished_at_ms=1_767_225_701_000,
-                scanned_sessions=2,
+                scanned_sessions=4,
                 embedded_sessions=2,
                 skipped_sessions=1,
                 error_count=0,
@@ -773,7 +801,7 @@ class TestFormatMetricsReadsArchiveState:
         assert "polylogue_embedding_coverage_percent 33.33333333333333" in body
         assert 'polylogue_embedding_status_state{status="partial"} 1' in body
         assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="completed"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 3' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 4' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="skipped"} 1' in body
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 4' in body
@@ -1072,9 +1100,7 @@ class TestMetricsEndpoint:
         assert status == HTTPStatus.OK
         assert "polylogue_daemon_uptime_seconds " in body
         assert 'polylogue_diagnostic_delivery_total{outcome="dropped"} 7' in body
-        assert (
-            'polylogue_daemon_metrics_collection_available{group="archive_storage",reason="collector_failed"} 0' in body
-        )
+        assert 'polylogue_daemon_metrics_collection_available{group="archive_storage"} 0' in body
         assert "/synthetic/private-input" not in body
 
     def test_metrics_route_responds_200_with_prometheus_content_type(

@@ -42,46 +42,14 @@ def _index_connection(archive: ArchiveStore) -> sqlite3.Connection:
 
 
 def execute_effective_context_read(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
-    """Replay the session's own messages across its latest compaction boundary."""
+    """Replay the composed transcript across its latest compaction boundary."""
 
-    from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
-    from polylogue.storage.sqlite.queries.message_query_reads import _MESSAGE_RECORD_SELECT, _TRANSCRIPT_ORDER
+    from polylogue.storage.sqlite.queries.message_query_reads import get_effective_context_sync
 
     session_id = archive.resolve_session_id(str(payload["session_id"]))
-    connection = _index_connection(archive)
-    cursor = connection.execute(
-        f"SELECT {_MESSAGE_RECORD_SELECT} FROM messages m JOIN sessions s ON s.session_id = m.session_id "
-        f"WHERE m.session_id = ? ORDER BY {_TRANSCRIPT_ORDER}",
-        (session_id,),
-    )
-    decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
-    messages = [decode(row) for row in cursor.fetchall()]
     requested_position = payload.get("at_position")
-    at_position = (
-        _int_field(payload, "at_position", -1)
-        if requested_position is not None
-        else max((message.position for message in messages), default=-1)
-    )
-    boundary = connection.execute(
-        """SELECT boundary_end_position, boundary_message_id FROM session_events
-        WHERE session_id = ? AND event_type = 'compaction'
-          AND boundary_start_position IS NOT NULL
-          AND boundary_end_position IS NOT NULL
-          AND boundary_message_id IS NOT NULL
-          AND boundary_end_position < ?
-        ORDER BY boundary_end_position DESC, position DESC LIMIT 1""",
-        (session_id, at_position),
-    ).fetchone()
-    visible = [message for message in messages if message.position <= at_position]
-    if boundary is not None:
-        summary = next((message for message in messages if str(message.message_id) == str(boundary[1])), None)
-        if summary is not None:
-            end_position = int(boundary[0])
-            visible = [summary] + [
-                message
-                for message in messages
-                if end_position < message.position <= at_position and message is not summary
-            ]
+    at_position = _int_field(payload, "at_position", -1) if requested_position is not None else None
+    visible = get_effective_context_sync(_index_connection(archive), session_id, at_position)
     return {
         "view": "effective_context",
         "payload": {

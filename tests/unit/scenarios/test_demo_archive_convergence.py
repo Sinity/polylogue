@@ -23,9 +23,8 @@ EXPECTED_DEMO_SESSIONS = (
         "aistudio-drive:demo-00",
         "aistudio-drive",
         "demo-00",
-        # No provider title is present in this generated Drive export; the
-        # parser keeps the source ID as its fallback title (title_source=NULL).
-        "demo-00",
+        # Gemini assembly derives the display title from its first user prompt.
+        "Please inspect the attached fixture note.",
         1706934696990,
         1706934696990,
         4,
@@ -56,9 +55,8 @@ EXPECTED_DEMO_SESSIONS = (
         "codex-session:demo-00",
         "codex-session",
         "demo-00",
-        # The generated export carries no session title, so assembly uses its
-        # source ID; message timestamps define this session's interval.
-        "demo-00",
+        # Codex assembly derives its title from the first user prompt.
+        "Could you review this code for potential issues?",
         # Session timestamps use the available message timestamp evidence.
         1705985222161,
         1705985522161,

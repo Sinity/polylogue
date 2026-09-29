@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from polylogue.storage.archive_tuple_location import InactiveTierDestination
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -143,7 +142,7 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 #:   ~102ms re-stamping an unchanged derived identity -- which is why an
 #:   already-current tier now takes :func:`converge_same_version_tier`.
 #: * ``schema_convergence`` -- ops.db proved current by its recorded schema
-#:   digest, so only the additive convergence plan ran.
+#:   digest, so only the additive same-version convergence steps ran.
 #:
 #: Kept because the split is not observable from the outside: all of them look
 #: like "initialize a tier" to a caller, while their costs differ by two orders
@@ -349,8 +348,7 @@ def converge_same_version_tier(
 
     What is *not* redundant stays: ops.db evolves by idempotent additive DDL
     without a version bump, so it keeps the full pass; user.db gains declared
-    annotation schemas; index.db takes its registered benign DDL convergence
-    and runtime indexes.
+    annotation schemas; index.db takes its runtime indexes.
 
     ``derived_identity`` selects which of the two existing identity policies the
     caller already had, because they are not interchangeable and this function
@@ -374,17 +372,10 @@ def converge_same_version_tier(
         _ensure_user_annotation_schemas(conn)
         conn.commit()
     elif tier is ArchiveTier.INDEX:
-        # index.db is rebuildable, but a *benign* registered DDL delta
-        # (idempotent, data-non-transforming, zero-consumer at this exact
-        # version -- see index_convergence.py) does not need the full rebuild a
-        # schema-version bump would force. Re-apply the registry on every
-        # same-version open so an already-populated archive converges without
-        # touching INDEX_SCHEMA_VERSION.
         from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
         from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
         ensure_runtime_indexes_sync(conn)
-        apply_index_benign_ddl_convergence(conn)
         _apply_derived_identity_policy(conn, tier, derived_identity)
         assert_schema_manifest(conn, tier)
     elif tier is ArchiveTier.EMBEDDINGS:
@@ -522,13 +513,6 @@ def _apply_archive_tier_convergence(
         ensure_embedding_catchup_run_outcome_columns(conn)
         ensure_ops_status_checks(conn)
         _ensure_schema_drift_samples_check(conn)
-        _apply_ops_benign_ddl_convergence(conn)
-    if tier is ArchiveTier.INDEX:
-        # Fresh init never had a registered drop's target table, and any
-        # additive registry entry lands identically to canonical DDL -- this
-        # is a no-op today, kept for fresh-init/converged-live parity (see
-        # index_convergence.py module docstring).
-        apply_index_benign_ddl_convergence(conn)
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
     if tier is ArchiveTier.OPS:
@@ -586,14 +570,6 @@ def _ensure_schema_drift_samples_check(conn: sqlite3.Connection) -> None:
 
     conn.execute("DROP TABLE IF EXISTS schema_drift_samples")
     conn.executescript(SCHEMA_DRIFT_SAMPLES_DDL)
-
-
-def _apply_ops_benign_ddl_convergence(conn: sqlite3.Connection) -> None:
-    """Apply the declared idempotent OPS same-version fast-forward plan."""
-    from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
-
-    for entry in OPS_BENIGN_DDL_CONVERGENCE_PLAN:
-        conn.execute(entry.sql)
 
 
 def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:

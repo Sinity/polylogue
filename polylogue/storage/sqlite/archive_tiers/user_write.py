@@ -2626,6 +2626,7 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
 def list_assertion_claims(
     conn: sqlite3.Connection,
     *,
+    schema: str | None = None,
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
     scope_ref: str | None = None,
@@ -2657,7 +2658,9 @@ def list_assertion_claims(
     must still see expired rows.
     """
 
-    if not _table_exists(conn, "assertions"):
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    if not _table_exists(conn, "assertions", schema=schema if schema is not None else "main"):
         return []
 
     where: list[str] = []
@@ -2707,7 +2710,8 @@ def list_assertion_claims(
         )
         params.append(effective_as_of_ms)
 
-    sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
+    table = f"{schema}.assertions" if schema is not None else "assertions"
+    sql = f"SELECT {_ASSERTION_COLUMNS} FROM {table}"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY updated_at_ms DESC, assertion_id"
@@ -2731,7 +2735,8 @@ def count_assertion_claims(
     conn: sqlite3.Connection,
     *,
     kinds: Sequence[str | AssertionKind],
-    statuses: Sequence[str | AssertionStatus],
+    statuses: Sequence[str | AssertionStatus] | None,
+    target_ref: str | None = None,
     annotation_schema_prefix: str | None = None,
     annotation_schema_qualified_id: str | None = None,
     annotation_schema_excluded_qualified_id: str | None = None,
@@ -2739,17 +2744,20 @@ def count_assertion_claims(
 ) -> int:
     """Count a typed assertion selection without materializing claim rows."""
 
-    if not _table_exists(conn, "assertions") or not kinds or not statuses:
+    if not _table_exists(conn, "assertions") or not kinds or (statuses is not None and not statuses):
         return 0
     normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
-    normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
     kind_placeholders = ", ".join("?" for _ in normalized_kinds)
-    status_placeholders = ", ".join("?" for _ in normalized_statuses)
-    where = [
-        f"kind IN ({kind_placeholders})",
-        f"COALESCE(status, ?) IN ({status_placeholders})",
-    ]
-    params: list[object] = [*normalized_kinds, ASSERTION_DEFAULT_STATUS.value, *normalized_statuses]
+    where = [f"kind IN ({kind_placeholders})"]
+    params: list[object] = list(normalized_kinds)
+    if statuses is not None:
+        normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
+        status_placeholders = ", ".join("?" for _ in normalized_statuses)
+        where.append(f"COALESCE(status, ?) IN ({status_placeholders})")
+        params.extend((ASSERTION_DEFAULT_STATUS.value, *normalized_statuses))
+    if target_ref is not None:
+        where.append("target_ref = ?")
+        params.append(target_ref)
     if annotation_schema_prefix is not None:
         where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
         params.extend((annotation_schema_prefix, annotation_schema_prefix))

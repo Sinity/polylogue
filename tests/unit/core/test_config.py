@@ -558,12 +558,6 @@ class TestPolylogueConfigDefaults:
         cfg = load_polylogue_config()
         assert cfg.health_check_tiers == "fast,medium"
 
-    def test_source_roots_default(self, workspace_env: dict[str, Path]) -> None:
-        from polylogue.config import load_polylogue_config
-
-        cfg = load_polylogue_config()
-        assert cfg.source_roots == ()
-
     def test_hermes_root_default(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
 
@@ -689,6 +683,19 @@ class TestPolylogueConfigTOML:
         cfg = load_polylogue_config(config_path=toml_path)
         assert cfg.api_port == 9998
 
+    def test_flat_daemon_bind_keys_are_refused(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        """The bind address has one authority, [daemon.api].
+
+        Anti-vacuity: silently ignoring [daemon].host/port leaves a config that
+        looks like it binds 0.0.0.0:8123 serving on the default loopback port.
+        """
+        from polylogue.config import ConfigError, load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text('[daemon]\nhost = "0.0.0.0"\nport = 8123\n', encoding="utf-8")
+        with pytest.raises(ConfigError, match=r"\[daemon\.api\]"):
+            load_polylogue_config(config_path=toml_path)
+
     def test_toml_sets_browser_capture(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
 
@@ -700,17 +707,6 @@ class TestPolylogueConfigTOML:
         cfg = load_polylogue_config(config_path=toml_path)
         assert cfg.browser_capture_host == "0.0.0.0"
         assert cfg.browser_capture_port == 9997
-
-    def test_toml_sets_source_roots(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-        from polylogue.config import load_polylogue_config
-
-        toml_path = tmp_path / "polylogue.toml"
-        toml_path.write_text(
-            '[sources]\nroots = ["/tmp/extra", "/tmp/more"]\n',
-            encoding="utf-8",
-        )
-        cfg = load_polylogue_config(config_path=toml_path)
-        assert cfg.source_roots == ("/tmp/extra", "/tmp/more")
 
     def test_toml_sets_hermes_root(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config, resolve_runtime_config
@@ -763,17 +759,6 @@ class TestPolylogueConfigFormatTOML:
         formatted = format_config_toml(cfg.raw)
         assert "[archive]" in formatted
         assert "[daemon]" in formatted
-
-    def test_source_roots_formatted_as_array(self, workspace_env: dict[str, Path]) -> None:
-        from polylogue.config import format_config_toml, load_polylogue_config
-
-        cfg = load_polylogue_config(cli_overrides={"source_roots": ("/a", "/b")})
-        formatted = format_config_toml(cfg.raw)
-        # The TOML serializer renders arrays multi-line; assert the array shape
-        # and both members rather than a single-line spelling.
-        assert "roots = [" in formatted
-        assert '"/a"' in formatted
-        assert '"/b"' in formatted
 
 
 class TestPolylogueConfigLayerPrecedence:
@@ -1155,3 +1140,34 @@ class TestSecurityBooleanBlankRefusal:
         assert PolylogueConfig({"api_allow_no_auth": ""}).api_allow_no_auth is False
         with pytest.raises(ConfigError, match="not a recognized boolean"):
             _ = PolylogueConfig({"api_allow_no_auth": "flase"}).api_allow_no_auth
+
+
+def test_undeclared_toml_keys_are_refused(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A key Polylogue does not read fails the load instead of doing nothing.
+
+    Anti-vacuity: drop the ``_undeclared_toml_keys`` check in
+    ``_apply_toml_layer`` and the removed ``sources.roots`` loads silently.
+    """
+    from polylogue.config import ConfigError, load_polylogue_config
+
+    config = tmp_path / "polylogue.toml"
+    config.write_text('[sources]\nroots = ["/tmp/exports"]\n\n[daemon.watch]\ndebounce_s = 30\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError) as refusal:
+        load_polylogue_config(config_path=config)
+
+    assert "daemon.watch, sources.roots" in str(refusal.value)
+
+
+def test_declared_nested_tables_still_load(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """Keys under a declared table and declared leaves are accepted."""
+    from polylogue.config import load_polylogue_config
+
+    config = tmp_path / "polylogue.toml"
+    config.write_text(
+        '[daemon.api]\nport = 8766\n\n[embedding]\nenabled = false\nmodel = "voyage-4"\n', encoding="utf-8"
+    )
+
+    cfg = load_polylogue_config(config_path=config)
+
+    assert cfg.embedding_model == "voyage-4"
