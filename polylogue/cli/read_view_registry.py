@@ -364,6 +364,14 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         execution_kind="distinct-operation",
         operations=("read.chronicle",),
     ),
+    "compact": ReadViewHandlerMetadata(
+        "compact",
+        "optional",
+        accepts_query_set=True,
+        execution_kind="distinct-operation",
+        operations=("read.compact",),
+        example="polylogue find repo:polylogue then read --view compact --max-tokens 4000",
+    ),
 }
 
 

@@ -94,6 +94,11 @@ class ChronicleReadRequest(QueryRequest):
     projection: dict[str, object] = Field(default_factory=dict)
 
 
+class CompactReadRequest(QueryRequest):
+    session_id: str | None = None
+    projection: dict[str, object] = Field(default_factory=dict)
+
+
 class EffectiveContextReadRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     at_position: int | None = None
@@ -952,6 +957,11 @@ class ChronicleReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class CompactReadResult(_OperationResult):
+    view: Literal["compact"]
+    payload: dict[str, object]
+
+
 class EffectiveContextReadResult(_OperationResult):
     view: Literal["effective_context"]
     payload: dict[str, object]
@@ -1464,6 +1474,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.chronicle.result/v1",
         request_model=ChronicleReadRequest,
         result_model=ChronicleReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.compact",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.compact.result/v1",
+        request_model=CompactReadRequest,
+        result_model=CompactReadResult,
     ),
     DaemonOperationSpec(
         "read.effective_context",

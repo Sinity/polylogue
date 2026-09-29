@@ -1419,7 +1419,7 @@ def read_verb(
     needs_context_image = (
         len(view_tokens) > 1
         or primary_view == "context-image"
-        or (max_tokens is not None and primary_view != "dialogue")
+        or (max_tokens is not None and primary_view not in {"dialogue", "compact"})
         or include_assertions
     )
     if needs_context_image and destination != "browser":

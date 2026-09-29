@@ -39,6 +39,7 @@ from polylogue.cli.read_views.base import (
     ReadViewOptions,
 )
 from polylogue.cli.read_views.chronicle import build_chronicle_options, run_read_chronicle
+from polylogue.cli.read_views.compact import run_read_compact
 from polylogue.cli.read_views.context import (
     build_context_image_options,
     build_context_options,
@@ -137,6 +138,7 @@ READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
     "correlation": ReadViewExecution(run_read_correlation, build_correlation_options),
     "temporal": ReadViewExecution(run_read_temporal),
     "chronicle": ReadViewExecution(run_read_chronicle, build_chronicle_options),
+    "compact": ReadViewExecution(run_read_compact),
 }
 
 
