@@ -52,8 +52,8 @@ def test_incident_mutations_leave_negative_membership_queries_untouched(name: st
 
     mutate = continuity_mutation(name).response_mutator
     assert mutate is not None
-    negative = {"expression": 'text:parallel-child AND NOT text:"workflow_run:run"'}
-    positive = {"expression": 'text:parallel-child AND text:"workflow_run:run"'}
+    negative: dict[str, object] = {"expression": 'text:parallel-child AND NOT text:"workflow_run:run"'}
+    positive: dict[str, object] = {"expression": 'text:parallel-child AND text:"workflow_run:run"'}
     first = json.dumps({"rows": [{"id": "first"}], "continuation": "page-2", "next_offset": 1})
     second = json.dumps({"rows": [{"id": "second"}], "continuation": None, "next_offset": None})
     assert mutate("query", negative, 0, first) == first
@@ -169,7 +169,7 @@ def test_census_copy_discards_a_failed_reflinks_partial_destination(
         (destination / "partial-copy").write_text("incomplete", encoding="utf-8")
         return subprocess.CompletedProcess(argv, 1, b"", b"reflink unavailable")
 
-    monkeypatch.setattr(query_census.subprocess, "run", failed_reflink)
+    monkeypatch.setattr(subprocess, "run", failed_reflink)
     snapshot = query_census.reflink_archive_snapshot(source, destination)
     assert not snapshot.reflinked
     assert not (destination / "partial-copy").exists()
@@ -201,7 +201,7 @@ def test_valid_cli_strategy_quotes_round_trip_through_the_expression_parser(
     monkeypatch: pytest.MonkeyPatch, data: st.DataObject
 ) -> None:
     """Quotes and backslashes in a valid generated value cannot break the DSL."""
-    from polylogue.archive.query.expression import parse_expression_ast
+    from polylogue.archive.query.expression import _FieldToken, parse_expression_ast
     from tests.infra.strategies import cli
 
     value = 'alpha"beta\\gamma東京'
@@ -210,7 +210,9 @@ def test_valid_cli_strategy_quotes_round_trip_through_the_expression_parser(
         cli.cli_interaction_case_strategy().filter(lambda item: not item.near_miss and item.query.startswith("title:"))
     )
     parsed = parse_expression_ast(case.query)
-    assert parsed.clauses[0].raw_value == value
+    clause = parsed.clauses[0]
+    assert isinstance(clause, _FieldToken)
+    assert clause.raw_value == value
 
 
 @pytest.mark.parametrize(

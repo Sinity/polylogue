@@ -1608,6 +1608,7 @@ def test_shared_wire_generation_observes_implicit_filesystem_sidecars(tmp_path: 
             },
         }
     ]
+    assert isinstance(payload, list)
     source_path.write_text("\n".join(json.dumps(item) for item in payload) + "\n", encoding="utf-8")
     with shared_wire_generation():
         first = dispatch_module.parse_payload("claude-code", payload, "w1-sidecars", source_path=str(source_path))
