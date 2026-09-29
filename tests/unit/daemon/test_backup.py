@@ -1097,6 +1097,67 @@ def test_full_evidence_backup_reacquires_live_append_segment_after_file_grows(
     assert verified_after_growth["missing_canonical_blob_count"] == 0
 
 
+def test_full_evidence_backup_verifies_a_full_prefix_append_proof(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """An append row whose retained blob is the whole prefix ``[0, end)`` is
+    proved from that prefix, and the proof names the window it proved.
+
+    Anti-vacuity: emit the proof with the row's own ``append_start_offset`` (3)
+    and verification rebuilds ``[3, 6)``, whose hash cannot match the six-byte
+    blob, so the backup's reference evidence is rejected.
+    """
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "prefix.jsonl"
+    snapshot = b"abcdef"
+    source_path.write_bytes(snapshot)
+    blob_hash = hashlib.sha256(snapshot).digest()
+    raw_id = "append-full-prefix"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status, revision_kind,
+                append_start_offset, append_end_offset
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "codex-session",
+                "codex",
+                "session",
+                str(source_path),
+                0,
+                blob_hash,
+                len(snapshot),
+                1,
+                "passed",
+                "append",
+                3,
+                6,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, raw_id, "raw_payload", str(source_path), len(snapshot), 1),
+        )
+
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=[],
+    )
+    assert [(proof["append_start_offset"], proof["append_end_offset"]) for proof in proofs] == [("0", "6")]
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verification["recoverable_source_blob_count"] == 1
+
+
 def test_backup_reanchors_dead_root_before_zip_member_replay(
     workspace_env: dict[str, Path],
     tmp_path: Path,
