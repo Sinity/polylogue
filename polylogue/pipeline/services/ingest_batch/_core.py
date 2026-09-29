@@ -679,36 +679,25 @@ _SIDECAR_EVENT_TYPES = ("claude_tool_result_sidecar", "gemini_cli_tool_output_si
 #: Replaces a matched TOOL_RESULT block's text when its sidecar's publication
 #: was refused as excised bytes: a non-content-bearing terminal value, never
 #: the excised text itself even in truncated or summarized form.
-_EXCISED_SIDECAR_TEXT = "[sidecar content excised; publication refused]"
-
-
-def _drop_refused_sidecar_blob_hashes(
+def _refuse_excised_sidecars(
     session_to_write: ParsedSession,
     blob_publisher: ArchiveBlobPublisher | None,
     *,
     source_conn: sqlite3.Connection | None = None,
-    redactable: bool = True,
-) -> ParsedSession:
-    """Remove refused sidecar ``blob_hash`` references and redact their block text.
+) -> None:
+    """Refuse a session that references an excised sidecar, as a typed excision.
 
-    A refused hash names bytes a prior excision already removed from the blob
-    store, but ``apply_tool_result_sidecars``/``apply_gemini_tool_output_sidecars``
-    already copied that same excised text into the matching TOOL_RESULT
-    block's ``text`` before this runs. Dropping only the event's ``blob_hash``
-    leaves that full text sitting in ``blocks.text``, which flush still
-    persists and FTS still indexes -- resurrecting deliberately excised
-    content under a fresh ingest despite this reporting a permanent
-    publication refusal. Both the event reference and the block text are
-    excised together.
+    ``apply_tool_result_sidecars``/``apply_gemini_tool_output_sidecars``
+    copied the sidecar's text into its TOOL_RESULT block at parse time, so
+    the session carries the excised bytes in hashed content. Rewriting that
+    text (or dropping the event's ``blob_hash``) here would change content
+    after its identity was bound (polylogue-bgnxh), so the session is not
+    written at all: :class:`ContentExcisedError` is its typed, permanent
+    refusal, and no excised byte reaches ``blocks.text`` or FTS.
 
     Refusal is read from both authorities: this flush's refusals, and the
     durable excision ledger at this write boundary, so an excision that
-    committed after the flush released its lock still redacts the block.
-
-    ``redactable=False`` names a session whose rows were lowered before
-    admission (a sealed prepared write, possibly disk-backed): its stored text
-    cannot be rewritten here without loading the transcript, so a refused
-    sidecar is the typed excision refusal instead.
+    committed after the flush released its lock still refuses the session.
     """
 
     def refused(blob_hash: str) -> bool:
@@ -721,56 +710,18 @@ def _drop_refused_sidecar_blob_hashes(
         except ValueError:
             return False
 
-    refused_hashes: dict[str, str] = {}
-    for event in session_to_write.session_events:
-        blob_hash = event.payload.get("blob_hash")
-        tool_use_id = event.payload.get("tool_use_id")
-        if (
-            event.event_type in _SIDECAR_EVENT_TYPES
-            and isinstance(blob_hash, str)
-            and isinstance(tool_use_id, str)
-            and refused(blob_hash)
-        ):
-            refused_hashes[tool_use_id] = blob_hash
-    refused_tool_use_ids = set(refused_hashes)
-    if not refused_tool_use_ids:
-        return session_to_write
-    if not redactable:
-        first = refused_hashes[min(refused_hashes)]
-        raise ContentExcisedError(
-            blob_hash=bytes.fromhex(first), source_path=f"sidecar:{session_to_write.provider_session_id}"
-        )
-    updated_events = [
-        event.model_copy(update={"payload": {key: value for key, value in event.payload.items() if key != "blob_hash"}})
-        if event.event_type in _SIDECAR_EVENT_TYPES and event.payload.get("tool_use_id") in refused_tool_use_ids
-        else event
+    refused_hashes = sorted(
+        blob_hash
         for event in session_to_write.session_events
-    ]
-    updated_messages = [
-        message.model_copy(
-            update={
-                "blocks": [
-                    block.model_copy(update={"text": _EXCISED_SIDECAR_TEXT})
-                    if block.type is BlockType.TOOL_RESULT
-                    and block.tool_id in refused_tool_use_ids
-                    and block.text is not None
-                    else block
-                    for block in message.blocks
-                ]
-            }
+        if event.event_type in _SIDECAR_EVENT_TYPES
+        and isinstance(blob_hash := event.payload.get("blob_hash"), str)
+        and isinstance(event.payload.get("tool_use_id"), str)
+        and refused(blob_hash)
+    )
+    if refused_hashes:
+        raise ContentExcisedError(
+            blob_hash=bytes.fromhex(refused_hashes[0]), source_path=f"sidecar:{session_to_write.provider_session_id}"
         )
-        if any(
-            block.type is BlockType.TOOL_RESULT and block.tool_id in refused_tool_use_ids for block in message.blocks
-        )
-        else message
-        for message in session_to_write.messages
-    ]
-    return session_to_write.model_copy(update={"session_events": updated_events, "messages": updated_messages})
-
-
-def _sidecars_redactable(payload: SessionWritePayload, session: ParsedSession) -> bool:
-    """Whether refused sidecar text in *session* can be rewritten in place."""
-    return payload.prepared_write is None and not isinstance(session.messages, SqliteMessageSink)
 
 
 def _publishable_sessions(
@@ -779,12 +730,11 @@ def _publishable_sessions(
     blob_publisher: ArchiveBlobPublisher | None,
     source_conn: sqlite3.Connection | None,
 ) -> list[tuple[SessionWritePayload, ParsedSession]]:
-    """Each session of *ir* as it may leave the archive, excised sidecars removed.
+    """The sessions of *ir* that may leave the archive.
 
-    Publication encodes a session before its index write, so the write's
-    redaction comes too late for it: the excision ledger decides here, and a
-    session whose excised text cannot be redacted is not published at all
-    (its write is refused the same way).
+    Publication encodes a session before its index write, so the excision
+    ledger decides here: a session that references an excised sidecar is not
+    published at all, just as its write is refused.
     """
     publishable: list[tuple[SessionWritePayload, ParsedSession]] = []
     for cdata in ir.sessions:
@@ -801,16 +751,9 @@ def _publishable_sessions(
                 },
             )
             try:
-                redacted = _drop_refused_sidecar_blob_hashes(
-                    hashed,
-                    blob_publisher,
-                    source_conn=source_conn,
-                    redactable=_sidecars_redactable(cdata, session),
-                )
+                _refuse_excised_sidecars(hashed, blob_publisher, source_conn=source_conn)
             except ContentExcisedError:
                 continue
-            if redacted is not hashed:
-                session = redacted
         publishable.append((cdata, session))
     return publishable
 
@@ -1589,12 +1532,7 @@ def _write_session(
         blob_publisher.flush()
         counts.update(_sidecar_blob_counts(queued_sidecar_blobs, blob_publisher))
         try:
-            session_to_write = _drop_refused_sidecar_blob_hashes(
-                session_to_write,
-                blob_publisher,
-                source_conn=source_conn,
-                redactable=_sidecars_redactable(payload, session_to_write),
-            )
+            _refuse_excised_sidecars(session_to_write, blob_publisher, source_conn=source_conn)
         except ContentExcisedError:
             # The attachment and sidecar blobs this session already published
             # hold reservations; hand them to the batch's post-commit
