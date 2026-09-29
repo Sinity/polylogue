@@ -253,6 +253,22 @@ def test_deep_link_refuses_a_reference_this_session_does_not_contain(reader: dic
     assert body["error"] == "message_not_found"
 
 
+def test_messages_route_answers_a_missing_session_as_not_found(reader: dict[str, Any]) -> None:
+    """``/messages`` and ``/read?view=messages`` 404 a session that does not exist.
+
+    Anti-vacuity: the archive projection used to return an error-outcome page
+    for an unresolvable reference, which both routes sent with HTTP 200.
+    """
+
+    for path in (
+        "/api/sessions/definitely-absent/messages?limit=5",
+        "/api/sessions/definitely-absent/read?view=messages&limit=5",
+    ):
+        status, body = _get_error(reader["base_url"], path)
+        assert status == HTTPStatus.NOT_FOUND, path
+        assert body["error"] == "not_found", path
+
+
 def test_deep_link_refuses_to_be_given_two_different_windows(reader: dict[str, Any]) -> None:
     session_id = reader["session_ids"][0]
     encoded = quote(session_id, safe="")

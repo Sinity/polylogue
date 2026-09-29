@@ -90,6 +90,9 @@ def _handle_get_messages(self: Any, conv_id: str, params: dict[str, list[str]]) 
     except QueryContinuationInvalidError as exc:
         self._send_error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
         return
+    if payload is None:
+        self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+        return
     self._send_json(HTTPStatus.OK, payload)
 
 

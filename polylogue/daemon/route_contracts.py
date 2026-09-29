@@ -265,18 +265,15 @@ def declared_route_keys() -> frozenset[tuple[str, str]]:
 
 
 def metadata_only_api_routes() -> tuple[RouteContract, ...]:
-    """Return API contracts that remain metadata-only, with named reasons.
+    """Return API contracts that have no executable binding.
 
-    This is deliberately a read-only inventory.  It is used by the focused
-    route-contract gate to ensure a newly added ``/api`` route cannot bypass
-    either a declaration or an explicit migration classification.
+    This is deliberately a read-only inventory, including routes whose
+    migration reason is missing. The startup route gate refuses any entry
+    without a declared ``metadata_only_reason``, so a newly added ``/api``
+    route cannot bypass both a declaration and an explicit classification.
     """
 
-    return tuple(
-        route
-        for route in ROUTE_CONTRACTS
-        if route.pattern.startswith("/api/") and route.metadata_only_reason is not None
-    )
+    return tuple(route for route in ROUTE_CONTRACTS if route.pattern.startswith("/api/") and route.is_metadata_only)
 
 
 ROUTE_CONTRACTS: tuple[RouteContract, ...] = (

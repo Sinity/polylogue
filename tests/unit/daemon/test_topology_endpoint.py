@@ -357,6 +357,38 @@ class TestTopologyEndpointDispatch:
         assert status == HTTPStatus.BAD_REQUEST
         assert code == "invalid_limit"
 
+    def test_continuation_pages_concatenate_every_edge_once(self, workspace_env: dict[str, Path]) -> None:
+        """An edge whose parent is on an earlier page is served on its child's page.
+
+        BFS at limit 2 puts root and child on page one and side and grandchild
+        on page two, so ``side -> root`` crosses the page boundary.
+        Anti-vacuity: keeping an edge only when both endpoints are on the page
+        drops ``side -> root`` from every page.
+        """
+        _seed_lineage(db_setup(workspace_env))
+        edges: list[tuple[object, object]] = []
+        continuation: object = ""
+        for _ in range(3):
+            handler = _make_handler(
+                "GET", f"/api/sessions/{_native('root')}/topology?limit=2&continuation={continuation}"
+            )
+            send_error, send_json = _capture_responses(handler)
+            handler.do_GET()
+            send_error.assert_not_called()
+            _status, payload = send_json.call_args.args
+            edges.extend((edge["child_id"], edge["parent_id"]) for edge in payload["edges"] if edge["resolved"])
+            continuation = payload["continuation"]
+            if continuation is None:
+                break
+        assert continuation is None
+        assert sorted(edges) == sorted(
+            [
+                (_native("child"), _native("root")),
+                (_native("grandchild"), _native("child")),
+                (_native("side"), _native("root")),
+            ]
+        )
+
     def test_node_limit_clamps_payload_size(self, workspace_env: dict[str, Path]) -> None:
         _seed_lineage(db_setup(workspace_env))
         handler = _make_handler("GET", f"/api/sessions/{_native('root')}/topology?limit=2")

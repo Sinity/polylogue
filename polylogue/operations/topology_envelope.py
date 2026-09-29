@@ -82,10 +82,12 @@ def bound_topology_envelope(
 ) -> dict[str, object]:
     """Narrow a canonical envelope to ``node_limit`` nodes, honestly.
 
-    Nodes beyond the limit are dropped and every edge incident only to a
-    dropped node goes with them, but an edge whose endpoints are both
-    still present is kept regardless of resolution or composability -- an
-    excluded edge stays visible as evidence, it is simply never traversed.
+    Nodes beyond the limit are dropped. An edge belongs to the page that
+    holds its child, as it does in the topology derivation's own paging, so
+    an edge whose parent sits on an earlier page is still served exactly
+    once and concatenated pages rebuild the whole graph. Kept edges are kept
+    regardless of resolution or composability -- an excluded edge stays
+    visible as evidence, it is simply never traversed.
 
     Any narrowing is recorded as the ``topology_truncated`` gap and forces
     ``nodes_complete`` / ``edges_complete`` false, so a bounded page can
@@ -99,9 +101,7 @@ def bound_topology_envelope(
     dropped = len(nodes) - len(kept_nodes)
 
     kept_edges = [
-        edge
-        for edge in cast("list[dict[str, object]]", envelope["edges"])
-        if str(edge["child_id"]) in kept_ids and (edge["parent_id"] is None or str(edge["parent_id"]) in kept_ids)
+        edge for edge in cast("list[dict[str, object]]", envelope["edges"]) if str(edge["child_id"]) in kept_ids
     ]
 
     source_incomplete = not bool(envelope["nodes_complete"]) or not bool(envelope["edges_complete"])

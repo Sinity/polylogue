@@ -515,3 +515,24 @@ def test_canonical_browser_routes_enter_typed_webui_handlers(path: str, expected
         "search": handler._serve_webui_search,
     }[expected]
     typed.assert_called_once()
+
+
+def test_unclassified_api_route_fails_the_startup_route_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ``/api`` route with no binding and no notes is refused, not classified.
+
+    Anti-vacuity: synthesizing a generic reason for such a route lets the gate
+    list it as metadata-only with a reason, and startup succeeds.
+    """
+    from polylogue.daemon import route_contracts
+    from polylogue.daemon.http import DaemonAPIHandler, validate_declared_route_reachability
+    from polylogue.daemon.route_types import RouteContract
+
+    unclassified = RouteContract(
+        "GET", "/api/new-thing", "read_query", "stable", "credential_if_configured", "new thing JSON"
+    )
+    assert unclassified.metadata_only_reason is None
+    monkeypatch.setattr(route_contracts, "ROUTE_CONTRACTS", (*route_contracts.ROUTE_CONTRACTS, unclassified))
+
+    assert unclassified in route_contracts.metadata_only_api_routes()
+    with pytest.raises(RuntimeError, match="/api/new-thing"):
+        validate_declared_route_reachability(DaemonAPIHandler)
