@@ -35,7 +35,7 @@ from polylogue import Polylogue
 from polylogue.core.enums import BlockType, Origin, Provider, Role
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
-from polylogue.operations.session_contracts import SessionList, SessionSearch
+from polylogue.operations.session_contracts import SessionList, SessionRead, SessionSearch
 from polylogue.operations.session_reads import execute_session_operation
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -199,3 +199,146 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     assert set(owner_ids) == set(generic_ids) == set(seeded)
     assert owner_page.total == envelope["total"]
     assert owner_page.next_offset == envelope["next_offset"]
+
+
+def _seed_exclusion(root: Path) -> dict[str, str]:
+    """Seed sessions whose text makes a ``-secret`` exclusion observable."""
+
+    texts = {"plain": "needle alpha", "secret": "needle secret", "other": "unrelated beta"}
+    ids: dict[str, str] = {}
+    with ArchiveStore(root) as archive:
+        for name, text in texts.items():
+            ids[name] = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=f"exclusion-{name}",
+                    title=f"Session {name}",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m0",
+                            role=Role.USER,
+                            timestamp="2026-02-01T12:00:00Z",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        )
+                    ],
+                ),
+            )
+    return ids
+
+
+async def _mcp_sessions(root: Path, expression: str) -> dict[str, object]:
+    import json
+    from typing import cast
+
+    from polylogue.mcp.server import build_server
+    from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
+
+    server = cast(MCPServerUnderTest, build_server())
+    query_fn = server._tool_manager._tools["query"].fn
+    with installed_runtime_services(root):
+        result = json.loads(
+            await invoke_surface_async(query_fn, expression=expression, projection="sessions", limit=50)
+        )
+    assert isinstance(result, dict)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_ranked_search_with_text_exclusion_is_refused_on_mcp_and_generic_routes(tmp_path: Path) -> None:
+    """``needle -secret`` is refused by MCP's post-filter fallback, as by the generic read.
+
+    The post-filter fallback (``server_cutover._query_advanced_sessions``) is
+    the third executor. Mutation: drop its exclusion refusal and MCP answers
+    a ranked page that ignores ``-secret`` while the generic read refuses.
+    """
+
+    root = tmp_path / "archive"
+    _seed_exclusion(root)
+
+    with open_operation_read(root) as pinned, pytest.raises(ValueError, match="text exclusions"):
+        execute_read_operation(
+            "cli.query",
+            # The CLI hands its root query over as the words it was given.
+            {"params": {"query": ("needle", "-secret"), "limit": 50}},
+            archive=pinned.archive,
+            serving_identity="direct",
+        )
+
+    result = await _mcp_sessions(root, "needle -secret")
+    assert result.get("is_error") is True, result
+    assert result.get("code") == "invalid_argument"
+
+
+@pytest.mark.asyncio
+async def test_text_exclusion_listing_agrees_between_mcp_and_generic_routes(tmp_path: Path) -> None:
+    """A bare ``-secret`` listing drops the same sessions on MCP and the generic read.
+
+    Mutation: send the raw expression to FTS again, or list without the
+    content post-filter, and MCP's selection stops matching the generic one.
+    """
+
+    root = tmp_path / "archive"
+    ids = _seed_exclusion(root)
+
+    generic = _generic_list(root, query="-secret", limit=50)
+    result = await _mcp_sessions(root, "-secret")
+    assert result.get("is_error") is not True, result
+    items = result["items"]
+    assert isinstance(items, list)
+    mcp_ids = [str(item["id"]) for item in items]
+
+    assert set(generic[0]) == {ids["plain"], ids["other"]}
+    assert mcp_ids == generic[0]
+    assert result["total"] == generic[1] == 2
+
+
+@pytest.mark.asyncio
+async def test_transcript_windows_agree_across_the_generic_and_owner_read_routes(tmp_path: Path) -> None:
+    """Both executors page one transcript into the same windows.
+
+    Each route resumes only its own continuation: ``session.read`` keeps its
+    ``session-read-v1`` dialect and ``sessions.read`` stamps
+    ``session-owner-v1``, and replaying one against the other is a typed
+    refusal (``test_session_read_parity``). What must agree is the window each
+    page selects. Mutation: let either route decide its offset, page size,
+    ``next_offset`` or row order outside ``read_transcript_window_sync`` and a
+    page's message ids or coordinates diverge here.
+    """
+
+    root = tmp_path / "archive"
+    session_id = _seed(root)[-1]  # five messages: three windows of two
+
+    owner_pages: list[tuple[list[str], int | None, int, int | None]] = []
+    async with Polylogue(archive_root=root) as api:
+        request = SessionRead(ref=f"session:{session_id}", limit=2)
+        while True:
+            page = await execute_session_operation(api, request)
+            owner_pages.append(([str(item.id) for item in page.items], page.total, page.offset, page.next_offset))
+            if page.continuation is None:
+                break
+            request = SessionRead(ref=f"session:{session_id}", continuation=page.continuation)
+
+    generic_pages: list[tuple[list[str], int | None, int, int | None]] = []
+    with open_operation_read(root) as pinned:
+        payload: dict[str, object] = {"ref": f"session:{session_id}", "limit": 2}
+        while True:
+            body = execute_read_operation("session.read", payload, archive=pinned.archive, serving_identity="direct")
+            session = body["session"]
+            assert isinstance(session, dict)
+            generic_pages.append(
+                (
+                    [str(message["message_id"]) for message in session["messages"]],
+                    _optional_int(body["total"]),
+                    _int(body["offset"]),
+                    _optional_int(body["next_offset"]),
+                )
+            )
+            if body["continuation"] is None:
+                break
+            payload = {"ref": f"session:{session_id}", "continuation": body["continuation"]}
+
+    assert owner_pages == generic_pages
+    assert [len(ids) for ids, *_ in owner_pages] == [2, 2, 1]
+    walked = [message_id for ids, *_ in owner_pages for message_id in ids]
+    assert len(walked) == len(set(walked)) == 5

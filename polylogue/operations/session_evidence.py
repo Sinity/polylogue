@@ -38,6 +38,7 @@ refuses a clipped page that claims to be whole.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -48,6 +49,8 @@ __all__ = [
     "read_file_edits_page",
     "read_raw_artifacts_page",
     "read_session_events_page",
+    "read_session_materials",
+    "read_session_materials_page",
     "read_web_content_constructs_page",
 ]
 
@@ -278,3 +281,97 @@ def read_raw_artifacts_page(
         for artifact in artifacts
     ]
     return rows, total
+
+
+def _session_material_rows(
+    archive: ArchiveStore,
+    session_id: str,
+    *,
+    limit: int | None,
+    offset: int,
+) -> tuple[list[dict[str, object]], int]:
+    """Read source-tier materials whose referrer is this session, with their content.
+
+    ``material_observations.referrer_ref`` is the durable session-scoped key
+    (the one ``excise --session`` follows). Codex goals and memories name the
+    session id itself; other admissions use the ``session:`` ref form.
+    """
+
+    from polylogue.storage.materials import get_material, read_material
+
+    conn = archive.source_connection
+    refs = (session_id, f"session:{session_id}")
+    total = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM material_observations WHERE referrer_ref IN (?, ?)",
+            refs,
+        ).fetchone()[0]
+    )
+    bound = "" if limit is None else " LIMIT ? OFFSET ?"
+    params: tuple[object, ...] = refs if limit is None else (*refs, max(limit, 0), max(offset, 0))
+    ids = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT material_id FROM material_observations WHERE referrer_ref IN (?, ?) "
+            "ORDER BY created_at_ms, material_id" + bound,
+            params,
+        ).fetchall()
+    ]
+    rows: list[dict[str, object]] = []
+    for material_id in ids:
+        material = get_material(conn, material_id)
+        if material is None:
+            continue
+        content: object = None
+        if material.blob_hash is not None:
+            payload = read_material(conn, material_id)
+            media_type = (material.media_type or "").split(";", 1)[0].strip().lower()
+            if media_type == "application/json":
+                content = json.loads(payload)
+            elif media_type.startswith("text/"):
+                content = payload.decode(material.media_charset or "utf-8")
+        rows.append(
+            {
+                "material_id": material.material_id,
+                "source_uri": material.source_uri,
+                "acquisition_state": material.acquisition_state,
+                "media_type": material.media_type,
+                "filename": material.filename,
+                "byte_size": material.byte_size,
+                "blob_hash": material.blob_hash,
+                "privacy_classification": material.privacy_classification,
+                "acquired_at_ms": material.acquired_at_ms,
+                "created_at_ms": material.created_at_ms,
+                "content": content,
+            }
+        )
+    return rows, total
+
+
+def read_session_materials_page(
+    archive: ArchiveStore,
+    session_id: str,
+    *,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, object]], int]:
+    """Project one page of the session's retained materials for ``read --view materials``.
+
+    Codex goals and memories terminate here and nowhere else: they have no
+    index-tier relation, so without this read the objective, status and memory
+    text were retained but unreachable from every public surface. Windowed
+    because a material's bytes are not bounded (a memory is split into text
+    parts, a fetched document is one row). Ordered by admission,
+    ``created_at_ms, material_id``; the returned total is the relation's own
+    count.
+    """
+
+    if limit <= 0:
+        return [], _session_material_rows(archive, session_id, limit=0, offset=0)[1]
+    return _session_material_rows(archive, session_id, limit=limit, offset=offset)
+
+
+def read_session_materials(archive: ArchiveStore, session_id: str) -> list[dict[str, object]]:
+    """Every retained material for one session, in the windowed read's order."""
+
+    return _session_material_rows(archive, session_id, limit=None, offset=0)[0]

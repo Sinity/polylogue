@@ -2132,6 +2132,10 @@ class SavedViewSaveActuator(ConvergentReplay):
         collision_view_id = plan.context["collision_view_id"]
         watch = bool(plan.context.get("watch"))
         created = args.archive.save_view(view_id, name, query_json, watch=watch)
+        if watch:
+            from polylogue.daemon.convergence_standing_queries import establish_watch_baselines
+
+            establish_watch_baselines(args.archive.index_db_path, archive_root=args.archive.archive_root)
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,

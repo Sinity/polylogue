@@ -339,7 +339,18 @@ def archive_session_list_payload(
     filters = archive_query_filters(spec)
     text_query = _archive_text_query(spec)
     match_counts_are_exact = True
-    if text_query is None:
+    if spec.exclude_text_terms:
+        # A text exclusion is a content post-filter the index filters above
+        # cannot express; the generic ``cli.query`` listing owns it.
+        from polylogue.api.archive import _archive_count_sessions_for_spec, _archive_list_summaries_for_spec
+
+        summaries = tuple(
+            _archive_list_summaries_for_spec(archive, spec, default_limit=default_limit, limit=limit, offset=offset)
+        )
+        total = _archive_count_sessions_for_spec(archive, spec)
+        match_counts = {summary.session_id: 1 for summary in summaries}
+        page = summaries
+    elif text_query is None:
         summaries = tuple(
             archive.list_summaries(
                 limit=limit,
@@ -466,17 +477,20 @@ def archive_search_payload(
         )
 
     filters = archive_query_filters(spec)
+    # ``query`` is the caller's expression and stays in the envelope; the
+    # lexical lane searches only the compiled text terms.
+    text_query = _archive_text_query(spec) or ""
     hits = archive.search_summaries(
-        query,
+        text_query,
         limit=limit,
         offset=offset,
         sort=_sort_value(spec.sort),
         reverse=spec.reverse,
         **filters,
     )
-    total = archive.count_search_sessions(query, **filters)
+    total = archive.count_search_sessions(text_query, **filters)
     diagnostics = (
-        _search_term_diagnostics(archive, query=query, filters=filters, spec=spec, config=config)
+        _search_term_diagnostics(archive, query=text_query, filters=filters, spec=spec, config=config)
         if total == 0
         else None
     )

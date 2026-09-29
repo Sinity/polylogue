@@ -20,6 +20,7 @@ from polylogue.operations.session_evidence import (
     read_file_edits_page,
     read_raw_artifacts_page,
     read_session_events_page,
+    read_session_materials_page,
     read_web_content_constructs_page,
 )
 
@@ -215,6 +216,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
         result = execute_effective_context_read(payload, archive=archive)
+    elif name == "read.orchestration":
+        from polylogue.operations.orchestration import execute_orchestration_read
+
+        result = execute_orchestration_read(payload, archive=archive)
     elif name == "read.lineage":
         from polylogue.operations.read_view_lineage import execute_lineage_read
 
@@ -1569,6 +1574,9 @@ _WINDOWED_EVIDENCE_READERS: dict[str, Callable[[ArchiveStore, str, int, int], tu
         archive, session_id, limit=limit, offset=offset
     ),
     "web-content": lambda archive, session_id, limit, offset: read_web_content_constructs_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "materials": lambda archive, session_id, limit, offset: read_session_materials_page(
         archive, session_id, limit=limit, offset=offset
     ),
 }

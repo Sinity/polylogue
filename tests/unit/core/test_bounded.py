@@ -20,12 +20,14 @@ def test_run_bounded_can_report_nonzero_exit_without_swallowing_timeout() -> Non
     assert result.returncode == 7
 
 
+@pytest.mark.uses_real_clock("waits on a live child process against a monotonic deadline")
 def test_run_bounded_translates_timeout_to_typed_error() -> None:
     with pytest.raises(BoundedTimeoutError) as caught:
         run_bounded(["/bin/sh", "-c", "sleep 10"], 0.01)
     assert caught.value.budget == pytest.approx(0.01)
 
 
+@pytest.mark.uses_real_clock("waits on the event-loop scheduler against a monotonic deadline")
 @pytest.mark.asyncio
 async def test_bounded_translates_timeout_and_cancels_awaitable() -> None:
     cancelled = False
@@ -42,6 +44,7 @@ async def test_bounded_translates_timeout_and_cancels_awaitable() -> None:
     assert cancelled
 
 
+@pytest.mark.uses_real_clock("waits on the event-loop scheduler against a monotonic deadline")
 @pytest.mark.asyncio
 async def test_bounded_accepts_a_typed_timeout_handler() -> None:
     class TypedTimeoutError(Exception):

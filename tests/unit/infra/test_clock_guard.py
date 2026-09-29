@@ -9,6 +9,7 @@ the `pytest.raises` blocks would no longer see a raise.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -65,11 +66,43 @@ def test_uses_real_clock_marker_bypasses_the_guard() -> None:
     datetime.now()
 
 
+def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.CompletedProcess[str]:
+    """Collect ``module`` through ``devtools test`` without touching operator history.
+
+    The nested run appends its history and evidence rows under ``state`` and
+    its receipt tree is removed afterwards, so these proof runs never appear
+    in ``devtools why --history`` or count against the checkout's retained
+    failure details.
+    """
+    history = state / "history.jsonl"
+    result = subprocess.run(
+        [sys.executable, "-m", "devtools", "test", "--collect-only", "--rootdir", str(root), str(module), "--json"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "POLYLOGUE_VERIFY_HISTORY_PATH": str(history),
+            "POLYLOGUE_VERIFICATION_EVIDENCE_PATH": str(state / "evidence.jsonl"),
+        },
+        check=False,
+    )
+    receipt = json.loads(result.stdout)
+    run_id = str(receipt["run_id"])
+    shutil.rmtree(root / ".cache" / "verify" / "runs" / run_id)
+    # Anti-vacuity: without the overrides the row lands in the operator's
+    # shared history and this file does not exist.
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert [row["run_id"] for row in rows] == [run_id]
+    return result
+
+
 @pytest.mark.parametrize(
     "expression",
     ("datetime.now()", "time.time()", "time.time_ns()", "time.monotonic()", "time.monotonic_ns()"),
 )
-def test_module_level_clock_read_fails_during_managed_collection(expression: str) -> None:
+def test_module_level_clock_read_fails_during_managed_collection(expression: str, tmp_path: Path) -> None:
     """The guard must be armed before pytest imports ordinary test modules."""
     root = Path(__file__).resolve().parents[3]
     temporary_root = root / "tests" / f".clock-guard-{uuid4().hex}"
@@ -84,23 +117,7 @@ def test_module_level_clock_read_fails_during_managed_collection(expression: str
         encoding="utf-8",
     )
     try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "devtools",
-                "test",
-                "--collect-only",
-                "--rootdir",
-                str(root),
-                str(violating_module),
-            ],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
-            check=False,
-        )
+        result = _managed_collection(violating_module, root=root, state=tmp_path)
     finally:
         shutil.rmtree(temporary_root)
 
@@ -108,7 +125,7 @@ def test_module_level_clock_read_fails_during_managed_collection(expression: str
     assert "frozen_clock" in result.stdout + result.stderr
 
 
-def test_module_level_real_clock_marker_exempts_managed_collection() -> None:
+def test_module_level_real_clock_marker_exempts_managed_collection(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[3]
     temporary_root = root / "tests" / f".clock-guard-{uuid4().hex}"
     temporary_root.mkdir()
@@ -125,23 +142,7 @@ def test_module_level_real_clock_marker_exempts_managed_collection() -> None:
         encoding="utf-8",
     )
     try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "devtools",
-                "test",
-                "--collect-only",
-                "--rootdir",
-                str(root),
-                str(exempt_module),
-            ],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
-            check=False,
-        )
+        result = _managed_collection(exempt_module, root=root, state=tmp_path)
     finally:
         shutil.rmtree(temporary_root)
 
