@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from polylogue.archive.semantic.pricing import PRICING
@@ -106,3 +108,25 @@ def test_undeclared_claude_model_is_named_as_a_credit_gap() -> None:
     assert compute_credit_cost("claude-opus-9", 1_000_000, 1_000_000) == 0
     assert models_without_credit_rate(["claude-opus-9", "claude-opus-5"]) == ("claude-opus-9",)
     assert models_without_credit_rate(["gpt-5", "deepseek-v4-flash", ""]) == ()
+
+
+def test_catalog_refresh_without_a_new_pin_is_refused(tmp_path: Path) -> None:
+    """A vendored catalog change must move this module, or costs never re-price.
+
+    Materialized session costs are rebuilt when the derived-identity closure
+    moves. That closure hashes ``pricing.py``, not the JSON file, so a refreshed
+    catalog with an unchanged pin would leave every already-priced session at
+    the old rate. Anti-vacuity: remove the digest check from
+    ``_load_litellm_catalog`` and the edited copy loads with its new rate.
+    """
+    from polylogue.archive.semantic import pricing
+
+    source = Path(pricing.__file__).parent / "data" / "litellm_model_prices.json"
+    refreshed = tmp_path / "litellm_model_prices.json"
+    refreshed.write_bytes(source.read_bytes().replace(b"0.000005", b"0.000006", 1))
+
+    assert pricing._load_litellm_catalog() == pricing.PRICING
+    with pytest.raises(pricing.PricingCatalogMismatchError):
+        pricing._load_litellm_catalog(refreshed)
+    with pytest.raises(FileNotFoundError):
+        pricing._load_litellm_catalog(tmp_path / "missing.json")
