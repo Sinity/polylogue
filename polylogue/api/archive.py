@@ -5010,40 +5010,64 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         return [message.model_dump(mode="json", exclude_none=True) for message in messages]
 
     async def get_session_orchestration(self, session_id: str) -> SessionOrchestrationEvidence | None:
-        """Return versioned orchestration evidence from the archive's stored records."""
+        """Return versioned orchestration evidence from the archive's stored records.
+
+        The session's own messages, events and usage rows are streamed page by
+        page into the bounded projection; the full session is never hydrated.
+        """
         from polylogue.analysis.orchestration_evidence import build_session_orchestration
-        from polylogue.operations.orchestration import read_orchestration_usage
+        from polylogue.operations.orchestration import (
+            iter_orchestration_events,
+            iter_orchestration_messages,
+            iter_orchestration_usage,
+        )
 
         resolved = await self.repository.resolve_id(session_id)
-        session = await self.repository.get(str(resolved) if resolved is not None else session_id)
-        if session is None:
+        candidate = str(resolved) if resolved is not None else session_id
+
+        def resolve_existing(archive: ArchiveStore) -> str | None:
+            try:
+                archive.read_summary(candidate)
+            except KeyError:
+                return None
+            return candidate
+
+        root = _active_archive_root(self.config)
+        resolved_id = await run_archive_read(
+            root,
+            operation="archive.session.exists",
+            arguments={"session_id": candidate},
+            work=resolve_existing,
+            projection="session-id",
+        )
+        if resolved_id is None:
             return None
-        resolved_id = str(session.id)
         topology = await cast("Polylogue", self).get_session_topology(resolved_id)
         artifacts, _ = await self.get_raw_artifacts_for_session(resolved_id, limit=1)
         acquisition = artifacts[0] if artifacts else None
-        usage_rows = await run_archive_read(
-            _active_archive_root(self.config),
-            operation="archive.orchestration.usage",
-            arguments={"session_id": resolved_id},
-            work=lambda archive: read_orchestration_usage(archive._conn, resolved_id),
-            projection="orchestration-usage",
-            stable_order="position",
-        )
         delegations = await run_archive_read(
-            _active_archive_root(self.config),
+            root,
             operation="archive.orchestration.delegations",
             arguments={"session_id": resolved_id},
             work=lambda archive: archive.query_delegations(_archive_context_session_predicate(resolved_id), limit=1001),
             projection="orchestration-delegations",
             stable_order="parent_session_id,instruction_tool_use_block_id,child_session_id",
         )
-        return build_session_orchestration(
-            session,
-            topology,
-            acquisition=acquisition,
-            delegations=delegations,
-            usage_rows=usage_rows,
+        return await run_archive_read(
+            root,
+            operation="archive.orchestration.evidence",
+            arguments={"session_id": resolved_id},
+            work=lambda archive: build_session_orchestration(
+                resolved_id,
+                topology,
+                messages=iter_orchestration_messages(archive._conn, resolved_id),
+                events=iter_orchestration_events(archive._conn, resolved_id),
+                acquisition=acquisition,
+                delegations=delegations,
+                usage_rows=iter_orchestration_usage(archive._conn, resolved_id),
+            ),
+            projection="orchestration-evidence",
+            stable_order="position",
         )
 
     async def get_session_events(
