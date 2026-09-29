@@ -2241,14 +2241,20 @@ def _disposed_result(raw_id: str, error: str, disposition: IngestAttemptDisposit
     )
 
 
-def _unattempted_result(raw_id: str, reason: str, *, evidence_ref: str) -> IngestRecordResult:
-    """A raw the pool never ran: retryable, because nothing of it executed."""
+def _unattempted_result(
+    raw_id: str, reason: str, *, evidence_ref: str, deterministic: bool = False
+) -> IngestRecordResult:
+    """A raw the pool never ran.
+
+    Nothing of it executed, so an unavailable pool is retryable. A refusal
+    the same raw would meet again (its arguments cannot be sent to a worker)
+    is a defect, so it is not retried forever.
+    """
     error = f"worker pool did not run this raw: {reason}"
-    return _disposed_result(
-        raw_id,
-        error,
-        transient_error_disposition(evidence_ref=evidence_ref, diagnostic=error),
+    disposition = (parser_defect_disposition if deterministic else transient_error_disposition)(
+        evidence_ref=evidence_ref, diagnostic=error
     )
+    return _disposed_result(raw_id, error, disposition)
 
 
 def _iter_ingest_results_chunk(
@@ -2346,6 +2352,9 @@ def _iter_ingest_results_chunk(
                             raw_record.raw_id,
                             f"submission failed: {type(exc).__name__}: {exc}",
                             evidence_ref=f"worker:submit:{type(exc).__name__}",
+                            # A pool that is shut down or broken is not this
+                            # raw's doing; anything else refuses the raw itself.
+                            deterministic=not isinstance(exc, (BrokenExecutor, RuntimeError)),
                         )
                     )
                     continue

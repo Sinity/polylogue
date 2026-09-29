@@ -344,9 +344,10 @@ def test_submission_fault_after_a_delivered_result_neither_replays_nor_runs_inli
     assert inline_runs == []
     assert [result.raw_id for result in results] == ["raw-1", "raw-2", "raw-3"]
     assert results[0].outcome_code == "success"
+    # The same raw would meet the same refusal again: a defect, not retried.
     for refused in results[1:]:
-        assert refused.outcome_code == "transient_error"
-        assert refused.retryable is True
+        assert refused.outcome_code == "parser_defect"
+        assert refused.retryable is False
         assert refused.evidence_ref == "worker:submit:TypeError"
     assert progress.completed_raw_count == 3
     assert progress.in_flight_raw_ids == []
@@ -491,3 +492,28 @@ def test_a_stalled_pool_refuses_the_raws_it_never_submitted(monkeypatch: pytest.
     assert all(result.retryable is True for result in results)
     assert all(result.evidence_ref == "worker:progress_deadline" for result in results)
     assert progress.in_flight_raw_ids == []
+
+
+def test_a_pool_that_stopped_accepting_work_refuses_retryably(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A shut-down pool is not the raw's doing, so the raw stays retryable.
+
+    Anti-vacuity: treating every submission failure as deterministic makes
+    these raws parser defects that are never retried.
+    """
+
+    class StoppedPool:
+        def submit(self, *_args: object, **_kwargs: object) -> Future[IngestRecordResult]:
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        def shutdown(self, **_kwargs: object) -> None:
+            return None
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", lambda *, max_workers: StoppedPool())
+
+    results = list(
+        _iter_ingest_results_sync(_raw_records(2), request=_worker_request(), worker_count=2, force_process_pool=True)
+    )
+
+    assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+    assert all(result.outcome_code == "transient_error" and result.retryable is True for result in results)
+    assert all(result.evidence_ref == "worker:submit:RuntimeError" for result in results)
