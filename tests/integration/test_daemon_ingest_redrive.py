@@ -480,36 +480,38 @@ async def test_a_retry_after_this_attempts_materialization_still_completes(
 
 @pytest.mark.timeout(300)
 async def test_shutdown_releases_every_claimed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An owner stopping mid re-drive hands every claimed run back, so a server in the same process reclaims them.
+    """An owner shut down mid re-drive hands every claimed run back, so a server in the same process reclaims them.
+
+    The stop is the production one: the server's shutdown closes its operation
+    runtime while the first of two claimed runs is being driven.
 
     Anti-vacuity (Codex P1, #5717): release only the active run and the later
     claimed one keeps a ``running`` attempt owned by this live process, which
     discovery never returns, so it never completes.
     """
-    from polylogue.operations import daemon_ingest
-    from polylogue.operations.daemon_ingest import IngestStoppedError
+    import threading
 
-    archive_root, source = _archive(tmp_path)
-    await _die_after_acceptance(archive_root, source, monkeypatch)
-    second = tmp_path / "inputs" / "second.json"
-    export = json.loads(source.read_text(encoding="utf-8"))
-    export["title"] = "Second Redrive"
-    second.write_text(json.dumps(export), encoding="utf-8")
-    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    archive_root = await _two_interrupted_ingests(tmp_path, monkeypatch)
+    entered = threading.Event()
+    original = IngestExecution.input_page
 
-    with monkeypatch.context() as patch:
-        # The second acceptance must not re-drive the first dead run.
-        patch.setattr(DaemonOperationRuntime, "start_accepted_ingest_redrive", lambda self: None)
-        await _die_after_acceptance(archive_root, second, monkeypatch)
-
-    async def owner_stops(*_args: object, **_kwargs: object) -> Any:
-        raise IngestStoppedError("shutdown")
+    async def held_until_shutdown(self: IngestExecution, *args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        while self.stop_reason() is None:
+            await asyncio.sleep(0.01)
+        return await original(self, *args, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(daemon_ingest, "drive_accepted_generation", owner_stops)
-        await _restart_and_settle(archive_root)
+        patch.setattr(IngestExecution, "input_page", held_until_shutdown)
+        with _serving(archive_root) as (harness, _api_server):
+            try:
+                assert await asyncio.to_thread(entered.wait, 60), "the re-drive never started driving a run"
+            finally:
+                await harness.close()
     with sqlite3.connect(archive_root / "audit.db") as audit:
         assert audit.execute("SELECT COUNT(*) FROM operation_attempts WHERE state = 'running'").fetchone() == (0,)
+    # The shutdown interrupted the drive: neither generation was materialized.
+    assert _session_titles(archive_root) == []
 
     await _restart_and_settle(archive_root)
 
