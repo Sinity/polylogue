@@ -7,6 +7,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, WebConstructType
 from polylogue.core.hashing import hash_payload
+from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import (
@@ -496,7 +497,7 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
         _message_hash_payload(m, m.provider_message_id or f"msg-{i}") for i, m in enumerate(session.messages, start=1)
     ]
     independent_attachment_payloads = [_attachment_hash_payload(a) for a in session.attachments]
-    independent_event_payloads = [
+    independent_event_payloads: list[dict[str, JSONValue]] = [
         {
             "event_index": idx,
             "event_type": e.event_type,

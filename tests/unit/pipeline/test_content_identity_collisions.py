@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.ids import (
     idless_session_identity,
@@ -48,14 +49,16 @@ _ANGSTROMS = ("Å", "Å", "Å")
 def _session(
     *,
     text: str | None = "unchanged",
-    tool_input: object = None,
+    tool_input: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
     title: str | None = "title",
     events: list[ParsedSessionEvent] | None = None,
     attachments: list[ParsedAttachment] | None = None,
     provider_message_id: str = "m1",
     timestamp: str | None = "2026-01-01T00:00:00Z",
-    **session_fields: object,
+    instructions_text: str | None = None,
+    git_branch: str | None = None,
+    working_directories: list[str] | None = None,
 ) -> ParsedSession:
     blocks = []
     if tool_input is not None or metadata is not None:
@@ -75,7 +78,7 @@ def _session(
         messages=[
             ParsedMessage(
                 provider_message_id=provider_message_id,
-                role="assistant",
+                role=Role.ASSISTANT,
                 text=text,
                 timestamp=timestamp,
                 blocks=blocks,
@@ -83,7 +86,9 @@ def _session(
         ],
         session_events=events or [],
         attachments=attachments or [],
-        **session_fields,
+        instructions_text=instructions_text,
+        git_branch=git_branch,
+        working_directories=working_directories or [],
     )
 
 
@@ -212,7 +217,9 @@ def test_equivalent_keys_are_order_independent_and_lossless(keys: tuple[str, ...
         payload = _nest({key: values[key] for key in order}, depth)
         if carrier == "event":
             return _session(events=_event(payload))
-        return _session(**{carrier: payload})  # type: ignore[arg-type]
+        if carrier == "metadata":
+            return _session(metadata=payload)
+        return _session(tool_input=payload)
 
     axis = "event" if carrier == "event" else "message"
 

@@ -1651,7 +1651,7 @@ def _session_hash_components(
                 raise
             owner_anchor = None
         attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
-    session_events_payload = [
+    session_events_payload: list[dict[str, JSONValue]] = [
         {
             "event_index": event_index,
             "event_type": event.event_type,
