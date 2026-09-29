@@ -136,8 +136,8 @@ def _resolve_local_ref(schema: object, root: Mapping[str, object] | None) -> obj
     resolved: dict[str, object] = {}
     if isinstance(schema, Mapping):
         resolved.update(schema)
-    for sibling in siblings:
-        for key, value in sibling.items():
+    for declarations in siblings:
+        for key, value in declarations.items():
             current = resolved.get(key)
             if (
                 key in {"properties", "patternProperties"}
