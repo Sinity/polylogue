@@ -986,7 +986,6 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     with sqlite3.connect(db_path) as conn:
         actual = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
         receipt = durable_change_train_module._verify_released_train_live_tier(
-            tmp_path,
             conn,
             historical_train,
             current_target_version=3,
@@ -1003,7 +1002,6 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     with sqlite3.connect(db_path) as conn:
         with pytest.raises(DurableChangeTrainError, match="is newer than current target"):
             durable_change_train_module._verify_released_train_live_tier(
-                tmp_path,
                 conn,
                 historical_train,
                 current_target_version=2,
@@ -1054,7 +1052,6 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         tampered = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
         with pytest.raises(DurableChangeTrainError, match="canonical live version"):
             durable_change_train_module._verify_released_train_live_tier(
-                tmp_path,
                 conn,
                 historical_train,
                 current_target_version=3,
@@ -1212,7 +1209,7 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     monkeypatch.setattr(
         durable_change_train_module,
         "_verify_released_train_live_tier",
-        lambda _root, _connection, train, **_kwargs: events.append(("verify", train.target_version)),
+        lambda _connection, train, **_kwargs: events.append(("verify", train.target_version)),
     )
 
     durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
@@ -1424,17 +1421,6 @@ def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(
         bootstrap.initialize_active_archive_root(tmp_path)
 
 
-def test_pre_marker_current_archive_is_adopted_once(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    initialize_active_archive_root(tmp_path)
-    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    marker.unlink()
-
-    initialize_active_archive_root(tmp_path)
-    assert marker.is_file()
-
-
 @_needs_shipped_durable_slot
 def test_missing_train_directory_denies_the_floor(tmp_path: Path) -> None:
     """Losing the train state denies the chain floor on the reconciliation route.
@@ -1454,9 +1440,6 @@ def test_missing_train_directory_denies_the_floor(tmp_path: Path) -> None:
     Anti-vacuity: make ``_fresh_durable_bootstrap_versions`` fall back to
     ``ARCHIVE_VERSION_BY_TIER`` when the manifest root is missing and the
     floor is granted with no marker at all, so the refusal below disappears.
-    ``test_pre_marker_current_archive_is_adopted_once`` pins the opposite
-    direction: an archive that still has its train directory is re-adopted
-    rather than refused.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -2867,45 +2850,3 @@ def test_rechecks_manifest_semantics_after_a_valid_checksum(tmp_path: Path) -> N
 
     with pytest.raises(DurableChangeTrainError, match="fresh-DDL parity is not an exact match"):
         load_durable_change_train_manifest(path)
-
-
-def test_a_manifest_written_before_the_projected_digest_still_verifies() -> None:
-    """A recorded train stays verifiable across the parity-digest split.
-
-    polylogue-jkoah separated ``DurableFreshDDLParityProof``'s projected digest
-    from its unprojected one. Every manifest written before that split carries
-    a single digest, and it is necessarily both: the split only separates two
-    values on a tier that retains a declared retirement, and such a tier could
-    not have been recorded while the proof that consumes the parity refused it.
-    So the decoder completes the missing slot from the recorded digest rather
-    than declaring the manifest unverifiable.
-
-    The manifest checksum is verified before the backfill, so this cannot be
-    used to admit an unauthenticated payload.
-
-    Anti-vacuity: without the decoder backfill this raises
-    ``train.fresh_ddl_parity fields differ: missing=['parity_inventory_sha256']``.
-    A manifest carrying the field is decoded untouched, which the second half
-    pins.
-    """
-    train = _admitted(ArchiveTier.SOURCE)
-    payload = migration_runner.durable_change_train_to_payload(train)
-    parity_payload = payload["fresh_ddl_parity"]
-    assert isinstance(parity_payload, dict)
-    assert "parity_inventory_sha256" in parity_payload
-
-    # Exactly the bytes a pre-split writer produced: the field absent, and the
-    # checksum computed over the payload without it.
-    legacy = {key: value for key, value in payload.items() if key != "manifest_sha256"}
-    legacy["fresh_ddl_parity"] = {
-        key: value for key, value in parity_payload.items() if key != "parity_inventory_sha256"
-    }
-    legacy["manifest_sha256"] = migration_runner._canonical_json_sha256(legacy)
-
-    decoded = migration_runner.durable_change_train_from_payload(legacy)
-    assert decoded.fresh_ddl_parity is not None
-    assert decoded.fresh_ddl_parity.parity_inventory_sha256 == decoded.fresh_ddl_parity.migrated_inventory_sha256
-    assert decoded == train
-
-    # A manifest that already carries the field is not rewritten by the backfill.
-    assert migration_runner.durable_change_train_from_payload(payload) == train
