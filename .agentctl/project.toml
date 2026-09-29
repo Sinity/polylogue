@@ -136,10 +136,29 @@ result = "json"
 cache = "none"
 timeout_seconds = 180
 
-[packets.review]
-backend = "codex"
-model = "gpt-6-luna"
+[packets.defaults]
+backend = "claude"
+model = "claude-opus-5-5"
 effort = "medium"
+
+[packets.review]
+backend = "claude"
+model = "claude-opus-5-5"
+effort = "medium"
+
+# Codex quota is reserved (operator, 2026-09-29): batch workers, reviewers and
+# every bead model_policy run on Claude Opus 5.5.
+[packets.model_policy.provider-neutral-calibrated-v2]
+backend = "claude"
+model = "claude-opus-5-5"
+
+[packets.model_policy.provider-neutral-capability-v1]
+backend = "claude"
+model = "claude-opus-5-5"
+
+[packets.model_policy.provider-pinned-v1]
+backend = "claude"
+model = "claude-opus-5-5"
 
 [operations.parser_census]
 description = "Parse the recorded source denominator with no archive and diff it against the last census"
