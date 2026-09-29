@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -117,128 +119,168 @@ def _iso_from_ms(value: object) -> str:
     return datetime.fromtimestamp(resolved / 1000, tz=UTC).isoformat()
 
 
-@dataclass(frozen=True, slots=True)
-class DaemonEventRetention:
-    """Declared bound on the ``daemon_events`` replay ledger.
+class EventSubscription:
+    """One live subscriber's position in the ledger, held while its stream is open."""
 
-    ``daemon_events`` lives in the disposable ops tier but nothing in
-    ``polylogue/`` ever deleted from it, so a long-running daemon emitting one
-    ``message.appended`` per live append grew the table without limit
-    (polylogue-20d.13.6).
+    __slots__ = ("_registry", "_token")
 
-    The ledger is a *resume buffer* for SSE subscribers, not archive history:
-    a subscriber whose ``Last-Event-ID`` falls below the retained range gets a
-    typed ``aged_out`` resync (:func:`query_events_since`) and re-reads current
-    state, so a bound changes how far back a resume can reach, never whether a
-    subscriber learns that it missed events. :data:`DEFAULT_DAEMON_EVENT_RETENTION`
-    is the production bound; :func:`prune_daemon_events` enforces it on every
-    emit.
+    def __init__(self, registry: EventSubscriberRegistry, token: int) -> None:
+        self._registry = registry
+        self._token = token
 
-    ``max_rows`` bounds the retained *id span*: after a prune the ledger holds
-    no id at or below ``MAX(id) - max_rows``. Ids are ``AUTOINCREMENT`` and
-    pruning only ever deletes a prefix, so the span is an upper bound on the row
-    count, and enforcing it costs two index probes instead of a ``COUNT(*)``
-    scan on every emit.
+    def advance(self, cursor: int) -> None:
+        """Record that the subscriber has now read every row through ``cursor``."""
+        self._registry._advance(self._token, cursor)
+
+    def close(self) -> None:
+        self._registry._close(self._token)
+
+    def __enter__(self) -> EventSubscription:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+class EventSubscriberRegistry:
+    """The live subscribers of the ``daemon_events`` ledger, and who may prune it.
+
+    The ledger is a resume buffer, so what it must keep is decided by who is
+    reading it, not by a row count or an age (polylogue-20d.13.6). A subscriber
+    is *live* while its SSE stream is open; only the daemon's HTTP server
+    serves those streams, so the daemon process is the one place that knows
+    every live cursor. It claims the ledger with :meth:`owning`, and only the
+    owning process prunes: an emitter in any other process cannot see the
+    daemon's subscribers and appends without pruning.
+
+    A subscriber that disconnects is not tracked afterwards. When it resumes
+    with a ``Last-Event-ID`` below what retention removed, it gets the typed
+    ``aged_out`` resync and refetches current state, which the rows it missed
+    only ever announced.
     """
 
-    max_rows: int | None = None
-    max_age_ms: int | None = None
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cursors: dict[int, int] = {}
+        self._next_token = 0
+        self._owners = 0
 
-    def __post_init__(self) -> None:
-        if self.max_rows is not None and self.max_rows <= 0:
-            raise ValueError("daemon event retention max_rows must be positive when declared")
-        if self.max_age_ms is not None and self.max_age_ms <= 0:
-            raise ValueError("daemon event retention max_age_ms must be positive when declared")
+    @contextmanager
+    def owning(self) -> Iterator[None]:
+        """Make this process the ledger's pruning owner for the block's lifetime."""
+        with self._lock:
+            self._owners += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._owners -= 1
 
-    @property
-    def is_bounded(self) -> bool:
-        """True only when at least one bound has actually been declared."""
-        return self.max_rows is not None or self.max_age_ms is not None
+    def subscribe(self, cursor: int) -> EventSubscription:
+        """Register a live subscriber that has read every row through ``cursor``."""
+        with self._lock:
+            token = self._next_token
+            self._next_token += 1
+            self._cursors[token] = max(0, cursor)
+        return EventSubscription(self, token)
+
+    def _advance(self, token: int, cursor: int) -> None:
+        with self._lock:
+            if token in self._cursors:
+                self._cursors[token] = max(0, cursor)
+
+    def _close(self, token: int) -> None:
+        with self._lock:
+            self._cursors.pop(token, None)
+
+    def prune_through(self, latest_id: int) -> int | None:
+        """Return the highest id every live subscriber has read, or ``None`` when this process may not prune.
+
+        With no live subscriber every row is read, so the answer is ``latest_id``.
+        """
+        with self._lock:
+            if self._owners <= 0:
+                return None
+            if not self._cursors:
+                return latest_id
+            return min(latest_id, min(self._cursors.values()))
 
 
-DAEMON_EVENT_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
-"""A week: the ops tier's telemetry horizon (``ROUTE_OBSERVATION_RETENTION_MS``).
-A subscriber disconnected for longer resyncs from current state."""
+EVENT_SUBSCRIBERS = EventSubscriberRegistry()
+"""The process's ledger subscriber registry; the daemon owns it for its lifetime."""
 
-DAEMON_EVENT_RETENTION_MAX_ROWS = 250_000
-"""Id span retained regardless of age, so a cold build that emits one event per
-session cannot grow the disposable tier without limit inside the age window.
-Frames are refs and counters (a few hundred bytes), so this caps the ledger at
-tens of megabytes."""
-
-DEFAULT_DAEMON_EVENT_RETENTION = DaemonEventRetention(
-    max_rows=DAEMON_EVENT_RETENTION_MAX_ROWS,
-    max_age_ms=DAEMON_EVENT_RETENTION_MAX_AGE_MS,
-)
-_RETENTION: DaemonEventRetention = DEFAULT_DAEMON_EVENT_RETENTION
+_LEDGER_NAME = "daemon_events"
 
 
-def daemon_event_retention() -> DaemonEventRetention:
-    """Return the retention bound currently enforced on ``daemon_events``."""
-    return _RETENTION
-
-
-def set_daemon_event_retention(retention: DaemonEventRetention) -> DaemonEventRetention:
-    """Install ``retention`` as the enforced bound and return the previous one."""
-    global _RETENTION
-    previous = _RETENTION
-    _RETENTION = retention
-    return previous
+def _pruned_through(conn: sqlite3.Connection) -> int:
+    """The highest id retention has removed (0 when nothing has been, or the tier predates it)."""
+    try:
+        row = conn.execute(
+            "SELECT pruned_through_id FROM daemon_event_retention WHERE ledger = ?", (_LEDGER_NAME,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return 0 if row is None else int(row[0])
 
 
 def prune_daemon_events(
     conn: sqlite3.Connection,
-    retention: DaemonEventRetention | None = None,
     *,
-    now_ms: int | None = None,
+    subscribers: EventSubscriberRegistry | None = None,
 ) -> int:
-    """Enforce ``retention`` on ``daemon_events`` and return the rows removed.
+    """Remove every row no live subscriber and no reader still needs; return how many.
 
-    The single enforcement point for the ledger bound. Called on every emit so
-    a resuming subscriber's cursor and the retained range are trimmed by the
-    same writer, inside the emit transaction.
+    The single enforcement point, run inside every emit's transaction. A row
+    at or below the lowest live subscriber cursor is removed when it is either
 
-    Both bounds delete an ``id`` *prefix*, never an interior row.
-    :func:`_cursor_refusal_reason` infers a subscriber's completeness from
-    ``MIN(id)`` alone, so an interior deletion is invisible to it: a cursor
-    below the hole still passes the minimum-id check and the next page is
-    delivered as ``OK`` with the deleted row silently missing. ``ts_ms`` is not
-    monotonic in ``id`` -- ``observed_at_ms`` is caller-supplied and the wall
-    clock can step backwards -- so age retention keeps the first row the
-    horizon retains and everything after it, rather than every row whose
-    timestamp happens to be old. Deleting through the highest expired ID
-    instead would discard in-window rows ahead of it. This over-retains an
-    out-of-order old row sitting behind a young one; ``max_rows`` still bounds
-    the ledger's size.
+    - a granular topic frame (:data:`GRANULAR_EVENT_KINDS`): it announces a
+      change whose state is committed in the tier its spec names, so a
+      subscriber that missed it loses nothing a resync does not return; or
+    - a record superseded by a newer row of the same kind: the in-process
+      readers of record kinds (status's last ingestion batch, the judgment
+      scheduler's latest receipt, capture health) read the newest row of the
+      kind, and the judgment receipts also have their typed table.
+
+    So the ledger holds what live subscribers have not read plus the newest
+    row of each record kind, and nothing grows with time or event volume. The
+    highest removed id is kept as the ledger's watermark: removal is not a
+    prefix any more, and :func:`query_events_since` refuses a cursor below the
+    watermark rather than trusting ``MIN(id)``.
     """
-    resolved = daemon_event_retention() if retention is None else retention
-    if not resolved.is_bounded:
+    registry = EVENT_SUBSCRIBERS if subscribers is None else subscribers
+    latest_row = conn.execute("SELECT MAX(id) FROM daemon_events").fetchone()
+    if latest_row is None or latest_row[0] is None:
         return 0
-    removed = 0
-    if resolved.max_age_ms is not None:
-        horizon = (current_epoch_ms() if now_ms is None else now_ms) - resolved.max_age_ms
-        # The first retained row in id order. ``NOT INDEXED`` walks the rowid
-        # b-tree from the oldest id and stops at the first in-window row, so
-        # each emit pays for the rows that expired since the previous one;
-        # ``MIN(id)`` over the ``ts_ms`` index would visit every in-window row.
-        boundary_row = conn.execute(
-            "SELECT id FROM daemon_events NOT INDEXED WHERE ts_ms >= ? ORDER BY id ASC LIMIT 1",
-            (horizon,),
-        ).fetchone()
-        boundary = None if boundary_row is None else boundary_row[0]
-        if boundary is None:
-            removed += conn.execute("DELETE FROM daemon_events").rowcount
-        else:
-            removed += conn.execute("DELETE FROM daemon_events WHERE id < ?", (int(boundary),)).rowcount
-    if resolved.max_rows is not None:
-        latest_row = conn.execute("SELECT MAX(id) FROM daemon_events").fetchone()
-        latest = None if latest_row is None or latest_row[0] is None else int(latest_row[0])
-        if latest is not None and latest > resolved.max_rows:
-            removed += conn.execute(
-                "DELETE FROM daemon_events WHERE id <= ?",
-                (latest - resolved.max_rows,),
-            ).rowcount
-    return removed
+    through = registry.prune_through(int(latest_row[0]))
+    if through is None or through <= 0:
+        return 0
+    granular = sorted(GRANULAR_EVENT_KINDS)
+    placeholders = ",".join("?" for _ in granular)
+    removed = [
+        int(row[0])
+        for row in conn.execute(
+            f"""
+            DELETE FROM daemon_events
+            WHERE id <= ?
+              AND (
+                kind IN ({placeholders})
+                OR id < (SELECT MAX(newer.id) FROM daemon_events AS newer WHERE newer.kind = daemon_events.kind)
+              )
+            RETURNING id
+            """,
+            (through, *granular),
+        ).fetchall()
+    ]
+    if removed:
+        conn.execute(
+            """
+            INSERT INTO daemon_event_retention (ledger, pruned_through_id) VALUES (?, ?)
+            ON CONFLICT(ledger) DO UPDATE SET
+                pruned_through_id = MAX(pruned_through_id, excluded.pruned_through_id)
+            """,
+            (_LEDGER_NAME, max(removed)),
+        )
+    return len(removed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,10 +302,9 @@ def emit_daemon_events(
     """Append several events to the ledger in one connection and one commit.
 
     A live batch announces its summary plus one event per touched session.
-    Emitting those one at a time opened the ledger, ran its DDL, counted the
-    table for retention and committed once per event: two per ingested
-    session, on the writer. The rows, their order and the retention bound are
-    the same; they land together.
+    Emitting those one at a time opened the ledger, ran its DDL, pruned and
+    committed once per event: two per ingested session, on the writer. The
+    rows, their order and the retention rule are the same; they land together.
     """
     if not records:
         return
@@ -279,7 +320,7 @@ def emit_daemon_events(
                 for record in records
             ],
         )
-        prune_daemon_events(conn, now_ms=observed_at_ms)
+        prune_daemon_events(conn)
         conn.commit()
     finally:
         conn.close()
@@ -337,7 +378,7 @@ def emit_daemon_event(
                 json.dumps(payload or {}),
             ),
         )
-        prune_daemon_events(conn, now_ms=observed_at_ms)
+        prune_daemon_events(conn)
         conn.commit()
     finally:
         conn.close()
@@ -504,6 +545,7 @@ class DaemonEventPage:
     retained_min_id: int | None
     """Lowest id still in the ledger, or ``None`` when the ledger holds no rows."""
     latest_id: int
+    """The newest id the ledger has held: the cursor a resync is consistent with."""
     resync: dict[str, object] | None = None
     """Snapshot-shaped envelope present exactly when ``status`` is ``AGED_OUT``."""
 
@@ -514,25 +556,35 @@ class DaemonEventPage:
             raise ValueError("an aged-out event page must not also deliver a partial row page")
 
 
-def _retained_range(conn: sqlite3.Connection) -> tuple[int | None, int]:
+def _retained_range(conn: sqlite3.Connection) -> tuple[int | None, int, int]:
+    """Return ``(MIN(id), high-water id, pruned-through watermark)`` in one snapshot.
+
+    The high-water id is the newest id the ledger has ever held: the newest row,
+    or the watermark when retention removed the newest rows too.
+    """
     row = conn.execute("SELECT MIN(id), COALESCE(MAX(id), 0) FROM daemon_events").fetchone()
+    pruned_through = _pruned_through(conn)
     if row is None:
-        return None, 0
-    return (None if row[0] is None else int(row[0])), int(row[1])
+        return None, pruned_through, pruned_through
+    retained_min = None if row[0] is None else int(row[0])
+    return retained_min, max(int(row[1]), pruned_through), pruned_through
 
 
-def _cursor_refusal_reason(last_id: int, retained_min: int | None, latest: int) -> str | None:
-    """Return why ``last_id`` cannot be honoured, or ``None`` when it can."""
+def _cursor_refusal_reason(last_id: int, pruned_through: int, high_water: int) -> str | None:
+    """Return why ``last_id`` cannot be honoured, or ``None`` when it can.
+
+    Retention removes only ids at or below the watermark, so a subscriber that
+    has read through the watermark has every later row; one below it has
+    missed at least the watermark row itself.
+    """
     if last_id <= 0:
         return None
-    if retained_min is None:
-        # The table exists but holds nothing, while the subscriber claims to
-        # have already seen row ``last_id``: its history is gone.
+    if last_id > high_water:
+        # Ahead of every id this ledger ever held: the disposable ops tier was
+        # reset or replaced under the subscriber.
         return RESYNC_LEDGER_RESET
-    if last_id + 1 < retained_min:
+    if last_id < pruned_through:
         return RESYNC_CURSOR_AGED_OUT
-    if last_id > latest:
-        return RESYNC_LEDGER_RESET
     return None
 
 
@@ -547,13 +599,13 @@ def query_events_since(
     Used by the live SSE stream and ETag polling fallback in the web reader.
     ``kinds`` restricts to a whitelist (empty/None means all kinds).
 
-    A cursor below the retained minimum is refused with
+    A cursor below the retention watermark is refused with
     :attr:`EventCursorStatus.AGED_OUT` and a resync envelope rather than the
     silently short page ``WHERE id > ?`` would otherwise produce.
 
-    The retained-range check and the page read observe **one** snapshot. In
+    The watermark check and the page read observe **one** snapshot. In
     autocommit each statement takes its own, so a writer pruning between them
-    lets a cursor pass the minimum-id check and then read a page whose rows
+    lets a cursor pass the watermark check and then read a page whose rows
     were deleted in the gap -- delivered as a short ``OK`` page, which is
     exactly the silent event loss the refusal exists to prevent. ``BEGIN`` is
     deferred, so the snapshot is taken by the first read below and released by
@@ -579,8 +631,8 @@ def query_events_since(
         )
     try:
         conn.execute("BEGIN")
-        retained_min, latest = _retained_range(conn)
-        refusal = _cursor_refusal_reason(last_id, retained_min, latest)
+        retained_min, latest, pruned_through = _retained_range(conn)
+        refusal = _cursor_refusal_reason(last_id, pruned_through, latest)
         if refusal is not None:
             kind_counts = {
                 str(row[0]): int(row[1])
@@ -1029,19 +1081,16 @@ __all__ = [
     "RESYNC_CURSOR_AGED_OUT",
     "RESYNC_LEDGER_RESET",
     "DaemonEventPage",
-    "DAEMON_EVENT_RETENTION_MAX_AGE_MS",
-    "DAEMON_EVENT_RETENTION_MAX_ROWS",
-    "DEFAULT_DAEMON_EVENT_RETENTION",
-    "DaemonEventRetention",
+    "EVENT_SUBSCRIBERS",
     "EventAudience",
+    "EventSubscriberRegistry",
+    "EventSubscription",
     "EventCursorStatus",
     "EventProducerPhase",
     "EventSpec",
     "build_snapshot_envelope",
-    "daemon_event_retention",
     "event_spec",
     "prune_daemon_events",
-    "set_daemon_event_retention",
     "emit_session_appended",
     "emit_session_updated",
     "emit_daemon_event",

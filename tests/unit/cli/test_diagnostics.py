@@ -757,12 +757,13 @@ def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatc
         obj=_env_with_archive_root(tmp_path),
     )
 
-    # Rows written by other processes: their drop ledgers are not countable
-    # here, so the answer is degraded (exit 1) even though it holds buckets.
-    assert result.exit_code == 1, result.output
+    # Every writer records its drops in the ops tier, so a reader in another
+    # process knows none were lost: the answer is ok (exit 0).
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["outcome"]["state"] == "degraded"
-    assert payload["outcome"]["reason"] == "drop_accounting_incomplete"
+    assert payload["outcome"]["state"] == "ok"
+    assert payload["drops"]["accounting_complete"] is True
+    assert payload["drops"]["total"] == 0
     assert len(payload["buckets"]) == 1
     bucket = payload["buckets"][0]
     assert bucket["surface"] == "cli"
@@ -800,23 +801,49 @@ def test_latency_command_excludes_observations_outside_lookback_window(tmp_path:
         obj=_env_with_archive_root(tmp_path),
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert json.loads(result.output)["buckets"] == []
 
 
-def test_latency_json_zero_rows_reports_unknown_drop_accounting(tmp_path: Path) -> None:
-    """An empty window read from another process is "drops unknown", never "zero drops"."""
+def test_latency_json_zero_rows_with_no_drops_is_empty(tmp_path: Path) -> None:
+    """An empty window with nothing recorded as lost is ``empty``, not a gap."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
     result = CliRunner().invoke(diagnostics.latency_command, ["--format", "json"], obj=_env_with_archive_root(tmp_path))
 
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.output)
+    assert payload["buckets"] == []
+    assert payload["drops"]["accounting_complete"] is True
+    assert payload["outcome"]["state"] == "empty"
+
+
+def test_latency_json_zero_rows_with_recorded_drops_is_degraded(tmp_path: Path) -> None:
+    """Degraded, not empty: every observation in the window was lost, and the drops say so."""
+    import time as _time
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import RouteObservationDropRow, record_route_observation_drops
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    now_ms = int(_time.time() * 1000)
+    conn = sqlite3.connect(ops_db)
+    record_route_observation_drops(
+        conn,
+        drops=[RouteObservationDropRow("cli", "cli.status", "emit_failed", now_ms - 1000, now_ms - 500, 2)],
+        now_ms=now_ms,
+    )
+    conn.close()
+    result = CliRunner().invoke(diagnostics.latency_command, ["--format", "json"], obj=_env_with_archive_root(tmp_path))
+
     assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
     assert payload["buckets"] == []
-    assert payload["drops"]["accounting_complete"] is False
-    # Degraded, not empty: the gap may be why the window holds nothing.
+    assert payload["drops"]["by_reason"] == {"emit_failed": 2}
     assert payload["outcome"]["state"] == "degraded"
 
 

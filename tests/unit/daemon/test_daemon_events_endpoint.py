@@ -18,7 +18,6 @@ status payload on every probe.
 from __future__ import annotations
 
 import ast
-import contextlib
 import dataclasses
 import hashlib
 import importlib
@@ -26,12 +25,11 @@ import inspect
 import json
 import re
 import sqlite3
-from collections.abc import Iterator
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1074,125 +1072,46 @@ class TestAdvertisedTopicContracts:
             dataclasses.replace(spec, object_ref="not_a_payload_key")
 
 
-@contextlib.contextmanager
-def _retention(max_rows: int | None = None, max_age_ms: int | None = None) -> Iterator[None]:
-    """Install a declared ledger bound (unbounded when both are ``None``)."""
-    from polylogue.daemon.events import DaemonEventRetention, set_daemon_event_retention
-
-    previous = set_daemon_event_retention(DaemonEventRetention(max_rows=max_rows, max_age_ms=max_age_ms))
-    try:
-        yield
-    finally:
-        set_daemon_event_retention(previous)
-
-
 class TestDaemonEventRetention:
-    """The ledger has a named enforcement point and a declared production bound."""
+    """The ledger keeps what live subscribers have not read, with no row count or age."""
 
-    def test_production_ledger_is_bounded_by_age_and_id_span(self) -> None:
-        """Anti-vacuity: restoring the unbounded default leaves the disposable
-        tier growing without limit, and both assertions go red."""
-        from polylogue.daemon.events import (
-            DAEMON_EVENT_RETENTION_MAX_AGE_MS,
-            DAEMON_EVENT_RETENTION_MAX_ROWS,
-            daemon_event_retention,
-        )
+    def test_an_open_stream_holds_its_unread_rows_against_the_owners_prune(self, empty_events_db: Path) -> None:
+        """A stream registered as a live subscriber reads every row emitted after it opened.
 
-        retention = daemon_event_retention()
-        assert retention.is_bounded is True
-        assert (retention.max_rows, retention.max_age_ms) == (
-            DAEMON_EVENT_RETENTION_MAX_ROWS,
-            DAEMON_EVENT_RETENTION_MAX_AGE_MS,
-        )
+        Anti-vacuity: without the subscription in ``_stream_events`` the owner's
+        next emit prunes the unread frames and the stream sees an aged-out resync.
+        """
+        from polylogue.daemon import events_http
+        from polylogue.daemon.events import EVENT_SUBSCRIBERS, emit_message_appended
 
-    def test_production_bound_is_enforced_by_the_real_emit(self, empty_events_db: Path) -> None:
-        """The default bound runs on the production emit, not only an injected one.
+        emitted: list[int] = []
+        real_query = events_http.query_events_since
 
-        Each emit prunes against its own ``observed_at_ms``, so no wall clock is read."""
-        from polylogue.daemon.events import DAEMON_EVENT_RETENTION_MAX_AGE_MS, emit_daemon_event, query_events_since
+        def emit_then_query(cursor: int, **kwargs: object) -> object:
+            if not emitted:
+                for index in range(3):
+                    emit_message_appended(session_id=f"s-{index}", source_name="codex", appended_count=1)
+                emitted.append(1)
+            return real_query(cursor, **kwargs)  # type: ignore[arg-type]
 
-        base_ms = 1_700_000_000_000
-        emit_daemon_event("ingestion_batch", payload={"n": "old"}, observed_at_ms=base_ms)
-        emit_daemon_event(
-            "ingestion_batch", payload={"n": "new"}, observed_at_ms=base_ms + DAEMON_EVENT_RETENTION_MAX_AGE_MS + 1
-        )
+        with EVENT_SUBSCRIBERS.owning(), patch.object(events_http, "query_events_since", emit_then_query):
+            handler = _make_handler("GET", "/api/events?max_seconds=1")
+            handler.do_GET()
+        out = cast("BytesIO", handler.wfile).getvalue()
 
-        assert [cast("dict[str, object]", event["payload"])["n"] for event in query_events_since(0).events] == ["new"]
+        assert out.count(b"event: message.appended\n") == 3
+        assert b"cursor_aged_out" not in out
 
-    def test_unbounded_retention_prunes_nothing(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_daemon_event, query_events_since
+    def test_a_closed_stream_no_longer_holds_rows(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import EVENT_SUBSCRIBERS, emit_message_appended, query_events_since
 
-        with _retention():
-            for index in range(6):
-                emit_daemon_event("ingestion_batch", payload={"n": index})
-        assert len(query_events_since(0).events) == 6
-
-    def test_row_bound_is_an_id_span_behind_the_latest_row(self, empty_events_db: Path) -> None:
-        """The retained ids are the ``max_rows`` ids ending at the newest row.
-
-        Anti-vacuity: a prune that deleted an interior row, or kept the oldest
-        rows instead of the newest, breaks the contiguous suffix asserted here."""
-        from polylogue.daemon.events import emit_daemon_event, query_events_since
-
-        with _retention(max_rows=3):
-            for index in range(5):
-                emit_daemon_event("ingestion_batch", payload={"n": index})
-            page = query_events_since(0)
-
-        ids = [cast("int", event["id"]) for event in page.events]
-        assert ids == list(range(page.latest_id - 2, page.latest_id + 1))
-
-    def test_declared_row_cap_is_enforced_on_every_emit(self, empty_events_db: Path) -> None:
-        """Anti-vacuity: a no-op enforcement point leaves all six rows behind."""
-        from polylogue.daemon.events import emit_daemon_event, query_events_since
-
-        with _retention(max_rows=3):
-            for index in range(6):
-                emit_daemon_event("ingestion_batch", payload={"n": index})
-            page = query_events_since(0)
-
-        assert [cast("dict[str, object]", event["payload"])["n"] for event in page.events] == [3, 4, 5]
-        assert page.retained_min_id is not None
-
-    def test_declared_age_window_is_enforced_on_every_emit(
-        self, empty_events_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from polylogue.daemon import events
-        from polylogue.daemon.events import emit_daemon_event, query_events_since
-
-        base_ms = 1_700_000_000_000
-        monkeypatch.setattr(events, "current_epoch_ms", lambda: base_ms + 30_000)
-        with _retention(max_age_ms=10_000):
-            emit_daemon_event("ingestion_batch", payload={"n": "stale"}, observed_at_ms=base_ms)
-            emit_daemon_event("ingestion_batch", payload={"n": "fresh"}, observed_at_ms=base_ms + 60_000)
-            page = query_events_since(0)
-
-        assert [cast("dict[str, object]", event["payload"])["n"] for event in page.events] == ["fresh"]
-
-    def test_retention_rejects_a_non_positive_declared_bound(self) -> None:
-        from polylogue.daemon.events import DaemonEventRetention
-
-        with pytest.raises(ValueError, match="max_rows"):
-            DaemonEventRetention(max_rows=0)
-        with pytest.raises(ValueError, match="max_age_ms"):
-            DaemonEventRetention(max_age_ms=-1)
-
-    def test_age_bound_keeps_an_in_window_first_row_and_its_suffix(self, empty_events_db: Path) -> None:
-        """Anti-vacuity: deleting through the highest expired ID also deletes the in-window row 1."""
-        from polylogue.daemon.events import DaemonEventRetention, _ensure_events_db, prune_daemon_events
-
-        initialized = _ensure_events_db(empty_events_db)
-        initialized.close()
-        with sqlite3.connect(empty_events_db) as conn:
-            conn.executemany(
-                "INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (?, 'test', '{}')",
-                [(20_000,), (1_000,), (2_000,), (3_000,)],
-            )
-            assert prune_daemon_events(conn, DaemonEventRetention(max_age_ms=5_000), now_ms=10_000) == 0
-            assert [row[0] for row in conn.execute("SELECT id FROM daemon_events ORDER BY id")] == [1, 2, 3, 4]
-            conn.execute("INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (1_000, 'test', '{}')")
-            conn.execute("UPDATE daemon_events SET ts_ms = 1_000 WHERE id = 1")
-            assert prune_daemon_events(conn, DaemonEventRetention(max_age_ms=5_000), now_ms=10_000) == 5
+        with EVENT_SUBSCRIBERS.owning():
+            subscription = EVENT_SUBSCRIBERS.subscribe(0)
+            emit_message_appended(session_id="s-1", source_name="codex", appended_count=1)
+            assert len(query_events_since(0).events) == 1
+            subscription.close()
+            emit_message_appended(session_id="s-2", source_name="codex", appended_count=1)
+            assert query_events_since(0).events == ()
 
 
 class TestAgedOutCursorResync:
@@ -1204,17 +1123,19 @@ class TestAgedOutCursorResync:
         Uses the production enforcement point to do the pruning, so the fixture
         reproduces the real route rather than a hand-rolled DELETE.
         """
-        from polylogue.daemon.events import emit_daemon_event, query_events_since
+        from polylogue.daemon.events import EVENT_SUBSCRIBERS, emit_daemon_event, query_events_since
 
         for index in range(4):
             emit_daemon_event("ingestion_batch", payload={"n": index})
         client_cursor = cast("int", query_events_since(0).events[0]["id"])
-        with _retention(max_rows=2):
+        # The daemon owns the ledger and no subscriber is live, so the next emit
+        # removes every superseded batch record the client has not read.
+        with EVENT_SUBSCRIBERS.owning():
             emit_daemon_event("ingestion_batch", payload={"n": "after-prune"})
         return client_cursor
 
     def test_cursor_below_the_retained_minimum_is_refused_with_a_resync(self, empty_events_db: Path) -> None:
-        """Anti-vacuity: without the retained-minimum check this returns a short
+        """Anti-vacuity: without the watermark check this returns a short
         page of surviving rows and reports it as a complete ``ok`` answer."""
         from polylogue.daemon.events import EventCursorStatus, query_events_since
 

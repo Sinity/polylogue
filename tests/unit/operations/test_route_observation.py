@@ -510,10 +510,13 @@ def test_rows_removed_by_the_writers_row_cap_are_counted_as_drops(
         with observe_route(archive_root=tmp_path, surface="cli", route="cli.capped"):
             pass
 
-    drops = route_observation_drops()
-    assert drops.by_reason.get("pruned", 0) == 3  # rows 1..3 evicted to hold the cap at 2
+    # Recorded in the ops tier by the evicting write itself, so any reader counts them.
     conn = sqlite3.connect(tmp_path / "ops.db")
     assert conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0] == 2
+    assert conn.execute(
+        "SELECT reason, surface, route, SUM(drop_count) FROM route_observation_drops GROUP BY reason, surface, route"
+    ).fetchall() == [("pruned", "cli", "cli.capped", 3)]  # rows 1..3 evicted to hold the cap at 2
+    assert route_observation_drops().total == 0
 
 
 def test_an_unsampled_spec_counts_its_invocations_rather_than_losing_them(tmp_path: Path) -> None:
@@ -647,9 +650,10 @@ def test_the_reader_computes_percentiles_over_every_row_in_the_window(tmp_path: 
     assert by_route["cli.status"].p95_ms == 5_000
     assert by_route["mcp.search"].sample_count == 1
     assert [bucket.route for bucket in cli_only.buckets] == ["cli.status"]
-    # A reader cannot see the emitters' in-process ledgers: unknown, not zero.
-    assert report.drops.accounting_complete is False
-    assert report.outcome.state == "degraded"
+    # The ops tier holds every emitter's drops: this window lost none, and says so.
+    assert report.drops.accounting_complete is True
+    assert report.drops.total == 0
+    assert report.outcome.state == "ok"
 
 
 def test_a_fully_accounted_report_is_ok_and_an_empty_one_is_empty() -> None:
@@ -670,3 +674,100 @@ def test_latency_report_is_frozen() -> None:
     report = compute_latency_percentiles([], drops=RouteObservationDrops.none_observed())
     with pytest.raises(AttributeError):
         report.buckets = ()  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Durable drop accounting across processes (polylogue-jtwu.2 J2-1)
+# ---------------------------------------------------------------------------
+
+
+def _read_report(ops_db: Path, *, since_ms: int, now_ms: int | None = None) -> object:
+    from polylogue.operations.route_observation import read_latency_report
+
+    conn = sqlite3.connect(ops_db)
+    try:
+        return read_latency_report(conn, since_ms=since_ms, now_ms=now_ms)
+    finally:
+        conn.close()
+
+
+def test_drops_held_while_the_tier_was_locked_reach_a_reader_in_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: drop the pending drops from the next write (or drain without
+    writing) and the reader reports ``ok`` over a sample that lost three members."""
+    from polylogue.operations import route_observation as route_observation_module
+    from polylogue.operations.route_observation import RouteLatencyReport
+
+    ops_db = _init_ops(tmp_path)
+    real_open = route_observation_module.open_observation_connection
+
+    def _locked(_ops_db: Path) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(route_observation_module, "open_observation_connection", _locked)
+    for _ in range(3):
+        with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.locked"):
+            pass
+    assert route_observation_drops().attributed_to("mcp", "mcp.locked") == 3
+
+    monkeypatch.setattr(route_observation_module, "open_observation_connection", real_open)
+    with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.locked"):
+        pass
+
+    # Nothing is left only in this process; a fresh reader sees the loss.
+    assert route_observation_drops().total == 0
+    report = cast(RouteLatencyReport, _read_report(ops_db, since_ms=0, now_ms=0))
+    assert report.drops.accounting_complete is True
+    assert report.drops.by_reason == {"emit_failed": 3}
+    bucket = report.buckets[0]
+    assert (bucket.sample_count, bucket.dropped_count) == (1, 3)
+    assert bucket.sample_completeness == pytest.approx(0.25)
+    assert report.outcome.state == "degraded"
+    assert report.outcome.to_dict()["reason"] == "observations_dropped"
+
+
+def test_the_exit_flush_records_drops_no_later_observation_carried(tmp_path: Path) -> None:
+    from polylogue.operations.route_observation import RouteLatencyReport, flush_route_observation_drops
+
+    ops_db = _init_ops(tmp_path)
+    spec = RouteObservationSpec(surface="cli", route="cli.unsampled", sampled=False)
+    with observe_route(archive_root=tmp_path, surface="cli", route="cli.unsampled", spec=spec):
+        pass
+    assert route_observation_drops().total == 1
+
+    assert flush_route_observation_drops() == 0
+    assert route_observation_drops().total == 0
+    report = cast(RouteLatencyReport, _read_report(ops_db, since_ms=0, now_ms=0))
+    assert report.drops.by_reason == {"not_sampled": 1}
+
+
+def test_an_unwritable_tier_at_exit_keeps_its_drops_and_reports_them(tmp_path: Path) -> None:
+    from polylogue.operations.route_observation import flush_route_observation_drops
+
+    missing = tmp_path / "gone"
+    with observe_route(archive_root=missing, surface="cli", route="cli.dropped"):
+        pass
+    with observe_route(archive_root=None, surface="cli", route="cli.rootless"):
+        pass
+
+    # The archive-less drop belongs to no archive's sample and is not owed to any tier.
+    assert flush_route_observation_drops() == 1
+    assert route_observation_drops().by_reason == {"ops_db_missing": 1, "no_archive_root": 1}
+
+
+def test_a_window_reaching_past_retention_is_degraded(tmp_path: Path) -> None:
+    from polylogue.operations.route_observation import WINDOW_EXCEEDS_RETENTION, RouteLatencyReport
+    from polylogue.storage.sqlite.archive_tiers.ops_write import ROUTE_OBSERVATION_RETENTION_MS
+
+    ops_db = _init_ops(tmp_path)
+    now_ms = 1_700_000_000_000
+    inside = cast(RouteLatencyReport, _read_report(ops_db, since_ms=now_ms - 1_000, now_ms=now_ms))
+    beyond = cast(
+        RouteLatencyReport,
+        _read_report(ops_db, since_ms=now_ms - ROUTE_OBSERVATION_RETENTION_MS - 1, now_ms=now_ms),
+    )
+    assert inside.window_exceeds_retention is False
+    assert inside.outcome.state == "empty"
+    assert beyond.window_exceeds_retention is True
+    assert beyond.outcome.to_dict()["reason"] == WINDOW_EXCEEDS_RETENTION

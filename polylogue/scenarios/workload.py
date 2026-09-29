@@ -388,6 +388,10 @@ class WorkloadReceipt:
     cancellation_requested: bool = False
     cleanup_complete: bool | None = None
     notes: tuple[str, ...] = ()
+    daemon_run_id: str | None = None
+    """The daemon run the workload executed in, when it ran inside one: the id
+    that run's lifecycle row, heartbeats, status and events carry, so a
+    receipt joins the run's termination evidence (polylogue-peo)."""
 
     def __post_init__(self) -> None:
         observed_phases = tuple(phase.name for phase in self.phases)
@@ -427,6 +431,7 @@ class WorkloadReceipt:
         cancellation_requested: bool = False,
         cleanup_complete: bool | None = None,
         notes: tuple[str, ...] = (),
+        daemon_run_id: str | None = None,
     ) -> WorkloadReceipt:
         """Construct a receipt whose budget verdicts are derived, not asserted."""
         return cls(
@@ -443,6 +448,7 @@ class WorkloadReceipt:
             cancellation_requested=cancellation_requested,
             cleanup_complete=cleanup_complete,
             notes=notes,
+            daemon_run_id=daemon_run_id,
         )
 
     def to_payload(self, *, include_receipt_id: bool = True) -> JSONDocument:
@@ -464,6 +470,10 @@ class WorkloadReceipt:
                 "notes": list(self.notes),
             }
         )
+        if self.daemon_run_id is not None:
+            # Present only when the workload ran inside a daemon, so receipts
+            # outside one keep the content identity they always had.
+            payload["daemon_run_id"] = self.daemon_run_id
         if include_receipt_id:
             payload["receipt_id"] = self.receipt_id
         return payload

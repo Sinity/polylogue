@@ -20,8 +20,11 @@ Backpressure coalescing (#1204): when the ledger has produced more than
 single ``snapshot`` event carrying ``{kind: count}`` rather than
 streaming each row to a slow client.
 
-Aged-out cursors (polylogue-20d.13.6): when ``since``/``Last-Event-ID``
-names history the ledger no longer retains, the handler answers with the
+Aged-out cursors (polylogue-20d.13.6): an open SSE stream is a live
+subscriber, and retention keeps every row after its cursor. When
+``since``/``Last-Event-ID`` names history the ledger no longer retains (a
+poll, or a stream that reconnected after rows it had not read were pruned),
+the handler answers with the
 same ``snapshot`` envelope carrying ``resync: true`` and a reason instead
 of a short or empty page, and the poll shape reports ``outcome:
 "degraded"``. An empty page would read to the client as "nothing
@@ -39,7 +42,12 @@ from collections import Counter
 from http import HTTPStatus
 from typing import TYPE_CHECKING, cast
 
-from polylogue.daemon.events import EventCursorStatus, build_snapshot_envelope, query_events_since
+from polylogue.daemon.events import (
+    EVENT_SUBSCRIBERS,
+    EventCursorStatus,
+    build_snapshot_envelope,
+    query_events_since,
+)
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler
@@ -157,6 +165,9 @@ def _stream_events(
 
     cursor = since
     deadline = time.monotonic() + max_seconds
+    # While the stream is open it is a live subscriber: retention keeps every
+    # row after its cursor (polylogue-20d.13.6).
+    subscription = EVENT_SUBSCRIBERS.subscribe(cursor)
     try:
         _write_sse_comment(handler, b"open")
         while time.monotonic() < deadline:
@@ -168,6 +179,7 @@ def _stream_events(
                 # to the newest retained id is the cursor that refetch is
                 # consistent with, and it cannot re-trip the same refusal.
                 cursor = page.latest_id
+                subscription.advance(cursor)
                 time.sleep(1.0)
                 continue
             events = list(page.events)
@@ -180,6 +192,7 @@ def _stream_events(
                     for event in events:
                         _write_sse_event(handler, event)
                         cursor = int(cast("int", event["id"]))
+                subscription.advance(cursor)
             else:
                 _write_sse_comment(handler, b"tick")
             time.sleep(1.0)
@@ -195,6 +208,8 @@ def _stream_events(
         # still express.
         _terminate_stream_with_error(handler, exc)
         return
+    finally:
+        subscription.close()
 
 
 def _terminate_stream_with_error(handler: DaemonAPIHandler, exc: BaseException) -> None:

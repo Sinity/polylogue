@@ -849,6 +849,37 @@ async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> N
     )
 
 
+async def _reconcile_ended_daemon_runs() -> None:
+    """Classify how every earlier run of this archive ended (polylogue-peo).
+
+    One pass per daemon start, as its own service rather than a startup step:
+    reading the journal and cgroup evidence happens off the writer at its own
+    pace, and only the receipt write takes the writer. A run that cannot be
+    reconciled now stays pending in status and is reconciled by the next start.
+    """
+    from polylogue.daemon.termination import HostTerminationEvidence
+
+    lifecycle = _daemon_lifecycle
+    if lifecycle is None:
+        return
+    # ``to_thread`` carries this context, so the read keeps the run's correlation.
+    receipts = await asyncio.to_thread(lifecycle.reconcile_ended_runs, HostTerminationEvidence())
+    if not receipts:
+        return
+    written = await daemon_write_coordinator().run_sync(
+        "daemon.lifecycle.reconcile", lifecycle.record_termination_receipts, receipts
+    )
+    for receipt in receipts:
+        emit(
+            "daemon.lifecycle.run_reconciled",
+            level=WARNING if receipt.classification.value not in ("clean", "handled_signal") else INFO,
+            outcome="ok",
+            run_id=receipt.run_id,
+            state=receipt.classification.value,
+        )
+    emit("daemon.lifecycle.reconciliation_recorded", outcome="ok", count=written)
+
+
 async def _periodic_db_optimize() -> None:
     """Run SQLite PRAGMA optimize once daily to keep query plans current.
 
@@ -1952,6 +1983,7 @@ async def run_daemon_services(
     until its writer coordinator has drained.
     """
     from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
+    from polylogue.daemon.events import EVENT_SUBSCRIBERS
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
     from polylogue.storage.sqlite.connection_profile import arm_recurring_checkpoint_owner
@@ -1968,6 +2000,9 @@ async def run_daemon_services(
         # contending through the busy timeout (polylogue-8qm4k).
         install_archive_write_guard(),
         arm_recurring_checkpoint_owner(),
+        # This process serves every SSE subscriber, so it alone knows every
+        # live cursor and is the only one that prunes the event ledger.
+        EVENT_SUBSCRIBERS.owning(),
     ):
         await _run_daemon_services_under_active_writer_lease(
             rebuild_exclusion=rebuild_exclusion,
@@ -2523,6 +2558,7 @@ async def _run_daemon_services_under_active_writer_lease(
         )
 
     supervisor.start("lifecycle_heartbeat", _periodic_lifecycle_heartbeat)
+    supervisor.start("termination_reconciliation", _reconcile_ended_daemon_runs)
     supervisor.start(
         "health_check",
         lambda: _periodic_health_check(sources=sources if enable_watch else ()),

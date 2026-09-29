@@ -57,6 +57,10 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
         "judgment scheduler", "one typed receipt per operation", True, "retain independently"
     ),
     "daemon_lifecycle": OpsTableDisposition("daemon", "one row per daemon run", True, "retain"),
+    "daemon_termination_receipts": OpsTableDisposition(
+        "daemon", "one reconciled termination receipt per ended daemon run", True, "retain"
+    ),
+    "daemon_event_retention": OpsTableDisposition("daemon", "one prune watermark per event ledger", True, "retain"),
     "embedding_catchup_runs": OpsTableDisposition(
         "embedding owner", "one row per catch-up run with counters", True, "retain independently"
     ),
@@ -69,6 +73,9 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     ),
     "route_observations": OpsTableDisposition(
         "route diagnostics", "one bounded route observation", False, "retain pending map"
+    ),
+    "route_observation_drops": OpsTableDisposition(
+        "route diagnostics", "one counted batch of lost route observations", False, "retain pending map"
     ),
     "fts_drift_samples": OpsTableDisposition(
         "FTS diagnostics", "one bounded drift sample", False, "retain pending map"
@@ -292,6 +299,16 @@ CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC);
 
+-- polylogue-20d.13.6: the highest daemon_events id retention has removed.
+-- Retention keeps interior rows (the newest row of each record kind and
+-- object), so MIN(id) no longer says where complete history starts; a resume
+-- cursor below this watermark may have missed a pruned row and is refused
+-- with the typed aged_out resync.
+CREATE TABLE IF NOT EXISTS daemon_event_retention (
+    ledger             TEXT PRIMARY KEY,
+    pruned_through_id  INTEGER NOT NULL CHECK(pruned_through_id >= 0)
+) STRICT;
+
 -- Judgment automation receipts are the typed authority for scheduler health.
 -- Keep the legacy daemon_events row as a compatibility/event-stream record,
 -- but do not require queue-health readers to decode its JSON payload.
@@ -328,6 +345,21 @@ CREATE TABLE IF NOT EXISTS daemon_lifecycle (
 
 CREATE INDEX IF NOT EXISTS idx_daemon_lifecycle_latest
 ON daemon_lifecycle(started_at_ms DESC);
+
+-- polylogue-peo: how each ended daemon run terminated, reconciled on the next
+-- start from service-manager, journal, kernel, cgroup, heartbeat and workload
+-- evidence. One row per run; a second reconciliation of the same run is a
+-- no-op. ``classification`` vocabulary is validated at the write boundary.
+CREATE TABLE IF NOT EXISTS daemon_termination_receipts (
+    run_id                TEXT PRIMARY KEY,
+    classification        TEXT NOT NULL,
+    reconciled_at_ms      INTEGER NOT NULL,
+    reconciled_by_run_id  TEXT NOT NULL,
+    receipt_json          TEXT NOT NULL CHECK(json_valid(receipt_json))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_daemon_termination_receipts_reconciled
+ON daemon_termination_receipts(reconciled_at_ms DESC);
 
 -- Sole live embedding_catchup_runs table (writer: ops_write.upsert_embedding_catchup_run).
 -- Status vocabulary is generated from the canonical operation lifecycle enum.
@@ -422,6 +454,26 @@ ON route_observations(trace_id, started_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_route_observations_started
 ON route_observations(started_at_ms);
+
+-- polylogue-jtwu.2: route observations that never reached route_observations,
+-- counted where a reader in any process can see them. One row aggregates the
+-- drops one process counted for a (surface, route, reason) between two
+-- flushes; the observed span is the lost observations' own start times, and a
+-- lookback window counts every row whose span reaches into it (an over-count
+-- at the window edge, never an under-count). Pruned with route_observations'
+-- age horizon; ``reason`` vocabulary is validated at the write boundary.
+CREATE TABLE IF NOT EXISTS route_observation_drops (
+    drop_id               INTEGER PRIMARY KEY,
+    surface               TEXT NOT NULL,
+    route                 TEXT NOT NULL,
+    reason                TEXT NOT NULL,
+    first_observed_at_ms  INTEGER NOT NULL,
+    last_observed_at_ms   INTEGER NOT NULL CHECK(last_observed_at_ms >= first_observed_at_ms),
+    drop_count            INTEGER NOT NULL CHECK(drop_count > 0)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_route_observation_drops_observed
+ON route_observation_drops(last_observed_at_ms);
 
 -- polylogue-1xc.12: bounded drift-magnitude history for the fts_freshness_state
 -- ledger (index.db). ops.db is disposable, so this is a plain freeform-
