@@ -556,15 +556,23 @@ def test_revision_gate_counts_only_events_that_replace_a_missing_message(
     for a genuinely missing message, relabelled ``event_reclassified``.
     """
     root = _clone(corpus_fidelity_archive, tmp_path / event_link)
-    session_id = _first_session_id(root)
     with _connect(root / "index.db") as conn:
-        message_count = _clear_attributed_events(conn, session_id)
+        # A directly stored session whose messages carry provider-native ids,
+        # so an event can name one the way the writer links it.
         row = conn.execute(
-            "SELECT message_id, native_id FROM messages WHERE session_id = ? AND native_id IS NOT NULL LIMIT 1",
-            (session_id,),
+            """
+            SELECT session_id, message_id, native_id FROM messages
+            WHERE native_id IS NOT NULL
+              AND session_id NOT IN (
+                  SELECT src_session_id FROM session_links WHERE inheritance = 'prefix-sharing'
+              )
+            ORDER BY session_id, position
+            LIMIT 1
+            """
         ).fetchone()
         assert row is not None
-        message_id, native_id = row
+        session_id, message_id, native_id = row
+        message_count = _clear_attributed_events(conn, session_id)
         if event_link == "native_id":
             _insert_event(conn, session_id, source_message_provider_id=native_id)
             best = message_count + 1

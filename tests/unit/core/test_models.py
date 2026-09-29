@@ -372,6 +372,7 @@ class TestMessageFromRecord:
                 "name": None,
                 "semantic_type": "file_read",
                 "signature": None,
+                "content_hash": None,
             }
         ]
 
