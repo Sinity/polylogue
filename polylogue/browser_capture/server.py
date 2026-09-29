@@ -102,6 +102,11 @@ logger = get_logger(__name__)
 #: Captures never pass through it: ``POST /v1/browser-captures`` streams its
 #: body into the spool whatever its size.
 MAX_CONTROL_BODY_BYTES = 128 * 1024 * 1024
+#: Seconds a capture upload may go without delivering a byte. Its declared
+#: length is already reserved on disk, so a stalled client is cancelled rather
+#: than left holding that space. Pacing, not a size bound.
+CAPTURE_BODY_IDLE_TIMEOUT_S = 60.0
+_CONTENT_LENGTH = re.compile(r"[0-9]+")
 # Capture-job requests are control messages -- job descriptors, leases, event
 # envelopes, checkpoints -- never capture content, so they need far less than
 # the general control bound. 1 MiB leaves ample headroom over the
@@ -213,7 +218,7 @@ class BrowserCaptureHTTPServer(ThreadingHTTPServer):
         # to the spool quota; reclaim them before accepting new uploads.
         reaped = reap_stale_staging(config.spool_path)
         if reaped:
-            emit("browser_capture.stale_staging_reaped", level=INFO, reaped=reaped)
+            emit("browser_capture.stale_staging_reaped", level=INFO, reclaimed=reaped)
         super().__init__(server_address, BrowserCaptureHandler)
 
 
@@ -561,11 +566,13 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _content_length(self) -> int | None:
         """Return a positive declared body length, or send the error and return None."""
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
+        declared = self.headers.get("Content-Length", "0").strip()
+        # ``Content-Length = 1*DIGIT``; ``int`` would also take a sign,
+        # ``_`` separators and non-ASCII digits.
+        if not _CONTENT_LENGTH.fullmatch(declared):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return None
+        length = int(declared)
         if length <= 0:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return None
@@ -599,8 +606,24 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         length = self._content_length()
         if length is None:
             return None
+        # The declared length is reserved before the first read, so a client
+        # that stops sending must not hold it: every socket read gets an idle
+        # deadline, and a stalled upload is cancelled and its space released.
+        previous_timeout = self.connection.gettimeout()
+        self.connection.settimeout(CAPTURE_BODY_IDLE_TIMEOUT_S)
         try:
             return stage_capture_body(self.rfile.read, length, spool_root=self.server.config.spool_path)
+        except TimeoutError:
+            emit(
+                "browser_capture.upload_stalled",
+                level=WARNING,
+                reason="upload_stalled",
+                request_id=self._request_id(),
+                bytes=length,
+                timeout_ms=int(CAPTURE_BODY_IDLE_TIMEOUT_S * 1000),
+            )
+            self._safe_error(HTTPStatus.REQUEST_TIMEOUT, "upload_stalled")
+            return None
         except CaptureBodyIncompleteError:
             emit(
                 "browser_capture.incomplete_body",
@@ -616,8 +639,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 level=WARNING,
                 reason="spool_storage_exhausted",
                 request_id=self._request_id(),
-                requested_bytes=exc.requested_bytes,
-                available_bytes=exc.available_bytes,
+                bytes=exc.requested_bytes,
             )
             self._safe_error(HTTPStatus.INSUFFICIENT_STORAGE, "spool_storage_exhausted")
             return None
@@ -641,6 +663,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             )
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return None
+        finally:
+            self.connection.settimeout(previous_timeout)
 
     def _do_post(self) -> None:
         if self._reject_origin():

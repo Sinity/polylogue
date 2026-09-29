@@ -1276,6 +1276,76 @@ def test_receiver_answers_an_unreservable_capture_with_retryable_pressure(
     assert not list(tmp_path.rglob("*.json"))
 
 
+def _post_capture_raw(host: str, port: int, *, content_length: str, body: bytes) -> tuple[int, dict[str, object]]:
+    """Send a capture request whose declared length the body need not match."""
+    with socket.create_connection((host, port), timeout=10) as sock:
+        sock.sendall(
+            (
+                "POST /v1/browser-captures HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                f"Origin: {_EXTENSION_ORIGIN}\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {content_length}\r\n\r\n"
+            ).encode("ascii")
+            + body
+        )
+        response = HTTPResponse(sock)
+        response.begin()
+        return response.status, json.loads(response.read())
+
+
+def test_receiver_answers_an_unrepresentable_body_length_with_the_physical_refusal(tmp_path: Path) -> None:
+    """A length past what a file offset can hold is the typed 507, before any read.
+
+    Anti-vacuity: ``posix_fallocate`` raises ``OverflowError`` for it, which
+    escapes the staging route's ``OSError`` handling and drops the response.
+    """
+    import polylogue.browser_capture.capture_stream as capture_stream
+
+    with _running_receiver(tmp_path) as (host, port):
+        status, body = _post_capture_raw(host, port, content_length=str(2**63), body=b"{}")
+
+    assert status == HTTPStatus.INSUFFICIENT_STORAGE
+    assert body["error"] == "spool_storage_exhausted"
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+
+
+@pytest.mark.parametrize("content_length", ["+2", "0_2"])
+def test_receiver_refuses_a_content_length_that_is_not_ascii_digits(tmp_path: Path, content_length: str) -> None:
+    """``Content-Length`` is ``1*DIGIT``; a spelling ``int`` merely tolerates is refused.
+
+    Anti-vacuity: ``int()`` reads ``+2`` and ``0_2`` as 2, so the two body
+    bytes would be staged as a valid length.
+    """
+    with _running_receiver(tmp_path) as (host, port):
+        status, body = _post_capture_raw(host, port, content_length=content_length, body=b"{}")
+
+    assert status == HTTPStatus.BAD_REQUEST
+    assert body["error"] == "invalid_content_length"
+
+
+@pytest.mark.uses_real_clock("the receiver's socket idle deadline is wall-clock")
+def test_receiver_cancels_a_stalled_upload_and_releases_its_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upload that stops sending is answered 408 and its staged space released.
+
+    Anti-vacuity: without the idle deadline the handler blocks in ``read``
+    holding the reserved staging file, so no response arrives and the
+    staging directory keeps the file.
+    """
+    import polylogue.browser_capture.capture_stream as capture_stream
+    import polylogue.browser_capture.server as capture_server
+
+    monkeypatch.setattr(capture_server, "CAPTURE_BODY_IDLE_TIMEOUT_S", 0.2)
+    with _running_receiver(tmp_path) as (host, port):
+        status, body = _post_capture_raw(host, port, content_length="4096", body=b'{"polylogue')
+
+    assert status == HTTPStatus.REQUEST_TIMEOUT
+    assert body["error"] == "upload_stalled"
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+
+
 def test_receiver_startup_reaps_abandoned_staging_but_not_live_uploads(tmp_path: Path) -> None:
     """A staging file no upload holds is removed at startup; a held one stays.
 

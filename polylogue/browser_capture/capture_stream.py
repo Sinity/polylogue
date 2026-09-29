@@ -134,7 +134,8 @@ def _reserve(fd: int, directory: Path, length: int) -> None:
     ``posix_fallocate`` allocates the blocks, so concurrent uploads -- in this
     process or another sharing the spool -- cannot both be admitted into the
     same free space. Where the filesystem cannot allocate, free space is
-    compared instead.
+    compared instead. A length no file offset can represent, or one past the
+    filesystem's largest file, is the same physical refusal.
     """
     if length <= 0:
         return
@@ -143,6 +144,8 @@ def _reserve(fd: int, directory: Path, length: int) -> None:
         try:
             fallocate(fd, 0, length)
             return
+        except OverflowError as exc:
+            raise SpoolStorageExhaustedError(length, _available_bytes(directory)) from exc
         except OSError as exc:
             if is_storage_exhausted(exc):
                 raise SpoolStorageExhaustedError(length, _available_bytes(directory)) from exc
@@ -233,8 +236,11 @@ def reap_stale_staging(spool_root: Path) -> int:
 
 
 def is_storage_exhausted(exc: OSError) -> bool:
-    """Whether a staging failure is disk pressure (retryable), not a fault."""
-    return exc.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}
+    """Whether a staging failure is the spool's physical limit, not a fault.
+
+    Space or quota exhaustion, or a body past the filesystem's largest file.
+    """
+    return exc.errno in {errno.ENOSPC, errno.EFBIG, getattr(errno, "EDQUOT", errno.ENOSPC)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,9 +261,10 @@ class AttachmentFact:
 class CaptureSummary:
     """Every fact spool admission reads from one capture envelope.
 
-    ``head`` is the validated envelope with its first turn only and no
-    attachments, raw provider payload or ``provider_meta``; everything that
-    depends on the rest is folded into the other fields.
+    ``head`` is the validated envelope with no turns, attachments, raw
+    provider payload or ``provider_meta``: every turn is validated as it
+    streams past and then folded into the other fields, so admission holds
+    no turn content while it summarizes a second (resident) capture.
     ``provenance_meta_digest`` digests ``provenance.provider_meta``; the
     envelope and session metadata are folded into both fingerprints.
 
@@ -349,7 +356,6 @@ class _ItemFold:
     carrierless: hashlib._Hash = field(default_factory=hashlib.sha256)
     attachments: list[AttachmentFact] = field(default_factory=list)
     identities: list[tuple[str, Literal["native", "unknown"]]] = field(default_factory=list)
-    first_turn: BrowserCaptureTurn | None = None
 
     def add_turn(self, turn: BrowserCaptureTurn) -> None:
         dump = turn.model_dump(mode="json", exclude_none=True)
@@ -362,8 +368,6 @@ class _ItemFold:
                 "native" if turn.identity_observation.fidelity == "native" else "unknown"
             )
             self.identities.append((turn.provider_turn_id, fidelity))
-        if self.first_turn is None:
-            self.first_turn = turn
         self.count += 1
 
     def add_raw_turn(self, item: object) -> None:
@@ -667,10 +671,12 @@ def _summary(
 ) -> CaptureSummary:
     head_input: dict[str, object] = dict(root)
     if session is not None:
-        first_turn = session.turns.first_turn
+        # Each turn was validated as it streamed past; the session's own
+        # rule is only that it has one, so an empty placeholder stands in
+        # for them and is dropped once the session validates.
         head_input["session"] = {
             **session.head,
-            "turns": [first_turn] if first_turn is not None else [],
+            "turns": [BrowserCaptureTurn.model_construct()] * min(session.turns.count, 1),
             "attachments": [],
         }
     try:
@@ -678,6 +684,7 @@ def _summary(
     except ValidationError as exc:
         raise CaptureEnvelopeError("invalid_payload", str(exc)) from exc
     assert session is not None  # a validated head has a session
+    head = head.model_copy(update={"session": head.session.model_copy(update={"turns": []})})
     session_dump = head.session.model_dump(mode="json", exclude_none=True, exclude={"turns", "attachments"})
     session_dump["provider_meta"] = (session.meta_digest or _object_digest({})).hex()
     head_bytes = dumps_bytes(
