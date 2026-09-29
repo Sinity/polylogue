@@ -3093,24 +3093,33 @@ def raw_revision_observed_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -
 
 
 def raw_revision_observation_order(store: RawRevisionGovernanceHost, raw_id: str) -> tuple[int, int]:
-    """Return the latest observation timestamp and its durable receipt order."""
+    """Return the latest observation's timestamp and its durable receipt order.
+
+    The latest observation is the newest ``raw_payload`` receipt by its
+    monotonic insertion order (``rowid``), never by its wall-clock stamp: a
+    clock rollback between two observations must not reorder them. Callers
+    order by the second element; the timestamp is reported, not ranked. A raw
+    with no receipt ranks oldest (order 0), as in ``raw_receipt_order_sql``:
+    ``raw_sessions.rowid`` is another sequence and cannot be compared with a
+    receipt's.
+    """
     conn = store._ensure_source_conn()
     row = conn.execute(
         """
         SELECT acquired_at_ms, rowid
         FROM blob_refs
         WHERE ref_id = ? AND ref_type = 'raw_payload'
-        ORDER BY acquired_at_ms DESC, rowid DESC
+        ORDER BY rowid DESC
         LIMIT 1
         """,
         (raw_id,),
     ).fetchone()
     if row is not None:
         return int(row[0]), int(row[1])
-    row = conn.execute("SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    row = conn.execute("SELECT acquired_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
     if row is None:
         raise KeyError(f"unknown raw revision {raw_id}")
-    return int(row[0]), int(row[1])
+    return int(row[0]), 0
 
 
 def raw_membership_rebuild_raw_ids(store: RawRevisionGovernanceHost, logical_source_key: str) -> tuple[str, ...]:

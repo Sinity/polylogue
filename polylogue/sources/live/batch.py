@@ -36,6 +36,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
+    raw_receipt_order_sql,
 )
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
@@ -2866,7 +2867,7 @@ class LiveBatchProcessor:
                         blob_hash,
                         ROW_NUMBER() OVER (
                             PARTITION BY source_path
-                            ORDER BY acquired_at_ms DESC, raw_id DESC
+                            ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
                         ) AS revision_rank
                     FROM raw_sessions
                     WHERE source_path IN ({placeholders})
@@ -2961,12 +2962,12 @@ class LiveBatchProcessor:
             conn = open_readonly_connection(source_db)
             try:
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT raw_id, blob_hash
                     FROM raw_sessions
                     WHERE source_path = ?
                       AND COALESCE(source_index, 0) >= 0
-                    ORDER BY acquired_at_ms DESC, raw_id DESC
+                    ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
                     LIMIT 1
                     """,
                     (str(path),),

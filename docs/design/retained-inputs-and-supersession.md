@@ -149,10 +149,13 @@ the archived object.
 A live database that goes A → B → A re-mints A's content-derived raw id, so
 `raw_sessions.acquired_at_ms` is the *first* time those bytes were seen, not
 the latest. The durable receipt log is the authority, ordered by a monotonically increasing
-observation sequence; wall-clock acquisition time is diagnostic only. The
-current `(acquired_at_ms, rowid)` ordering remains vulnerable to clock rollback
-and does not satisfy this rule. Update the receipt schema and every
-latest-value projection before relying on it.
+observation sequence; wall-clock acquisition time is diagnostic only. That
+sequence is the `blob_refs` `raw_payload` receipt's `rowid`: every observation
+re-records the receipt (`INSERT OR REPLACE`), which allocates a rowid above
+every live row, and the source tier is never `VACUUM`-ed, so the rowid is
+stable. Every latest-value selection ranks raws by that receipt order through
+`raw_receipt_order_sql` (`archive/revision_authority.py`), never by
+`raw_sessions.acquired_at_ms` or by a receipt's `acquired_at_ms`.
 
 ### R6 — Disappearance is an observation, never a delete
 
@@ -171,10 +174,10 @@ outcome. Where they differ, §6 names the defect and its owner.
 | S1 | Strict-prefix log continuation | Baseline plus one delta per window; the chain replays to exactly the source bytes | 1.00× — one copy of each content byte | **Holds** when the cursor is live: measured 1.00×, 40/40 appends accepted |
 | S2 | Divergent log (history rewrite) | The divergent observation becomes a new full baseline; the prior chain stays archived and readable as its own evidence | Both retained; the prior chain's bytes are **not** retirable — no retained successor contains them | **Defect D7** — both divergent children are quarantined, so the old root stays the accepted baseline |
 | S3 | Truncated log | Truncation is not a prefix, so continuity is refused and a new baseline is captured | Both retained; prior bytes not retirable | **Defect D7** — continuity is refused (`_record_append_cursor`, "source replaced or truncated"), but the cohort then has two roots and no observation is accepted |
-| S4 | A-B-A database values | A's second observation re-mints A's content hash and adds no blob; currency follows receipt order (R5) | Two blobs for three observations | Holds (`codex_state_projection.py:56`) |
+| S4 | A-B-A database values | A's second observation re-mints A's content hash and adds no blob; currency follows receipt order (R5) | Two blobs for three observations | Holds: every latest-value selection ranks by `raw_receipt_order_sql`; `test_retained_state_export_follows_receipt_order_across_a_clock_rollback` |
 | S5 | Row missing from a newer export | The object stays archived and readable; its presence in that scope becomes absent-as-of-R | No byte change | **Defect D2** — `write_thread_state_projection` deletes every projected row |
 | S6 | Incomplete observation | Never an assertion of absence. A declared table the source lacked is carried in the export header's `missing` list; an item that could not be completed keeps a `pending`/`unknown_blocking` disposition and supersedes nothing | Retained, non-superseding | Partly: the export header records `missing` (`sqlite_export.py:228`); the projection does not consult it |
-| S7 | Two source roots with disjoint objects | Two scopes, two current values; neither supersedes the other, in either acquisition order | Both retained | **Defect D2** — `latest_retained_state_export` picks one global newest across every `source_path` |
+| S7 | Two source roots with disjoint objects | Two scopes, two current values; neither supersedes the other, in either acquisition order | Both retained | Holds: `latest_retained_state_exports` returns one newest export per scope, and no archive-wide newest selector remains |
 | S8 | Late or orphan sidecar | Joins by durable coordinate and reconverges; no duplicate message, and a still-missing sidecar stays an explicit outcome | One copy of the sidecar bytes | **Defect D3** — sidecar text is resolved from the original filesystem at parse time |
 | S10 | One thread ID under two source roots, with different titles | One archived session; each scope's state stays its own object, and the session reads the scope of the rollout that produced it (R3) | Both exports retained | Holds: scope-keyed thread-state graph; `test_one_thread_id_in_two_scopes_keeps_each_scopes_title` |
 | S9 | Original source disappears after acquisition | Absence observation only; archived bytes and every derived read are unchanged | Nothing retired | Holds for acquired raw payloads; **fails** for anything only resolvable through a live sibling file (D3) |

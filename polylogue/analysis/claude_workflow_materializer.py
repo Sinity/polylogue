@@ -24,6 +24,7 @@ from polylogue.analysis.claude_workflow_evidence import (
     project_claude_workflow_evidence,
 )
 from polylogue.analysis.work_evidence import WorkEvidenceGraph
+from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.stage_admission import admit_stage_write
@@ -269,14 +270,14 @@ def _load_current_artifacts(conn: sqlite3.Connection) -> tuple[_RawArtifact, ...
     # source owner will either classify the new revision during replay or leave
     # it pending for a later pass.
     rows = conn.execute(
-        """
+        f"""
         WITH latest_raw AS (
             SELECT raw_id, origin, source_path, source_index
             FROM (
                 SELECT raw_id, origin, source_path, source_index,
                        ROW_NUMBER() OVER (
                            PARTITION BY origin, source_path, source_index
-                           ORDER BY acquired_at_ms DESC, rowid DESC
+                           ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
                        ) AS revision_rank
                 FROM raw_sessions
                 WHERE origin = ?

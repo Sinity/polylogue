@@ -93,7 +93,7 @@ _RECEIPT_ORDER = """
     SELECT b.{column}
     FROM blob_refs AS b
     WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
-    ORDER BY b.acquired_at_ms DESC, b.rowid DESC
+    ORDER BY b.rowid DESC
     LIMIT 1
 """
 
@@ -130,7 +130,7 @@ def _select_retained(
           AND a.artifact_kind = ?
           AND r.blob_hash IS NOT NULL
           AND r.parse_error IS NULL
-        ORDER BY 5 DESC, 6 DESC, r.raw_id DESC
+        ORDER BY 6 DESC, r.raw_id DESC
     """
     # A read failure here is infrastructure state, not an answer: it
     # propagates so the ingesting pass records a retryable outcome instead of

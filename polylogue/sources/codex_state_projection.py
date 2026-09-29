@@ -88,7 +88,8 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
     newest ``raw_payload`` receipt first -- so a reconciliation pass and a
     per-export apply never disagree about which observation is current. A live
     database that went A -> B -> A reuses A's content-derived raw id, so the
-    receipt log, not ``raw_sessions.acquired_at_ms``, is the authority.
+    receipt log, not ``raw_sessions.acquired_at_ms``, is the authority. A raw
+    with no receipt ranks oldest (order 0), as in ``raw_receipt_order_sql``.
 
     Scans the durable tier, so callers reconcile once per pass rather than
     once per session.
@@ -104,7 +105,7 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
         SELECT b.{column}
         FROM blob_refs AS b
         WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
-        ORDER BY b.acquired_at_ms DESC, b.rowid DESC
+        ORDER BY b.rowid DESC
         LIMIT 1
     """
     try:
@@ -115,10 +116,10 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
                 lower(hex(r.blob_hash)),
                 r.source_path,
                 COALESCE(({receipt.format(column="acquired_at_ms")}), r.acquired_at_ms),
-                COALESCE(({receipt.format(column="rowid")}), r.rowid)
+                COALESCE(({receipt.format(column="rowid")}), 0)
             FROM raw_sessions AS r
             WHERE r.origin = ? AND r.parse_error IS NULL AND ({clauses})
-            ORDER BY 4 DESC, 5 DESC, r.raw_id DESC
+            ORDER BY 5 DESC, r.raw_id DESC
             """,
             parameters,
         ).fetchall()
@@ -134,18 +135,6 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
             str(raw_id), str(blob_hash), source_scope, int(observed_at_ms), int(observation_order)
         )
     return tuple(newest[scope] for scope in sorted(newest))
-
-
-def latest_retained_state_export(source_conn: sqlite3.Connection) -> RetainedStateExport | None:
-    """Return the newest export archive-wide for legacy diagnostic callers.
-
-    Projection reconciliation must use :func:`latest_retained_state_exports`.
-    This compatibility helper deliberately has no projection semantics.
-    """
-    exports = latest_retained_state_exports(source_conn)
-    if not exports:
-        return None
-    return max(exports, key=lambda item: (item.observed_at_ms, item.observation_order, item.raw_id, item.source_scope))
 
 
 #: Which retained export one scope's graph was computed from.
@@ -234,7 +223,7 @@ def apply_retained_state_export(
     so the next pass with a derived tier recomputes from it.
 
     The durable ``raw_payload`` receipt orders this observation, the same term
-    :func:`latest_retained_state_export` reads, so the two routes never
+    :func:`latest_retained_state_exports` reads, so the two routes never
     disagree about which export is current. ``observed_at_ms`` stands in only
     for a raw with no receipt row yet.
     """
@@ -350,7 +339,6 @@ __all__ = [
     "apply_retained_state_export",
     "codex_state_source_scope",
     "ensure_thread_state_projection",
-    "latest_retained_state_export",
     "latest_retained_state_exports",
     "projection_provenance",
     "read_parent_thread_id",

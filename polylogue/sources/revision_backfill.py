@@ -47,6 +47,7 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     is_work_event_raw_id,
     parser_census_is_complete,
+    raw_receipt_order_sql,
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
@@ -2366,7 +2367,7 @@ def _census_historical_revision_evidence(
                         )
                 for raw_id, _source_index, _terminal_non_session, _raw_rowid in sorted(
                     rows,
-                    key=lambda row: archive.raw_revision_observation_order(row[0]),
+                    key=lambda row: archive.raw_revision_observation_order(row[0])[1],
                 ):
                     if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
                         continue
@@ -3257,7 +3258,7 @@ def _replay_representative_raw_ids(sorted_keys: list[str], archive_root: Path) -
                 SELECT logical_source_key, raw_id
                 FROM raw_sessions
                 WHERE logical_source_key IN ({placeholders})
-                ORDER BY logical_source_key, acquired_at_ms DESC, raw_id ASC
+                ORDER BY logical_source_key, {raw_receipt_order_sql("raw_sessions")} DESC, raw_id ASC
                 """,
                 chunk,
             )

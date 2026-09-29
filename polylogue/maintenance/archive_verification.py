@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.archive.topology.edge import (
     HOOK_AUTHORITATIVE_LINK_METHOD,
     HOOK_CONTRADICTED_LINK_METHOD,
@@ -410,6 +411,7 @@ def _check_source_index_coverage_at_index_path(
             valid_supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
             logical_cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
             materialized_expr = raw_materialized_expr(raw_alias="r")
+            receipt_order_expr = raw_receipt_order_sql("r")
 
             # A read-only connection (``query_only=ON``, connection-wide, not
             # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
@@ -441,7 +443,7 @@ def _check_source_index_coverage_at_index_path(
                         ROW_NUMBER() OVER (
                             PARTITION BY r.origin,
                                          {logical_cohort_expr}
-                            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                            ORDER BY {receipt_order_expr} DESC, r.raw_id DESC
                         ) AS rn
                     FROM raw_sessions r
                 )
@@ -3070,6 +3072,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
     valid_supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
     logical_cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
     materialized_expr = raw_materialized_expr(raw_alias="r")
+    receipt_order_expr = raw_receipt_order_sql("r")
     typed_cte = typed_raw_cte(conn, name="typed_raws")
     terminal_terms = TYPED_ABSENCE_TERMS - {"quarantined_cohort_unmaterialized", "authority_blocked"}
     typed_terms = ", ".join(f"'{term}'" for term in sorted(terminal_terms))
@@ -3090,7 +3093,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
                 ROW_NUMBER() OVER (
                     PARTITION BY r.origin,
                                  {logical_cohort_expr}
-                    ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                    ORDER BY {receipt_order_expr} DESC, r.raw_id DESC
                 ) AS rn
             FROM raw_sessions r
         )

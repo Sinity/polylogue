@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.core.sqlite_introspection import column_exists as _column_exists
@@ -24,7 +25,7 @@ _TERMINAL_RAW_FAILURE_EVIDENCE_KINDS = frozenset(
     kind.value for kind in RawFailureEvidenceKind if kind.lifecycle == "terminal"
 )
 
-_V1_RAW_CANDIDATE_SQL = """
+_V1_RAW_CANDIDATE_SQL = f"""
 WITH ranked AS (
     SELECT
         raw_id,
@@ -35,7 +36,7 @@ WITH ranked AS (
         acquired_at_ms,
         ROW_NUMBER() OVER (
             PARTITION BY source_path, source_index
-            ORDER BY acquired_at_ms DESC, raw_id DESC
+            ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
         ) AS recency
     FROM raw_sessions
     WHERE source_index IN (-1, 0)
@@ -2113,7 +2114,7 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                         rowid AS observation_rowid,
                         ROW_NUMBER() OVER (
                             PARTITION BY ref_id
-                            ORDER BY acquired_at_ms DESC, rowid DESC
+                            ORDER BY rowid DESC
                         ) AS observation_rank
                     FROM blob_refs
                     WHERE ref_type = 'raw_payload'
@@ -2136,9 +2137,7 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                         raw.parsed_at_ms,
                         ROW_NUMBER() OVER (
                             PARTITION BY raw.source_path, raw.origin, raw.source_index
-                            ORDER BY
-                                COALESCE(observation.acquired_at_ms, raw.acquired_at_ms) DESC,
-                                COALESCE(observation.observation_rowid, raw.rowid) DESC
+                            ORDER BY COALESCE(observation.observation_rowid, raw.rowid) DESC
                         ) AS coordinate_rank
                     FROM raw_sessions AS raw
                     LEFT JOIN latest_raw_observation AS observation ON observation.raw_id = raw.raw_id

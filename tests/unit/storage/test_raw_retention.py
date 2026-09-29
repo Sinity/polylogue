@@ -1390,11 +1390,12 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
                 acquired_at_ms=acquired_at_ms,
             )
 
+        # Seeded in observation order: receipt order, not the stamp, ranks them.
         _seed(full_old, source, 0, full_old_size, 1_000)
         _seed(full_new, source, 0, full_new_size, 2_000)
+        _seed(leased_old, source, -1, leased_old_size, 2_500)
         _seed(append_old, source, -1, append_old_size, 3_000)
         _seed(append_current, source, -1, append_current_size, 4_000)
-        _seed(leased_old, source, -1, leased_old_size, 2_500)
         _seed(missing_old, missing_source, 0, missing_old_size, 1_000)
         _seed(missing_new, missing_source, 0, missing_new_size, 2_000)
         conn.commit()
@@ -3225,3 +3226,36 @@ def test_cursor_authority_refuses_every_path_of_a_violated_logical_source(tmp_pa
 
     assert str(violated) in blocked.source_paths
     assert str(sibling) in blocked.source_paths
+
+
+def test_snapshot_cleanup_keeps_the_raw_whose_receipt_is_newest_after_a_clock_rollback(tmp_path: Path) -> None:
+    """A at 200, B at 300, A again at 250: A is current by receipt order.
+
+    ``raw_sessions.acquired_at_ms`` keeps A's first sighting (200) and A's
+    receipt stamp (250) is older than B's, so ranking by either wall clock
+    proposes deleting the current snapshot A.
+    """
+    source_db = tmp_path / "source.db"
+    source_path = tmp_path / "rollout.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with closing(sqlite3.connect(source_db)) as conn:
+
+        def _observe(payload: bytes, acquired_at_ms: int) -> str:
+            return write_source_raw_session(
+                conn,
+                origin="claude-code-session",
+                source_path=str(source_path),
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=acquired_at_ms,
+            )
+
+        raw_a = _observe(b"snapshot A", 200)
+        raw_b = _observe(b"snapshot B", 300)
+        assert _observe(b"snapshot A", 250) == raw_a
+        conn.commit()
+
+        candidates = superseded_raw_snapshot_candidates(conn, limit=100)
+
+    assert [candidate.raw_id for candidate in candidates] == [raw_b]

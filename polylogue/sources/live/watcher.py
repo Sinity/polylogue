@@ -23,7 +23,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from polylogue.archive.revision_authority import decided_unresolved_membership_sql
+from polylogue.archive.revision_authority import decided_unresolved_membership_sql, raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.sources import provider_from_origin
@@ -1022,14 +1022,14 @@ class LiveWatcher:
         The row is ``(raw_id, origin, blob_hash, blob_size, acquired_at_ms)``.
         """
         rows = source_conn.execute(
-            """
+            f"""
             SELECT raw_id, origin, blob_hash, blob_size, acquired_at_ms
             FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
               AND (parsed_at_ms IS NOT NULL OR revision_authority IN ('asserted', 'byte_proven'))
               AND parse_error IS NULL
-            ORDER BY acquired_at_ms DESC, raw_id DESC
+            ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
             """,
             (str(path),),
         ).fetchall()
@@ -1074,7 +1074,7 @@ class LiveWatcher:
                   AND COALESCE(r.source_index, 0) >= 0
                   AND r.parse_error IS NULL
                   AND ({decided_unresolved_membership_sql("r")})
-                ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                ORDER BY {raw_receipt_order_sql("r")} DESC, r.raw_id DESC
                 LIMIT 1
                 """,
                 (str(path),),
