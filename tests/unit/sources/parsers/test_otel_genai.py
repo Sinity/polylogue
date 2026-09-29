@@ -765,7 +765,7 @@ def test_tool_arguments_in_plain_json_attributes_are_not_wire_types() -> None:
     becomes an ``otel_genai_unknown_input`` event.
     """
     chat = _chat("c" * 32, "3" * 16, 1_000, ["Q"], "A")
-    tool = {
+    tool: dict[str, object] = {
         "traceId": "c" * 32,
         "spanId": "4" * 16,
         "name": "execute_tool",
