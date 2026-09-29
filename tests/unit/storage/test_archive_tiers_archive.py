@@ -292,7 +292,9 @@ def test_pinned_read_only_store_blocks_all_archive_tier_mutations(tmp_path: Path
         assert archive.read_session(session_id).session_id == session_id
         source_reader = archive.source_connection
         assert source_reader.execute("PRAGMA query_only").fetchone()[0] == 1
-        with pytest.raises(sqlite3.OperationalError, match="readonly|read.only"):
+        # The profiled reader's authorizer (#5564) refuses the write at prepare
+        # time ("not authorized"), before SQLite's own read-only check can.
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
             source_reader.execute("UPDATE raw_hook_events SET event_type = event_type")
         assert archive.list_user_tags() == {"pinned": 1}
         hook_summary = archive.hook_event_summary_for_session(session_id)

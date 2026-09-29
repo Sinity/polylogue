@@ -81,6 +81,9 @@ __all__ = [
 
 _RAW_DISCOVERY_INSPECTION_LIMIT = 32
 _FILE_DISCOVERY_STEP_LIMIT = 256
+#: Fresh paths discovered beyond the offered page, so the next page's parsing
+#: can be prefetched while the current page publishes.
+_FRESH_LOOKAHEAD_PAGES = 1
 _FILE_DISCOVERY_RESCAN_S = 600.0
 _FILE_RETRY_DELAY_S = 5.0
 
@@ -355,7 +358,12 @@ class FileIntakeAdapter(IntakeAdapter):
         # retaining that stale page forever prevents both later paths and a
         # queued rescan from running. Recreated files return in a later scan.
         self._fresh_pending = [path for path in self._fresh_pending if self._pending_path_is_live(path)]
+        lookahead = limit * (1 + _FRESH_LOOKAHEAD_PAGES)
         if self._fresh_pending:
+            # A live walk refills the lookahead behind the carried-over page;
+            # without it every other page would have nothing to prefetch.
+            if self._fresh_walk is not None:
+                self._extend_fresh_pending(lookahead)
             return self._offer_fresh_page(limit)
         if self._fresh_exhausted:
             if self._rescan_after_walk:
@@ -384,12 +392,20 @@ class FileIntakeAdapter(IntakeAdapter):
                     getattr(self._discovery_thread, "token", None), disposition=disposition
                 ),
             )
-        steps = max(_FILE_DISCOVERY_STEP_LIMIT, limit)
+        self._extend_fresh_pending(lookahead)
+        return self._offer_fresh_page(limit)
+
+    def _extend_fresh_pending(self, target: int) -> None:
+        """Walk until ``target`` fresh paths are pending or the step budget is spent."""
+        walk = self._fresh_walk
+        if walk is None:
+            return
+        steps = max(_FILE_DISCOVERY_STEP_LIMIT, target)
         for _ in range(steps):
-            if len(self._fresh_pending) >= limit:
+            if len(self._fresh_pending) >= target:
                 break
             try:
-                path = next(self._fresh_walk)
+                path = next(walk)
             except StopIteration:
                 self._fresh_walk = None
                 self._fresh_exhausted = True
@@ -404,7 +420,6 @@ class FileIntakeAdapter(IntakeAdapter):
                 raise
             if path is not None:
                 self._fresh_pending.append(path)
-        return self._offer_fresh_page(limit)
 
     def _discover_sync(self, limit: int) -> Sequence[IntakeItem]:
         generation = self._ledger_generation()
@@ -833,6 +848,12 @@ class FileIntakeAdapter(IntakeAdapter):
             if not batch:
                 return outcomes
             paths = [Path(cast(Any, item.payload)) for item in batch]
+            # Skipped paths belong to this page too; they must not stand in
+            # for the next page in the lookahead slice.
+            page = set(paths) | {Path(cast(Any, item.payload)) for item in skipped}
+            # The current page is warmed by its own ingest. What overlaps its
+            # publication is the next page, sampled off the admission path.
+            self._offer_parse_lookahead([path for path in self._fresh_pending if path not in page][: len(paths)])
             metrics = await self.context.watcher._ingest_files(
                 paths,
                 queued_file_count=len(paths) + len(skipped),
@@ -995,6 +1016,18 @@ class FileIntakeAdapter(IntakeAdapter):
             if callable(converge_profiles):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         return outcomes
+
+    def _offer_parse_lookahead(self, paths: Sequence[Path]) -> None:
+        """Offer the next page's files for read-ahead parsing.
+
+        Nothing is read here. The next full ingest keeps only cursorless
+        files, the ones certain to be ingested in full, and the parse stage
+        samples and prepares them in workers it can reap, so a slow or
+        unavailable lookahead file never delays the page being admitted.
+        """
+        offer = getattr(self.context.watcher, "offer_parse_lookahead", None)
+        if callable(offer) and paths:
+            offer(tuple(paths), source_name=self.source.name)
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable

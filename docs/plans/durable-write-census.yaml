@@ -951,13 +951,6 @@ writes:
     tier: "source"
     classification: lifecycle_transition
     reason: "forward path of the same two-phase commit: _prepare sets the pending command only WHERE pending_mutation_id IS NULL, _promote clears it only WHERE it still matches (mutation_id, pending_payload_sha256) with rowcount == 1, and _apply_prepared advances the audit head only from the prepared prior -- the singleton control/head row advancing through its declared prepared/promoted states"
-  - file: "polylogue/storage/sqlite/audit_continuity.py"
-    function: "AuditContinuityCoordinator._repair_promoted_rebind"
-    table: "audit_continuity_head"
-    kind: "update"
-    tier: "audit"
-    classification: two_phase_recovery
-    reason: "cross-tier two-phase commit recovery: the abort/rebind paths re-read audit_continuity_head under BEGIN IMMEDIATE, refuse unless it still equals the prepared command's exact prior generation+head, and the source abort additionally matches pending_payload_sha256 with rowcount == 1 -- checksum-validated prepared evidence, never a recomputed value"
   - file: "polylogue/storage/sqlite/durable_change_train.py"
     function: "_probe_revision_provider_resolution"
     table: "raw_sessions"

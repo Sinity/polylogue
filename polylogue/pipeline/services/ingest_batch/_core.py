@@ -1449,6 +1449,9 @@ def _write_session(
             fallback_timestamp=payload.fallback_timestamp,
             source_conn=source_conn,
             signature_cache=signature_cache,
+            # The worker's carrier covers the full session; the admission gate
+            # declines it for an append delta or a lineage-sliced tail.
+            prepared_rows=payload.prepared_rows,
         )
     if prepared_writes is not None and prepared_write is not None:
         # Register before the writer call so entry cleanup owns this carrier

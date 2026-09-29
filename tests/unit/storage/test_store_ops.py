@@ -37,6 +37,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
     make_attachment,
@@ -1130,13 +1131,14 @@ class TestTagAssignmentLaws:
 
             (SessionBuilder(db_path, conv_id).provider("test").title("Tag Test").add_message("m1", text="Hello").save())
 
-            repo = archive_for_scenario_db(db_path)
-            try:
-                await repo.add_tag(native_session_id_for("test", conv_id), tag)
-                listed = await repo.list_tags()
-                assert tag.strip().lower() in listed
-            finally:
-                await repo.close()
+            with daemon_serving_archive(db_path.parent):
+                repo = archive_for_scenario_db(db_path)
+                try:
+                    await repo.add_tag(native_session_id_for("test", conv_id), tag)
+                    listed = await repo.list_tags()
+                    assert tag.strip().lower() in listed
+                finally:
+                    await repo.close()
 
     @pytest.mark.parametrize("tag", ["missing", "Needs-Review", "  spaced-tag  "])
     async def test_remove_tag_is_idempotent(self, tag: str) -> None:
@@ -1156,13 +1158,14 @@ class TestTagAssignmentLaws:
                 .save()
             )
 
-            repo = archive_for_scenario_db(db_path)
-            try:
-                await repo.remove_tag(native_session_id_for("test", conv_id), tag)
-                listed = await repo.list_tags()
-                assert tag.strip().lower() not in listed
-            finally:
-                await repo.close()
+            with daemon_serving_archive(db_path.parent):
+                repo = archive_for_scenario_db(db_path)
+                try:
+                    await repo.remove_tag(native_session_id_for("test", conv_id), tag)
+                    listed = await repo.list_tags()
+                    assert tag.strip().lower() not in listed
+                finally:
+                    await repo.close()
 
 
 _SIMPLE_TITLE_SEARCH_CASES = (
@@ -1691,12 +1694,19 @@ class TestInfraTagAssignment:
             db_path = archive_root / "index.db"
             seed_session_graph(db_path, spec.sessions)
 
-            repo = archive_for_scenario_db(db_path)
-            try:
+            # The tag primitive the daemon's TagAddActuator applies. A daemon
+            # per Hypothesis example would test process lifecycle, not tag
+            # storage laws; the facade route is covered by the
+            # daemon-served tests above.
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            with ArchiveStore(archive_root) as store:
                 for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
                     for tag in tags:
-                        await repo.add_tag(native_session_id_for(conv.provider, conv.session_id), tag)
+                        store.add_user_tags((native_session_id_for(conv.provider, conv.session_id),), (tag,))
 
+            repo = archive_for_scenario_db(db_path)
+            try:
                 listed = await repo.list_tags()
                 for _conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
                     for tag in set(tags):
@@ -1704,6 +1714,12 @@ class TestInfraTagAssignment:
                 assert await repo.list_tags() == expected_tag_counts(spec)
             finally:
                 await repo.close()
+                # Each Hypothesis example seeds a new archive through
+                # ``open_connection``'s per-path cache; the autouse fixture
+                # clears it only between tests, not between examples.
+                from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+                _clear_connection_cache()
 
 
 _LITERAL_TITLE_SEARCH_CASES = (

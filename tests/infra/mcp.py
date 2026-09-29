@@ -119,16 +119,9 @@ def daemon_served_runtime_services(archive_root: Path) -> Iterator[None]:
     archive's own socket. Start one per archive at a time; a second stack on
     the same root does not come up until the first has fully stopped.
     """
-    from unittest.mock import patch
+    from tests.infra.daemon_operations import daemon_serving_archive
 
-    from polylogue.daemon.socket_path import daemon_socket_path
-    from tests.infra.daemon_operations import running_daemon_operations
-
-    with (
-        patch("polylogue.daemon.api_auth.resolve_api_auth_token", return_value=None),
-        running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)),
-        installed_runtime_services(archive_root),
-    ):
+    with daemon_serving_archive(archive_root), installed_runtime_services(archive_root):
         yield
 
 

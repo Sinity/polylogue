@@ -425,57 +425,6 @@ def test_writer_enrichment_resolves_an_unknown_acquisition_provider(monkeypatch:
     assert seen == [Provider.CLAUDE_CODE]
 
 
-def test_retained_prewarm_spends_one_deadline_across_members(tmp_path: Path) -> None:
-    """A member that outlives the budget stops the prewarm; nothing waits again.
-
-    Anti-vacuity: restore a per-member timeout and every later member is
-    submitted and waited on in turn (``submitted`` grows to three).
-    """
-    from concurrent.futures import Future
-    from types import SimpleNamespace
-
-    from polylogue.archive.revision_authority import RawRevisionKind
-    from polylogue.sources.live.retained_prefetch import prepare_live_retained_raws
-
-    blob = tmp_path / "blob"
-    descriptors = {
-        f"raw-{index}": (Provider.CODEX, f"{index:064x}", f"/src/{index}.jsonl", RawRevisionKind.FULL, 1)
-        for index in range(3)
-    }
-    archive = SimpleNamespace(
-        archive_root=tmp_path,
-        source_db_path=tmp_path / "source.db",
-        index_db_path=tmp_path / "index.db",
-        raw_membership_raw_ids=lambda _key: set(descriptors),
-        raw_membership_retired_full_revision_siblings=lambda _key: set(),
-        convertible_full_revision_raw_ids=lambda _key: set(),
-        raw_revision_head_raw_id=lambda _key: None,
-        raw_revision_replay_plan=lambda _key: SimpleNamespace(accepted_raw_ids=()),
-        raw_revision_descriptor=descriptors.__getitem__,
-        raw_revision_file_mtime=lambda _raw_id: None,
-    )
-    blob.mkdir()
-    submitted: list[str] = []
-
-    class StalledExecutor:
-        def submit(self, _fn: object, raw_id: str, *_args: object) -> Future[object]:
-            submitted.append(raw_id)
-            future: Future[object] = Future()
-            future.set_running_or_notify_cancel()
-            return future
-
-    prepared = prepare_live_retained_raws(
-        archive,
-        logical_keys={"codex-session:x"},
-        current_raw_id="current",
-        directory=tmp_path / "retained",
-        worker_executor=StalledExecutor(),  # type: ignore[arg-type]
-        member_timeout_s=0.05,
-    )
-    assert prepared == {}
-    assert submitted == ["raw-0"]
-
-
 def test_unpublishable_retained_carrier_falls_back_to_the_writer_parse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

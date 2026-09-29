@@ -312,6 +312,23 @@ def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
     return "database is locked" in message or "database table is locked" in message or "busy" in message
 
 
+def _published_index_path(archive_root: Path) -> Path:
+    """The index this watcher's writes publish into.
+
+    Cursor corroboration asks whether a file's raw is materialized in the
+    index. During a cold build that is the inactive candidate generation the
+    writer is filling, not the still-active (empty or old) index: checking
+    the active one demoted every cursor the build had just written and
+    re-ingested the file from scratch.
+    """
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+
+    generation = active_cold_build_generation(archive_root)
+    if generation is not None:
+        return Path(generation.generation.index_path)
+    return resolve_active_index_path(archive_root)
+
+
 class LiveWatcher:
     """Filesystem watch that wakes the fair-intake dispatcher.
 
@@ -917,7 +934,7 @@ class LiveWatcher:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
         try:
-            index_db = resolve_active_index_path(archive_root)
+            index_db = _published_index_path(archive_root)
         except (ArchiveLocationError, OSError, UnicodeError):
             self._archived_cursor_conns = None
             yield
@@ -1051,7 +1068,7 @@ class LiveWatcher:
                 return self._path_corroborated_by_index(path, source_conn=shared[0], index_conn=shared[1])
             archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
             source_db = archive_root / "source.db"
-            index_db = resolve_active_index_path(archive_root)
+            index_db = _published_index_path(archive_root)
             if not source_db.exists() or not index_db.exists():
                 return True
             with (
@@ -1094,7 +1111,7 @@ class LiveWatcher:
                 ) or self._decided_unresolved_cursor_row(path, source_conn=shared[0])
             else:
                 source_db = archive_root / "source.db"
-                index_db = resolve_active_index_path(archive_root)
+                index_db = _published_index_path(archive_root)
                 if not source_db.exists() or not index_db.exists():
                     return _ArchivedCursorReconciliation.UNAVAILABLE
                 with (
@@ -1180,6 +1197,14 @@ class LiveWatcher:
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
 
+    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
+        """Offer the paths a later batch will ingest in full for read-ahead parsing.
+
+        Nothing is read or submitted here: the next ingest filters and
+        submits the offer while it owns the stage under the ingest lock.
+        """
+        self._batch_processor.offer_parse_lookahead(paths, source_name=source_name)
+
     async def _ingest_files(
         self,
         paths: list[Path],
@@ -1199,17 +1224,22 @@ class LiveWatcher:
         """
         from polylogue.core.degraded import is_fully_degraded
 
-        if not is_fully_degraded():
-            # A degraded batch returns its skip metrics without the gate.
-            self._batch_processor.require_cursor_authority(paths)
-        async with self._ingest_lock:
-            return await self._batch_processor.ingest_files(
-                paths,
-                queued_file_count=queued_file_count,
-                skipped_file_count=skipped_file_count,
-                max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
-                whole_archive_convergence=whole_archive_convergence,
-            )
+        try:
+            if not is_fully_degraded():
+                # A degraded batch returns its skip metrics without the gate.
+                self._batch_processor.require_cursor_authority(paths)
+            async with self._ingest_lock:
+                return await self._batch_processor.ingest_files(
+                    paths,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                    whole_archive_convergence=whole_archive_convergence,
+                )
+        finally:
+            # A lookahead belongs to the batch it was offered beside, including
+            # one the authority gate refused before it took the lock.
+            self._batch_processor.drop_parse_lookahead()
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""

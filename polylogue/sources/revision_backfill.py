@@ -1508,7 +1508,11 @@ def prepare_retained_jsonl_carrier(
 
 
 def _prepared_retained_outcome(
-    archive: ArchiveStore, raw_id: str, prepared_inputs: Mapping[str, PreparedRetainedInput]
+    archive: ArchiveStore,
+    raw_id: str,
+    prepared_inputs: Mapping[str, PreparedRetainedInput],
+    *,
+    stop: Callable[[], bool] | None = None,
 ) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
     prepared = prepared_inputs.get(raw_id)
     if prepared is None:
@@ -1542,7 +1546,9 @@ def _prepared_retained_outcome(
         )
     from polylogue.storage.blob_store import BlobStore
 
-    if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash):
+    # ``stop`` is the caller's cancellation: it ends this re-hash between
+    # chunks with BlobVerificationCancelledError.
+    if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash, stop=stop):
         raise RetainedPreparationRetryableError(f"prepared retained blob changed for raw {raw_id}")
     if prepared.parser_error is not None:
         return RuntimeError(prepared.parser_error)
@@ -3635,6 +3641,8 @@ def selected_prepared_membership_head(
     archive: ArchiveStore,
     logical_key: str,
     prepared_inputs: Mapping[str, PreparedRetainedInput],
+    *,
+    stop: Callable[[], bool] | None = None,
 ) -> tuple[str, ParsedSession] | None:
     """Classify a censused membership cohort on a read-only preparation snapshot.
 
@@ -3665,7 +3673,7 @@ def selected_prepared_membership_head(
             raise RetainedPreparationRetryableError(
                 f"prepared membership candidate is absent for {logical_key}: {raw_id}"
             )
-        outcome = _prepared_retained_outcome(archive, raw_id, prepared_inputs)
+        outcome = _prepared_retained_outcome(archive, raw_id, prepared_inputs, stop=stop)
         if isinstance(outcome, Exception):
             raise RetainedPreparationRetryableError(
                 f"prepared membership candidate has parser failure for {logical_key}: {raw_id}"
