@@ -253,9 +253,11 @@ def test_storage_correctness_rejects_a_non_canonical_stored_content_hash(
     """
     from devtools import storage_correctness_scenario
 
+    # The raw-and-parsed write route decides the stored digest in revision
+    # governance; the scenario's own canonical hash is imported separately.
     monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.write._prepared_session_content_hash",
-        lambda _session: b"\x07" * 32,
+        "polylogue.storage.sqlite.archive_tiers.revision_governance.session_content_hash",
+        lambda _session: "07" * 32,
     )
 
     result = storage_correctness_scenario.run_storage_correctness(report_dir=None)
