@@ -1509,6 +1509,11 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         ),
         _raw_column("source_url", """source_url             TEXT"""),
         _raw_column("caption", """caption                TEXT"""),
+        # The raw acquisition whose parse produced this reference. Projection
+        # carry-forward keeps a reference that a later acquisition of the
+        # session omits, so ``sessions.raw_id`` does not name the raw that
+        # holds it. NULL when the writer had no raw identity.
+        _raw_column("supplying_raw_id", """supplying_raw_id       TEXT"""),
     ),
     table_constraints=("""PRIMARY KEY(message_id, position)""", _MESSAGE_OWNER_FK),
 )

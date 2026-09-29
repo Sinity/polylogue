@@ -18,8 +18,14 @@ from polylogue.sources.drive.gateway import (
     _resolve_retry_base,
     resolve_drive_retry_policy,
 )
-from polylogue.sources.drive.types import DriveAuthError, DriveError, DriveNotFoundError, DriveRetryPolicy
-from tests.infra.drive_mocks import MockDriveService, MockMediaIoBaseDownload
+from polylogue.sources.drive.types import (
+    DriveAccessDeniedError,
+    DriveAuthError,
+    DriveError,
+    DriveNotFoundError,
+    DriveRetryPolicy,
+)
+from tests.infra.drive_mocks import MockDriveService, MockMediaIoBaseDownload, drive_http_error
 
 
 def _as_drive_service(value: object) -> _DriveService:
@@ -159,6 +165,51 @@ def test_call_with_retry_contract(
 
     expected_attempts = 1 if terminal_error is not None else min(failure_count + 1, retries + 1)
     assert attempts["count"] == expected_attempts
+
+
+@pytest.mark.parametrize(
+    ("status", "errors", "raised", "retried"),
+    [
+        (403, (("usageLimits", "userRateLimitExceeded"),), None, True),
+        (403, (("usageLimits", "rateLimitExceeded"),), None, True),
+        (403, (("global", "downloadQuotaExceeded"),), None, True),
+        (403, (), None, True),
+        (403, (("global", "insufficientFilePermissions"),), DriveAccessDeniedError, False),
+        (404, (("global", "notFound"),), DriveNotFoundError, False),
+    ],
+    ids=["user-rate-limit", "rate-limit", "download-quota", "unreadable-403", "denied", "not-found"],
+)
+def test_call_with_retry_tells_a_throttled_403_from_a_denied_file(
+    status: int,
+    errors: tuple[tuple[str, str], ...],
+    raised: type[Exception] | None,
+    retried: bool,
+) -> None:
+    """07.F002: a 403 is permanent only when Drive says it is about the file.
+
+    Anti-vacuity: classify on status alone (``status in {403, 404}``) and the
+    three throttled cases become ``DriveAccessDeniedError`` after one
+    attempt; drop the translation and the denied and not-found cases are
+    retried and escape as the raw ``HttpError``.
+    """
+    retries = 2
+    gw = _gateway(retries=retries, retry_base=0.0)
+    failure = drive_http_error(status, *errors)
+    attempts = {"count": 0}
+
+    def fail() -> None:
+        attempts["count"] += 1
+        raise failure
+
+    if raised is None:
+        with pytest.raises(type(failure)) as caught:
+            gw.call_with_retry(fail)
+        assert caught.value is failure
+    else:
+        with pytest.raises(raised) as caught_typed:
+            gw.call_with_retry(fail)
+        assert caught_typed.value.__cause__ is failure
+    assert attempts["count"] == (retries + 1 if retried else 1)
 
 
 # ---------------------------------------------------------------------------

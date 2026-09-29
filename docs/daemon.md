@@ -49,8 +49,10 @@ tool's own directory, the hook spools and browser-capture spool under the
 archive root, and the archive inbox. There are no custom watch roots and no
 way to narrow the watch set. A tool whose logs live elsewhere is followed by
 a symlink at its canonical path. Account exports (ChatGPT, Claude, Gemini) are
-imported deliberately with `polylogue import <path>`, which stages them into
-the inbox.
+imported deliberately with `polylogue import <path>`, which stages them in the
+archive's `import-staging/` directory and submits the `ingest` operation. That
+directory is not watched, so the operation is the only route that acquires
+an import, keyed on the original path.
 
 ## Configuration Flags
 

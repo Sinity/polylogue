@@ -24,6 +24,14 @@ class DriveNotFoundError(DriveError):
     pass
 
 
+class DriveAccessDeniedError(DriveError):
+    """Drive refused this account access to a file, as a decision about the file.
+
+    Distinct from a quota or rate-limit refusal, which arrives with the same
+    HTTP 403 status but clears once the provider's window resets.
+    """
+
+
 @dataclass
 class DriveFile:
     file_id: str
@@ -134,6 +142,7 @@ __all__ = [
     "DriveAuthFlowFactory",
     "DriveAuthFlowLike",
     "DriveLocalServerFlowLike",
+    "DriveAccessDeniedError",
     "DriveAuthError",
     "DriveConfigLike",
     "DriveConsoleLike",

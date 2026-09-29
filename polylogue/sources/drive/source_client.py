@@ -26,6 +26,7 @@ from .source_support import (
 )
 from .types import (
     FOLDER_MIME_TYPE,
+    DriveAccessDeniedError,
     DriveFile,
     DriveNotFoundError,
 )
@@ -86,21 +87,16 @@ class DriveSourceClient:
         return file_id or folder_ref
 
     def resolve_folder_id(self, folder_ref: str) -> str:
-        from .gateway import _import_module as _gw_import
-
-        http_error_cls = _gw_import("googleapiclient.errors").HttpError
-
         if _looks_like_id(folder_ref):
             try:
                 resolved = self._resolve_folder_by_id(folder_ref)
                 if resolved is not None:
                     return resolved
+            except (DriveNotFoundError, DriveAccessDeniedError):
+                # Not a folder id this account can read; it may be a name.
+                pass
             except Exception as exc:
-                if isinstance(exc, http_error_cls):
-                    if exc.resp.status not in (404, 403):
-                        logger.warning("Unexpected Drive API error resolving %s: %s", folder_ref, exc)
-                else:
-                    logger.warning("Error resolving folder ID %s: %s", folder_ref, exc)
+                logger.warning("Error resolving folder ID %s: %s", folder_ref, exc)
         return self._resolve_folder_by_name(folder_ref)
 
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:

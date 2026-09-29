@@ -2622,6 +2622,7 @@ def write_parsed_session_to_archive(
                 session_id,
                 messages,
                 session.attachments,
+                supplying_raw_id=raw_id,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
                 refresh_attachment_ids=refresh_attachment_ids,
@@ -4916,7 +4917,7 @@ def _capture_session_projection_rows(
 ) -> _CapturedProjections:
     if scratch is not None:
         selections = {
-            "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption FROM attachment_refs WHERE session_id = ?",
+            "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
             "paste_spans": "SELECT message_id, session_id, position, start_offset, end_offset, boundary_state, source_event_id, source_marker, content_hash, observed_at_ms FROM paste_spans WHERE session_id = ?",
             "file_edits": "SELECT tool_use_block_id, session_id, message_id, file_path, structured_patch_json, original_file, old_string, new_string, replace_all, user_modified, observed_at_ms FROM file_edits WHERE session_id = ?",
             "web_content_constructs": "SELECT session_id, message_id, block_id, position, provider, construct_type, provider_key, title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, task_id, task_type, rank, start_index, end_index FROM web_content_constructs WHERE session_id = ?",
@@ -4958,8 +4959,8 @@ def _capture_session_projection_rows(
             )
         )
     attachment_refs = conn.execute(
-        "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption "
-        "FROM attachment_refs WHERE session_id = ?",
+        "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
+        "caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
         (session_id,),
     ).fetchall()
     ref_ids = [f"{row[2]}:attachment:{row[3]}" for row in attachment_refs]
@@ -5037,10 +5038,13 @@ def _restore_captured_projection_rows(
             "SELECT 1 FROM attachment_refs WHERE message_id = ? AND position = ?", (message_id, position)
         ).fetchone()
         if exists is None:
+            # ``supplying_raw_id`` travels with the row: the reference comes
+            # from the earlier acquisition that held it, not from this one.
             conn.execute(
                 "INSERT OR IGNORE INTO attachment_refs "
-                "(attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
+                "caption, supplying_raw_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
             ref_id = f"{message_id}:attachment:{position}"
@@ -6476,6 +6480,7 @@ def _write_attachments(
     messages: Sequence[ParsedMessage],
     attachments: Iterable[ParsedAttachment],
     *,
+    supplying_raw_id: str | None,
     content_identities: Sequence[MessageContentIdentity],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
@@ -6495,6 +6500,7 @@ def _write_attachments(
                 session_id,
                 messages,
                 attachments,
+                supplying_raw_id=supplying_raw_id,
                 content_identities=content_identities,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_native_ids,
@@ -6598,8 +6604,9 @@ def _write_attachments(
         conn.execute(
             """
             INSERT INTO attachment_refs (
-                attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url,
+                caption, supplying_raw_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, position) DO UPDATE SET
                 attachment_id = excluded.attachment_id,
                 session_id = excluded.session_id,
@@ -6607,7 +6614,10 @@ def _write_attachments(
                 direction = excluded.direction,
                 producer_ref = excluded.producer_ref,
                 source_url = excluded.source_url,
-                caption = excluded.caption
+                caption = excluded.caption,
+                -- This acquisition holds the reference too. A write with no
+                -- raw identity keeps the supplier already known to hold it.
+                supplying_raw_id = COALESCE(excluded.supplying_raw_id, attachment_refs.supplying_raw_id)
             WHERE attachment_refs.attachment_id = excluded.attachment_id
             """,
             (
@@ -6620,6 +6630,7 @@ def _write_attachments(
                 _sqlite_text(producer_ref),
                 _sqlite_text(_attachment_source_url(attachment)),
                 _sqlite_text(_attachment_caption(attachment)),
+                supplying_raw_id,
             ),
         )
         _write_attachment_native_ids(conn, ref_id, attachment)

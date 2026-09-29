@@ -149,8 +149,8 @@ def _classify_artifact_path_strong(
             default_priority=120 if rule.parse_policy == "session" else 80,
             reason=f"OriginSpec {provider_token.value} artifact rule: {rule.coverage_role}",
         )
-    # polylogue-omsw: generic/ad-hoc acquisition routes (the daemon's shared
-    # "inbox" import source backing `polylogue import <path>`, and this
+    # polylogue-omsw: generic/ad-hoc acquisition routes (the daemon's "inbox"
+    # drop directory, the ingest operation behind `polylogue import <path>`, and this
     # taxonomy's own `classify_artifact_path` pre-decode callers) resolve a
     # provider hint of "unknown" or a shape-detected non-Claude-Code provider
     # for these paths -- they never learn the file actually sits under a

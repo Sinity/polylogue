@@ -7,17 +7,23 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import IO
+from unittest.mock import MagicMock
+
+import pytest
 
 from polylogue.core.enums import Provider, Role
 from polylogue.core.types import AttachmentUploadOrigin
 from polylogue.operations.attachment_convergence import converge_drive_attachments
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
-from polylogue.sources.drive.types import DriveNotFoundError
+from polylogue.sources.drive.gateway import DriveServiceGateway
+from polylogue.sources.drive.source_client import DriveSourceClient
+from polylogue.sources.drive.types import DriveNotFoundError, DriveRetryPolicy
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.drive_mocks import drive_http_error
 
 
 def _into(fetch: Callable[[str], bytes]) -> Callable[[str, IO[bytes]], None]:
@@ -57,6 +63,16 @@ def _open_index(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _retain_raws(source: sqlite3.Connection, *raw_ids: str) -> None:
+    """Record durable acquisitions the index's references can name as their supplier."""
+    with source:
+        source.executemany(
+            "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES (?, 'aistudio-drive', ?, ?, 0, 0)",
+            ((raw_id, f"/exports/{raw_id}.json", hashlib.sha256(raw_id.encode()).digest()) for raw_id in raw_ids),
+        )
+
+
 def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_path: Path) -> None:
     """A ZIP-restored row is fetched without Drive iterator enumeration.
 
@@ -75,6 +91,7 @@ def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_pa
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "legacy-zip-raw", "negative-paste-raw")
 
     payload = b"bytes restored from Drive after ZIP import"
     calls: list[str] = []
@@ -166,6 +183,7 @@ def test_attachment_convergence_keeps_retryable_provider_failure_as_debt(tmp_pat
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "retry-raw")
 
     calls: list[str] = []
 
@@ -209,6 +227,7 @@ def test_attachment_download_streams_to_disk_and_has_no_size_cap(tmp_path: Path)
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "large-raw")
 
     chunk = bytes(range(256)) * 4096  # 1 MiB
     chunk_count = 3
@@ -242,6 +261,7 @@ def test_attachment_convergence_records_debt_for_the_next_bounded_window(tmp_pat
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "raw-1", "raw-2")
 
     calls: list[str] = []
 
@@ -278,6 +298,7 @@ def test_shared_attachment_fetches_once_but_records_each_raw_ref(tmp_path: Path)
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "raw-1", "raw-2")
 
     calls: list[str] = []
 
@@ -309,6 +330,7 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "gone-raw")
 
     calls: list[str] = []
 
@@ -341,6 +363,222 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     source.close()
 
 
+def _drive_client(
+    monkeypatch: pytest.MonkeyPatch, download: Callable[[str, IO[bytes]], None], *, retries: int
+) -> DriveSourceClient:
+    """The production Drive client and gateway, with only the media request replaced."""
+    gateway = DriveServiceGateway(
+        auth_manager=MagicMock(),
+        retry_policy=DriveRetryPolicy(retries=retries, retry_base=0.0),
+    )
+    monkeypatch.setattr(gateway, "download_file", download)
+    return DriveSourceClient(gateway=gateway)
+
+
+def test_rate_limited_403_keeps_the_attachment_owed_until_the_quota_resets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """07.F002: a throttled 403 is retryable debt, a denied 403 is terminal.
+
+    Drive answers ``userRateLimitExceeded`` with HTTP 403. The gateway retries
+    it and re-raises the provider error, and the attachment must stay
+    ``unfetched`` so a later pass acquires it once the quota resets.
+
+    Anti-vacuity: restore the status-only rule (``status in {403, 404}``) in
+    ``_permanent_failure`` and the throttled row turns ``unavailable`` on the
+    first pass, so the second pass inspects nothing and acquires nothing.
+    Classify every 403 as retryable and the denied row stays ``unfetched``.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("throttled", file_id="drive-throttled"), raw_id="throttled-raw")
+    write_parsed_session_to_archive(index, _session("denied", file_id="drive-denied"), raw_id="denied-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "throttled-raw", "denied-raw")
+
+    retries = 2
+    attempts: list[str] = []
+    throttled = drive_http_error(403, ("usageLimits", "userRateLimitExceeded"))
+    denied = drive_http_error(403, ("global", "insufficientFilePermissions"))
+
+    def quota_exhausted(file_id: str, _handle: IO[bytes]) -> None:
+        attempts.append(file_id)
+        raise throttled if file_id == "drive-throttled" else denied
+
+    first = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_into=_drive_client(monkeypatch, quota_exhausted, retries=retries).download_into,
+        limit=10,
+    )
+
+    def status(file_id: str) -> str:
+        return str(
+            index.execute(
+                "SELECT a.acquisition_status FROM attachments a "
+                "JOIN attachment_refs r ON r.attachment_id = a.attachment_id "
+                "JOIN attachment_native_ids n ON n.ref_id = r.ref_id AND n.id_kind = 'file' "
+                "WHERE n.native_id = ?",
+                (file_id,),
+            ).fetchone()[0]
+        )
+
+    assert attempts.count("drive-throttled") == retries + 1
+    assert attempts.count("drive-denied") == 1
+    assert first.terminal == 1
+    assert first.transport_pending
+    assert status("drive-throttled") == "unfetched"
+    assert status("drive-denied") == "unavailable"
+
+    payload = b"bytes served once the quota window reset"
+
+    def quota_reset(file_id: str, handle: IO[bytes]) -> None:
+        attempts.append(file_id)
+        handle.write(payload)
+
+    second = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_into=_drive_client(monkeypatch, quota_reset, retries=retries).download_into,
+        limit=10,
+    )
+    assert second.inspected == 1
+    assert second.acquired == 1
+    assert second.complete
+    assert status("drive-throttled") == "acquired"
+    assert status("drive-denied") == "unavailable"
+    index.close()
+    source.close()
+
+
+def _carried_forward_attachment(index: sqlite3.Connection) -> None:
+    """Raw A holds a Drive attachment; a later raw B of the session omits it.
+
+    B keeps the owning message, so projection carry-forward restores the
+    reference while ``sessions.raw_id`` moves to B.
+    """
+    with_attachment = _session("carried", file_id="drive-carried")
+    write_parsed_session_to_archive(index, with_attachment, raw_id="raw-a")
+    write_parsed_session_to_archive(index, with_attachment.model_copy(update={"attachments": []}), raw_id="raw-b")
+    index.commit()
+    assert index.execute("SELECT raw_id FROM sessions").fetchone()[0] == "raw-b"
+    assert [tuple(row) for row in index.execute("SELECT supplying_raw_id FROM attachment_refs")] == [("raw-a",)]
+
+
+def test_carried_forward_attachment_bytes_are_attributed_to_the_raw_that_held_it(tmp_path: Path) -> None:
+    """07.F004: the durable ref names the acquisition that supplied the reference.
+
+    Anti-vacuity: take ``raw_id`` from ``sessions`` again (the previous
+    candidate query) and the blob ref is written under ``raw-b``; drop
+    ``supplying_raw_id`` from the carry-forward capture and the restored
+    reference has no supplier, so nothing is acquired.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    _carried_forward_attachment(index)
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "raw-a", "raw-b")
+
+    payload = b"attachment bytes raw A referenced"
+    result = converge_drive_attachments(
+        index, source, archive_root=tmp_path, download_into=_into(lambda _file_id: payload)
+    )
+
+    assert result.acquired == 1
+    assert result.complete
+    refs = source.execute("SELECT ref_id, blob_hash FROM blob_refs WHERE ref_type = 'attachment'").fetchall()
+    assert [(row[0], bytes(row[1])) for row in refs] == [("raw-a", hashlib.sha256(payload).digest())]
+    index.close()
+    source.close()
+
+
+def test_an_unretained_supplier_is_never_replaced_by_the_sessions_current_raw(tmp_path: Path) -> None:
+    """07.F004: the supplier is checked against durable ``raw_sessions``.
+
+    The index is rebuildable, so its ``supplying_raw_id`` is only a claim.
+    When ``source.db`` no longer retains raw A the reference cannot be
+    attributed: nothing is downloaded, no blob ref is written for raw B, and
+    the obligation stays open without being retried as transport work.
+
+    Anti-vacuity: fall back to ``sessions.raw_id`` for an unretained supplier
+    and the pass downloads the file and writes ``blob_refs(ref_id='raw-b')``;
+    skip the ``raw_sessions`` probe and it writes a durable ref naming a raw
+    ``source.db`` does not hold.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    _carried_forward_attachment(index)
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "raw-b")
+
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        return b"never fetched"
+
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(fetch))
+
+    assert calls == []
+    assert result.inspected == 0
+    assert result.unattributed == 1
+    assert not result.transport_pending
+    assert not result.complete
+    assert source.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+    assert index.execute("SELECT acquisition_status FROM attachments").fetchone()[0] == "unfetched"
+    index.close()
+    source.close()
+
+
+def test_a_supplier_retired_during_the_download_gets_no_durable_ref(tmp_path: Path) -> None:
+    """07.F004: the supplier is re-checked under the writer, before publication.
+
+    Anti-vacuity: drop the publish-time probe and the pass writes a
+    ``blob_refs`` row for the retired raw and reserves its bytes.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    _carried_forward_attachment(index)
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "raw-a", "raw-b")
+
+    def retire_then_open() -> tuple[sqlite3.Connection, sqlite3.Connection]:
+        with source:
+            source.execute("DELETE FROM raw_sessions WHERE raw_id = 'raw-a'")
+        write_index = _open_index(tmp_path / "index.db")
+        write_source = sqlite3.connect(tmp_path / "source.db")
+        return write_index, write_source
+
+    payload = b"downloaded while raw A was retired"
+    result = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_into=_into(lambda _file_id: payload),
+        open_write_connections=retire_then_open,
+    )
+
+    digest = hashlib.sha256(payload).digest()
+    assert result.acquired == 0
+    assert result.unattributed == 1
+    assert source.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+    reservations = source.execute(
+        "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?", (digest,)
+    ).fetchone()[0]
+    assert reservations == 0
+    assert not BlobStore(tmp_path / "blob").exists(digest.hex())
+    assert index.execute("SELECT acquisition_status FROM attachments").fetchone()[0] == "unfetched"
+    index.close()
+    source.close()
+
+
 def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) -> None:
     """A rebuilt attachment row re-binds bytes the blob store still holds.
 
@@ -355,6 +593,7 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "survivor-raw")
 
     payload = b"bytes that outlive the derived tier"
     first = converge_drive_attachments(
@@ -428,6 +667,7 @@ def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "decayed-raw")
 
     payload = b"bytes the archive published once"
     first = converge_drive_attachments(
@@ -500,6 +740,7 @@ def test_a_contradicted_destination_blocks_the_acquired_outcome(tmp_path: Path) 
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "decayed-raw")
 
     payload = b"bytes the archive published once"
     assert (
@@ -581,6 +822,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "two-docs-raw")
 
     payloads = {
         "drive-file-a": b"first retained document",
@@ -673,6 +915,7 @@ def test_contested_provider_identity_is_refused_not_downloaded_under_a_lexical_w
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "contested-raw", "resolvable-raw")
 
     calls: list[str] = []
 
@@ -729,6 +972,7 @@ def _seed_contested(tmp_path: Path, *, with_resolvable: bool) -> tuple[sqlite3.C
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "c-raw", "r-raw")
     source.close()
     return index, ref_id
 
@@ -818,6 +1062,7 @@ def test_terminal_absence_stays_distinct_from_contested_identity(tmp_path: Path)
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "g-raw")
 
     def missing(file_id: str, _handle: IO[bytes]) -> None:
         raise DriveNotFoundError(file_id)

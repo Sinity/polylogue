@@ -63,19 +63,28 @@ class PreparedSourceMemberDisposition:
 
 
 def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_stop: Callable[[], None]) -> Path:
-    """Sort the physical denominator on disk before retaining any input."""
+    """Sort the physical denominator on disk before retaining any input.
+
+    Each row pairs the physical file with the logical path its raws are keyed
+    on. ``source_path`` names the caller's original input: a file's logical
+    path is ``source_path`` itself, and a directory member's is its relative
+    path under ``source_path``, so a staged copy is keyed where the caller's
+    material lives rather than where it was staged. Without ``source_path``
+    the physical path is the logical one.
+    """
     fd, name = tempfile.mkstemp(prefix="polylogue-ingest-paths-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
     os.close(fd)
     spool = Path(name)
     try:
         with spool_connection(spool) as conn:
-            conn.execute("CREATE TABLE paths(coordinate TEXT PRIMARY KEY, physical TEXT NOT NULL) WITHOUT ROWID")
+            conn.execute(
+                "CREATE TABLE paths(coordinate TEXT PRIMARY KEY, physical TEXT NOT NULL, logical TEXT NOT NULL) "
+                "WITHOUT ROWID"
+            )
             mode = path.lstat().st_mode
             if stat.S_ISREG(mode):
-                conn.execute("INSERT INTO paths VALUES (?, ?)", ("input:0", str(path)))
+                conn.execute("INSERT INTO paths VALUES (?, ?, ?)", ("input:0", str(path), source_path or str(path)))
             elif stat.S_ISDIR(mode):
-                if source_path is not None:
-                    raise ValueError("a directory ingest cannot rename its physical input coordinates")
                 for candidate in path.rglob("*"):
                     check_stop()
                     candidate_mode = candidate.lstat().st_mode
@@ -83,7 +92,9 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
                         continue
                     if not stat.S_ISREG(candidate_mode):
                         raise ValueError("ingest inputs must be regular files, not links or special files")
-                    conn.execute("INSERT INTO paths VALUES (?, ?)", (str(candidate.relative_to(path)), str(candidate)))
+                    relative = candidate.relative_to(path)
+                    logical = str(Path(source_path) / relative) if source_path is not None else str(candidate)
+                    conn.execute("INSERT INTO paths VALUES (?, ?, ?)", (str(relative), str(candidate), logical))
             else:
                 raise ValueError("ingest input must be a regular file or directory")
             if conn.execute("SELECT 1 FROM paths LIMIT 1").fetchone() is None:
@@ -98,18 +109,17 @@ def retain_input_page(
     spool: Path,
     *,
     after_coordinate: str | None,
-    source_path: str | None,
     publisher: ArchiveBlobPublisher,
     check_stop: Callable[[], None],
 ) -> tuple[FrozenSourceInput, ...]:
     """One compute-phase page; its SQLite connection never crosses threads."""
     with spool_connection(spool, read_only=True) as conn:
         rows = conn.execute(
-            "SELECT coordinate, physical FROM paths WHERE coordinate > ? ORDER BY coordinate LIMIT 256",
+            "SELECT coordinate, physical, logical FROM paths WHERE coordinate > ? ORDER BY coordinate LIMIT 256",
             (after_coordinate or "",),
         ).fetchall()
     batch: list[FrozenSourceInput] = []
-    for coordinate, physical_name in rows:
+    for coordinate, physical_name, logical_path in rows:
         check_stop()
         physical = Path(physical_name)
         before = physical.stat()
@@ -129,7 +139,7 @@ def retain_input_page(
         publication_id = publisher.receipt_id(blob_hash)
         if publication_id is None:
             raise RuntimeError("retained input has no publication reservation identity")
-        batch.append(FrozenSourceInput(str(coordinate), source_path or physical_name, blob_hash, publication_id))
+        batch.append(FrozenSourceInput(str(coordinate), str(logical_path), blob_hash, publication_id))
     return tuple(batch)
 
 

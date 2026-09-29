@@ -2,19 +2,21 @@
 
 Truthfulness contract (#1264 / #869 slice C):
 
-* ``polylogue import PATH`` either really stages the file into the daemon
-  inbox **and** confirms the daemon accepted scheduling, or it fails with
-  an actionable message. There is no silent success path.
+* ``polylogue import PATH`` either really stages the file into the archive's
+  import staging directory **and** confirms the daemon accepted scheduling,
+  or it fails with an actionable message. There is no silent success path.
+  The staging directory is not a watched source: the accepted ``ingest``
+  operation is the only route that acquires a staged import.
 
 The three observable outcomes are:
 
 1. **accepted + observable** — the file was copied into
-   ``archive_root()/inbox`` and the running daemon returned an
+   ``archive_root()/import-staging`` and the running daemon returned an
    durable operation reference with status ``accepted``. The user sees the
    staged path, the operation id, and the next-step pointer
    (``polylogue ops status``) so they can watch the work converge.
 2. **rejected (input)** — the supplied path does not exist, cannot be
-   read, or cannot be staged into the inbox. Click rejects missing paths
+   read, or cannot be staged. Click rejects missing paths
    directly; staging errors raise a ``fail()`` with the offending path.
 3. **rejected (daemon)** — the daemon is not running, refused the
    declared ``ingest`` operation, or returned an envelope this command
@@ -30,6 +32,7 @@ import json
 import os
 import shutil
 import stat
+import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -45,7 +48,7 @@ if TYPE_CHECKING:
     from polylogue.demo import DemoVerifyResult
 
 # Statuses that mean the daemon accepted scheduling and the work is now
-# observable through the inbox / ``polylogue ops status`` surfaces.
+# observable through ``polylogue ops status``.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 
 
@@ -72,33 +75,67 @@ def _clone_file(
     return destination_path
 
 
-def _make_directories_owner_writable(root: Path) -> list[tuple[str, int]]:
-    """Let a restage create its temporaries inside an earlier staged tree.
+def _remove_staged_entry(entry: Path) -> None:
+    """Remove a staged file or tree, including one with read-only directories.
 
     ``copytree`` copies each source directory's mode after its contents, so a
-    ``0555`` export directory is read-only once staged and a later restage
-    could not create a replacement inside it. The same ``copytree`` restores
-    every mode once the directory's contents are published; the modes changed
-    here are returned so a failed restage can put them back.
+    ``0555`` export directory is read-only once staged and its members could
+    not be unlinked without first making it owner-writable again.
     """
-    changed: list[tuple[str, int]] = []
-    for directory, _subdirectories, _files in os.walk(root):
-        mode = stat.S_IMODE(os.stat(directory).st_mode)
-        if not mode & stat.S_IWUSR:
-            os.chmod(directory, mode | stat.S_IWUSR)
-            changed.append((directory, mode))
-    return changed
+    if entry.is_dir() and not entry.is_symlink():
+        for directory, _subdirectories, _files in os.walk(entry):
+            mode = stat.S_IMODE(os.stat(directory).st_mode)
+            if not mode & stat.S_IWUSR:
+                os.chmod(directory, mode | stat.S_IWUSR)
+        shutil.rmtree(entry)
+    else:
+        entry.unlink(missing_ok=True)
 
 
-def _restore_directory_modes(changed: list[tuple[str, int]]) -> None:
-    # Deepest first, so a parent is never made read-only before its child.
-    for directory, mode in reversed(changed):
-        with suppress(FileNotFoundError):
-            os.chmod(directory, mode)
+def _stage_directory(source: Path, dest: Path) -> None:
+    """Stage ``source`` at ``dest`` as an exact copy of the tree.
+
+    The ingest operation keys every staged member on its path under the
+    caller's ``source_path``, so the staged tree must hold exactly the
+    source's members: copying over an earlier staging of a same-named tree
+    would acquire that tree's leftovers as members of this one. The copy is
+    built in a fresh sibling and swapped in only once complete, so a failed
+    restage leaves the earlier staged tree as it was.
+    """
+    # Short fixed prefixes: embedding the destination name could push a valid
+    # 255-byte name past the filesystem's component limit.
+    fresh = Path(tempfile.mkdtemp(prefix=".stage-", dir=dest.parent))
+    try:
+        shutil.copytree(source, fresh, dirs_exist_ok=True, copy_function=_clone_file)
+    except BaseException:
+        _remove_staged_entry(fresh)
+        raise
+    if not (dest.exists() or dest.is_symlink()):
+        fresh.rename(dest)
+        return
+    retired_root = Path(tempfile.mkdtemp(prefix=".retired-", dir=dest.parent))
+    retired = retired_root / "entry"
+    try:
+        dest.rename(retired)
+        try:
+            fresh.rename(dest)
+        except BaseException:
+            retired.rename(dest)
+            raise
+    except BaseException:
+        _remove_staged_entry(fresh)
+        raise
+    finally:
+        # Only once one tree is in place: an earlier tree that could not be
+        # put back stays in its retired sibling rather than being deleted.
+        if dest.exists():
+            with suppress(FileNotFoundError):
+                _remove_staged_entry(retired_root)
 
 
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
-    """Stage a local import target into the archive inbox for daemon pickup."""
+    """Stage a local import target for the daemon's ``ingest`` operation."""
+    from polylogue.operations.import_staging import import_staging_root
     from polylogue.sources.parsers import antigravity, hermes_state
     from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
 
@@ -106,19 +143,16 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
     if not resolved.exists():
         fail("import", f"Path does not exist: {resolved}")
 
-    inbox = archive_root() / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    dest = inbox / resolved.name
+    staging = import_staging_root(archive_root())
+    staging.mkdir(parents=True, exist_ok=True)
+    dest = staging / resolved.name
 
     if dest.exists() and resolved == dest.resolve():
         return dest
 
     try:
         if replace_existing and dest.exists():
-            if dest.is_dir():
-                shutil.rmtree(dest)
-            else:
-                dest.unlink()
+            _remove_staged_entry(dest)
         if hermes_state.looks_like_state_db_path(resolved) or antigravity.looks_like_trajectory_db_path(resolved):
             stage_sqlite_snapshot(resolved, dest)
             return dest
@@ -128,12 +162,7 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
         # rename that publishes it, and restored if that publication fails.
         metadata_path = sqlite_staging_metadata_path(dest)
         if resolved.is_dir():
-            changed_modes = _make_directories_owner_writable(dest) if dest.is_dir() else []
-            try:
-                shutil.copytree(resolved, dest, dirs_exist_ok=True, copy_function=_clone_file)
-            except OSError:
-                _restore_directory_modes(changed_modes)
-                raise
+            _stage_directory(resolved, dest)
             metadata_path.unlink(missing_ok=True)
         else:
             retired: list[bytes] = []
@@ -152,7 +181,7 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
                     atomic_replace(metadata_path, retired[0], mode=0o600)
                 raise
     except OSError as exc:
-        fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
+        fail("import", f"Could not stage {resolved} for import: {exc}")
 
     return dest
 
@@ -320,13 +349,13 @@ def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> tupl
         fail(
             "import",
             f"Daemon refused the ingest operation ({exc.code}: {exc.detail}).\n"
-            f"  The staged inbox entry was left in place at {staged}.",
+            f"  The staged entry was left in place at {staged}.",
         )
     except OperationKernelError as exc:
         fail(
             "import",
             f"Daemon returned an unusable ingest response ({exc}); refusing to claim success.\n"
-            f"  The staged inbox entry was left in place at {staged}.",
+            f"  The staged entry was left in place at {staged}.",
         )
 
     reference = envelope.get("accepted_reference")
@@ -422,8 +451,8 @@ def import_command(
 ) -> None:
     """Schedule a file or directory for import by the running daemon.
 
-    Stages PATH into the archive inbox and asks the running polylogued
-    daemon to schedule it for processing. The command is truthful: it
+    Stages PATH into the archive's import staging directory and asks the
+    running polylogued daemon to ingest it. The command is truthful: it
     either confirms the daemon accepted scheduling (with a pointer to
     'polylogue ops status' for observable progress) or fails with an
     actionable error. It never reports success without observable

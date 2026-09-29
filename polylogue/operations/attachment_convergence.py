@@ -25,7 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     is_blob_hash_excised,
     write_source_blob_refs,
 )
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.attachment_records import (
     contested_native_id_predicate,
     unambiguous_native_id_sql,
@@ -59,6 +59,15 @@ class AttachmentConvergenceResult:
     #: neither of the two states this pass can otherwise produce is true --
     #: the bytes are not acquired, and their absence is not permanent.
     contradicted: int = 0
+    #: Unfetched Drive references whose supplying raw -- the acquisition whose
+    #: parse produced the reference -- is not retained in ``source.db``. The
+    #: durable blob ref names that raw, and binding the bytes to any other raw
+    #: (the session's current one included) attributes them to an acquisition
+    #: that never held them. Like contested identity they are neither
+    #: transport work nor terminal: they stay ``unfetched`` until the derived
+    #: index converges on the retained raws. Counted by the same SQL predicate
+    #: that excludes them from the transport window.
+    unattributed: int = 0
 
     @property
     def transport_pending(self) -> bool:
@@ -73,10 +82,28 @@ class AttachmentConvergenceResult:
     def complete(self) -> bool:
         """Whether the whole owed obligation is discharged.
 
-        A contested reference is neither acquired nor terminally absent, so it
-        keeps the obligation incomplete even when no transport work remains.
+        A contested or unattributed reference is neither acquired nor
+        terminally absent, so it keeps the obligation incomplete even when no
+        transport work remains.
         """
-        return self.deferred == 0 and self.unresolved_identity == 0
+        return self.deferred == 0 and self.unresolved_identity == 0 and self.unattributed == 0
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateWindow:
+    rows: tuple[sqlite3.Row, ...]
+    #: Owed references whose supplying raw is not retained.
+    unattributed: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Acquired:
+    """One reference whose bytes this pass holds, with its durable source ref."""
+
+    attachment_id: str
+    blob_hash: bytes
+    byte_count: int
+    ref: ArchiveSourceBlobRef
 
 
 #: Drive-hosted references still owed bytes. ``upload_origin`` and
@@ -84,40 +111,80 @@ class AttachmentConvergenceResult:
 _UNFETCHED_DRIVE_REFERENCE_SQL = """
     FROM attachments AS a
     JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id
-    JOIN sessions AS s ON s.session_id = r.session_id
     WHERE a.acquisition_status = 'unfetched'
       AND r.upload_origin = 'drive'
 """
 
+#: Placeholder budget for one ``raw_sessions`` membership probe.
+_RAW_PROBE_CHUNK = 500
 
-def _candidate_rows(conn: sqlite3.Connection, *, limit: int) -> list[sqlite3.Row]:
-    """One bounded window of references with a resolvable provider identity.
 
-    The download coordinate comes from :func:`unambiguous_native_id_sql`, the
-    same selection the session reads use, so what the operator is shown and
-    what the downloader asks for cannot diverge. A reference whose identity is
-    contested is excluded here rather than downloaded under a lexical winner;
-    :func:`_unresolved_identity_count` reports it.
+def _retained_raw_ids(source_conn: sqlite3.Connection, raw_ids: set[str]) -> set[str]:
+    """The subset of ``raw_ids`` that ``source.db`` durably retains."""
+    ordered = sorted(raw_ids)
+    retained: set[str] = set()
+    for start in range(0, len(ordered), _RAW_PROBE_CHUNK):
+        chunk = ordered[start : start + _RAW_PROBE_CHUNK]
+        marks = ",".join("?" for _ in chunk)
+        retained.update(
+            str(row[0])
+            for row in source_conn.execute(f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({marks})", chunk)
+        )
+    return retained
+
+
+def _candidate_rows(conn: sqlite3.Connection, source_conn: sqlite3.Connection, *, limit: int) -> _CandidateWindow:
+    """Select a bounded transport window using the durable supplier relation.
+
+    Join the retained source tier before LIMIT so missing suppliers cannot
+    starve valid candidates. Do not page the whole archive through Python to
+    find one eligible reference: the stage's one-row work probe uses this same
+    query. The supplier is checked again under the publication writer lease.
     """
+    wanted = max(0, int(limit))
+    if wanted == 0:
+        return _CandidateWindow(rows=(), unattributed=0)
+    source_path = next(str(row[2]) for row in source_conn.execute("PRAGMA database_list") if row[1] == "main")
+    if not source_path:
+        raise ValueError("attachment convergence requires a retained source database")
+    attached = {str(row[1]): str(row[2]) for row in conn.execute("PRAGMA database_list")}
+    alias = "attachment_source"
+    if alias not in attached:
+        attach_database(conn, source_path, alias=alias)
+    elif Path(attached[alias]).resolve() != Path(source_path).resolve():
+        raise ValueError("attachment convergence source attachment changed")
     conn.row_factory = sqlite3.Row
-    return list(
-        conn.execute(
-            f"""
-            SELECT a.attachment_id, r.ref_id, r.session_id, r.upload_origin,
-                   r.source_url, s.raw_id,
-                   COALESCE(
-                       ({unambiguous_native_id_sql("file")}),
-                       ({unambiguous_native_id_sql("drive")}),
-                       ({unambiguous_native_id_sql("attachment")})
-                   ) AS provider_file_id
-            {_UNFETCHED_DRIVE_REFERENCE_SQL}
-              AND NOT {contested_native_id_predicate()}
-            ORDER BY a.attachment_id, r.ref_id
-            LIMIT ?
-            """,
-            (max(0, int(limit)),),
-        ).fetchall()
-    )
+    retained = "EXISTS (SELECT 1 FROM attachment_source.raw_sessions AS raw WHERE raw.raw_id = r.supplying_raw_id)"
+    predicate = f"{_UNFETCHED_DRIVE_REFERENCE_SQL} AND NOT {contested_native_id_predicate()}"
+    unattributed = int(conn.execute(f"SELECT COUNT(*) {predicate} AND NOT {retained}").fetchone()[0])
+    rows = conn.execute(
+        f"""
+        SELECT a.attachment_id, r.ref_id, r.session_id, r.upload_origin,
+               r.source_url, r.supplying_raw_id,
+               COALESCE(
+                   ({unambiguous_native_id_sql("file")}),
+                   ({unambiguous_native_id_sql("drive")}),
+                   ({unambiguous_native_id_sql("attachment")})
+               ) AS provider_file_id
+        {predicate} AND {retained}
+        ORDER BY a.attachment_id, r.ref_id
+        LIMIT ?
+        """,
+        (wanted,),
+    ).fetchall()
+    return _CandidateWindow(rows=tuple(rows), unattributed=unattributed)
+
+
+def _report_unattributed(unattributed: int) -> None:
+    """Name owed references whose supplying acquisition is not retained."""
+    if unattributed:
+        emit(
+            "operations.attachment_convergence.supplier_unretained",
+            level=WARNING,
+            outcome="degraded",
+            unattributed=unattributed,
+            reason="attachment reference names no retained raw acquisition",
+        )
 
 
 def _unresolved_identity_count(conn: sqlite3.Connection) -> int:
@@ -153,22 +220,19 @@ def _report_unresolved_identity(conn: sqlite3.Connection) -> int:
 
 
 def _permanent_failure(exc: BaseException) -> bool:
-    """Classify only explicit absence/access failures as terminal.
+    """Classify only the provider's explicit answer about the file as terminal.
 
-    Transport/auth failures remain retryable.  The Drive client deliberately
-    exposes ``DriveNotFoundError`` for the permanent 404 case; importing the
-    type lazily keeps this module usable with small test doubles.
+    The Drive gateway owns reading a provider HTTP error: it raises
+    ``DriveNotFoundError`` for 404 and ``DriveAccessDeniedError`` for a 403
+    that denies the file, and leaves a throttled 403 (``userRateLimitExceeded``
+    and its siblings) as the provider's own, retryable exception. Everything
+    else -- a rate limit, a transport or auth failure, or a local
+    ``PermissionError`` while staging the download -- keeps the row
+    ``unfetched`` for a later pass.
     """
-    from polylogue.sources.drive.types import DriveNotFoundError
+    from polylogue.sources.drive.types import DriveAccessDeniedError, DriveNotFoundError
 
-    if isinstance(exc, (DriveNotFoundError, PermissionError)):
-        return True
-    # The gateway preserves provider HTTP errors for callers that need the
-    # response metadata.  Treat only explicit absence/access responses as
-    # terminal; rate limits and transport failures must retain convergence
-    # debt for a later pass.
-    status = getattr(getattr(exc, "resp", None), "status", None)
-    return status in {403, 404}
+    return isinstance(exc, (DriveNotFoundError, DriveAccessDeniedError))
 
 
 def _acquisition_coordinate(row: sqlite3.Row) -> str:
@@ -308,12 +372,14 @@ def converge_drive_attachments(
     opener rather than hand in connections it could not have opened yet.
     """
     unresolved_identity = _report_unresolved_identity(index_conn)
-    rows = _candidate_rows(index_conn, limit=limit)
+    window = _candidate_rows(index_conn, source_conn, limit=limit)
+    unattributed = window.unattributed
+    rows = window.rows
     if not rows:
-        return AttachmentConvergenceResult(unresolved_identity=unresolved_identity)
+        _report_unattributed(unattributed)
+        return AttachmentConvergenceResult(unresolved_identity=unresolved_identity, unattributed=unattributed)
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    acquired_refs: list[ArchiveSourceBlobRef] = []
-    acquired_rows: list[tuple[str, bytes, int]] = []
+    acquired: list[_Acquired] = []
     #: Rows bound to a blob whose stored object still re-hashes to the
     #: recorded identity; no provider request and no new source blob ref, but
     #: the same durable index outcome -- and the same content evidence -- as a
@@ -339,7 +405,9 @@ def converge_drive_attachments(
             if not isinstance(provider_file_id, str) or not provider_file_id:
                 terminal_ids.append(attachment_id)
                 continue
-            raw_id = str(row["raw_id"])
+            # The acquisition whose parse produced this reference, checked
+            # against ``raw_sessions`` when the window was drawn.
+            raw_id = str(row["supplying_raw_id"])
             source_path = _acquisition_coordinate(row)
             surviving = _surviving_blob_ref(
                 source_conn,
@@ -376,18 +444,20 @@ def converge_drive_attachments(
                     deferred += 1
                     continue
                 assert outcome == "acquired" and cached_hash is not None
-                blob_hash = cached_hash
-                byte_count = cached_size
-                acquired_rows.append((attachment_id, blob_hash, byte_count))
-                acquired_refs.append(
-                    ArchiveSourceBlobRef(
-                        blob_hash=blob_hash,
-                        raw_id=raw_id,
-                        ref_type="attachment",
-                        source_path=source_path,
-                        size_bytes=byte_count,
-                        acquired_at_ms=observed_at_ms,
-                        publication_receipt_id=publisher.receipt_id(blob_hash.hex()),
+                acquired.append(
+                    _Acquired(
+                        attachment_id,
+                        cached_hash,
+                        cached_size,
+                        ArchiveSourceBlobRef(
+                            blob_hash=cached_hash,
+                            raw_id=raw_id,
+                            ref_type="attachment",
+                            source_path=source_path,
+                            size_bytes=cached_size,
+                            acquired_at_ms=observed_at_ms,
+                            publication_receipt_id=publisher.receipt_id(cached_hash.hex()),
+                        ),
                     )
                 )
                 continue
@@ -460,16 +530,20 @@ def converge_drive_attachments(
 
             blob_hash = bytes.fromhex(blob_hash_hex)
             fetch_outcomes[provider_file_id] = ("acquired", blob_hash, byte_count)
-            acquired_rows.append((attachment_id, blob_hash, byte_count))
-            acquired_refs.append(
-                ArchiveSourceBlobRef(
-                    blob_hash=blob_hash,
-                    raw_id=str(row["raw_id"]),
-                    ref_type="attachment",
-                    source_path=source_path,
-                    size_bytes=byte_count,
-                    acquired_at_ms=observed_at_ms,
-                    publication_receipt_id=publisher.receipt_id(blob_hash_hex),
+            acquired.append(
+                _Acquired(
+                    attachment_id,
+                    blob_hash,
+                    byte_count,
+                    ArchiveSourceBlobRef(
+                        blob_hash=blob_hash,
+                        raw_id=raw_id,
+                        ref_type="attachment",
+                        source_path=source_path,
+                        size_bytes=byte_count,
+                        acquired_at_ms=observed_at_ms,
+                        publication_receipt_id=publisher.receipt_id(blob_hash_hex),
+                    ),
                 )
             )
 
@@ -486,13 +560,27 @@ def converge_drive_attachments(
                 write_index.close()
 
         def _publish(index_conn: sqlite3.Connection, source_conn: sqlite3.Connection) -> None:
+            nonlocal unattributed
+            # The window checked each supplier against ``raw_sessions`` before
+            # downloading; a raw can still be retired while the downloads ran.
+            # Re-check under the writer, so no durable ref names a raw that is
+            # gone, and drop publications only those refs would have used.
+            retained = _retained_raw_ids(source_conn, {str(item.ref.raw_id) for item in acquired})
+            kept = [item for item in acquired if str(item.ref.raw_id) in retained]
+            unattributed += len(acquired) - len(kept)
+            kept_receipts = {item.ref.publication_receipt_id for item in kept}
+            for receipt_id in {item.ref.publication_receipt_id for item in acquired} - kept_receipts:
+                if receipt_id is not None:
+                    publisher.discard_pending_receipt(receipt_id)
+            acquired[:] = kept
             publisher.flush()
-            if acquired_refs:
+            if acquired:
                 by_raw_id: dict[str, list[ArchiveSourceBlobRef]] = {}
-                for ref in acquired_refs:
-                    by_raw_id.setdefault(str(ref.raw_id), []).append(ref)
+                for item in acquired:
+                    by_raw_id.setdefault(str(item.ref.raw_id), []).append(item.ref)
                 for raw_id, refs in by_raw_id.items():
                     write_source_blob_refs(source_conn, raw_id, tuple(refs))
+            acquired_rows = [(item.attachment_id, item.blob_hash, item.byte_count) for item in acquired]
             if acquired_rows or rebound_rows:
                 with index_conn:
                     for attachment_id, blob_hash, byte_count in (*acquired_rows, *rebound_rows):
@@ -522,7 +610,7 @@ def converge_drive_attachments(
                     )
 
         admit_stage_write("convergence.stage.attachment_bytes.publish", publish_attachment_outcomes)
-        if _candidate_rows(index_conn, limit=1):
+        if _candidate_rows(index_conn, source_conn, limit=1).rows:
             # The scheduler records a false result as convergence debt.  Count
             # the remaining canonical rows as deferred even when this window
             # itself had no transport failure.
@@ -530,14 +618,16 @@ def converge_drive_attachments(
     finally:
         publisher.discard_pending()
 
+    _report_unattributed(unattributed)
     return AttachmentConvergenceResult(
         inspected=len(rows),
-        acquired=len(acquired_rows) + len(rebound_rows),
+        acquired=len(acquired) + len(rebound_rows),
         terminal=len(terminal_ids),
         deferred=deferred,
         excised=len(excised_ids),
         unresolved_identity=unresolved_identity,
         contradicted=len(contradicted_ids),
+        unattributed=unattributed,
     )
 
 
@@ -572,13 +662,19 @@ def make_attachment_convergence_stage(
         every pass for as long as the ambiguity stood. It is reported as
         degraded instead, and leaves the obligation incomplete.
         """
-        if not db_path.exists():
+        source_db = archive_root / "source.db"
+        if not db_path.exists() or not source_db.exists():
             return False
         conn = open_readonly_connection(db_path)
+        source = open_readonly_connection(source_db)
         try:
             _report_unresolved_identity(conn)
-            return bool(_candidate_rows(conn, limit=1))
+            window = _candidate_rows(conn, source, limit=1)
+            if not window.rows:
+                _report_unattributed(window.unattributed)
+            return bool(window.rows)
         finally:
+            source.close()
             conn.close()
 
     def check(_path: Path) -> bool:

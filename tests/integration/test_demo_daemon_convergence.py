@@ -3,7 +3,7 @@
 This test covers the real scheduling chain:
 
 ``polylogue import --demo`` -> daemon ``/api/ingest`` acceptance -> staged
-demo fixture in the archive inbox -> live daemon convergence.
+demo fixture in the archive import staging directory -> live daemon convergence.
 
 Known remaining gap (polylogue-z1c6 follow-up, tracked separately): the
 live daemon materializes newly-staged raws through
@@ -39,6 +39,7 @@ from urllib.request import urlopen
 import pytest
 
 from polylogue.demo.seed import demo_source_specs
+from polylogue.operations.import_staging import import_staging_root
 from polylogue.scenarios import DEMO_CHATGPT_SESSION_ID, DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -278,7 +279,7 @@ async def test_import_demo_converges_through_live_daemon_path(
                 ]
                 assert not unexpected_problems, combined_output
 
-            staged = inbox / "demo-fixture-world-source"
+            staged = import_staging_root(archive_root) / "demo-fixture-world-source"
             assert sorted(path.name for path in staged.iterdir()) == sorted(
                 source.name for source in demo_source_specs(staged)
             )

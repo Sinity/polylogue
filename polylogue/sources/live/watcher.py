@@ -1557,9 +1557,11 @@ def daemon_watch_sources(
     """The daemon's watch set: every origin at its canonical location.
 
     There are no custom source roots. Each origin is acquired from the place
-    its tool writes it, account exports arrive through ``polylogue import``
-    into the archive inbox, and a relocated tool directory is followed by a
-    symlink at the canonical path rather than by configuration. The one
+    its tool writes it, the archive inbox is a watched drop directory, and a
+    relocated tool directory is followed by a symlink at the canonical path
+    rather than by configuration. ``polylogue import`` stages outside this set
+    (``operations/import_staging.py``): its ``ingest`` operation is the only
+    route that acquires an import. The one
     substitution is the browser-capture spool, which Polylogue itself owns.
     """
     sources = list(default_sources(hermes_root=hermes_root))

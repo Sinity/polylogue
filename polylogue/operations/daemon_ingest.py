@@ -579,7 +579,6 @@ class IngestExecution:
                         return retain_input_page(
                             spool,
                             after_coordinate=after,
-                            source_path=source_path,
                             publisher=self.publisher,
                             check_stop=self.check_stop,
                         )

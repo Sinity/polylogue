@@ -17,7 +17,7 @@ from polylogue.operations.attachment_convergence import converge_drive_attachmen
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from tests.unit.daemon.test_attachment_convergence import _into, _open_index, _session
+from tests.unit.daemon.test_attachment_convergence import _into, _open_index, _retain_raws, _session
 
 
 def test_drive_backfill_refuses_bytes_the_operator_excised(tmp_path: Path) -> None:
@@ -38,6 +38,7 @@ def test_drive_backfill_refuses_bytes_the_operator_excised(tmp_path: Path) -> No
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "excised-raw", "kept-raw")
 
     excised_payload = b"the attachment the operator excised"
     kept_payload = b"an unrelated attachment"

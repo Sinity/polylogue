@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from collections.abc import Callable
 from types import ModuleType
 from typing import ParamSpec, Protocol, TypeAlias, TypeVar, Unpack, runtime_checkable
@@ -17,6 +18,7 @@ from polylogue.core.json import JSONDocument, JSONDocumentList
 from polylogue.logging import get_logger
 
 from .types import (
+    DriveAccessDeniedError,
     DriveAuthError,
     DriveConfigLike,
     DriveCredentialLike,
@@ -56,6 +58,25 @@ class _DriveGetMediaKwargs(TypedDict):
 
 DEFAULT_DRIVE_RETRIES = 3
 DEFAULT_DRIVE_RETRY_BASE = 0.5
+
+#: Drive error reasons (``error.errors[].reason``, ``error.details[].reason``
+#: and ``error.status``, compared case-folded) that report a quota or rate
+#: window. Drive sends them with HTTP 403 as well as 429, so the status alone
+#: cannot tell a throttled request from a refused file.
+_DRIVE_RATE_LIMIT_REASONS = frozenset(
+    {
+        "dailylimitexceeded",
+        "downloadquotaexceeded",
+        "quotaexceeded",
+        "rate_limit_exceeded",
+        "ratelimitexceeded",
+        "resource_exhausted",
+        "sharingratelimitexceeded",
+        "userratelimitexceeded",
+    }
+)
+#: ``error.errors[].domain`` for every Drive usage-limit reason.
+_DRIVE_USAGE_LIMIT_DOMAIN = "usagelimits"
 
 
 class _DriveAuthManagerLike(Protocol):
@@ -114,6 +135,75 @@ def _import_module(name: str) -> ModuleType:
         ) from exc
 
 
+def _http_error_type() -> type[BaseException] | None:
+    try:
+        http_error = _import_module("googleapiclient.errors").HttpError
+    except DriveAuthError:
+        return None
+    return http_error if isinstance(http_error, type) and issubclass(http_error, BaseException) else None
+
+
+def _http_error_status(exc: BaseException) -> int | None:
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _http_error_reasons(exc: BaseException) -> frozenset[str]:
+    """Every reason, usage domain, and status token the Drive error body names."""
+    content = getattr(exc, "content", None)
+    if not isinstance(content, bytes | str):
+        return frozenset()
+    try:
+        document = json.loads(content)
+    except (UnicodeDecodeError, ValueError):
+        return frozenset()
+    error = document.get("error") if isinstance(document, dict) else None
+    if not isinstance(error, dict):
+        return frozenset()
+    reasons: set[str] = set()
+    status = error.get("status")
+    if isinstance(status, str) and status:
+        reasons.add(status.casefold())
+    for key in ("errors", "details"):
+        entries = error.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for field in ("reason", "domain"):
+                value = entry.get(field)
+                if isinstance(value, str) and value:
+                    reasons.add(value.casefold())
+    return frozenset(reasons)
+
+
+def drive_http_failure(exc: BaseException) -> DriveNotFoundError | DriveAccessDeniedError | None:
+    """Translate a permanent provider HTTP answer into its typed Drive error.
+
+    Only an explicit answer about the file is permanent: 404, or a 403 whose
+    body names a reason and none of them is a quota or rate window. A
+    throttled 403, a 403 with no readable reason, and every other status stay
+    the provider's own exception, which the retry policy and later
+    convergence passes treat as retryable.
+    """
+    http_error = _http_error_type()
+    if http_error is None or not isinstance(exc, http_error):
+        return None
+    status = _http_error_status(exc)
+    if status == 404:
+        return DriveNotFoundError(str(exc))
+    if status != 403:
+        return None
+    reasons = _http_error_reasons(exc)
+    if not reasons or reasons & _DRIVE_RATE_LIMIT_REASONS or _DRIVE_USAGE_LIMIT_DOMAIN in reasons:
+        return None
+    return DriveAccessDeniedError(str(exc))
+
+
 def _resolve_retries(value: int | None, config: DriveConfigLike | None = None) -> int:
     """Resolve retry count from explicit value, config, or default."""
     if value is not None:
@@ -160,6 +250,15 @@ class DriveServiceGateway:
     def call_with_retry(self, func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         from tenacity import Retrying
 
+        def attempt() -> T:
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:
+                permanent = drive_http_failure(exc)
+                if permanent is None:
+                    raise
+                raise permanent from exc
+
         retryer = Retrying(
             stop=stop_after_attempt(max(self._retry_policy.retries, 0) + 1),
             wait=wait_exponential(
@@ -168,10 +267,10 @@ class DriveServiceGateway:
                 max=10,
             ),
             retry=retry_if_exception_type(Exception)
-            & retry_if_not_exception_type((DriveAuthError, DriveNotFoundError)),
+            & retry_if_not_exception_type((DriveAuthError, DriveNotFoundError, DriveAccessDeniedError)),
             reraise=True,
         )
-        return retryer(func, *args, **kwargs)
+        return retryer(attempt)
 
     @staticmethod
     def _credentials_expired(service: object) -> bool:
@@ -266,5 +365,6 @@ __all__ = [
     "_import_module",
     "_resolve_retries",
     "_resolve_retry_base",
+    "drive_http_failure",
     "resolve_drive_retry_policy",
 ]

@@ -21,7 +21,7 @@ from polylogue.operations.attachment_convergence import make_attachment_converge
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from tests.unit.daemon.test_attachment_convergence import _open_index, _session
+from tests.unit.daemon.test_attachment_convergence import _open_index, _retain_raws, _session
 
 
 class _SerializingWriter:
@@ -53,6 +53,7 @@ def _seed_drive_attachments(tmp_path: Path) -> tuple[sqlite3.Connection, sqlite3
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
     initialize_archive_tier(source, ArchiveTier.SOURCE)
+    _retain_raws(source, "slow-raw")
     return index, source, {"drive-slow": b"attachment bytes behind a slow provider"}
 
 
