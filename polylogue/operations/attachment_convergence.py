@@ -61,8 +61,22 @@ class AttachmentConvergenceResult:
     contradicted: int = 0
 
     @property
+    def transport_pending(self) -> bool:
+        """Whether executable transport work remains for a later window.
+
+        Contested identity is not transport work: no retry can resolve it, so
+        it never keeps the stage pending (which would re-execute it forever).
+        """
+        return self.deferred > 0
+
+    @property
     def complete(self) -> bool:
-        return self.deferred == 0
+        """Whether the whole owed obligation is discharged.
+
+        A contested reference is neither acquired nor terminally absent, so it
+        keeps the obligation incomplete even when no transport work remains.
+        """
+        return self.deferred == 0 and self.unresolved_identity == 0
 
 
 #: Drive-hosted references still owed bytes. ``upload_origin`` and
@@ -116,6 +130,26 @@ def _unresolved_identity_count(conn: sqlite3.Connection) -> int:
         """
     ).fetchone()
     return int(row[0]) if row is not None else 0
+
+
+def _report_unresolved_identity(conn: sqlite3.Connection) -> int:
+    """Count contested owed references and name them as a degraded outcome.
+
+    Not a transport failure and not a terminal absence: the archive holds two
+    provider identities for one reference and no evidence that ranks them.
+    Named on every pass that looks, rather than letting a silent lexical
+    choice make the ambiguity invisible.
+    """
+    unresolved_identity = _unresolved_identity_count(conn)
+    if unresolved_identity:
+        emit(
+            "operations.attachment_convergence.identity_unresolved",
+            level=WARNING,
+            outcome="degraded",
+            unresolved_identity=unresolved_identity,
+            reason="two native ids of one kind for one attachment reference",
+        )
+    return unresolved_identity
 
 
 def _permanent_failure(exc: BaseException) -> bool:
@@ -273,22 +307,10 @@ def converge_drive_attachments(
     this pass off the writer -- the daemon stage engine does -- must supply the
     opener rather than hand in connections it could not have opened yet.
     """
-    unresolved_identity = _unresolved_identity_count(index_conn)
-    if unresolved_identity:
-        # Not a transport failure and not a terminal absence: the archive
-        # holds two provider identities for one reference and no evidence
-        # that ranks them. Name it every pass rather than letting a silent
-        # lexical choice make the ambiguity invisible.
-        emit(
-            "operations.attachment_convergence.identity_unresolved",
-            level=WARNING,
-            outcome="degraded",
-            unresolved_identity=unresolved_identity,
-            reason="two native ids of one kind for one attachment reference",
-        )
+    unresolved_identity = _report_unresolved_identity(index_conn)
     rows = _candidate_rows(index_conn, limit=limit)
     if not rows:
-        return AttachmentConvergenceResult(unresolved_identity=unresolved_identity, deferred=unresolved_identity)
+        return AttachmentConvergenceResult(unresolved_identity=unresolved_identity)
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     acquired_refs: list[ArchiveSourceBlobRef] = []
     acquired_rows: list[tuple[str, bytes, int]] = []
@@ -512,7 +534,7 @@ def converge_drive_attachments(
         inspected=len(rows),
         acquired=len(acquired_rows) + len(rebound_rows),
         terminal=len(terminal_ids),
-        deferred=deferred + unresolved_identity,
+        deferred=deferred,
         excised=len(excised_ids),
         unresolved_identity=unresolved_identity,
         contradicted=len(contradicted_ids),
@@ -543,18 +565,19 @@ def make_attachment_convergence_stage(
         )
 
     def _has_work() -> bool:
+        """Whether a resolvable owed reference exists for a transport window.
+
+        The same predicate as the fetch window: a contested reference is not
+        work any execution can do, so counting it here re-executed the stage on
+        every pass for as long as the ambiguity stood. It is reported as
+        degraded instead, and leaves the obligation incomplete.
+        """
         if not db_path.exists():
             return False
         conn = open_readonly_connection(db_path)
         try:
-            return bool(
-                conn.execute(
-                    """
-                    SELECT 1 FROM attachments a JOIN attachment_refs r ON r.attachment_id = a.attachment_id
-                    WHERE a.acquisition_status = 'unfetched' AND r.upload_origin = 'drive' LIMIT 1
-                    """
-                ).fetchone()
-            )
+            _report_unresolved_identity(conn)
+            return bool(_candidate_rows(conn, limit=1))
         finally:
             conn.close()
 
@@ -576,7 +599,7 @@ def make_attachment_convergence_stage(
                 limit=limit,
                 open_write_connections=_open_write,
             )
-            return result.complete
+            return not result.transport_pending
         finally:
             source.close()
             index.close()

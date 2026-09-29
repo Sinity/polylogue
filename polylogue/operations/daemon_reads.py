@@ -89,9 +89,17 @@ def vector_binding_from_config(config: Config) -> VectorReadBinding | None:
     )
 
 
+def never_aborted() -> None:
+    """The abort checkpoint of a read no execution context controls."""
+
+
 @dataclass(frozen=True, slots=True)
 class DaemonReadDependencies:
     """Explicit non-SQL dependencies resolved by the daemon operation context.
+
+    ``raise_if_aborted`` is the read's Python-level abort checkpoint between
+    SQL statements; the daemon binds it to the read's execution context, and
+    it raises that context's typed cancelled / timed-out / over-budget error.
 
     ``vector_failure`` records a failed/unavailable provider construction so a
     hybrid query retains its lexical answer with a named gap.  Provider
@@ -103,6 +111,7 @@ class DaemonReadDependencies:
     vector_connection: sqlite3.Connection | None = None
     vector_failure: LaneFailure | None = None
     runtime_status: Mapping[str, object] | None = None
+    raise_if_aborted: Callable[[], None] = never_aborted
     status_now_ms: int | None = None
     status_config: Config | PolylogueConfig | None = None
 
@@ -226,7 +235,7 @@ def execute_read_operation(
     elif name == "read.topology":
         from polylogue.operations.read_view_lineage import execute_topology_read
 
-        result = execute_topology_read(payload, archive=archive)
+        result = execute_topology_read(payload, archive=archive, raise_if_aborted=dependencies.raise_if_aborted)
     elif name == "read.neighbors":
         from polylogue.operations.read_view_extras import execute_neighbor_read
 

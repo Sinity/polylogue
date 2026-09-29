@@ -296,16 +296,30 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash.clear()
         return receipts
 
-    def discard_queued(self, blob_hash: str) -> None:
-        """Drop the most recent queued write of ``blob_hash``; earlier writes stay queued."""
-        receipt_id = self._latest_receipt_by_hash.get(blob_hash)
-        for index in range(len(self._pending) - 1, -1, -1):
-            receipt, prepared = self._pending[index]
-            if receipt.publication_id == receipt_id:
+    def discard_pending_receipt(self, publication_id: str) -> bool:
+        """Drop one queued publication or adoption by its receipt, before any flush.
+
+        Receipts, not hashes, identify a capture: two identical captures share
+        a hash, and dropping one must not strand or drop the other. Returns
+        whether the receipt was still queued.
+        """
+        blob_hash: str | None = None
+        for index, (receipt, prepared) in enumerate(self._pending):
+            if receipt.publication_id == publication_id:
                 del self._pending[index]
                 self._store.discard_prepared(prepared)
+                blob_hash = receipt.blob_hash
                 break
-        self._adoptions = [receipt for receipt in self._adoptions if receipt.publication_id != receipt_id]
+        else:
+            for index, receipt in enumerate(self._adoptions):
+                if receipt.publication_id == publication_id:
+                    # An adopted blob was published by its worker; dropping the
+                    # adoption only leaves those bytes to ordinary GC.
+                    del self._adoptions[index]
+                    blob_hash = receipt.blob_hash
+                    break
+        if blob_hash is None:
+            return False
         earlier = [(receipt, prepared) for receipt, prepared in self._pending if receipt.blob_hash == blob_hash]
         earlier_adoptions = [receipt for receipt in self._adoptions if receipt.blob_hash == blob_hash]
         if earlier:
@@ -317,6 +331,7 @@ class ArchiveBlobPublisher(BlobStore):
                 self._latest_receipt_by_hash[blob_hash] = earlier_adoptions[-1].publication_id
             else:
                 self._latest_receipt_by_hash.pop(blob_hash, None)
+        return True
 
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:

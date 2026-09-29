@@ -31,7 +31,9 @@ from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
+from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
+    ForeignOriginContentError,
     detect_provider,
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
@@ -918,8 +920,9 @@ def detect_provider_from_path_sample_evidence(
             return fallback_provider, _crash(exc)
     if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
         return Provider.ANTIGRAVITY, None
-    if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
-        path
+    if fallback_provider in (Provider.HERMES, Provider.UNKNOWN) and (
+        hermes_state.looks_like_state_db_path(path)
+        or hermes_verification.looks_like_verification_evidence_db_path(path)
     ):
         return Provider.HERMES, None
     if is_jsonl_source_path(str(path)):
@@ -1017,14 +1020,16 @@ def _jsonl_provider_and_session_artifact(
     """
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
+    # A ``raw-only`` declaration is terminal: its bytes are evidence and the
+    # record shape cannot decide otherwise (polylogue-ximhz). Checked before
+    # any content probe, so a prompt-history log -- whose rows carry the same
+    # ``sessionId`` keys a transcript does -- is never session-parsed.
+    if path_declaration_refuses_session(fallback_provider, path):
+        return fallback_provider, False, None
     records, failure = _jsonl_sample_with_failure(path)
     detected = detect_provider(records) if records else None
     provider = detected or fallback_provider
     detection_failure = failure if detected is None else None
-    # A ``raw-only`` declaration is terminal: its bytes are evidence and the
-    # record shape cannot decide otherwise (polylogue-ximhz). Checked before
-    # the content probe so a prompt-history log -- whose rows carry the same
-    # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(provider, path):
         return provider, False, detection_failure
     if checkpoint is None:
@@ -1155,6 +1160,17 @@ class PreAcquisitionDecision:
     excluded_reason: str | None
     detected_provider: Provider | None = None
     detection_crash: str | None = None
+    #: The exclusion is a foreign-origin refusal, recorded as refused.
+    refused: bool = False
+
+
+def foreign_origin_exclusion(exc: ForeignOriginContentError) -> str:
+    """The typed reason intake records for a refused foreign-origin file.
+
+    Intake's cursor and the production baseline's exclusion carry the same
+    reason, so a file intake refuses is never a revision the baseline demands.
+    """
+    return f"{exc.code}: {exc}"
 
 
 def classify_pre_acquisition(
@@ -1226,6 +1242,11 @@ def _classify_pre_acquisition(
     if path.suffix.lower() == ".zip":
         # ZIP members are admitted or excluded one by one by the member walk.
         return PreAcquisitionDecision(None)
+    try:
+        # A declared database of another origin is foreign by its name.
+        refuse_declared_foreign(path.name, fallback_provider)
+    except ForeignOriginContentError as exc:
+        return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
     if (
         fallback_provider is Provider.ANTIGRAVITY
         and path.suffix.lower() == ".pb"
@@ -1243,6 +1264,13 @@ def _classify_pre_acquisition(
     )
     source_class = recognize_source_class(fallback_provider, path, source_only=source_only)
     if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
+        # Unknown/config/cache material under a broad root is a typed
+        # non-session observation -- unless the boundary finds another
+        # origin's records in it, which is a refusal. A read fault raises.
+        try:
+            refuse_foreign_path(path, fallback_provider)
+        except ForeignOriginContentError as exc:
+            return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
         return PreAcquisitionDecision("unsupported source class")
     if fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN} and antigravity.looks_like_trajectory_db_path(
         path

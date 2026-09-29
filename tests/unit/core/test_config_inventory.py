@@ -70,22 +70,21 @@ blob_integrity_sample_size = 7
     assert "<set>" in rendered
 
 
-def test_retired_whale_escalation_setting_does_not_reject_existing_config(
-    tmp_path: Path, workspace_env: dict[str, Path]
-) -> None:
-    """Old TOML and environment values are ignored after raw admission unified."""
-    from polylogue.config import config_inventory_by_key, load_polylogue_config
+def test_retired_whale_escalation_setting_is_refused(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A retired TOML key fails the load instead of being silently ignored.
+
+    Anti-vacuity: stop refusing undeclared TOML keys and the retired
+    ``pipeline.raw_authority`` table loads as if it still did something.
+    """
+    from polylogue.config import ConfigError, config_inventory_by_key, load_polylogue_config
 
     config_path = tmp_path / "polylogue.toml"
     config_path.write_text("[pipeline.raw_authority]\nwhale_payload_bytes = 4096\n", encoding="utf-8")
-    config = load_polylogue_config(
-        config_path=config_path,
-        site_config_path=tmp_path / "absent.toml",
-        environment={"POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES": "8192"},
-    )
+
+    with pytest.raises(ConfigError, match="pipeline.raw_authority"):
+        load_polylogue_config(config_path=config_path, site_config_path=tmp_path / "absent.toml")
 
     assert "raw_authority_whale_payload_bytes" not in config_inventory_by_key()
-    assert "raw_authority_whale_payload_bytes" not in config.raw
 
 
 def test_inventory_env_mapping_is_executable(monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
@@ -167,43 +166,6 @@ def test_effective_config_payload_redacts_secret_presence_and_exposes_source_lay
     assert "do-not-leak" not in str(payload)
 
 
-def test_effective_config_payload_reports_configured_source_root_debt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    workspace_env: dict[str, Path],
-) -> None:
-    from polylogue.config import effective_config_payload, load_polylogue_config
-
-    missing_root = tmp_path / "missing-source-root"
-    cfg_path = tmp_path / "polylogue.toml"
-    cfg_path.write_text(
-        f"""
-[sources]
-roots = ["{missing_root}"]
-""".strip(),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
-
-    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
-
-    diagnostics = payload["diagnostics"]
-    assert isinstance(diagnostics, list)
-    matches = [
-        diag for diag in diagnostics if isinstance(diag, dict) and diag.get("code") == "configured_source_root_missing"
-    ]
-    assert matches
-    diag = matches[0]
-    assert diag["severity"] == "warning"
-    assert diag["key"] == "source_roots"
-    assert diag["toml_path"] == "sources.roots"
-    assert diag["env_var"] is None
-    assert diag["source_layer"] == "user"
-    assert diag["value"] == [str(missing_root)]
-    assert diag["message"] == f"Configured source root does not exist: {missing_root}."
-    assert diag["next_action"] == "Remove the stale source root or create/mount it before running the daemon."
-
-
 def test_effective_config_payload_reports_invalid_home_expansion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -215,8 +177,8 @@ def test_effective_config_payload_reports_invalid_home_expansion(
     raw_root = "~polylogue-user-that-should-not-exist/source"
     cfg_path.write_text(
         f"""
-[sources]
-roots = ["{raw_root}"]
+[maintenance]
+backup_verify_tmpdir = "{raw_root}"
 """.strip(),
         encoding="utf-8",
     )
@@ -229,7 +191,7 @@ roots = ["{raw_root}"]
     assert any(
         diag.get("code") == "config_path_invalid"
         and diag.get("severity") == "error"
-        and diag.get("key") == "source_roots"
+        and diag.get("key") == "backup_verify_tmpdir"
         and raw_root in str(diag.get("message"))
         for diag in diagnostics
         if isinstance(diag, dict)

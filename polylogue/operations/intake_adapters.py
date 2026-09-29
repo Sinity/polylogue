@@ -1175,7 +1175,24 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             remaining = limit - len(result)
             if remaining <= 0:
                 break
-            page = await adapter.discover(limit=remaining)
+            try:
+                page = await adapter.discover(limit=remaining)
+            except WalkRefusedError as exc:
+                # One root's absence (an uninstalled or relocated tool) is
+                # that sub-unit's own retryable gap, not this class's: a
+                # sibling root that IS present must still offer its own
+                # pending files this pass instead of the round-robin
+                # aborting on the first unavailable root it visits.
+                unit = _sub_unit_name(adapter)
+                emit(
+                    "daemon.intake.sub_unit_walk_refused",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="walk_refused",
+                    component=unit or "unknown",
+                    error_detail=str(exc),
+                )
+                continue
             result.extend(page)
             owners.extend([adapter] * len(page))
         self._next = (start + 1) % len(adapters)
