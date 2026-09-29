@@ -234,8 +234,10 @@ def test_status_snapshot_unreadable_frame_never_certifies_fresh(
 ) -> None:
     from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
 
-    missing_index = tmp_path / "missing-index.db"
-    monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda _root: missing_index)
+    def unreadable_index(_root: Path) -> Path:
+        raise PermissionError("synthetic unreadable index")
+
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", unreadable_index)
     refresh_status_snapshot(payload={"ok": True, "raw_frontier_integrity": _complete_healthy_frontier()})
     result = get_status_snapshot_payload()
     metadata = cast(dict[str, Any], result["status_snapshot"])

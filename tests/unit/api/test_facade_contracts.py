@@ -5962,7 +5962,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert len(unavailable) == 1
         assert unavailable[0].estimate.status == "unavailable"
         assert unavailable[0].estimate.missing_reasons == ("no_tokens",)
-        assert model_filtered == []
+        assert [insight.session_id for insight in model_filtered] == [priced_id]
         assert len(rollups) == 1
         assert rollups[0].origin == Origin.CODEX_SESSION.value
         assert rollups[0].session_count == 1

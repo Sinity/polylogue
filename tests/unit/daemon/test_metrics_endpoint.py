@@ -128,7 +128,12 @@ def test_independent_unmeasured_collectors_share_one_metric_header() -> None:
     _collect_group(lines, states, "hooks", collector("hook_statuses"))
     _collect_group(lines, states, "index", collector("convergence_debt"))
 
-    assert states == [({"group": "hooks", "reason": "none"}, 1), ({"group": "index", "reason": "none"}, 1)]
+    assert states == [
+        ({"group": "hooks"}, 1),
+        ({"group": "hooks", "reason": "none"}, -1),
+        ({"group": "index"}, 1),
+        ({"group": "index", "reason": "none"}, -1),
+    ]
     assert sum(line.startswith("# HELP polylogue_probe_unmeasured ") for line in lines) == 1
     assert sum(line == "# TYPE polylogue_probe_unmeasured gauge" for line in lines) == 1
     assert 'polylogue_probe_unmeasured{probe="hook_statuses"} 1' in lines
@@ -184,7 +189,11 @@ class TestFormatMetricsExpositionShape:
         )
 
         missing_index = tmp_path / "missing-index.db"
-        monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda _root: missing_index)
+
+        def unreadable_index(_root: Path) -> Path:
+            raise PermissionError("synthetic unreadable index")
+
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", unreadable_index)
         try:
             refresh_status_snapshot(payload={"ok": True})
             status = get_status_snapshot_payload()
