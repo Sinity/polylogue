@@ -361,6 +361,14 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
             raise ValueError("manual continuation child session does not exist")
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
             raise ValueError("manual continuation parent session does not exist")
+        from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph, _would_create_cycle
+
+        # The edge is written already resolved, and the resolver's cycle guard
+        # only examines unresolved inbound edges, so validate it here before any
+        # projection refresh can publish a cyclic parent chain.
+        cycle_walk = _would_create_cycle(index, child_id=child, proposed_parent_id=parent)
+        if cycle_walk.outcome != "acyclic":
+            raise ValueError(f"manual continuation refused ({cycle_walk.outcome}): {' -> '.join(cycle_walk.path)}")
         index.execute(
             # ``status`` is an exceptional marker (``TopologyEdgeStatus``:
             # repaired / quarantined / authority-contradicted), not the
@@ -375,11 +383,8 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
                        'manual-continuation', 1.0, '[]', ?)""",
             (child, parent_origin, parent_native, parent, now_ms),
         )
-        # Reuse the canonical cycle and topology projection pass so the edge
-        # cannot be accepted by this facade while its read accelerators remain
-        # stale. Unsafe cycles are quarantined by that writer.
-        from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph
-
+        # Reuse the canonical topology projection pass so the accepted edge's
+        # read accelerators are refreshed in the same transaction.
         child_origin, child_native = child.split(":", 1)
         _resolve_session_graph(index, child, child_native, child_origin)
         index.commit()

@@ -118,6 +118,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
+    WORK_EVENT_RAW_ID_PREFIX,
     PreparedRows,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
@@ -5368,7 +5369,10 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
 
     # Work events have their own durable envelope.  They are not provider
     # transcript records, so replay them before dispatching to provider parsers.
-    if source_path.startswith("agent-work-event:"):
+    # Replay returns the event alone; ``write_parsed_session_to_archive``
+    # recognizes the work-event raw and writes it event-only, keeping the
+    # stored session header.
+    if source_path.startswith(WORK_EVENT_RAW_ID_PREFIX):
         _provider, payload, _path, _kind = archive.raw_revision_material(raw_id)
         try:
             envelope = json.loads(payload)
