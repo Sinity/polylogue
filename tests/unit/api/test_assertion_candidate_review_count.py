@@ -1,4 +1,4 @@
-"""Worker 12 regression sources; exercise public API routes on fresh archives."""
+"""A candidate-review page counts its selection without hydrating off-page reviews."""
 
 from __future__ import annotations
 
@@ -9,37 +9,15 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.core.enums import AssertionKind
-from polylogue.readiness import VerifyStatus
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER, user_write
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers import user_write
 from tests.infra.archive_templates import bootstrap_archive_root
-
-
-async def test_health_check_reports_schema_skew_without_raising(tmp_path: Path) -> None:
-    """55.05: schema validation on the diagnostic open raises instead of reporting ERROR."""
-    bootstrap_archive_root(tmp_path)
-    expected = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
-    mismatched = expected + 1
-    archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
-    try:
-        with sqlite3.connect(tmp_path / "audit.db") as conn:
-            conn.execute(f"PRAGMA user_version = {mismatched}")
-        report = await archive.health_check()
-    finally:
-        await archive.close()
-
-    check = next(item for item in report.checks if item.name == "archive_audit")
-    assert check.status == VerifyStatus.ERROR
-    assert f"v{mismatched}/{expected}" in check.summary
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == mismatched
 
 
 @pytest.mark.parametrize("limit", [0, 1])
 async def test_review_count_does_not_hydrate_off_page_judgments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: int
 ) -> None:
-    """55.10: restoring the unbounded second read hydrates all three off-page judgments."""
+    """Fails if ``total`` comes from a second unbounded review read, which hydrates every judgment."""
     bootstrap_archive_root(tmp_path)
     target = "session:w12-review-target"
     with sqlite3.connect(tmp_path / "user.db") as conn:

@@ -49,7 +49,7 @@ from polylogue.context.scheduler import (
     read_context_ledger,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
-from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, SchemaRefusalError
 from polylogue.core.json import JSONDocument
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
@@ -1253,14 +1253,16 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
     if not path.exists():
         return ReadinessCheck(name, VerifyStatus.WARNING, summary=f"missing: {path}")
     try:
-        # This diagnostic must read the mismatching version, not reject the
-        # database before it can report which tier is incompatible.
-        conn = open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
+        conn = open_readonly_connection(path, tier=tier, timeout_class="interactive-read")
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             version = int(row[0] or 0) if row is not None else 0
         finally:
             conn.close()
+    except SchemaRefusalError as exc:
+        # The open's own admission check is the diagnosis: it covers both a
+        # version skew and a derived-identity mismatch at the same version.
+        return ReadinessCheck(name, VerifyStatus.ERROR, summary=f"{exc}: {path}")
     except (OSError, sqlite3.Error) as exc:
         return ReadinessCheck(name, VerifyStatus.ERROR, summary=str(exc))
 
@@ -1666,7 +1668,7 @@ def _archive_list_assertion_candidate_reviews(
     kinds: Sequence[str | AssertionKind] | None = None,
     statuses: Sequence[str | AssertionStatus] | None = None,
     limit: int | None = None,
-) -> tuple[list["ArchiveAssertionCandidateReviewEnvelope"], int]:
+) -> tuple[list[ArchiveAssertionCandidateReviewEnvelope], int]:
     """Read one review page and its unpaginated count from the same snapshot."""
 
     from polylogue.storage.sqlite.archive_tiers.user_write import (
