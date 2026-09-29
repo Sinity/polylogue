@@ -51,10 +51,12 @@ Before a storage, daemon, MCP, source, or query change, read its
   `session_links` also holds parser-asserted topology edges, resolved on every
   save by `write_parsed_session_to_archive`, the one write path shared by live
   ingest and replay.
-- Archive writes are idempotent by content hash (SHA-256 over the
-  NFC-normalized payload, excluding user metadata, so tagging never
-  re-imports). `pipeline/ids.py` declares which parser fields are hashed and
-  why each excluded field is excluded.
+- Archive writes are idempotent by content hash (SHA-256 over the canonical
+  JSON payload, excluding user metadata, so tagging never re-imports). Only
+  declared prose fields are NFC-folded; identifiers, tool arguments, paths,
+  metadata, and mapping keys hash exactly, and absence stays JSON `null`,
+  distinct from `""`. `pipeline/ids.py` declares which parser fields are
+  hashed, which are prose, and why each excluded field is excluded.
 
 ## Storage tiers
 

@@ -230,8 +230,8 @@ parsing/schema boundary.
 - **Timestamps** are stored as integer epoch milliseconds in `*_at_ms` columns
   (e.g. `created_at_ms`, `updated_at_ms`, `occurred_at_ms`).
 - **Content hashes** are 32-byte `BLOB` columns (`CHECK(length(...) = 32)`),
-  SHA-256 over the NFC-normalized session payload — title, timestamps,
-  messages, attachments, and blocks. User metadata (tags, summaries, notes) is
+  SHA-256 over the canonical session payload — title, timestamps,
+  messages, attachments, and blocks, with only prose fields NFC-folded. User metadata (tags, summaries, notes) is
   **excluded** from the hash, so editing it does not trigger re-import. See
   [Internals § Content Hash Model](internals.md#content-hash-model).
 - Tables use SQLite `STRICT` mode and closed-enum `CHECK` constraints generated
