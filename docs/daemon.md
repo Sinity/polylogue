@@ -739,6 +739,20 @@ embedding and session-profile work already runs outside it.
 Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.
 
+JSON and JSONL files are prepared off the writer hold by the watcher's parse
+stage (`polylogue/sources/live/parse_prefetch.py`). A worker copies the file
+into its attempt scratch first and samples the provider, finds the JSONL
+frontier and parses from that copy, so the carrier's digest and its provider
+describe one revision; the writer accepts a carrier only when its own capture
+hashes the same. When a JSON document the stage prepared has no carrier for
+its captured bytes (the file changed after preparation, or preparation was
+deferred), the writer does not decode the capture to classify it: it releases
+that capture, reports `live.ingest.json_capture_deferred`, and defers the path
+to a later pass whose preparation matches what it captures. A complete JSONL
+record that does not decode is refused for every provider: the raw is retained
+with `terminal_corrupt_input` evidence (`terminal_unknown_json_decode` for an
+unknown provider) instead of being skipped on the way to the cursor frontier.
+
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published
 that blob GC reclaimed before the writer reserved them

@@ -66,7 +66,7 @@ from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw, prepare_live_retained_raws
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
-from polylogue.sources.prepared_jsonl import VerificationCancelledError, prepare_jsonl_blob
+from polylogue.sources.prepared_jsonl import VerificationCancelledError, prepare_jsonl_blob, source_snapshot
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
@@ -243,7 +243,7 @@ def live_parse_worker(
                 _iter_json_stream(
                     BytesIO(payload),
                     source_name,
-                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                    fail_on_decode_error=True,
                 ),
                 fallback_id,
                 source_path=source_path,
@@ -253,7 +253,7 @@ def live_parse_worker(
                 _iter_json_stream(
                     BytesIO(payload),
                     source_name,
-                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                    fail_on_decode_error=True,
                 )
             )
             sessions = parse_payload(provider, payloads, fallback_id, source_path=source_path)
@@ -341,24 +341,55 @@ def live_parse_path_worker(
     With it, every admitted session is enriched from retained archive evidence
     exactly as retained replay would enrich the same bytes. ``None`` is only
     for callers with no archive (the stage then publishes parsed content).
+
+    Provider sampling, the JSONL frontier and the parse all read one private
+    snapshot of the source, and the carrier is sealed with that snapshot's
+    digest, so the provider it names is the one those exact bytes select.
     """
+    with source_snapshot(
+        Path(source_path), Path(attempt_directory) if attempt_directory is not None else Path(shard_directory)
+    ) as (snapshot, snapshot_sha256):
+        return _prepare_path_snapshot(
+            provider_value,
+            source_path,
+            snapshot,
+            snapshot_sha256,
+            fallback_id,
+            is_stream=is_stream,
+            shard_directory=shard_directory,
+            attempt_directory=attempt_directory,
+            evidence=evidence,
+        )
+
+
+def _prepare_path_snapshot(
+    provider_value: str,
+    source_path: str,
+    snapshot: Path,
+    snapshot_sha256: str,
+    fallback_id: str,
+    *,
+    is_stream: bool,
+    shard_directory: str,
+    attempt_directory: str | None,
+    evidence: LiveEnrichmentEvidence | None,
+) -> LivePathPreparation:
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, jsonl_complete_prefix_path
     from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 
-    source = Path(source_path)
-    provider = _detect_provider_from_path_sample(source, Provider.from_string(provider_value))
-    boundary = jsonl_complete_prefix_path(source) if is_jsonl_source_path(source_path) else None
-    source_size = source.stat().st_size
+    provider = _detect_provider_from_path_sample(snapshot, Provider.from_string(provider_value))
+    boundary = jsonl_complete_prefix_path(snapshot) if is_jsonl_source_path(source_path) else None
+    snapshot_size = snapshot.stat().st_size
     parse_prefix_size = (
         boundary.prefix_size
-        if boundary is not None and 0 < boundary.prefix_size < source_size and not boundary.malformed_record
+        if boundary is not None and 0 < boundary.prefix_size < snapshot_size and not boundary.malformed_record
         else None
     )
     # Apply evidence filtering before sealing so publication can use the indexed sequence.
     if evidence is None:
         return prepare_jsonl_blob(
-            source_path,
+            str(snapshot),
             source_path,
             provider.value,
             fallback_id,
@@ -368,6 +399,8 @@ def live_parse_path_worker(
             parse_prefix_size=parse_prefix_size,
             prepare_session=lambda session: session,
             sidecar_resolver=FilesystemSidecarResolver(),
+            source_sha256=snapshot_sha256,
+            strict_jsonl_records=True,
         )
     from polylogue.sources.revision_backfill import open_retained_session_enricher
 
@@ -382,7 +415,7 @@ def live_parse_path_worker(
         # pass. The sealed digest lets the writer detect evidence that moved
         # in between (a sidecar admitted in the same pass) and re-enrich.
         return prepare_jsonl_blob(
-            source_path,
+            str(snapshot),
             source_path,
             provider.value,
             fallback_id,
@@ -399,6 +432,8 @@ def live_parse_path_worker(
                 enrich.dependency_digest(),
                 str(Path(evidence.index_db_path).resolve()),
             ),
+            source_sha256=snapshot_sha256,
+            strict_jsonl_records=True,
         )
 
 
@@ -1066,7 +1101,11 @@ class LiveParseStage:
         return self._path_attempt_dirs.pop(source_path, None), observation
 
     def _attempt_bytes(self, paths: set[str]) -> int:
-        """Bytes the running preparations of ``paths`` have written so far."""
+        """Bytes the running preparations of ``paths`` have written so far.
+
+        The source snapshot a worker copies first sits one directory down
+        (``source_snapshot``); its growth is progress too.
+        """
         total = 0
         for source_path in paths:
             directory = self._path_attempt_dirs.get(source_path)
@@ -1075,7 +1114,12 @@ class LiveParseStage:
             try:
                 for entry in os.scandir(directory):
                     with suppress(OSError):
-                        total += entry.stat(follow_symlinks=False).st_size
+                        if entry.is_dir(follow_symlinks=False):
+                            total += sum(
+                                nested.stat(follow_symlinks=False).st_size for nested in os.scandir(entry.path)
+                            )
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
             except OSError:
                 continue
         return total
@@ -1204,28 +1248,27 @@ class LiveParseStage:
             attempt_directory: Path | None = None
             try:
                 attempt_directory = self._new_attempt_directory()
-                if speculative:
-                    future = self._executor.submit(
-                        _run_holding_attempt,
-                        live_lookahead_path_worker,
-                        provider.value,
+                try:
+                    future = self._submit_path_task(
                         source_path,
-                        Path(source_path).stem,
-                        shard_directory=str(self._attempt_root),
-                        attempt_directory=str(attempt_directory),
-                        **({} if evidence is None else {"evidence": evidence}),
+                        provider,
+                        is_stream,
+                        attempt_directory,
+                        speculative=speculative,
+                        evidence=evidence,
                     )
-                else:
-                    future = self._executor.submit(
-                        carry_context(_run_holding_attempt),
-                        live_parse_path_worker,
-                        provider.value,
+                except BrokenProcessPool:
+                    # One replacement per submission: a pool that breaks again
+                    # at once leaves this path deferred, never a spin.
+                    if not self._replace_pool_broken_before_submit():
+                        raise
+                    future = self._submit_path_task(
                         source_path,
-                        Path(source_path).stem,
-                        is_stream=is_stream,
-                        shard_directory=str(self._attempt_root),
-                        attempt_directory=str(attempt_directory),
-                        **({} if evidence is None else {"evidence": evidence}),
+                        provider,
+                        is_stream,
+                        attempt_directory,
+                        speculative=speculative,
+                        evidence=evidence,
                     )
             except Exception as exc:
                 if attempt_directory is not None:
@@ -1244,6 +1287,64 @@ class LiveParseStage:
             self._path_progress[source_path] = (0, time.monotonic())
             self._path_inflight_bytes += source_bytes
         return next_wave
+
+    def _submit_path_task(
+        self,
+        source_path: str,
+        provider: Provider,
+        is_stream: bool,
+        attempt_directory: Path,
+        *,
+        speculative: bool,
+        evidence: LiveEnrichmentEvidence | None,
+    ) -> Future[LivePathPreparation]:
+        if speculative:
+            return self._executor.submit(
+                _run_holding_attempt,
+                live_lookahead_path_worker,
+                provider.value,
+                source_path,
+                Path(source_path).stem,
+                shard_directory=str(self._attempt_root),
+                attempt_directory=str(attempt_directory),
+                **({} if evidence is None else {"evidence": evidence}),
+            )
+        return self._executor.submit(
+            carry_context(_run_holding_attempt),
+            live_parse_path_worker,
+            provider.value,
+            source_path,
+            Path(source_path).stem,
+            is_stream=is_stream,
+            shard_directory=str(self._attempt_root),
+            attempt_directory=str(attempt_directory),
+            **({} if evidence is None else {"evidence": evidence}),
+        )
+
+    def _replace_pool_broken_before_submit(self) -> bool:
+        """Replace a process pool whose break surfaced only at submission.
+
+        A worker can die while no collected future would report it (killed
+        between tasks, or holding work the stage no longer tracks). Every
+        future the broken pool still owes fails promptly with
+        ``BrokenProcessPool``; collecting them first keeps worker-death
+        attribution, whose restart replaces the pool. A pool with nothing
+        left to report is replaced here. Returns whether the stage now holds
+        a replacement pool that can take the submission.
+        """
+        broken = self._executor
+        if self._path_futures:
+            wait(tuple(self._path_futures.values()))
+            self._collect_finished()
+        if self._executor is broken and not self._cleanup_blocked and not self._closing:
+            emit(
+                "live.parse_prefetch.worker_pool_replaced",
+                level=WARNING,
+                outcome="degraded",
+                reason="pool_broken_before_submission",
+            )
+            self._restart_broken_process_pool(reason="worker pool broke before this preparation was submitted")
+        return self._executor is not broken and not self._cleanup_blocked and not self._closing
 
     def _prepare_existing_session_writes(
         self,
