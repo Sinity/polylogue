@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -87,3 +89,62 @@ def test_cost_insight_keeps_unpriced_tokens_unknown(tmp_path: Path) -> None:
     assert insight.estimate.total_usd is None
     assert insight.estimate.unavailable_reason == "price_not_materialized"
     conn.close()
+
+
+def test_session_cost_lookup_pages_at_the_connection_bind_limit(tmp_path: Path) -> None:
+    """Both previous IN statements failed when all requested IDs exceeded the limit."""
+    conn = _conn(tmp_path)
+    try:
+        ids = [write_parsed_session_to_archive(conn, _session(f"bind-{i}", "claude-sonnet-4-5")) for i in range(5)]
+        previous_limit = conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 2)
+        try:
+            costs = session_usage_costs_for_connection(conn, [*ids, ids[0]])
+        finally:
+            conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+        assert set(costs) == set(ids)
+        assert all(cost.input_tokens == 1_000 and cost.output_tokens == 500 for cost in costs.values())
+    finally:
+        conn.close()
+
+
+def test_session_subscription_fallback_normalizes_provider_qualified_models(tmp_path: Path) -> None:
+    """The raw qualified name formerly missed the credit catalog and returned zero."""
+    from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd
+
+    conn = _conn(tmp_path)
+    try:
+        session_id = write_parsed_session_to_archive(conn, _session("qualified-credit", "claude-sonnet-4-5"))
+        conn.execute(
+            "UPDATE session_model_usage SET model_name = ?, cost_credits = NULL WHERE session_id = ?",
+            ("anthropic/claude-sonnet-4-5", session_id),
+        )
+        cost = session_usage_costs_for_connection(conn, [session_id])[session_id]
+        expected = credits_to_usd(compute_credit_cost("claude-sonnet-4-5", 1_000, 500, 200, 100))
+        assert expected > 0
+        assert cost.subscription_equivalent_usd == pytest.approx(expected)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("configured_tier", [None, "max_20x"])
+def test_session_subscription_amount_is_dollars_not_raw_credits(
+    tmp_path: Path, configured_tier: str | None
+) -> None:
+    """The old projection put the raw stored credit count into a USD field."""
+    from polylogue.archive.semantic.subscription_pricing import credits_to_usd
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
+
+    conn = _conn(tmp_path)
+    try:
+        session_id = write_parsed_session_to_archive(conn, _session("stored-credit", "claude-sonnet-4-5"))
+        credits = 1_234_567
+        conn.execute("UPDATE session_model_usage SET cost_credits = ? WHERE session_id = ?", (credits, session_id))
+        if configured_tier is not None:
+            with sqlite3.connect(tmp_path / "user.db") as user_conn:
+                set_user_setting(user_conn, "subscription_tier", configured_tier)
+        cost = session_usage_costs_for_connection(conn, [session_id])[session_id]
+        expected = credits_to_usd(credits, tier=configured_tier or "pro")
+        assert expected != credits
+        assert cost.subscription_equivalent_usd == pytest.approx(expected)
+    finally:
+        conn.close()

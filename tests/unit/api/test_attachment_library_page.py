@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -11,6 +12,7 @@ from polylogue import Polylogue
 
 if TYPE_CHECKING:
     from polylogue.api.runtime import RuntimeServices
+    from polylogue.storage.runtime import AttachmentRecord
 
 
 class _Repository:
@@ -51,3 +53,49 @@ async def test_attachment_library_page_delegates_one_bounded_read() -> None:
             "state_filter": "available",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_attachment_library_pages_keep_session_and_transcript_order(
+    workspace_env: dict[str, Path],
+) -> None:
+    """An older lexical-first session must not displace the newest attachment."""
+    import sqlite3
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+    db_path = workspace_env["archive_root"] / "index.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        for native_id, timestamp in [("a-old", "2026-01-01T00:00:00Z"), ("z-new", "2026-01-02T00:00:00Z")]:
+            write_parsed_session_to_archive(conn, ParsedSession(
+                source_name=Provider.CODEX, provider_session_id=native_id, timestamp=timestamp,
+                messages=[
+                    ParsedMessage(provider_message_id="z-first", role=Role.USER,
+                                  blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first message")]),
+                    ParsedMessage(provider_message_id="a-second", role=Role.USER,
+                                  blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second message")]),
+                ],
+                attachments=[
+                    ParsedAttachment(provider_attachment_id="z-first", message_provider_id="z-first", name="first.txt"),
+                    ParsedAttachment(provider_attachment_id="a-second", message_provider_id="z-first", name="second.txt"),
+                    ParsedAttachment(provider_attachment_id="third", message_provider_id="a-second", name="third.txt"),
+                ],
+            ))
+    poly = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        pages = [await poly._get_attachment_library_page(limit=1, offset=offset) for offset in range(6)]
+        records = [cast("AttachmentRecord", page[0][0]) for page in pages]
+        assert [(str(row.session_id), row.display_name) for row in records] == [
+            (f"codex-session:{session}", name)
+            for session in ("z-new", "a-old")
+            for name in ("first.txt", "second.txt", "third.txt")
+        ]
+    finally:
+        await poly.close()

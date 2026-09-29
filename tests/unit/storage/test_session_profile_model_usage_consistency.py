@@ -37,6 +37,7 @@ import sqlite3
 from pathlib import Path
 
 import aiosqlite
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
@@ -303,3 +304,38 @@ def test_codex_profile_undercounts_without_model_usage_anti_vacuity(tmp_path: Pa
     assert corrected_profile.total_cache_read_tokens == _CODEX_EXPECTED_CACHE_READ
     assert corrected_profile.total_cache_write_tokens == _CODEX_EXPECTED_CACHE_WRITE
     conn.close()
+
+
+async def test_profile_batch_and_usage_overlay_share_one_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before the fix, an old profile was returned with a concurrently replaced usage row."""
+    from polylogue.archive.semantic.cost_records import ModelUsageTotals
+    from polylogue.storage.sqlite.queries import session_insight_profile_reads
+
+    writer = _make_archive_conn(tmp_path)
+    try:
+        session_id = write_parsed_session_to_archive(writer, _claude_code_session("profile-snapshot"))
+        rebuild_session_insights_sync(writer, session_ids=[session_id])
+        writer.commit()
+        title = writer.execute("SELECT title FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
+        read_usage = session_insight_profile_reads.read_model_usage_batch_async
+        committed = False
+
+        async def interleaved(conn: aiosqlite.Connection, ids: list[str]) -> dict[str, list[ModelUsageTotals]]:
+            nonlocal committed
+            if not committed:
+                committed = True
+                writer.execute("UPDATE session_profiles SET title = 'replacement' WHERE session_id = ?", (session_id,))
+                writer.execute("UPDATE session_model_usage SET input_tokens = 9000 WHERE session_id = ?", (session_id,))
+                writer.commit()
+            return await read_usage(conn, ids)
+
+        monkeypatch.setattr(session_insight_profile_reads, "read_model_usage_batch_async", interleaved)
+        async with aiosqlite.connect(tmp_path / "index.db") as reader:
+            reader.row_factory = aiosqlite.Row
+            profiles = await session_insight_profile_reads.get_session_profiles_batch(reader, [session_id])
+            assert not reader.in_transaction
+        assert committed
+        assert profiles[session_id].title == title
+        assert profiles[session_id].total_input_tokens == 1_000
+    finally:
+        writer.close()

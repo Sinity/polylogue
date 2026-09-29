@@ -210,42 +210,53 @@ async def get_effective_context(
     session_id: str,
     at_position: int | None = None,
 ) -> list[MessageRecord]:
-    """Return the messages visible to the model at a session position.
+    """Apply a local compaction to the lineage-composed transcript prefix.
 
-    A compaction boundary replaces its recorded range with the materialized
-    summary. This intentionally reads the session's own rows, rather than the
-    full lineage-composed prefix used by ordinary transcript reads.
+    ``at_position`` is a zero-based position in the composed transcript, not
+    the child's physical tail (which starts at position zero again). An
+    incomplete newest compaction cannot authorize reuse of an older summary.
     """
+    if not conn.in_transaction:
+        await conn.execute("BEGIN DEFERRED")
+        try:
+            return await get_effective_context(conn, session_id, at_position)
+        finally:
+            await conn.execute("ROLLBACK")
     resolved = await _resolve_session_id(conn, session_id)
-    messages = await _own_messages(conn, resolved)
+    messages = await get_messages(conn, resolved)
     if at_position is None:
-        at_position = max((message.position for message in messages), default=-1)
+        at_position = len(messages) - 1
+    prefix = messages[: max(0, at_position + 1)]
     boundary = await (
         await conn.execute(
             """
             SELECT boundary_start_position, boundary_end_position, boundary_message_id
             FROM session_events
             WHERE session_id = ? AND event_type = 'compaction'
-              AND boundary_start_position IS NOT NULL
-              AND boundary_end_position IS NOT NULL
-              AND boundary_message_id IS NOT NULL
-              AND boundary_end_position < ?
-            ORDER BY boundary_end_position DESC, position DESC
+              AND (boundary_end_position IS NULL OR boundary_end_position < ?)
+            ORDER BY position DESC
             LIMIT 1
             """,
             (resolved, at_position),
         )
     ).fetchone()
     if boundary is None:
-        return [message for message in messages if message.position <= at_position]
+        return prefix
+    start_position = boundary["boundary_start_position"]
+    end_position = boundary["boundary_end_position"]
     summary_id = boundary["boundary_message_id"]
-    summary = next((message for message in messages if str(message.message_id) == str(summary_id)), None)
-    if summary is None:
-        return [message for message in messages if message.position <= at_position]
-    end_position = int(boundary["boundary_end_position"])
-    return [summary] + [
-        message for message in messages if end_position < message.position <= at_position and message is not summary
-    ]
+    if start_position is None or end_position is None or summary_id is None:
+        return prefix
+    if not 0 <= int(start_position) <= int(end_position) < len(prefix):
+        return prefix
+    summary_position = next(
+        (index for index, message in enumerate(prefix) if str(message.message_id) == str(summary_id)),
+        None,
+    )
+    if summary_position is None or summary_position <= int(end_position):
+        return prefix
+    summary = prefix[summary_position]
+    return [summary] + [message for message in prefix[int(end_position) + 1 :] if message is not summary]
 
 
 async def get_messages_with_lineage_completeness(

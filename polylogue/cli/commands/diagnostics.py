@@ -472,8 +472,20 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             f"estimated={row.estimated_model_row_count}  multi_model_sessions={row.multi_model_session_count}  "
             f"stale_sessions={row.stale_rollup_session_count}"
         )
-        env.ui.console.print(f"  origin request usage:    {_usage_counter_line(row.provider_request_usage)}")
-        env.ui.console.print(f"  origin cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
+        for label, lanes in (
+            ("origin request usage", row.provider_request_lanes),
+            ("origin cumulative usage", row.provider_cumulative_lanes),
+        ):
+            if lanes.state != "reported":
+                env.ui.console.print(f"  {label}: unavailable")
+                continue
+            env.ui.console.print(
+                f"  {label}: state={lanes.state} "
+                f"uncached_input={lanes.uncached_input_tokens} "
+                f"cached_input={lanes.cached_input_tokens} cache_write={lanes.cache_write_tokens} "
+                f"completion_output={lanes.completion_output_tokens} "
+                f"reasoning_output={lanes.reasoning_output_tokens}"
+            )
         env.ui.console.print(
             f"  model rollup usage ({row.model_rollup_grain}): {_usage_counter_line(row.model_rollup_usage)}"
         )

@@ -450,3 +450,36 @@ def test_explicit_read_timeout_bounds_the_lock_wait_even_at_the_default_value(tm
     assert busy_ms(timeout_class="background-read") == 30_000
     assert busy_ms(timeout_class="background-read", timeout=5.0) == 5_000
     assert busy_ms(timeout=0.2) == 200
+
+
+@pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
+@pytest.mark.parametrize("tier", [ArchiveTier.USER, ArchiveTier.SOURCE, ArchiveTier.EMBEDDINGS])
+def test_writers_refuse_an_uninitialized_durable_tier(
+    tmp_path: Path, factory: Callable[..., sqlite3.Connection], tier: ArchiveTier
+) -> None:
+    """The former shared read exemption returned a writable zero-schema handle."""
+    path = tmp_path / f"{tier.value}.db"
+    path.touch()
+    with pytest.raises(SchemaSkew) as raised:
+        with factory(path):
+            pass
+    assert raised.value.tier == tier.value
+    assert raised.value.found == 0
+
+
+def test_memory_budget_includes_source_and_reservation_writers() -> None:
+    """Counting just the index writer understates the overlap by two profiles."""
+    c = connection_profile
+    ordinary = c.WRITE_MMAP_SIZE_BYTES + c.WRITE_CACHE_SIZE_KIB * 1024
+    non_ordinary = (
+        c.BULK_BUILD_MMAP_SIZE_BYTES + c.BULK_BUILD_CACHE_SIZE_KIB * 1024
+        + c.DAEMON_WRITE_MMAP_SIZE_BYTES + c.DAEMON_WRITE_CACHE_SIZE_KIB * 1024
+        + c.BOUNDED_REPAIR_MMAP_SIZE_BYTES + c.BOUNDED_REPAIR_CACHE_SIZE_KIB * 1024
+        + c.OBSERVATION_JOURNAL_CACHE_SIZE_KIB * 1024
+    )
+    expected = non_ordinary + 3 * ordinary
+    assert c.mapped_bytes_budget(concurrent_read_connections=0) == expected
+    observation = c.MappedBytesBudgetCheck(
+        budget_bytes=expected, memory_max_bytes=None, memory_high_bytes=None, concurrent_read_connections=0
+    )
+    assert observation.concurrent_profile_budget_bytes == expected

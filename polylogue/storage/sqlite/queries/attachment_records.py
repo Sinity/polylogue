@@ -217,8 +217,10 @@ async def get_attachment_library_page(
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
         JOIN sessions s ON s.session_id = r.session_id
+        LEFT JOIN messages m ON m.message_id = r.message_id
         WHERE {" AND ".join(clauses)}
-        ORDER BY r.session_id, COALESCE(r.message_id, ''), a.attachment_id
+        ORDER BY s.sort_key_ms DESC, s.session_id,
+                 m.position, m.variant_index, r.position, a.attachment_id, r.ref_id
         LIMIT ? OFFSET ?
         """,
         [*args, max(0, limit), max(0, offset)],

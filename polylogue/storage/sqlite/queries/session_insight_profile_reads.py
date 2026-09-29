@@ -51,6 +51,12 @@ async def get_session_profiles_batch(
 ) -> dict[str, SessionProfileRecord]:
     if not session_ids:
         return {}
+    if not conn.in_transaction:
+        await conn.execute("BEGIN DEFERRED")
+        try:
+            return await get_session_profiles_batch(conn, session_ids)
+        finally:
+            await conn.execute("ROLLBACK")
     placeholders = ", ".join("?" for _ in session_ids)
     cursor = await conn.execute(
         f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",

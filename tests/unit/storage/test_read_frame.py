@@ -442,3 +442,34 @@ def test_a_reader_does_not_block_writer_progress(index_db: Path) -> None:
         _commit(index_db, "INSERT INTO rows_ VALUES (13, 'row-13')")
         frame.rebind()
         assert frame.connection.execute("SELECT count(*) FROM rows_").fetchone()[0] == 11
+
+
+def test_resume_releases_a_held_snapshot_before_proving_the_anchor(index_db: Path) -> None:
+    """Old snapshot proof finds row 5 even after a concurrent delete."""
+    with read_frame(index_db) as frame:
+        frame.connection.execute("BEGIN DEFERRED")
+        assert frame.connection.execute(_ANCHOR, (5,)).fetchone()[0] == 5
+        continuation = frame.bind(ReadContinuation(position=5, anchor_sql=_ANCHOR, anchor_params=(5,)))
+        _commit(index_db, "DELETE FROM rows_ WHERE position = 5")
+        with pytest.raises(StaleContinuationError):
+            frame.resume(continuation)
+
+
+def test_stream_can_be_closed_after_its_frame(index_db: Path) -> None:
+    """Pre-fix generator finalization closes a cursor on an already closed DB."""
+    with read_frame(index_db) as frame:
+        rows = frame.stream("SELECT * FROM rows_ ORDER BY position")
+        assert next(rows)[0] == 1
+    rows.close()
+    assert not frame.streaming
+
+
+@pytest.mark.parametrize("bound", [float("nan"), float("inf"), -float("inf")])
+def test_read_frame_rejects_nonfinite_snapshot_bounds(index_db: Path, bound: float) -> None:
+    """NaN/inf bypass a <= 0 comparison and disable the declared lifetime."""
+    with pytest.raises(ValueError):
+        with read_frame(index_db, max_snapshot_age_s=bound, reason="nonfinite regression"):
+            pass
+    with pytest.raises(ValueError):
+        with ReadFrame(index_db, profile=replace(READ_PROFILES["interactive-read"], max_snapshot_age_s=bound)):
+            pass

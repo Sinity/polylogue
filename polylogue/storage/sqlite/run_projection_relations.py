@@ -476,7 +476,7 @@ source_compaction_snapshots AS (
         'context-snapshot:' || se.event_id || ':compaction' AS snapshot_ref,
         se.session_id AS session_id,
         'run:' || se.session_id AS run_ref,
-        se.position AS position,
+        se.position + 1 AS position,
         printf('%016d', COALESCE(se.occurred_at_ms, 0)) AS source_updated_at,
         'compaction' AS boundary,
         'summary' AS inheritance_mode,

@@ -171,7 +171,7 @@ def checkpoint_wal(
         elapsed_s=round(time.perf_counter() - started, 6),
         error=error,
         blocking_processes=blocking_processes,
-        blocking_read_frames=pinning_frames,
+        blocking_read_frames=pinning_frames if busy > 0 or checkpointed < log else (),
     )
 
 
