@@ -2067,3 +2067,31 @@ def test_a_pathless_selection_is_never_reused(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
 
     assert run_tests._reuse_eligible(["-m", "uses_real_clock", "-p", "no:randomly"], root=tmp_path) is False
+
+
+def test_python_runtime_settings_are_part_of_the_reuse_key() -> None:
+    """A different hash seed or locale never answers from another's receipt.
+
+    Anti-vacuity (Codex P2, #5708): key only ``HYPOTHESIS_``/``PYTEST_``/
+    ``POLYLOGUE_`` settings and ``PYTHONHASHSEED=2`` reuses the seed-1 green.
+    """
+    assert run_tests.execution_environment_key({"PYTHONHASHSEED": "1"}) != run_tests.execution_environment_key(
+        {"PYTHONHASHSEED": "2"}
+    )
+    assert run_tests.execution_environment_key({"LC_ALL": "C"}) != run_tests.execution_environment_key(
+        {"LC_ALL": "pl_PL.UTF-8"}
+    )
+
+
+def test_arguments_after_the_separator_are_counted_as_paths(tmp_path: Path) -> None:
+    """``-- -test_x.py`` names one file, not the whole tree.
+
+    Anti-vacuity (Codex P2, #5708): apply the leading-dash test after ``--`` and
+    the selection counts as the configured ``tests`` tree, crossing the xdist
+    threshold.
+    """
+    assert run_tests._split_separator(["-x", "--", "-test_x.py"]) == (["-x"], ["-test_x.py"])
+    assert run_tests._selected_test_modules(["--", "-no-such-test.py"]) == 0
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "-test_x.py").write_text("def test_x() -> None: ...\n", encoding="utf-8")
+    assert run_tests._reuse_eligible(["-p", "no:randomly", "--", "-test_x.py"], root=tmp_path) is True

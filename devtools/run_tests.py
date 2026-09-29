@@ -278,7 +278,7 @@ def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
 #: (Hypothesis profiles, pytest options, Polylogue test switches). Its values
 #: are part of the reuse key, so a run under a different profile never answers
 #: from a weaker one's receipt.
-_EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
+_EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_", "PYTHON", "LC_")
 #: Individual switches the suite reads outside those prefixes: golden-file
 #: regeneration, fuzz depth, colour, time zone and the XDG roots.
 _EXECUTION_ENV_NAMES = frozenset(
@@ -287,6 +287,9 @@ _EXECUTION_ENV_NAMES = frozenset(
         # and HOME is inherited into every job (.agentctl/project.toml).
         "PATH",
         "HOME",
+        # The interpreter's hash seed, warnings and optimization, and the
+        # locale, change what a run observes.
+        "LANG",
         "UPDATE_GOLDEN",
         "FUZZ_ITERATIONS",
         "NO_COLOR",
@@ -360,12 +363,23 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
         # key carries: a stale pass must never answer for a new one.
         return False
     resolved_root = root.resolve()
+
+    def reusable_file(argument: str) -> bool:
+        target = Path(argument.split("::", 1)[0])
+        target = (target if target.is_absolute() else root / target).resolve()
+        # A directory can hold ignored, collectable modules the tree digest
+        # omits; only named files are reusable.
+        if not target.is_relative_to(resolved_root) or not target.is_file() or _git_ignored(target, root=resolved_root):
+            return False
+        return not _real_clock_module(target)
+
+    head, tail = _split_separator(selection)
     order_fixed = False
     named = 0
     index = 0
-    while index < len(selection):
-        argument = selection[index]
-        order = _explicit_order(argument, selection[index + 1] if index + 1 < len(selection) else None)
+    while index < len(head):
+        argument = head[index]
+        order = _explicit_order(argument, head[index + 1] if index + 1 < len(head) else None)
         if order is not None:
             fixed, consumed = order
             if not fixed:
@@ -379,18 +393,15 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
         if argument in _REUSABLE_FLAGS or argument.startswith(_REUSABLE_PREFIXES):
             index += 1
             continue
-        if argument.startswith("-"):
-            return False
-        target = Path(argument.split("::", 1)[0])
-        target = (target if target.is_absolute() else root / target).resolve()
-        # A directory can hold ignored, collectable modules the tree digest
-        # omits; only named files are reusable.
-        if not target.is_relative_to(resolved_root) or not target.is_file() or _git_ignored(target, root=resolved_root):
-            return False
-        if _real_clock_module(target):
+        if argument.startswith("-") or not reusable_file(argument):
             return False
         named += 1
         index += 1
+    # After ``--`` every argument is a path operand, a leading dash included.
+    for argument in tail:
+        if not reusable_file(argument):
+            return False
+        named += 1
     # A pathless ``-m``/``-k`` selection collects from the whole suite, whose
     # modules this check cannot inspect (a ``-m uses_real_clock`` run, say).
     return order_fixed and named > 0
@@ -758,24 +769,34 @@ def _configured_test_module_globs() -> tuple[str, ...]:
     return tuple(patterns) if isinstance(patterns, list) else (str(patterns),)
 
 
+def _split_separator(selection: list[str]) -> tuple[list[str], list[str]]:
+    """The arguments before ``--`` and the path operands after it."""
+    if "--" not in selection:
+        return selection, []
+    index = selection.index("--")
+    return selection[:index], selection[index + 1 :]
+
+
 def _selected_test_modules(selection: list[str]) -> int:
     """How many test modules the selection names, directories expanded."""
     modules: set[Path] = set()
+    head, tail = _split_separator(selection)
     # An option's value is skipped exactly as pytest's parser consumes it:
     # standalone flags (``-x``, ``--strict-markers``, ...) take none, and the
-    # path after them is still a selection.
+    # path after them is still a selection. After ``--`` every argument is a
+    # path, a leading dash included.
     certain: list[str] = []
     index = 0
-    while index < len(selection):
-        certain.append(selection[index])
-        index += 1 + operand_count(selection, index)
-    if not any(not argument.startswith("-") for argument in certain):
+    while index < len(head):
+        if not head[index].startswith("-"):
+            certain.append(head[index])
+        index += 1 + operand_count(head, index)
+    certain += tail
+    if not certain:
         # No path operand: pytest collects its configured ``testpaths``, the
         # whole test tree, so the selection is counted as that tree.
-        certain = [*certain, "tests"]
+        certain = ["tests"]
     for argument in certain:
-        if argument.startswith("-"):
-            continue
         target = Path(argument.split("::", 1)[0])
         target = target if target.is_absolute() else ROOT / target
         if target.is_dir():

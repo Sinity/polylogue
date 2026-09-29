@@ -461,3 +461,45 @@ def test_an_unpublishable_rerun_result_leaves_a_typed_failure(tmp_path: Path, mo
 def real_read(path: Path) -> str:
     with path.open(encoding="utf-8") as handle:
         return handle.read()
+
+
+def test_rerun_provenance_is_taken_after_the_first_group_is_reaped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rerun's content identity is read right before it starts.
+
+    Anti-vacuity (Codex P1, #5708): snapshot provenance before reaping and an
+    edit made while a stubborn descendant is reaped runs under the first
+    attempt's digest, so a pass clears a failure of content never rerun.
+    """
+    step = tmp_path / "step"
+    step.mkdir()
+    report = step / "pytest-report.json"
+    _failed_report(report, "tests/test_x.py::test_order")
+    monkeypatch.setattr(
+        pytest_rerun,
+        "build_rerun",
+        lambda **_kwargs: (["tests/test_x.py::test_order"], [sys.executable, "-c", "pass"], step / "r.json"),
+    )
+    order: list[str] = []
+
+    def reaped(_group: int) -> bool:
+        order.append("reap")
+        return True
+
+    def provenance(*_args: Any, **_kwargs: Any) -> str:
+        order.append("provenance")
+        return "digest"
+
+    monkeypatch.setattr(pytest_slot, "_group_reaped", reaped)
+    monkeypatch.setattr(pytest_slot, "_focused_worktree_provenance", provenance)
+    environment = {
+        RERUN_IN_SLOT_ENV: json.dumps({"report_path": str(report), "step_dir": str(step), "root": str(tmp_path)}),
+        "PATH": "/usr/bin:/bin",
+    }
+    with (tmp_path / "slot.log").open("wb") as log:
+        pytest_slot._rerun_failures_in_slot(
+            environment, cwd=str(tmp_path), log=log, on_start=lambda _process: None, first_group=12345
+        )
+
+    assert order == ["reap", "provenance"]

@@ -1397,20 +1397,6 @@ def _rerun_failures_in_slot(
     if plan is None:
         return
     failed, command, _rerun_report = plan
-    # Taken as the rerun starts, like the first run's: the client compares
-    # the two and refuses to clear a failure of content the rerun never ran.
-    try:
-        provenance = _focused_worktree_provenance(cwd, environment)
-    except Exception as exc:
-        # Without the rerun's identity nothing it proves can be attributed to
-        # the failing run's content, so no rerun happens and the failures stand.
-        log.write(f"\n  rerun skipped: worktree provenance unavailable ({exc})\n".encode())
-        with contextlib.suppress(OSError):
-            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-                json.dumps({"attempted": failed, "rerun_exit": 125, "provenance_error": str(exc)[:500]}),
-                encoding="utf-8",
-            )
-        return
     if first_group is not None and not _group_reaped(first_group):
         # A descendant of the first attempt (a server, a lock holder) would
         # share the rerun's slot and state, so no rerun happens and the
@@ -1442,6 +1428,22 @@ def _rerun_failures_in_slot(
                 )
             return
         rerun_env.update({"TMPDIR": fresh, "TMP": fresh, "TEMP": fresh})
+    # Taken as the rerun starts, like the first run's -- after the first
+    # attempt's group is reaped and the scratch made, immediately before the
+    # launch: the client compares the two and refuses to clear a failure of
+    # content the rerun never ran.
+    try:
+        provenance = _focused_worktree_provenance(cwd, environment)
+    except Exception as exc:
+        # Without the rerun's identity nothing it proves can be attributed to
+        # the failing run's content, so no rerun happens and the failures stand.
+        log.write(f"\n  rerun skipped: worktree provenance unavailable ({exc})\n".encode())
+        with contextlib.suppress(OSError):
+            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                json.dumps({"attempted": failed, "rerun_exit": 125, "provenance_error": str(exc)[:500]}),
+                encoding="utf-8",
+            )
+        return
     # Published before the rerun starts: if its result cannot be written
     # afterwards, this typed record (the rerun ran, its outcome is unknown)
     # stands, and the client neither clears the failures nor runs them a third

@@ -1419,3 +1419,18 @@ def test_a_group_left_with_only_zombies_counts_as_reaped() -> None:
         if orphan:
             with contextlib.suppress(ChildProcessError):
                 os.waitpid(orphan, 0)
+
+
+def test_verify_never_inherits_the_focused_charge_profile() -> None:
+    """Broad verification is sized by the corpus model, whatever the caller exported.
+
+    Anti-vacuity (Codex P2, #5708): keep an ambient focused marker and corpus
+    workers are admitted at the focused per-worker budget and ceiling.
+    """
+    from devtools import verify
+    from devtools.worker_memory import CHARGE_PROFILE_ENV
+
+    env = {CHARGE_PROFILE_ENV: "focused"}
+    verify._normalize_managed_pytest_environment(env)
+
+    assert CHARGE_PROFILE_ENV not in env
