@@ -308,10 +308,12 @@ class _FullIngestResult:
     #: Admitted paths whose provider is the source fallback only because
     #: detection crashed, with the failure. A shape fallback is not listed.
     detection_fallbacks: dict[Path, str] = field(default_factory=dict)
-    #: Succeeded paths whose every record parsed to zero sessions. The cursor
-    #: advances like any success, so identical bytes are not re-parsed, but
-    #: the intake outcome is an exclusion, never an admission (xf8qp).
-    no_session: list[Path] = field(default_factory=list)
+    #: Succeeded paths whose every record settled to a terminal outcome with
+    #: nothing admissible (no session, or corrupt input), with the reason.
+    #: The cursor advances like any success, so identical bytes are not
+    #: re-parsed, but the intake outcome is an exclusion, never an admission
+    #: (xf8qp).
+    settled_exclusions: dict[Path, str] = field(default_factory=dict)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
@@ -356,7 +358,7 @@ def _full_ingest_result_from_summary(
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
     detection_fallbacks: dict[Path, str] | None = None,
-    no_session: list[Path] | None = None,
+    settled_exclusions: dict[Path, str] | None = None,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     raw_frontier_sizes: dict[Path, int] | None = None,
@@ -379,7 +381,7 @@ def _full_ingest_result_from_summary(
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
         detection_fallbacks=dict(detection_fallbacks or {}),
-        no_session=list(no_session or ()),
+        settled_exclusions=dict(settled_exclusions or {}),
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         raw_frontier_sizes=raw_frontier_sizes or {},
@@ -541,6 +543,62 @@ def jsonl_complete_prefix_path(path: Path) -> JsonlBoundary:
     if candidate_terminated:
         return JsonlBoundary(complete_end, record_count, complete_end != size)
     return JsonlBoundary(size, record_count, False)
+
+
+def jsonl_parse_prefix_size(boundary: JsonlBoundary, size: int) -> int | None:
+    """The complete-record prefix a strict JSONL parse reads, or ``None`` for all of it.
+
+    Only an unterminated tail -- an append in progress -- is left out, even
+    when it is the whole payload (a capture taken before its first record
+    finished). A newline-terminated final line that does not decode is a
+    finished record, so the whole payload is parsed and the strict decoder
+    refuses it. Live preparation and retained replay both read through this
+    rule, so they parse the same records of the same bytes; whether an
+    incomplete capture is a deferral or corrupt input is live intake's
+    decision, recorded on the raw as failure evidence.
+    """
+    return boundary.prefix_size if 0 <= boundary.prefix_size < size and not boundary.malformed_record else None
+
+
+def jsonl_parse_prefix_size_of_handle(handle: IO[bytes], *, chunk_size: int = 64 * 1024) -> int | None:
+    """:func:`jsonl_parse_prefix_size` of a whole seekable handle, reading only its tail.
+
+    Only the final non-blank physical line decides the prefix, so this
+    seeks backward from the end until that line is whole instead of reading
+    every record twice; it holds at most that line plus one chunk. The
+    handle is left at offset 0 for the decoder.
+    """
+    position = handle.seek(0, 2)
+    tail = b""
+    newline_after = False
+    candidate_end = 0
+    line_start = 0
+    while True:
+        candidate_end = len(tail.rstrip())
+        if candidate_end:
+            line_start = tail.rfind(b"\n", 0, candidate_end) + 1
+            if line_start or position == 0:
+                break
+        else:
+            # Trailing whitespace only: keep whether it ended a line, not its bytes.
+            newline_after = newline_after or b"\n" in tail
+            tail = b""
+        if position == 0:
+            break
+        read = min(chunk_size, position)
+        position -= read
+        handle.seek(position)
+        tail = handle.read(read) + tail
+    handle.seek(0)
+    if not candidate_end:
+        return None
+    candidate = tail[line_start:candidate_end].strip()
+    terminated = newline_after or b"\n" in tail[candidate_end:]
+    try:
+        json.loads(candidate)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None if terminated else position + line_start
+    return None
 
 
 def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:

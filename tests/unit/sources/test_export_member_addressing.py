@@ -667,3 +667,44 @@ def test_split_zip_member_text_separates_after_the_zip_suffix_when_the_container
     )
     assert split_zip_member_text("/gone/odd:name.ZIP:a:b.json") == ("/gone/odd:name.ZIP", "a:b.json")
     assert split_zip_member_text("/gone/plain:file.json") is None
+
+
+def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_path: Path) -> None:
+    """A missing colon path whose prefix exists but is no ZIP is not a member (polylogue-zrb9y).
+
+    Every reader that splits ``<container>:<member>`` goes through
+    ``core/raw_coordinates``: blob integrity's availability, archive debt's
+    source presence, and ZIP reacquisition.
+
+    Anti-vacuity: the former first-colon split read the existing ``odd``
+    directory (and the plain ``notes`` file) as the container, so a deleted
+    loose file reported its source as available and reacquisition opened a
+    non-ZIP as the container.
+    """
+    from polylogue.operations import archive_debt
+    from polylogue.storage import blob_integrity
+
+    (tmp_path / "odd").mkdir()
+    (tmp_path / "notes").write_text("plain file, not a ZIP")
+    deleted_loose_files = (str(tmp_path / "odd:name.json"), str(tmp_path / "notes:conversations.json"))
+    for recorded in deleted_loose_files:
+        assert blob_integrity._source_path_availability(recorded)[0] is False
+        assert archive_debt._source_artifact_exists(recorded) is False
+        payload, reason = zip_reacquisition_payload(
+            _row(recorded, payload=b"{}", source_index=0), source_path=recorded, zip_payload_cache={}
+        )
+        assert (payload, reason) == (None, "container_coordinate_missing")
+
+    fake_zip = tmp_path / "fake.zip"
+    fake_zip.write_text("not a ZIP archive")
+    member_path = f"{fake_zip}:conversations.json"
+    payload, reason = zip_reacquisition_payload(
+        _row(member_path, payload=b"{}", source_index=0), source_path=member_path, zip_payload_cache={}
+    )
+    assert (payload, reason) == (None, "source_missing")
+    assert archive_debt._source_artifact_exists(member_path) is False
+
+    real_zip = tmp_path / "real.zip"
+    _write_member(real_zip, [_session("one")])
+    assert archive_debt._source_artifact_exists(f"{real_zip}:conversations.json") is True
+    assert blob_integrity._source_path_availability(f"{real_zip}:conversations.json")[0] is True

@@ -23,6 +23,7 @@ import ijson
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
@@ -188,6 +189,26 @@ def classify_decode_failure(error: BaseException) -> DecodeFailure | None:
         return DecodeFailure.JSONL_RECORD
     if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError, PartialJsonStreamError)):
         return DecodeFailure.DOCUMENT
+    return None
+
+
+def terminal_decode_evidence(error: BaseException, *, provider: Provider) -> RawFailureEvidenceKind | None:
+    """The terminal evidence a decode failure of retained bytes earns, if any.
+
+    Any decode failure of an unknown-provider capture is terminal. A complete
+    JSONL record that does not decode is terminal for every provider: the
+    producer finished that record, so no later observation of these bytes
+    can repair it, and a frontier past it without evidence would drop it
+    silently. Live intake and retained replay both decide from this one rule,
+    so a rebuild refuses exactly the bytes live intake refused.
+    """
+    failure = classify_decode_failure(error)
+    if failure is None:
+        return None
+    if provider is Provider.UNKNOWN:
+        return RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE
+    if failure is DecodeFailure.JSONL_RECORD:
+        return RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
     return None
 
 

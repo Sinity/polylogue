@@ -49,7 +49,7 @@ from polylogue.sources.live.batch_support import (
     tail_hash_from_path,
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
-from polylogue.sources.live.metrics import LiveBatchMetrics
+from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
 from polylogue.sources.live.watcher import WriteCoordinator
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
@@ -4337,7 +4337,7 @@ async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
     bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=1.0)
 
     assert bounded.time_budget_exceeded is True
-    assert bounded.no_session_paths
+    assert set(bounded.settled_exclusion_paths.values()) == {REFUSED_NO_SESSIONS}
     with sqlite3.connect(cursor._ops_db_path) as ops:
         (outcome_code,) = ops.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone()
     assert outcome_code != IngestOutcome.UNSUPPORTED_SHAPE.value

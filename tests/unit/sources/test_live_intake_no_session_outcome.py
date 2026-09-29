@@ -100,6 +100,74 @@ async def test_a_file_without_sessions_is_excluded_not_admitted(workspace_env: d
         (outcome_code,) = ops.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone()
     assert outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
     (result,) = outcomes.values()
-    assert result.reason is not None and "no sessions" in result.reason
+    assert result.reason is not None and result.reason.startswith("no_sessions:")
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
+
+
+#: A complete record that does not decode, between two good ones.
+_MALFORMED_MIDDLE_RECORD = (
+    json.dumps(
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "hello"},
+            "uuid": "u1",
+            "sessionId": "corrupt",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
+    ).encode()
+    + b"\n{not json}\n"
+    + json.dumps(
+        {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            "uuid": "a1",
+            "parentUuid": "u1",
+            "sessionId": "corrupt",
+            "timestamp": "2026-01-01T00:00:01Z",
+        }
+    ).encode()
+    + b"\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_corrupt_capture_is_excluded_as_corrupt_input(workspace_env: dict[str, Path]) -> None:
+    """A capture live intake settles as ``terminal_corrupt_input`` is excluded, not admitted.
+
+    The truncated capture that is no longer growing reaches the same settled
+    exclusion through the batch route
+    (``test_captured_incomplete_jsonl_is_rejected_after_source_disappears``).
+
+    Anti-vacuity: the pre-fix route recorded the terminal evidence on the raw
+    but left the path in the succeeded set, so the intake outcome was
+    ``ADMITTED`` and the batch counted the file's bytes as ingested
+    (polylogue-xf8qp); and a Claude Code capture with no semantic frontier
+    refused its cursor write, so the page was ``RETRYABLE`` on every pass.
+    """
+    from polylogue.core.enums import IngestOutcome
+
+    archive_root = workspace_env["archive_root"]
+    source_root = workspace_env["data_root"] / "claude-projects"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "corrupt.jsonl"
+    source_path.write_bytes(_MALFORMED_MIDDLE_RECORD)
+
+    batches: list[Any] = []
+    outcomes = await _admit(archive_root, source_root, batches)
+
+    metrics = batches[-1]
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.EXCLUDED}, outcomes
+    (result,) = outcomes.values()
+    assert result.reason is not None and result.reason.startswith("corrupt_input:"), result
+    assert metrics.succeeded_file_count == 0 and not metrics.succeeded_paths
+    assert metrics.excluded_paths == {str(source_path): "corrupt_input"}
+    assert metrics.ingested_bytes == 0
+    with sqlite3.connect(archive_root / "ops.db") as ops:
+        (outcome_code,) = ops.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert outcome_code == IngestOutcome.CORRUPT_INPUT.value
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        kinds = {str(row[0]) for row in conn.execute("SELECT artifact_kind FROM raw_artifacts")}
+    assert "terminal_corrupt_input" in kinds
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0

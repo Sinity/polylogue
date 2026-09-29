@@ -375,17 +375,17 @@ def _prepare_path_snapshot(
     evidence: LiveEnrichmentEvidence | None,
 ) -> LivePathPreparation:
     from polylogue.sources.dispatch import is_jsonl_source_path
-    from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, jsonl_complete_prefix_path
+    from polylogue.sources.live.batch_support import (
+        _detect_provider_from_path_sample,
+        jsonl_complete_prefix_path,
+        jsonl_parse_prefix_size,
+    )
     from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 
     provider = _detect_provider_from_path_sample(snapshot, Provider.from_string(provider_value))
     boundary = jsonl_complete_prefix_path(snapshot) if is_jsonl_source_path(source_path) else None
     snapshot_size = snapshot.stat().st_size
-    parse_prefix_size = (
-        boundary.prefix_size
-        if boundary is not None and 0 < boundary.prefix_size < snapshot_size and not boundary.malformed_record
-        else None
-    )
+    parse_prefix_size = jsonl_parse_prefix_size(boundary, snapshot_size) if boundary is not None else None
     # Apply evidence filtering before sealing so publication can use the indexed sequence.
     if evidence is None:
         return prepare_jsonl_blob(

@@ -206,8 +206,6 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
     """
     from polylogue.storage.blob_publication import flush_blob_publications
 
-    from .decoder_zip import MAX_UNCOMPRESSED_SIZE
-
     acquired: dict[str, tuple[str, int]] = {}
     member_by_asset: dict[str, str] = {}
     seen_asset_members: set[str] = set()
@@ -228,16 +226,8 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
                 observed = os.fstat(handle.fileno())
                 if not stat.S_ISREG(observed.st_mode):
                     continue
-                if observed.st_size > MAX_UNCOMPRESSED_SIZE:
-                    emit(
-                        "sources.chatgpt.asset_refused",
-                        level=WARNING,
-                        outcome="refused",
-                        reason="oversized",
-                        path=str(asset_path),
-                        size=observed.st_size,
-                    )
-                    continue
+                # Streamed into the blob store, so a large asset costs no
+                # memory; a size cap here would drop a valid asset.
                 blob_hash, size = store.write_from_fileobj(handle)
         except OSError as exc:
             emit(

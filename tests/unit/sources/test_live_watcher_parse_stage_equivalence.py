@@ -2209,7 +2209,9 @@ async def test_path_worker_decode_failure_reaches_terminal_unknown_evidence(
         second = await processor.ingest_files([path], emit_event=False)
     finally:
         stage.shutdown()
-    assert first.failed_file_count == 0 and first.succeeded_file_count == 1
+    # Settled terminal corrupt input: excluded, never admitted (polylogue-xf8qp).
+    assert first.failed_file_count == 0 and first.succeeded_file_count == 0
+    assert first.excluded_paths == {str(path): "corrupt_input"}
     assert second.failed_file_count == 0
     with _connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
@@ -2256,7 +2258,9 @@ async def test_known_provider_jsonl_with_a_malformed_middle_record_is_terminal(
     finally:
         if stage is not None:
             stage.shutdown()
-    assert first.failed_file_count == 0 and first.succeeded_file_count == 1
+    # Settled terminal corrupt input: excluded, never admitted (polylogue-xf8qp).
+    assert first.failed_file_count == 0 and first.succeeded_file_count == 0
+    assert first.excluded_paths == {str(path): "corrupt_input"}
     assert second.failed_file_count == 0
     with _connect(archive_root / "source.db") as conn:
         raws = conn.execute("SELECT blob_size, parse_error FROM raw_sessions").fetchall()
@@ -2621,7 +2625,8 @@ async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path
         stage.shutdown()
 
     assert result.failed_file_count == 0
-    assert result.succeeded_file_count == 1
+    assert result.succeeded_file_count == 0
+    assert result.excluded_paths == {str(path): "corrupt_input"}
     assert len(stage.cache) == 0
     with _connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0

@@ -3888,27 +3888,18 @@ def test_citation_marker_stripping_is_linear_in_unterminated_openers() -> None:
     assert elapsed < 2.0, f"citation stripping took {elapsed:.2f}s; expected linear time"
 
 
-def test_in_memory_sandbox_link_attachments_are_bounded_with_an_exact_found_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An in-memory parse bounds sandbox attachments and reports the excess.
+def test_in_memory_sandbox_links_are_all_recorded() -> None:
+    """An in-memory parse records every distinct sandbox link, like the spilled route.
 
-    Without a scratch spill (the bundle-member route) every link would become
-    an in-memory ``ParsedAttachment``; the scratch-backed route records every
-    link (``test_chatgpt_sandbox_links_spill_every_attachment``).
+    The in-memory route already holds the whole message and every other
+    attachment it parses, so a count cap on sandbox links alone changed the
+    outcome without bounding memory (polylogue-qlvyu); the scratch-backed
+    route is ``test_chatgpt_sandbox_links_spill_every_attachment``.
 
-    Anti-vacuity (Codex P1, #5643): drop the in-memory bound and the
-    attachment count becomes ``link_count`` with no degradation event; drop
-    the dedup and the repeated link counts twice in ``found``.
+    Anti-vacuity: restoring the former 512-per-message cap keeps 512 of the
+    1537 links; dropping the dedup records the repeated link twice.
     """
-    captured: list[tuple[str, dict[str, object]]] = []
-
-    def record(event: str, /, **fields: object) -> None:
-        captured.append((event, dict(fields)))
-
-    monkeypatch.setattr("polylogue.sources.parsers.chatgpt.emit", record)
-    limit = chatgpt_parser.MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE
-    link_count = limit * 3
+    link_count = 3 * 512 + 1
     text = " ".join(f"[f](sandbox:/mnt/data/f{index}.bin)" for index in range(link_count))
     text += " [again](sandbox:/mnt/data/f0.bin)"
     mapping = {"node1": make_chatgpt_node("msg1", "assistant", [text])}
@@ -3916,27 +3907,9 @@ def test_in_memory_sandbox_link_attachments_are_bounded_with_an_exact_found_coun
     _messages, attachments = extract_messages_from_mapping(mapping)
 
     sandbox = [a for a in attachments if a.attachment_kind == "sandbox_file"]
-    assert len(sandbox) == limit
+    assert len(sandbox) == link_count
+    assert len({a.source_url for a in sandbox}) == link_count
     assert [a.source_url for a in sandbox[:2]] == ["sandbox:/mnt/data/f0.bin", "sandbox:/mnt/data/f1.bin"]
-    bounded = [fields for event, fields in captured if event == "sources.chatgpt.sandbox_links_bounded"]
-    assert len(bounded) == 1
-    assert bounded[0]["found"] == link_count
-    assert bounded[0]["recorded"] == limit
-    assert bounded[0]["skipped"] == link_count - limit
-    assert bounded[0]["outcome"] == "degraded"
-
-
-def test_sandbox_links_under_the_bound_emit_no_degradation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The in-memory bound is inert for ordinary Code Interpreter turns."""
-    captured: list[str] = []
-    monkeypatch.setattr("polylogue.sources.parsers.chatgpt.emit", lambda event, /, **_fields: captured.append(event))
-    text = "[a](sandbox:/mnt/data/a.zip) and [b](sandbox:/mnt/data/b.zip)"
-    mapping = {"node1": make_chatgpt_node("msg1", "assistant", [text])}
-
-    _messages, attachments = extract_messages_from_mapping(mapping)
-
-    assert len([a for a in attachments if a.attachment_kind == "sandbox_file"]) == 2
-    assert "sources.chatgpt.sandbox_links_bounded" not in captured
 
 
 def test_chatgpt_thought_step_keeps_its_summary_beside_its_content() -> None:

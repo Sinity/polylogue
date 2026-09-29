@@ -116,12 +116,15 @@ def split_zip_member_text(source_path: str) -> tuple[str, str] | None:
     A container present on disk is located by :func:`zip_member_coordinate`.
     A relocated or removed one is split lexically after its ``.zip`` suffix,
     so a colon earlier in the container path (a Windows drive, a legal POSIX
-    filename) is not taken as the separator.
+    filename) is not taken as the separator. A loose file that exists at the
+    literal path is never a member coordinate, whatever its name holds.
     """
     located = zip_member_coordinate(source_path)
     if located is not None:
         container, member = located
         return source_path[: len(source_path) - len(member) - 1], member
+    if Path(source_path).exists():
+        return None
     match = _ZIP_MEMBER_SEPARATOR.search(source_path)
     if match is None or match.end() == len(source_path):
         return None
