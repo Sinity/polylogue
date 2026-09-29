@@ -218,7 +218,7 @@ async def test_topic_pack_reports_a_session_deleted_before_its_window_as_a_gap()
             raise SessionNotFoundError(session_id)
 
     result = await build_topic_pack(cast(Any, DeletedStore()), TopicPackRequest("topic", max_messages=1))
-    assert result.context_pack == []
+    assert len(result.context_pack) == 0
     assert any("session disappeared during read" in gap for gap in result.gaps)
 
 
