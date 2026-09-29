@@ -55,7 +55,6 @@ class SourceItemMemberDisposition(StrEnum):
     UNSELECTED = "unselected"
 
 
-_MAX_MEMBER_IDENTITY_CHARS = 4096
 _MAX_MEMBER_DIAGNOSTIC_CHARS = 4080
 
 
@@ -1040,12 +1039,9 @@ def record_source_item_member_disposition(
     ).fetchone()
     if admitted is not None:
         raise ValueError("source member already has an admitted raw record")
-    # Central-directory names and admission explanations are attacker
-    # controlled. Keep both bounded before they reach the durable source
-    # tier; the diagnostic budget leaves room for the truncation marker used
-    # by bounded_diagnostic while the identity keeps its ordinal as the
-    # collision-free coordinate.
-    bounded_name = member_name[:_MAX_MEMBER_IDENTITY_CHARS]
+    # Member identity is evidence, not a display summary: a clipped name
+    # can become blank or hide a changed member on retry. Only the diagnostic
+    # summary uses the declared display budget.
     bounded = bounded_diagnostic(diagnostic, max_len=_MAX_MEMBER_DIAGNOSTIC_CHARS) or ""
     row = conn.execute(
         "SELECT member_name, disposition, diagnostic, observed_at_ms FROM source_item_member_dispositions "
@@ -1053,14 +1049,14 @@ def record_source_item_member_disposition(
         (source_generation_id, source_item_id, entry_ordinal),
     ).fetchone()
     if row is not None:
-        if tuple(row[:3]) != (bounded_name, value, bounded):
+        if tuple(row[:3]) != (member_name, value, bounded):
             raise ValueError("source member disposition changed")
         return
     conn.execute(
         "INSERT INTO source_item_member_dispositions "
         "(source_generation_id, source_item_id, entry_ordinal, member_name, disposition, diagnostic, observed_at_ms) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (source_generation_id, source_item_id, entry_ordinal, bounded_name, value, bounded, observed_at_ms),
+        (source_generation_id, source_item_id, entry_ordinal, member_name, value, bounded, observed_at_ms),
     )
 
 

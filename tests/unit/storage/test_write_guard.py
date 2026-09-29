@@ -236,3 +236,56 @@ def test_classification_reads_the_file_name_not_the_directory(tmp_path: Path) ->
     assert guarded_archive_tier_path(tmp_path / "index.db.tmp") is None
     assert guarded_archive_tier_path(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True) is None
     assert guarded_archive_tier_path(f"file:{tmp_path / 'index.db'}?mode=rw", uri=True) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["connection", "transaction", "begin", "bulk"])
+async def test_async_backend_preserves_lease_at_the_worker_open(tmp_path: Path, route: str) -> None:
+    """A raw aiosqlite connector loses the lease on its worker and refuses the write."""
+    from contextlib import nullcontext
+
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    root = tmp_path / "archive"
+    backend = SQLiteBackend(root / "index.db")
+    with closing(sqlite3.connect(backend.db_path)) as conn:
+        conn.execute("CREATE TABLE lease_probe (value TEXT NOT NULL)")
+        conn.commit()
+
+    async def mutate() -> None:
+        if route == "begin":
+            await backend.begin()
+        scope = (
+            backend.transaction()
+            if route == "transaction"
+            else backend.bulk_connection()
+            if route == "bulk"
+            else nullcontext()
+        )
+        async with scope:
+            async with backend.connection() as conn:
+                await conn.execute("INSERT INTO lease_probe VALUES ('admitted')")
+                if route == "connection":
+                    await conn.commit()
+        if route == "begin":
+            await backend.commit()
+
+    try:
+        with install_archive_write_guard(), arm_write_lease_enforcement(process_wide=True):
+            with pytest.raises(UnleasedWriteError):
+                await mutate()
+            with write_lease("other-archive", archive_root=tmp_path / "other"):
+                with pytest.raises(UnleasedWriteError):
+                    await mutate()
+            with write_lease("archive-owner", archive_root=root):
+                await mutate()
+            # Neither the connector nor its worker grants subsequent calls
+            # the authority of the lease that has now ended.
+            with pytest.raises(UnleasedWriteError):
+                await mutate()
+            async with backend.read_connection() as conn:
+                async with conn.execute("SELECT value FROM lease_probe") as cursor:
+                    rows = await cursor.fetchall()
+                    assert [row[0] for row in rows] == ["admitted"]
+    finally:
+        await backend.close()

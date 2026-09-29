@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -88,19 +89,41 @@ def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
     }
     assert started["api_port"] == 48801
     assert started["capture_port"] == 48865
-    assert initialized == [tmp_path / "scratch" / "polylogue-dev-loop-proof" / "archive"]
+    assert len(initialized) == 1
+    archive_root = initialized[0]
+    assert archive_root.name == "archive"
+    assert archive_root.parent.parent == tmp_path / "scratch"
+    assert archive_root.parent.name.startswith("polylogue-dev-loop-proof-")
+    assert stat.S_IMODE(archive_root.parent.stat().st_mode) == 0o700
     environment = started["environment"]
     assert isinstance(environment, dict)
     assert environment["POLYLOGUE_API_PORT"] == "48801"
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
-    assert environment["XDG_CONFIG_HOME"] == str(
-        tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "home" / ".config"
-    )
+    assert environment["XDG_CONFIG_HOME"] == str(archive_root.parent / "artifacts" / "home" / ".config")
 
 
-def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_started_daemon_loads_private_per_run_tokens_without_argv_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fixed argv credentials fail both secrecy and independent-run isolation."""
+    from polylogue.browser_capture.receiver import load_or_mint_receiver_token
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+
     artifact_root = tmp_path / "artifacts"
+    archive_root = tmp_path / "archive"
     artifact_root.mkdir()
+    environment = dev_loop_service._proof_environment(
+        archive_root=archive_root, artifact_root=artifact_root, api_port=48801, capture_port=48865
+    )
+    receiver_token, api_token = dev_loop_service._proof_tokens(archive_root)
+    second_pair = dev_loop_service._proof_tokens(tmp_path / "another-archive")
+    assert len({receiver_token, api_token, *second_pair}) == 4
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    assert load_or_mint_receiver_token() == receiver_token
+    assert resolve_api_auth_token(None) == api_token
+    for name in ("browser-capture-receiver-token", "api-auth-token"):
+        assert stat.S_IMODE((archive_root / name).stat().st_mode) == 0o600
+
     launched: dict[str, object] = {}
 
     def fake_popen(command: list[str], **kwargs: object) -> object:
@@ -108,21 +131,32 @@ def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pyt
         return object()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
     dev_loop_service._start_daemon(
         repo_root=tmp_path,
-        environment={},
+        environment=environment,
         artifact_root=artifact_root,
         api_port=48801,
         capture_port=48865,
     )
-
     command = launched["command"]
     assert isinstance(command, list)
-    token_index = command.index("--browser-capture-auth-token")
-    assert command[token_index + 1] == dev_loop_service._RECEIVER_TOKEN
-    api_token_index = command.index("--api-auth-token")
-    assert command[api_token_index + 1] == dev_loop_service._API_TOKEN
+    assert "--browser-capture-auth-token" not in command
+    assert "--api-auth-token" not in command
+    assert all(token not in str(command) and token not in str(environment) for token in (receiver_token, api_token))
+
+
+def test_service_paths_are_exclusive_private_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reusing a fixed basename mixes runs and may follow a pre-existing tree."""
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    planted = tmp_path / "polylogue-dev-loop-proof"
+    planted.symlink_to(tmp_path / "unowned-target")
+    first, first_artifacts = dev_loop_service._service_paths()
+    second, second_artifacts = dev_loop_service._service_paths()
+    assert first.parent != second.parent
+    assert first_artifacts.parent == first.parent and second_artifacts.parent == second.parent
+    assert planted.is_symlink()
+    assert not (tmp_path / "unowned-target").exists()
+    assert stat.S_IMODE(first.parent.stat().st_mode) == stat.S_IMODE(second.parent.stat().st_mode) == 0o700
 
 
 def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,6 +171,7 @@ def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setenv("XDG_CONFIG_HOME", str(host / ".config"))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(host / "polylogue.toml"))
     monkeypatch.setenv("HERMES_HOME", str(host / ".hermes"))
+    monkeypatch.setenv("POLYLOGUE_API_ALLOW_NO_AUTH", "1")
     artifact_root = tmp_path / "artifacts"
 
     environment = dev_loop_service._proof_environment(
@@ -154,6 +189,7 @@ def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pyte
     assert Path(environment["POLYLOGUE_CONFIG"]).is_relative_to(home)
     assert not Path(environment["POLYLOGUE_CONFIG"]).exists()
     assert "HERMES_HOME" not in environment
+    assert environment["POLYLOGUE_API_ALLOW_NO_AUTH"] == "0"
     assert environment["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
 
 
@@ -190,18 +226,22 @@ def test_convergence_reads_use_the_matching_service_tokens(monkeypatch: pytest.M
             provider="chatgpt",
             provider_session_id="proof",
             timeout_s=0.1,
+            receiver_token="receiver-test-token",
         )
         is not None
     )
-    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is True
+    assert (
+        dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed", api_token="api-test-token")
+        is True
+    )
     assert observed == [
         {
             "url": "http://receiver/v1/archive-state?provider=chatgpt&provider_session_id=proof",
-            "bearer_token": dev_loop_service._RECEIVER_TOKEN,
+            "bearer_token": "receiver-test-token",
         },
         {
             "url": "http://api/api/sessions/indexed/messages?limit=5",
-            "bearer_token": dev_loop_service._API_TOKEN,
+            "bearer_token": "api-test-token",
         },
     ]
 
@@ -257,7 +297,10 @@ def test_api_message_convergence_rejects_wrong_or_malformed_response(
 ) -> None:
     monkeypatch.setattr(dev_loop_service, "_http_get_json", lambda *_args, **_kwargs: (200, payload))
 
-    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is False
+    assert (
+        dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed", api_token="api-test-token")
+        is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -358,7 +401,9 @@ def test_deterministic_captures_still_exercise_receiver_provider_identity(monkey
 
     monkeypatch.setattr(dev_loop_service, "_receiver_post", accepted)
 
-    captures = dev_loop_service._submit_deterministic_captures(capture_port=48865, session_id="proof")
+    captures = dev_loop_service._submit_deterministic_captures(
+        capture_port=48865, session_id="proof", receiver_token="receiver-test-token"
+    )
 
     assert captures == {
         "chatgpt": {"provider": "chatgpt", "provider_session_id": "proof-chatgpt"},
@@ -366,7 +411,8 @@ def test_deterministic_captures_still_exercise_receiver_provider_identity(monkey
     }
     payloads = [cast(dict[str, dict[str, str]], entry["body"]) for entry in observed]
     assert [payload["session"]["provider"] for payload in payloads] == ["chatgpt", "claude-ai"]
-    assert all(entry["token"] == dev_loop_service._RECEIVER_TOKEN for entry in observed)
+    assert len(observed) == 2
+    assert all(entry["token"] == "receiver-test-token" for entry in observed)
 
 
 def test_shared_chrome_node_boundary_launches_only_sinnix_control() -> None:
@@ -571,3 +617,21 @@ def test_main_emits_one_bounded_json_error(monkeypatch: pytest.MonkeyPatch, caps
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert len(payload["error"]["message"]) == 512
+
+
+def test_receiver_smoke_mints_a_different_token_for_each_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = dev_loop_service.make_server
+    tokens: list[str] = []
+
+    def observe(*args: Any, **kwargs: Any) -> Any:
+        tokens.append(kwargs["auth_token"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dev_loop_service, "make_server", observe)
+    for index in range(2):
+        payload = dev_loop_service.run_receiver_smoke(spool_path=tmp_path / str(index))
+        assert payload["ok"] is True
+        assert tokens[-1] not in str(payload)
+    assert len(tokens) == 2 and tokens[0] != tokens[1]

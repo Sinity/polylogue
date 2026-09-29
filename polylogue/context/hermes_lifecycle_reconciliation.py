@@ -28,6 +28,7 @@ from __future__ import annotations
 import sqlite3
 
 from polylogue.core.enums import Origin
+from polylogue.sources.parsers.hermes_identity import qualified_session_id_bounds
 from polylogue.sources.parsers.hermes_lifecycle import (
     HermesLifecycleEvent,
     HermesLifecycleReconciliation,
@@ -49,10 +50,10 @@ def _snapshot_message_ids(index_conn: sqlite3.Connection, hermes_session_native_
         FROM messages m
         JOIN sessions s ON s.session_id = m.session_id
         WHERE s.origin = ?
-          AND (s.native_id = ? OR s.native_id LIKE ? || '@profile-%')
+          AND (s.native_id = ? OR (s.native_id >= ? AND s.native_id < ?))
           AND m.native_id IS NOT NULL
         """,
-        (Origin.HERMES_SESSION.value, hermes_session_native_id, hermes_session_native_id),
+        (Origin.HERMES_SESSION.value, hermes_session_native_id, *qualified_session_id_bounds(hermes_session_native_id)),
     ).fetchall()
     return frozenset(str(row[0]) for row in rows if row[0] is not None)
 

@@ -6496,3 +6496,43 @@ def test_parent_links_cross_the_update_batch_boundary(tmp_path: Path, monkeypatc
     ).fetchall()
     assert rows[0]["parent_message_id"] is None
     assert [row["parent_message_id"] for row in rows[1:]] == [row["message_id"] for row in rows[:-1]]
+
+
+@pytest.mark.parametrize(("raw_id", "decoy_id"), [("raw_id", "rawXid"), ("raw%id", "raw-long-id"), ("RawId", "rawid")])
+@pytest.mark.parametrize("parent_present", [False, True])
+def test_hermes_parent_identity_is_literal_across_profiles(
+    tmp_path: Path, raw_id: str, decoy_id: str, parent_present: bool
+) -> None:
+    """LIKE either invents a decoy parent or makes a genuine parent ambiguous."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        native_ids = [f"{decoy_id}@profile-aaaaaaaaaaaa"]
+        expected_native = f"{raw_id}@profile-bbbbbbbbbbbb"
+        if parent_present:
+            native_ids.append(expected_native)
+        for native in native_ids:
+            write_parsed_session_to_archive(
+                conn,
+                ParsedSession(
+                    source_name=Provider.HERMES,
+                    provider_session_id=native,
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="conversation")],
+                ),
+            )
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.HERMES,
+                provider_session_id="observer",
+                parent_session_provider_id=f"{raw_id}@profile-cccccccccccc",
+                branch_type=BranchType.FORK,
+                messages=[ParsedMessage(provider_message_id="o1", role=Role.SYSTEM, text="observer event")],
+            ),
+        )
+        row = conn.execute(
+            "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id = 'hermes-session:observer'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == (f"hermes-session:{expected_native}" if parent_present else None)
+    finally:
+        conn.close()

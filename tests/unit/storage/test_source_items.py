@@ -332,7 +332,9 @@ def test_zip_member_disposition_completes_full_denominator_and_retry_is_idempote
     assert census["sealable"] is False
 
 
-def test_member_disposition_bounds_attacker_controlled_identity_and_reason() -> None:
+@pytest.mark.parametrize("member_name", ["n" * 20_000, " " * 4096 + "member.json"])
+def test_member_disposition_retains_full_identity_and_bounds_reason(member_name: str) -> None:
+    """Clipping identity either loses its suffix or makes a valid name blank."""
     conn = _source()
     item = _frozen_item(conn)
     conn.execute("BEGIN")
@@ -341,14 +343,27 @@ def test_member_disposition_bounds_attacker_controlled_identity_and_reason() -> 
         source_generation_id="frozen",
         source_item_id=item,
         entry_ordinal=0,
-        member_name="n" * 20_000,
+        member_name=member_name,
         disposition=SourceItemMemberDisposition.REFUSED,
         diagnostic="d" * 20_000,
         observed_at_ms=2,
     )
     name, diagnostic = conn.execute("SELECT member_name, diagnostic FROM source_item_member_dispositions").fetchone()
-    assert len(name) <= 4096
+    assert name == member_name
     assert len(diagnostic) <= 4096
+    # A changed suffix must not be mistaken for an idempotent retry.
+    with pytest.raises(ValueError):
+        record_source_item_member_disposition(
+            conn,
+            source_generation_id="frozen",
+            source_item_id=item,
+            entry_ordinal=0,
+            member_name=member_name + ".changed",
+            disposition=SourceItemMemberDisposition.REFUSED,
+            diagnostic="d" * 20_000,
+            observed_at_ms=3,
+        )
+    assert conn.execute("SELECT member_name FROM source_item_member_dispositions").fetchone()[0] == member_name
 
 
 def test_zip_enumeration_without_member_denominator_stays_incomplete() -> None:

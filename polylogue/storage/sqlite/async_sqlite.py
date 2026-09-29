@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from contextvars import copy_context
 from pathlib import Path
 from urllib.parse import quote
 
@@ -44,6 +46,15 @@ from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, ensure_schema_async
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
 from polylogue.storage.sqlite.write_lease import current_write_lease, require_write_lease, write_lease_enforced
+
+
+def _connect_write(database: Path) -> aiosqlite.Connection:
+    """Open on aiosqlite's worker under the admitted caller's write context."""
+    context = copy_context()
+    return aiosqlite.Connection(
+        lambda: context.run(sqlite3.connect, str(database), timeout=DB_TIMEOUT),
+        iter_chunk_size=64,
+    )
 
 
 async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements: tuple[str, ...]) -> None:
@@ -254,7 +265,7 @@ async def ensure_schema_once(backend: SQLiteBackend) -> None:
         require_write_lease(
             f"async schema initialization({backend._db_path})", archive_root=backend._source_db_path.parent
         )
-        async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as init_conn:
+        async with _connect_write(backend._db_path) as init_conn:
             os.chmod(backend._db_path, 0o600)
             await configure_connection(init_conn)
             await backend._ensure_schema(init_conn)
@@ -292,7 +303,7 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
     async with backend._write_lock:
         if backend._txn_conn is None:
             require_write_lease(f"async transaction({backend._db_path})", archive_root=backend._source_db_path.parent)
-            backend._txn_conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
+            backend._txn_conn = await _connect_write(backend._db_path)
             await configure_connection(backend._txn_conn)
 
         await _backend_begin(backend)
@@ -309,7 +320,7 @@ async def _backend_begin(backend: SQLiteBackend) -> None:
     await backend._ensure_schema_once()
     if backend._txn_conn is None:
         require_write_lease(f"async transaction begin({backend._db_path})", archive_root=backend._source_db_path.parent)
-        backend._txn_conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
+        backend._txn_conn = await _connect_write(backend._db_path)
         await configure_connection(backend._txn_conn)
 
     if backend._transaction_depth == 0:
@@ -386,7 +397,7 @@ async def _bulk_connection(backend: SQLiteBackend) -> AsyncIterator[None]:
     """Keep a single connection alive for many sequential operations."""
     await backend._ensure_schema_once()
     require_write_lease(f"async bulk transaction({backend._db_path})", archive_root=backend._source_db_path.parent)
-    conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
+    conn = await _connect_write(backend._db_path)
     await configure_connection(conn)
     await conn.execute("BEGIN IMMEDIATE")
     backend._bulk_conn = conn
@@ -457,7 +468,7 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
     # the explicit transaction factories; otherwise an async caller can open
     # a second writer while the daemon coordinator is holding the gate.
     require_write_lease(f"async connection({backend._db_path})", archive_root=backend._source_db_path.parent)
-    async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as conn:
+    async with _connect_write(backend._db_path) as conn:
         os.chmod(backend._db_path, 0o600)
         await configure_connection(conn)
         yield conn

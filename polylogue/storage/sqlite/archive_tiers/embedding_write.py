@@ -9,10 +9,12 @@ import json
 import sqlite3
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from dataclasses import dataclass
+from itertools import batched
 from typing import Literal, cast
 
+from polylogue.core.compute_cancel import compute_cancel_requested
 from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
@@ -460,6 +462,39 @@ def replace_message_embedding_derivation(
         _write_message_embeddings(conn, (prepared,))
 
 
+_EMBEDDING_REF_PAGE_SIZE = 512
+
+
+def _check_embedding_publication_cancelled() -> None:
+    if compute_cancel_requested():
+        # Match SQLite interruption: the enclosing transaction rolls back and
+        # the materializer records a retryable publication failure.
+        raise sqlite3.OperationalError("interrupted")
+
+
+def _delete_stale_message_embedding_refs(conn: sqlite3.Connection, session_id: str, desired_ids: Set[str]) -> None:
+    """Retire only this session's obsolete references, never shared vectors."""
+    after_rowid: int | None = None
+    while True:
+        _check_embedding_publication_cancelled()
+        after = "" if after_rowid is None else " AND rowid > ?"
+        params = (session_id,) if after_rowid is None else (session_id, after_rowid)
+        # The session index carries rowid as its tie-breaker. Each page is
+        # closed before deletion, with no growing OFFSET or whole-session set.
+        rows = conn.execute(
+            "SELECT rowid, message_id FROM message_embedding_refs "
+            f"WHERE session_id = ?{after} ORDER BY rowid LIMIT {_EMBEDDING_REF_PAGE_SIZE}",
+            params,
+        ).fetchall()
+        if not rows:
+            return
+        after_rowid = int(rows[-1][0])
+        conn.executemany(
+            "DELETE FROM message_embedding_refs WHERE session_id = ? AND rowid = ?",
+            ((session_id, row[0]) for row in rows if str(row[1]) not in desired_ids),
+        )
+
+
 def complete_embedding_attempt_success(
     conn: sqlite3.Connection,
     *,
@@ -527,21 +562,7 @@ def complete_embedding_attempt_success(
         # re-embed. Only this session's message_id -> hash refs are stale;
         # drop the ones this generation no longer writes (message removed
         # from the session, or the session shrank) before rewriting.
-        current_message_ids = {write.message_id for write in prepared}
-        prior_message_ids = tuple(
-            str(row[0])
-            for row in conn.execute(
-                "SELECT message_id FROM message_embedding_refs WHERE session_id = ?",
-                (attempt.session_id,),
-            ).fetchall()
-        )
-        stale_message_ids = tuple(sorted(set(prior_message_ids) - current_message_ids))
-        if stale_message_ids:
-            placeholders = ", ".join("?" for _ in stale_message_ids)
-            conn.execute(
-                f"DELETE FROM message_embedding_refs WHERE message_id IN ({placeholders})",
-                stale_message_ids,
-            )
+        _delete_stale_message_embedding_refs(conn, attempt.session_id, message_ids)
         _write_message_embeddings(conn, prepared)
         updated = conn.execute(
             """
@@ -664,7 +685,7 @@ def finalize_embedding_attempt_success(
     """Close a pending windowed attempt after all desired messages are present."""
 
     now_ms = int(time.time() * 1000) if completed_at_ms is None else completed_at_ms
-    desired_ids = tuple(dict.fromkeys(str(message_id) for message_id in message_ids))
+    desired_ids = frozenset(str(message_id) for message_id in message_ids)
     with conn:
         current = conn.execute(
             """
@@ -681,32 +702,22 @@ def finalize_embedding_attempt_success(
         # has exactly one current reference. Validate the reference set so a
         # retry can reuse surviving vectors without a false counter mismatch.
         if desired_ids:
-            placeholders = ", ".join("?" for _ in desired_ids)
-            present_ids = {
-                str(row[0])
-                for row in conn.execute(
-                    "SELECT message_id FROM message_embedding_refs "
+            page_size = min(_EMBEDDING_REF_PAGE_SIZE, conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) - 1)
+            for page in batched(desired_ids, page_size):
+                _check_embedding_publication_cancelled()
+                placeholders = ", ".join("?" for _ in page)
+                present_count = conn.execute(
+                    "SELECT COUNT(*) FROM message_embedding_refs "
                     f"WHERE session_id = ? AND message_id IN ({placeholders})",
-                    (attempt.session_id, *desired_ids),
-                ).fetchall()
-            }
-            if present_ids != set(desired_ids):
-                return False
+                    (attempt.session_id, *page),
+                ).fetchone()[0]
+                if present_count != len(page):
+                    return False
         elif conn.execute(
             "SELECT 1 FROM message_embedding_refs WHERE session_id = ? LIMIT 1", (attempt.session_id,)
         ).fetchone():
             return False
-        prior_ids = tuple(
-            str(row[0])
-            for row in conn.execute(
-                "SELECT message_id FROM message_embedding_refs WHERE session_id = ?",
-                (attempt.session_id,),
-            ).fetchall()
-        )
-        stale_ids = tuple(sorted(set(prior_ids) - set(desired_ids)))
-        if stale_ids:
-            placeholders = ", ".join("?" for _ in stale_ids)
-            conn.execute(f"DELETE FROM message_embedding_refs WHERE message_id IN ({placeholders})", stale_ids)
+        _delete_stale_message_embedding_refs(conn, attempt.session_id, desired_ids)
         updated = conn.execute(
             """
             UPDATE embedding_derivation_state

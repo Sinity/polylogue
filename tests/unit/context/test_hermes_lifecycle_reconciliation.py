@@ -13,6 +13,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.context.hermes_lifecycle_reconciliation import reconcile_hermes_session_lifecycle
 from polylogue.sources.hooks import append_hook_event
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, TOOL_FINISH, TOOL_START
@@ -160,3 +162,34 @@ def test_session_with_no_drained_events_reconciles_as_a_well_formed_empty_report
     assert report.total_events == 0
     assert report.complete
     assert not report.finalized
+
+
+@pytest.mark.parametrize(("raw_id", "decoy_id"), [("raw_id", "rawXid"), ("raw%id", "raw-long-id"), ("RawId", "rawid")])
+def test_lifecycle_snapshot_does_not_borrow_messages_from_a_pattern_match(
+    tmp_path: Path, raw_id: str, decoy_id: str
+) -> None:
+    """LIKE would incorrectly certify a foreign snapshot message as known."""
+    archive_root = tmp_path / "archive"
+    index_conn = _index_conn()
+    try:
+        _seed_snapshot(index_conn, qualified_native_id=f"{raw_id}@profile-abc", message_native_id="own-message")
+        _seed_snapshot(index_conn, qualified_native_id=f"{decoy_id}@profile-def", message_native_id="foreign-message")
+        append_hook_event(
+            event_id="literal-session-event",
+            provider="hermes",
+            event_type=TOOL_START,
+            session_id=raw_id,
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"tool_call_id": "call-1", "message_id": "foreign-message"},
+            root=archive_root / "hooks",
+        )
+        assert materialize_hook_carriers(archive_root) == 1
+        source_conn = _source_conn(archive_root)
+        try:
+            report = reconcile_hermes_session_lifecycle(source_conn, index_conn, hermes_session_native_id=raw_id)
+        finally:
+            source_conn.close()
+        assert report.total_events == 1
+        assert report.events_referencing_unknown_messages == ("hook:literal-session-event",)
+    finally:
+        index_conn.close()

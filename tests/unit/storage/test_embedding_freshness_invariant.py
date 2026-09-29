@@ -603,3 +603,137 @@ def test_absent_embeddings_tier_stays_a_measured_absence(tmp_path: Path, monkeyp
     assert payload["coverage_measurable"] is True
     assert payload["embedded_sessions"] == 0
     assert payload["status"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("route", "desired_count"), [("windowed", 1), ("windowed", 40), ("complete", 0), ("complete", 40)]
+)
+def test_embedding_completion_pages_references_below_sqlite_bind_limit(
+    tmp_path: Path, route: str, desired_count: int
+) -> None:
+    """Either monolithic IN list fails with more desired or stale refs than binds.
+
+    The interrupted attempt must roll back reference cleanup; its retry keeps
+    another session's reference and the shared purchased vector intact.
+    """
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+        ArchiveEmbeddingWrite,
+        complete_embedding_attempt_success,
+        finalize_embedding_attempt_success,
+        publish_embedding_attempt_window,
+        upsert_message_embeddings,
+    )
+
+    path = tmp_path / "embeddings.db"
+    initialize_archive_database(path, ArchiveTier.EMBEDDINGS)
+    conn = _open_embeddings(path)
+    try:
+        recipe = _recipe()
+        address = vector_derivation_hash(recipe=recipe, input_text=_INITIAL_TEXT)
+        embedding = [0.01] * 1024
+        stale_count = 600
+        upsert_message_embeddings(
+            conn,
+            [
+                ArchiveEmbeddingWrite(
+                    message_id=f"stale-{index}",
+                    session_id="session",
+                    origin=Origin.CODEX_SESSION,
+                    embedding=embedding,
+                    model=recipe.model,
+                    embedded_at_ms=1,
+                    vector_derivation_hash=address,
+                )
+                for index in range(stale_count)
+            ]
+            + [
+                ArchiveEmbeddingWrite(
+                    message_id="other-session-message",
+                    session_id="other-session",
+                    origin=Origin.CODEX_SESSION,
+                    embedding=embedding,
+                    model=recipe.model,
+                    embedded_at_ms=1,
+                    vector_derivation_hash=address,
+                )
+            ],
+        )
+        digest = EmbeddingSourceDigest()
+        for _ in range(desired_count):
+            digest.update(address)
+        attempt = begin_embedding_attempt(
+            conn,
+            session_id="session",
+            origin=Origin.CODEX_SESSION,
+            source_hash=digest.digest(),
+            recipe=recipe,
+            started_at_ms=2,
+        )
+        writes = [
+            ArchiveEmbeddingWrite(
+                message_id=f"desired-{index}",
+                session_id="session",
+                origin=Origin.CODEX_SESSION,
+                embedding=embedding,
+                model=recipe.model,
+                embedded_at_ms=3,
+                vector_derivation_hash=address,
+                generation=attempt.generation,
+            )
+            for index in range(desired_count)
+        ]
+        desired_ids = [write.message_id for write in writes]
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 16)
+        if route == "windowed":
+            assert publish_embedding_attempt_window(conn, attempt=attempt, writes=writes, completed_at_ms=3)
+            assert not finalize_embedding_attempt_success(
+                conn, attempt=attempt, message_ids=[*desired_ids, "not-published"], completed_at_ms=4
+            )
+            assert (
+                conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0]
+                == stale_count + desired_count + 1
+            )
+
+        # Reject the status write after stale-reference deletion. Both
+        # completion routes must preserve all pre-attempt rows on failure.
+        def deny_completion(
+            action: int, table: str | None, column: str | None, db: str | None, trigger: str | None
+        ) -> int:
+            del column, db, trigger
+            return (
+                sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_UPDATE and table == "embedding_derivation_state"
+                else sqlite3.SQLITE_OK
+            )
+
+        before = conn.execute("SELECT message_id FROM message_embedding_refs ORDER BY message_id").fetchall()
+        conn.set_authorizer(deny_completion)
+        try:
+            with pytest.raises(sqlite3.DatabaseError):
+                if route == "windowed":
+                    finalize_embedding_attempt_success(
+                        conn, attempt=attempt, message_ids=desired_ids, completed_at_ms=4
+                    )
+                else:
+                    complete_embedding_attempt_success(conn, attempt=attempt, writes=writes, completed_at_ms=4)
+        finally:
+            conn.set_authorizer(None)
+        assert conn.execute("SELECT message_id FROM message_embedding_refs ORDER BY message_id").fetchall() == before
+        assert conn.execute("SELECT attempt_state FROM embedding_derivation_state").fetchone()[0] == "pending"
+
+        if route == "windowed":
+            assert finalize_embedding_attempt_success(
+                conn, attempt=attempt, message_ids=desired_ids + desired_ids[:1], completed_at_ms=5
+            )
+        else:
+            assert complete_embedding_attempt_success(conn, attempt=attempt, writes=writes, completed_at_ms=5)
+        refs = conn.execute("SELECT message_id FROM message_embedding_refs").fetchall()
+        assert {str(row[0]) for row in refs} == {*desired_ids, "other-session-message"}
+        assert conn.execute("SELECT attempt_state FROM embedding_derivation_state").fetchone()[0] == "succeeded"
+        assert conn.execute(
+            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = 'session'"
+        ).fetchone() == (desired_count, 0)
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+    finally:
+        conn.close()

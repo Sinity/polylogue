@@ -7,7 +7,6 @@ its image; persistence is a separate writer concern.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from polylogue.context.compiler import ContextImage, ContextSpec
@@ -417,14 +416,6 @@ async def compile_context_image(source: Any, spec: ContextSpec) -> ContextImage:
     class _CompiledSegmentsSource:
         name = "archive-context"
 
-        @staticmethod
-        def _degrade(item: ContextItem) -> ContextItem:
-            # The historical message compiler guarantees at least one
-            # visible message plus its framing even at a one-token
-            # request. Preserve that established shape while making the
-            # scheduler record the bounded degraded admission.
-            return replace(item, token_cost=1)
-
         def candidates(self, *, moment: str, target_session: str | None) -> Sequence[ContextItem]:
             del moment
             return tuple(
@@ -437,7 +428,6 @@ async def compile_context_image(source: Any, spec: ContextSpec) -> ContextImage:
                     trust_class="quoted",
                     material_class="evidence",
                     target_session=target_session,
-                    degrade=self._degrade,
                 )
                 for index, segment in enumerate(segments)
             )
@@ -479,15 +469,7 @@ async def compile_context_image(source: Any, spec: ContextSpec) -> ContextImage:
         assertion_refs=assertion_refs,
         omitted=tuple(omitted),
         caveats=caveats,
-        # The estimate a caller budgets against must describe the payload
-        # this image actually carries. ``admission.token_cost`` is the
-        # scheduler's own charge, and a budget-degraded admission charges
-        # the floor it applied rather than the segment it admitted: a
-        # ``max_tokens=1`` image reported 1 token while returning 14
-        # tokens of markdown (measured on the seeded two-session fixture).
-        # Each segment's own ``token_estimate`` is honest, so the image's
-        # is their sum. It can exceed ``spec.max_tokens`` -- that is the
-        # minimum-viable-segment floor being visible instead of hidden.
+        # No unchanged segment can be admitted at less than its real estimate.
         token_estimate=sum(segment.token_estimate for segment in admitted_segments),
         execution_context_ref=execution_context,
         ledger=admission.ledger,

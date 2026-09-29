@@ -31,6 +31,7 @@ __all__ = [
     "profile_key",
     "profile_root_for_artifact",
     "qualified_session_id",
+    "qualified_session_id_bounds",
     "split_qualified_session_id",
 ]
 
@@ -77,6 +78,15 @@ def profile_root_for_artifact(artifact_path: Path) -> Path:
 def qualified_session_id(raw_session_id: str, key: str) -> str:
     """Return the profile-qualified session id for a raw Hermes session id."""
     return f"{raw_session_id}@profile-{key}"
+
+
+def qualified_session_id_bounds(raw_session_id: str) -> tuple[str, str]:
+    """Half-open binary bounds for profile-qualified forms of one exact raw ID.
+
+    Incrementing the marker's final ASCII hyphen bounds precisely that prefix,
+    without interpreting raw-ID wildcards or folding its case as LIKE would.
+    """
+    return qualified_session_id(raw_session_id, ""), f"{raw_session_id}@profile."
 
 
 def split_qualified_session_id(qualified_id: str) -> tuple[str, str | None]:

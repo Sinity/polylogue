@@ -3485,17 +3485,10 @@ class ArchiveStore:
 
         event_scan_cutoff_ms: int | None = None
         skip_event_scan = False
-        # The first-page cutoff optimization below reasons about events sorted
-        # by a real occurred_at_ms/sort_key_ms timestamp; a genuinely timeless
-        # event (both NULL, landing in the "unknown" bucket) doesn't fit that
-        # ordering at all, and the heuristic's own cost_page probe excludes
-        # timeless sessions, so it cannot see one coming. If it fired anyway,
-        # the caller's event_scan_cutoff_ms branch below adds an unconditional
-        # "e.occurred_at_ms IS NOT NULL" filter, silently dropping the very
-        # "unknown" bucket rows this fix exists to preserve. Skip the
-        # optimization entirely whenever a timeless event exists rather than
-        # risk that.
-        has_timeless_event = (
+        # The cutoff only orders events with their own timestamps. An
+        # undated event instead uses its session time (or the unknown bucket),
+        # so neither the timestamp cutoff nor a skipped scan can include it.
+        has_undated_event = (
             limit is not None
             and offset == 0
             and limit > 0
@@ -3504,13 +3497,13 @@ class ArchiveStore:
                     """
                     SELECT 1 FROM session_provider_usage_events e
                     JOIN sessions s ON s.session_id = e.session_id
-                    WHERE e.occurred_at_ms IS NULL AND s.sort_key_ms IS NULL
+                    WHERE e.occurred_at_ms IS NULL
                     LIMIT 1
                     """
                 ).fetchone()
             )
         )
-        if limit is not None and offset == 0 and limit > 0 and not has_timeless_event:
+        if limit is not None and offset == 0 and limit > 0 and not has_undated_event:
             event_scan_cutoff_ms, skip_event_scan = self._usage_timeline_event_scan_cutoff_ms(
                 origin=origin,
                 model=model,

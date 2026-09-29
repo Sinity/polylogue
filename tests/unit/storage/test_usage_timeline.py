@@ -168,3 +168,34 @@ def test_usage_timeline_unions_event_sessions_when_models_share_a_bucket(tmp_pat
 
     assert len(rows) == 1
     assert rows[0].session_count == 1
+
+
+@pytest.mark.parametrize("group_by", ["month-origin-model", "month-origin", "month-model", "month"])
+def test_first_usage_page_keeps_undated_events_in_dated_sessions(tmp_path: Path, group_by: str) -> None:
+    """A cost-filled first page must not skip events that use the session date."""
+    with ArchiveStore(tmp_path / "archive") as archive:
+        conn = archive._conn
+        months = (1_690_000_000_000, 1_695_000_000_000, 1_700_000_000_000)
+        for index, stamp in enumerate(months):
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, content_hash, updated_at_ms) VALUES (?, ?, ?, ?)",
+                (f"dated-{index}", "codex-session", bytes(32), stamp),
+            )
+            conn.execute(
+                "INSERT INTO session_model_usage (session_id, model_name, catalog_cost_usd) VALUES (?, 'gpt-5', 0.01)",
+                (f"codex-session:dated-{index}",),
+            )
+        conn.execute(
+            "INSERT INTO session_provider_usage_events "
+            "(session_id, position, provider_event_type, model_name, last_input_tokens) "
+            "VALUES ('codex-session:dated-2', 0, 'token_count', 'gpt-5', 7)"
+        )
+        conn.commit()
+        first = archive.list_usage_timeline_insights(group_by=group_by, limit=1)
+        full = archive.list_usage_timeline_insights(group_by=group_by)
+
+    assert len(first) == 1 and len(full) == 3
+    assert first[0].bucket == full[0].bucket == "2023-11"
+    assert first[0].event_count == full[0].event_count == 1
+    assert first[0].usage.input_tokens == full[0].usage.input_tokens == 7
+    assert first[0].stored_cost_usd == full[0].stored_cost_usd
