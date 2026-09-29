@@ -212,3 +212,21 @@ def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None
     benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
     assert {spec.origin for spec in named.corpus_specs()} == {named.workload.origin}
     assert {spec.origin for spec in benchmark_corpus_specs(benchmark.tier)} == {benchmark.workload.origin}
+
+
+def test_named_workloads_keep_default_style_without_changing_benchmarks() -> None:
+    """Omitting the named shape's style substitutes tool-heavy fixture content."""
+    specs = named_corpus_specs("cli-mixed")
+    assert specs
+    assert {spec.style for spec in specs} == {"default"}
+    benchmark_specs = benchmark_corpus_specs(BenchmarkWorkloadTier.SMOKE)
+    assert benchmark_specs
+    assert {spec.style for spec in benchmark_specs} == {"tool-heavy"}
+
+
+@pytest.mark.parametrize("prefix", ["workload-name:", "workload-purpose:"])
+def test_profile_tokens_cannot_mask_a_declaration_identity_change(prefix: str) -> None:
+    """Forged old/new tokens formerly hid a rename behind deduplication."""
+    profile = named_workload_profile("cli-chatgpt").workload
+    with pytest.raises(ValueError):
+        dataclasses.replace(profile, profile_tokens=(*profile.profile_tokens, prefix + "old", prefix + "new"))

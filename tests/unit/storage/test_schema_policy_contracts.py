@@ -667,3 +667,22 @@ def test_transient_sqlite_failure_reading_the_manifest_is_retryable_not_a_rebuil
     assert error.lifecycle_action == "retry"
     assert "was not inspected" in str(error)
     assert isinstance(error.__cause__, sqlite3.OperationalError)
+
+
+def test_readable_layout_refuses_noncanonical_message_fts_tokenizer(tmp_path: Path) -> None:
+    """A present Porter table is not the declared missing-FTS degradation."""
+    from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL, FTS_UNICODE_TOKENIZER
+
+    conn = sqlite3.connect(tmp_path / "noncanonical-fts.db")
+    try:
+        _ensure_schema(conn)
+        conn.execute("DROP TABLE messages_fts")
+        assert FTS_MESSAGES_TABLE_SQL.count(FTS_UNICODE_TOKENIZER) == 1
+        conn.execute(FTS_MESSAGES_TABLE_SQL.replace(FTS_UNICODE_TOKENIZER, "porter"))
+        conn.commit()
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(conn, generation_id="noncanonical-fts")
+        assert caught.value.generation_id == "noncanonical-fts"
+        assert caught.value.lifecycle_action == "rebuild_index"
+    finally:
+        conn.close()

@@ -114,3 +114,18 @@ def test_conflicting_bytes_keep_a_top_level_file_distinct(relation: str, expecte
         assert sum(row.message_provider_id is None for row in session.attachments) == 1
     if relation == "different":
         assert {row.inline_bytes for row in session.attachments} == {b"same", b"diff"}
+
+
+def test_run_and_authorship_events_bind_to_the_node_id_when_message_id_is_absent() -> None:
+    """The mapping key is not the message id when the node supplies its own."""
+    payload = chatgpt_run("success_list")
+    node = payload["mapping"]["result"]
+    node["id"] = "native-result-node"
+    node["message"].pop("id", None)
+    node["message"]["channel"] = "final"
+    session = parse_chatgpt(payload, "fallback")
+    assert any(message.provider_message_id == "native-result-node" for message in session.messages)
+    for event_type in ("chatgpt_code_interpreter_run", "chatgpt_message_authorship"):
+        events = [event for event in session.session_events if event.event_type == event_type]
+        assert len(events) == 1
+        assert events[0].source_message_provider_id == "native-result-node"

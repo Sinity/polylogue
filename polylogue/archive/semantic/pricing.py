@@ -393,9 +393,9 @@ def _lookup_stem(model: str) -> str:
 def _normalize_model(model: str) -> str:
     """Resolve a provider model name to its LiteLLM catalog pricing key.
 
-    Provider routes may prefix a model with arbitrary path segments; pricing
-    identifies the model by its final path segment only. That segment is tried
-    against the catalog **exactly first**, because the vendored catalog carries
+    An exact routed catalog key owns its route's prices and precedes bare
+    aliases. Otherwise, try the final path segment exactly before removing a
+    dated suffix, because the vendored catalog carries
     dated snapshot keys (``claude-sonnet-4-20250514``) alongside bare keys of
     the same name owned by an unrelated router. Only when the exact key is
     absent is a dated snapshot suffix removed, so a snapshot whose own rates
@@ -408,7 +408,10 @@ def _normalize_model(model: str) -> str:
     not fragment by release date uses :func:`model_cohort_key`.
     """
 
-    lowered = _lookup_stem(model)
+    qualified = model.strip().casefold()
+    if qualified in PRICING:
+        return qualified
+    lowered = _lookup_stem(qualified)
     if not lowered:
         return lowered
     if lowered in PRICING:

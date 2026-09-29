@@ -228,6 +228,13 @@ def _unit_payload(descriptor: QueryUnitDescriptor, *, stable_order: int) -> dict
         "operators": ["where", "exists"] if descriptor.exists_supported else ["where"],
         "value_type": "record",
         "cardinality": "many",
+        "fields": [
+            {"name": field.name, "description": field.description, "example": field.example}
+            for field in descriptor.fields
+        ],
+        "aggregate_group_fields": list(descriptor.aggregate_group_fields),
+        "aggregate_metric_fields": list(descriptor.aggregate_metric_fields),
+        "projectable_fields": dict(descriptor.projectable_fields),
         "cost": {
             "shape": "indexed" if descriptor.lowerer_kind == "sql" else "post_filter",
             "pushdown": descriptor.lowerer_kind == "sql",

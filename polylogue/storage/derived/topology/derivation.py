@@ -371,21 +371,15 @@ def derive_session_topology_sync(
         return None
     records: dict[str, SessionRecord] = {str(target.session_id): target}
     pending: deque[SessionRecord] = deque([target])
+    links: list[Mapping[str, object]] = []
     while pending:
         record = pending.popleft()
-        for child in fetch_children(str(record.session_id)):
+        record_id = str(record.session_id)
+        for child in fetch_children(record_id):
             if str(child.session_id) not in records:
                 records[str(child.session_id)] = child
                 pending.append(child)
-    links: list[Mapping[str, object]] = []
-    if fetch_links is not None:
-        pending_ids: deque[str] = deque(records)
-        queried: set[str] = set()
-        while pending_ids:
-            record_id = pending_ids.popleft()
-            if record_id in queried:
-                continue
-            queried.add(record_id)
+        if fetch_links is not None:
             for link in fetch_links(record_id):
                 links.append(link)
                 parent_id = link.get("resolved_dst_session_id")
@@ -393,7 +387,7 @@ def derive_session_topology_sync(
                     parent = fetch(parent_id)
                     if parent is not None:
                         records[parent_id] = parent
-                        pending_ids.append(parent_id)
+                        pending.append(parent)
     return compose_session_topology(
         str(target.session_id), [node_input_from_record(record) for record in records.values()], links
     )

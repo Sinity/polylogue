@@ -9,6 +9,7 @@ unresolved-edge surfaces.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -397,3 +398,57 @@ def test_lineage_edges_are_owned_by_session_links_not_the_parent_column(
         edges = archive.session_lineage_edges([root, child])
     assert edges[child][0] is None
     assert child not in edges[root][1]
+
+
+def test_sync_topology_discovers_siblings_of_a_link_discovered_ancestor() -> None:
+    """Walking children only before links omits the target's sibling."""
+    records = {
+        key: SessionRecord(
+            session_id=SessionId(key),
+            origin=Origin.from_string("codex-session"),
+            native_id=f"native-{key}",
+            content_hash=ContentHash(f"hash-{key}"),
+        )
+        for key in ("root", "child", "sibling")
+    }
+    links: dict[str, list[Mapping[str, object]]] = {
+        key: [
+            {
+                "src_session_id": key,
+                "dst_origin": "codex-session",
+                "dst_native_id": "native-root",
+                "resolved_dst_session_id": "root",
+                "link_type": "branch",
+                "confidence": 1.0,
+                "observed_at_ms": 1,
+            }
+        ]
+        for key in ("child", "sibling")
+    }
+    topology = derive_session_topology_sync(
+        "child",
+        fetch=records.get,
+        fetch_children=lambda key: [records["child"], records["sibling"]] if key == "root" else [],
+        fetch_links=lambda key: links.get(key, []),
+    )
+    assert topology is not None
+    assert {str(node.session_id) for node in topology.nodes} == set(records)
+    assert [str(key) for key in topology.siblings("child")] == ["sibling"]
+    assert {str(edge.child_id) for edge in topology.edges if edge.resolved} == {"child", "sibling"}
+
+
+@pytest.mark.asyncio
+async def test_message_branch_filter_keeps_default_root_scope(workspace_env: dict[str, Path]) -> None:
+    """A message-branch predicate must not implicitly request child sessions."""
+    db_path = db_setup(workspace_env)
+    _seed_lineage(db_path)
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        roots = await archive.filter().has_branches(False).list()
+        children = await archive.filter().has_branches(False).is_root(False).list()
+    finally:
+        await archive.close()
+    assert {str(session.id) for session in roots} == {_native("root")}
+    assert {str(session.id) for session in children} == {
+        _native(key) for key in ("continuation", "fork", "subagent", "sidechain")
+    }

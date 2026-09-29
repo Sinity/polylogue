@@ -243,8 +243,12 @@ def write_logical_export(
             # AUTOINCREMENT table leaves every user row identical while
             # advancing the stored high-water mark.
             sequence_rows = [
-                [_schema_text(name), _schema_text(seq) if seq is not None else None]
-                for name, seq in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name")
+                [_encode_value(_schema_text(name_type), name), _encode_value(_schema_text(seq_type), seq)]
+                for name_type, name, seq_type, seq in conn.execute(
+                    "SELECT typeof(name), name, typeof(seq), seq FROM sqlite_sequence "
+                    "ORDER BY typeof(name) COLLATE BINARY, name COLLATE BINARY, "
+                    "typeof(seq) COLLATE BINARY, seq COLLATE BINARY"
+                )
                 if declared is None or _schema_text(name) in declared
             ]
         header = (

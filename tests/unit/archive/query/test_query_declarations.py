@@ -139,3 +139,21 @@ def test_a_renamed_unit_executor_is_an_actionable_diagnostic() -> None:
     assert [item.code for item in diagnostics] == ["unresolved_handler_symbol"]
     assert "query_messages_renamed_away" in diagnostics[0].message
     assert diagnostics[0].repair_command
+
+
+def test_structural_unit_fields_are_discoverable_from_their_descriptors() -> None:
+    """Omitting descriptor fields formerly made executable predicates invisible."""
+    descriptors = {descriptor.unit: descriptor for descriptor in query_unit_descriptors(terminal_supported=True)}
+    for search in ("cache_read_tokens", "author_kind"):
+        page = capability_detail_page(search=search)
+        items = cast(list[dict[str, object]], page["items"])
+        assert items
+        message = next(item for item in items if item["declaration_id"] == "query.unit.message")
+        descriptor = descriptors["message"]
+        assert message["fields"] == [
+            {"name": field.name, "description": field.description, "example": field.example}
+            for field in descriptor.fields
+        ]
+        assert message["aggregate_metric_fields"] == list(descriptor.aggregate_metric_fields)
+        assert message["aggregate_group_fields"] == list(descriptor.aggregate_group_fields)
+        assert message["projectable_fields"] == descriptor.projectable_fields

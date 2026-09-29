@@ -2568,15 +2568,9 @@ def _aggregate_result_events(
     in the parsed session, and neither does the executed program, which rides
     the ``aggregate_result`` web construct.
     """
-    for node_id, node in mapping.items():
-        if not isinstance(node, Mapping):
-            continue
-        message = node.get("message")
-        if not isinstance(message, Mapping):
-            continue
+    for message_id, message in _iter_message_nodes(mapping):
         metadata = message.get("metadata")
         aggregate_result = metadata.get("aggregate_result") if isinstance(metadata, Mapping) else None
-        message_id = str(message.get("id") or node_id)
         if message_id not in emitted_message_ids:
             continue
         content = message.get("content")
@@ -2623,17 +2617,11 @@ def _message_authorship_events(
     ``phase`` -- and ``author.metadata.real_author`` names the tool that
     actually produced a message rendered through another role's envelope.
     """
-    for node_id, node in mapping.items():
-        if not isinstance(node, Mapping):
-            continue
-        message = node.get("message")
-        if not isinstance(message, Mapping):
-            continue
+    for message_id, message in _iter_message_nodes(mapping):
         channel = _string_value(message, "channel")
         real_author = _real_author(message.get("author"))
         if channel is None and real_author is None:
             continue
-        message_id = str(message.get("id") or node_id)
         if message_id not in emitted_message_ids:
             continue
         payload: dict[str, object] = {}

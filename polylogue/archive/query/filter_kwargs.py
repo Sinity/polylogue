@@ -124,7 +124,6 @@ def plan_session_filter_kwargs(plan: SessionQueryPlan) -> SessionFilterKwargs:
             parent_id=plan.parent_id,
             continuation=plan.continuation,
             sidechain=plan.sidechain,
-            has_branches=plan.has_branches,
         ),
     }
 

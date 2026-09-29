@@ -177,20 +177,19 @@ MESSAGE_FTS_DEGRADABLE_OBJECTS: frozenset[tuple[str, str]] = frozenset(
 
 
 def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool:
-    """Report whether a non-empty manifest diff is confined to message FTS."""
+    """Admit only missing message-FTS objects, never changed search semantics."""
 
-    if diff.get("version"):
+    if diff.get("version") or diff.get("extra") or diff.get("wrong_definition"):
         return False
-    objects: list[tuple[str, str]] = []
-    for key in ("missing", "extra", "wrong_definition"):
-        entries = diff.get(key)
-        if not isinstance(entries, (list, tuple)):
-            continue
-        for entry in entries:
-            if not isinstance(entry, (list, tuple)) or len(entry) < 2:
-                return False
-            objects.append((str(entry[0]), str(entry[1])))
-    return bool(objects) and all(entry in MESSAGE_FTS_DEGRADABLE_OBJECTS for entry in objects)
+    entries = diff.get("missing")
+    if not isinstance(entries, (list, tuple)) or not entries:
+        return False
+    for entry in entries:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            return False
+        if (str(entry[0]), str(entry[1])) not in MESSAGE_FTS_DEGRADABLE_OBJECTS:
+            return False
+    return True
 
 
 def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> SchemaManifest:

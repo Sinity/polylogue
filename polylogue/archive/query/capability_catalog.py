@@ -83,7 +83,19 @@ def capability_detail_page(
             row
             for row in rows
             if needle
-            in " ".join(str(row.get(key, "")) for key in ("declaration_id", "name", "meaning", "examples")).lower()
+            in " ".join(
+                str(row.get(key, ""))
+                for key in (
+                    "declaration_id",
+                    "name",
+                    "meaning",
+                    "examples",
+                    "fields",
+                    "aggregate_group_fields",
+                    "aggregate_metric_fields",
+                    "projectable_fields",
+                )
+            ).lower()
         )
     snapshot = _snapshot_id(stats)
     origins = [

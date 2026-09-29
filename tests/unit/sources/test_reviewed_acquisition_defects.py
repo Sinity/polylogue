@@ -308,3 +308,22 @@ def test_blocked_source_paths_match_through_a_symlinked_watch_root(tmp_path: Pat
     admitted = processor.admit_paths([violating, healthy])
 
     assert admitted == [healthy]
+
+
+@pytest.mark.parametrize("replacement", ["1", 1.0, b"1", None])
+def test_autoincrement_storage_class_changes_the_logical_revision(tmp_path: Path, replacement: object) -> None:
+    """Stringifying sqlite_sequence formerly equated INTEGER 1 and TEXT '1'."""
+    database = tmp_path / "sequence-types.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE item (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+        conn.execute("INSERT INTO item DEFAULT VALUES")
+    before = sqlite_logical_revision(database)
+    with sqlite3.connect(database) as conn:
+        conn.execute("UPDATE sqlite_sequence SET seq = ?", (replacement,))
+        assert conn.execute("SELECT typeof(seq) FROM sqlite_sequence").fetchone() != ("integer",)
+    after = sqlite_logical_revision(database)
+    assert after != before
+    assert sqlite_logical_revision(database) == after
+    with sqlite3.connect(database) as conn:
+        conn.execute("UPDATE sqlite_sequence SET seq = 1")
+    assert sqlite_logical_revision(database) == before

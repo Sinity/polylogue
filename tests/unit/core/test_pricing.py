@@ -402,6 +402,8 @@ def test_exact_routed_catalog_key_precedes_bare_alias() -> None:
 
     routed = "deepinfra/openai/gpt-oss-120b"
     assert routed in PRICING
+    assert _normalize_model(routed) == routed
+    assert _normalize_model(f"  {routed.upper()}  ") == routed
     assert estimate_cost(1_000_000, 1_000_000, routed) == pytest.approx(0.5)
 
 
