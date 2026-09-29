@@ -117,6 +117,9 @@ class _IngestBatchSummary:
     # boundary.  This is deliberately per attachment rather than a single
     # lossy counter: callers can account for every non-linked attachment.
     attachment_owner_resolutions: list[dict[str, str]] = field(default_factory=list)
+    # Rowid of each unscoped foreign-key child table when this batch's
+    # ``foreign_keys=OFF`` window opened; the pre-commit check probes rows above it.
+    unscoped_foreign_key_watermarks: dict[str, int] = field(default_factory=dict)
     counts: dict[str, int] = field(
         default_factory=lambda: {
             "sessions": 0,

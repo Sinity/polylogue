@@ -74,7 +74,9 @@ def test_scoped_foreign_key_check_ignores_preexisting_orphans(tmp_path: Path) ->
         conn.commit()
         conn.execute("PRAGMA foreign_keys = ON")
 
-        violations = ingest_batch_core._foreign_key_violations_for_sessions(conn, ("codex-session:new",))
+        violations = ingest_batch_core._foreign_key_violations_for_sessions(
+            conn, ("codex-session:new",), unscoped_since={}
+        )
 
     assert violations == []
 
@@ -96,7 +98,9 @@ def test_scoped_foreign_key_check_reports_current_session_orphans(tmp_path: Path
         conn.commit()
         conn.execute("PRAGMA foreign_keys = ON")
 
-        violations = ingest_batch_core._foreign_key_violations_for_sessions(conn, ("codex-session:new",))
+        violations = ingest_batch_core._foreign_key_violations_for_sessions(
+            conn, ("codex-session:new",), unscoped_since={}
+        )
 
     assert violations == [
         {
@@ -194,7 +198,7 @@ def test_bulk_precommit_check_reports_a_compound_owner_disagreement(tmp_path: Pa
         conn.execute(_CONTRADICTORY_ROWS[table], parameters)
 
         violations = ingest_batch_core._foreign_key_violations_for_sessions(
-            conn, ("codex-session:a", "codex-session:b")
+            conn, ("codex-session:a", "codex-session:b"), unscoped_since={}
         )
         pragma_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
         conn.rollback()
@@ -203,6 +207,42 @@ def test_bulk_precommit_check_reports_a_compound_owner_disagreement(tmp_path: Pa
     assert [(item["table"], item["parent"]) for item in violations] == [(table, "messages")]
     assert violations[0]["session_id"] == "codex-session:b"
     assert violations[0]["child_key"] == {"message_id": message_id, "session_id": "codex-session:b"}
+
+
+def test_unscoped_foreign_key_check_probes_only_rows_the_window_wrote(tmp_path: Path) -> None:
+    """A child table no session owns is checked for this window's rows, not whole.
+
+    An orphan committed before the window opened is not this batch's to
+    refuse; one the window inserts is. Anti-vacuity: running
+    ``PRAGMA foreign_key_check(attachment_native_ids)`` over the whole table
+    reports the pre-window orphan too, and a scan that ignores the watermark
+    grows with the archive on every batch.
+    """
+    db_path = tmp_path / "unscoped-fk.db"
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash) VALUES ('codex-session', 'new', zeroblob(32))"
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES ('old:attachment:0', 'file', 'old')"
+        )
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        watermarks = ingest_batch_core._unscoped_foreign_key_watermarks(conn)
+        conn.execute(
+            "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES ('new:attachment:0', 'file', 'new')"
+        )
+
+        violations = ingest_batch_core._foreign_key_violations_for_sessions(
+            conn, ("codex-session:new",), unscoped_since=watermarks
+        )
+        conn.rollback()
+
+    assert [(item["table"], item["child_key"]) for item in violations] == [
+        ("attachment_native_ids", {"ref_id": "new:attachment:0"})
+    ]
 
 
 def test_foreign_key_check_plan_is_total_over_the_schema(tmp_path: Path) -> None:

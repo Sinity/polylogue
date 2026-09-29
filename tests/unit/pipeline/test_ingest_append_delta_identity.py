@@ -206,3 +206,37 @@ def test_stored_hash_stays_merged_digest(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (_SESSION_ID,)).fetchone()[0] == 2
     finally:
         conn.close()
+
+
+def test_tail_only_append_that_repeats_earlier_content_is_kept(tmp_path: Path) -> None:
+    """A live tail carrying only a new message that repeats an earlier prompt is a delta.
+
+    Anti-vacuity: matching the replay cursor by content signature before
+    native identity treats the new ``m1`` as a replay of ``m0`` and drops it.
+    """
+    conn = _seeded(tmp_path)
+    try:
+        parsed = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=_NATIVE_ID,
+            title="Append delta identity",
+            created_at="2026-04-02T00:00:00Z",
+            updated_at="2026-04-02T00:00:00Z",
+            messages=[_message("m1", "first")],
+        )
+        content_hash = str(session_content_hash(parsed))
+        payload = SessionWritePayload(
+            session_id=_SESSION_ID,
+            content_hash=content_hash,
+            parsed_session=parsed.model_copy(update={"content_hash": content_hash}),
+            message_count=1,
+            append_only=True,
+        )
+
+        delta, skipped = ingest_batch_core._append_delta_payload(conn, payload)
+
+        assert delta is not None
+        assert skipped == 0
+        assert [message.provider_message_id for message in delta.messages] == ["m1"]
+    finally:
+        conn.close()

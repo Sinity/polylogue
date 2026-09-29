@@ -51,7 +51,12 @@ from polylogue.markers.preparation import (
     marker_recipe_fingerprint,
     retired_marker_assertion_ids,
 )
-from polylogue.pipeline.ids import SIDECAR_BLOB_EVENT_TYPES, bound_session_content_hash, session_content_hash
+from polylogue.pipeline.ids import (
+    SIDECAR_BLOB_EVENT_TYPES,
+    bound_session_content_hash,
+    message_content_identity,
+    session_content_hash,
+)
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
@@ -377,10 +382,70 @@ def _scoped_foreign_key_sql(check: _ScopedForeignKey, placeholders: str) -> str:
         """
 
 
+def _unscoped_foreign_key_sql(check: _ScopedForeignKey) -> str:
+    """Probe one unscoped foreign key over the rows written since a rowid watermark."""
+    child = _quote_identifier(check.table)
+    parent = _quote_identifier(check.parent)
+    selected = ", ".join(f"c.{_quote_identifier(column)}" for column in check.child_columns)
+    not_null = " AND ".join(f"c.{_quote_identifier(column)} IS NOT NULL" for column in check.child_columns)
+    joined = " AND ".join(
+        f"p.{_quote_identifier(parent_column)} = c.{_quote_identifier(child_column)}"
+        for child_column, parent_column in zip(check.child_columns, check.parent_columns, strict=True)
+    )
+    return f"""
+        SELECT c.rowid AS violation_rowid, {selected}
+        FROM {child} AS c
+        WHERE c.rowid > ?
+          AND {not_null}
+          AND NOT EXISTS (SELECT 1 FROM {parent} AS p WHERE {joined})
+        """
+
+
+def _unscoped_foreign_keys(conn: sqlite3.Connection, tables: Sequence[str]) -> tuple[_ScopedForeignKey, ...]:
+    """Every foreign key of the tables no session owns, resolved like the scoped plan."""
+    checks: list[_ScopedForeignKey] = []
+    for table in tables:
+        groups: dict[int, list[Sequence[object]]] = {}
+        for fk in conn.execute(f"PRAGMA foreign_key_list({_quote_identifier(table)})").fetchall():
+            groups.setdefault(int(fk[0]), []).append(fk)
+        for fkid, rows in sorted(groups.items()):
+            ordered = sorted(rows, key=lambda row: int(cast(int, row[1])))
+            parent = str(ordered[0][2])
+            child_columns = tuple(str(row[3]) for row in ordered)
+            parent_columns = tuple(None if row[4] is None else str(row[4]) for row in ordered)
+            if any(column is None for column in parent_columns):
+                parent_columns = _primary_key_columns(conn, parent)
+            checks.append(
+                _ScopedForeignKey(
+                    table=table,
+                    fkid=fkid,
+                    parent=parent,
+                    scope_column="rowid",
+                    child_columns=child_columns,
+                    parent_columns=cast(tuple[str, ...], parent_columns),
+                )
+            )
+    return tuple(checks)
+
+
+def _unscoped_foreign_key_watermarks(conn: sqlite3.Connection) -> dict[str, int]:
+    """The highest rowid of each unscoped child table when a ``foreign_keys=OFF`` window opens.
+
+    Taken inside that window's transaction, before any write, so every row
+    the window inserts lies above it.
+    """
+    _scoped, unscoped = _foreign_key_check_plan(conn)
+    return {
+        table: int(conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {_quote_identifier(table)}").fetchone()[0])
+        for table in unscoped
+    }
+
+
 def _foreign_key_violations_for_sessions(
     conn: sqlite3.Connection,
     session_ids: Iterable[str],
     *,
+    unscoped_since: Mapping[str, int],
     limit: int = 10,
 ) -> list[dict[str, object | None]]:
     """Return FK violations the bulk path's ``foreign_keys=OFF`` window admitted.
@@ -392,6 +457,17 @@ def _foreign_key_violations_for_sessions(
     live schema instead of written down, which is the property the previous
     hand-rolled list lacked: it probed each column of a compound key
     independently and therefore could not see two owners disagreeing.
+
+    A table that names an owning session is probed for the batch's sessions.
+    A table no session owns (``attachment_native_ids``, ``repo_checkouts``,
+    the work-evidence graph) is probed for the rows this window inserted:
+    those above ``unscoped_since``, the per-table rowid watermark taken when
+    the window opened (``_unscoped_foreign_key_watermarks``). Re-checking the
+    whole child table on every batch made a replay of many large batches
+    quadratic in the archive. A window deletes none of those tables' parents
+    without deleting their children itself (the writer clears a session's
+    ``attachment_native_ids`` before its ``attachment_refs``), so a violation
+    they can carry is a row the window wrote.
     """
     scoped_session_ids = tuple(sorted({session_id for session_id in session_ids if session_id}))
     if not scoped_session_ids:
@@ -414,18 +490,18 @@ def _foreign_key_violations_for_sessions(
             )
             if len(violations) >= limit:
                 return violations
-    for table in unscoped_tables:
-        # Reachable only through a scoped parent, so there is no session to
-        # scope by. SQLite checks these whole rather than leaving them out.
-        for row in conn.execute(f"PRAGMA foreign_key_check({_quote_identifier(table)})").fetchall():
+    for check in _unscoped_foreign_keys(conn, unscoped_tables):
+        # A table with no recorded watermark was empty-and-new to this window.
+        since = unscoped_since.get(check.table, 0)
+        for row in conn.execute(_unscoped_foreign_key_sql(check), (since,)).fetchall():
             violations.append(
                 {
-                    "table": str(row[0]),
-                    "rowid": row[1],
-                    "parent": str(row[2]),
-                    "fkid": row[3],
+                    "table": check.table,
+                    "rowid": row["violation_rowid"],
+                    "parent": check.parent,
+                    "fkid": check.fkid,
                     "session_id": None,
-                    "child_key": None,
+                    "child_key": {column: row[column] for column in check.child_columns},
                 }
             )
             if len(violations) >= limit:
@@ -499,32 +575,54 @@ def _needs_session_fts_repair(conn: sqlite3.Connection, session_id: str) -> bool
     return not session_partition_is_valid_sync(conn, session_id)
 
 
-def _existing_native_message_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
-    return {
-        str(row[0]).strip()
-        for row in conn.execute(
-            "SELECT native_id FROM messages WHERE session_id = ? AND native_id IS NOT NULL",
-            (session_id,),
-        ).fetchall()
-    }
+def _composed_native_ids(conn: sqlite3.Connection, message_ids: Sequence[str]) -> dict[str, str]:
+    """Native ids of the composed transcript's messages, own and inherited alike."""
+    found: dict[str, str] = {}
+    pending = list(dict.fromkeys(message_ids))
+    for start in range(0, len(pending), 500):
+        batch = pending[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        for message_id, native_id in conn.execute(
+            f"SELECT message_id, native_id FROM messages WHERE message_id IN ({placeholders}) AND native_id IS NOT NULL",
+            batch,
+        ):
+            found[str(message_id)] = str(native_id).strip()
+    return found
 
 
 def _append_delta_payload(
     conn: sqlite3.Connection,
     payload: SessionWritePayload,
 ) -> tuple[ParsedSession | None, int]:
-    existing_native_ids = _existing_native_message_ids(conn, payload.session_id)
+    """Select the messages an append payload adds to the composed transcript.
+
+    Identity decides where it exists: a message whose native id matches the
+    composed message at the replay cursor, or any composed message, is
+    already held. Content signatures decide only when either side lacks a
+    native id -- the case a replayed inherited prefix without provider ids
+    needs. A tail-only append that repeats earlier content under a new
+    native id is therefore new, not a replay.
+    """
     existing_logical = _composed_db_signatures(conn, payload.session_id)
+    native_by_message = _composed_native_ids(conn, [message_id for message_id, _signature in existing_logical])
+    composed = [(native_by_message.get(message_id), signature) for message_id, signature in existing_logical]
+    composed_native_ids = {native_id for native_id, _signature in composed if native_id is not None}
     delta_messages: list[ParsedMessage] = []
     logical_prefix = 0
     for message in payload.parsed_session.messages:
         native_id = _normalized_message_native_id(message)
         signature = _parsed_message_signature(message)
-        is_replayed_prefix = logical_prefix < len(existing_logical) and existing_logical[logical_prefix][1] == signature
-        if is_replayed_prefix:
-            logical_prefix += 1
-            continue
-        if native_id is not None and native_id in existing_native_ids:
+        if logical_prefix < len(composed):
+            composed_native_id, composed_signature = composed[logical_prefix]
+            is_replayed_prefix = (
+                native_id == composed_native_id
+                if native_id is not None and composed_native_id is not None
+                else signature == composed_signature
+            )
+            if is_replayed_prefix:
+                logical_prefix += 1
+                continue
+        if native_id is not None and native_id in composed_native_ids:
             continue
         delta_messages.append(message.model_copy(update={"position": None}))
     if not delta_messages and not payload.attachment_count:
@@ -649,25 +747,36 @@ def _incoming_write_carries_distinct_messages(
     and its distinct messages then never land. Skipping is counted, not
     silent, but the content is still lost on a fresh import.
 
-    Comparing composed message signatures is the narrowest evidence that
-    separates the two cases. ``_composed_db_signatures`` returns the stored
-    session's composed transcript (inherited prefix + own tail), the same
-    view the incoming full parse represents, and signatures carry role plus
-    every block's type/text/tool name/tool input -- so a revision that merely
-    re-states what is already stored is a multiset subset and stays skippable,
-    while one that adds or revises any message is not. The measured
-    aistudio-drive shape (identical messages, differing attachment coverage)
-    is a subset by construction and remains blocked.
+    Each message is compared by its complete semantic revision,
+    ``message_content_identity``: the digest of every declared semantic field
+    (``pipeline.ids``), stored as ``messages.content_identity``. The composed
+    transcript (inherited prefix + own tail, ``_composed_db_signatures``) is
+    the same view the incoming full parse represents, so a revision that
+    merely re-states what is stored is a multiset subset and stays skippable,
+    while one that adds a message or revises any semantic field -- including
+    model, stop reason, material origin or provider message id, which the
+    coarse lineage signature omits -- is not. The measured aistudio-drive
+    shape (identical messages, differing attachment coverage) is a subset by
+    construction and remains blocked.
 
     Multiplicity matters: two byte-identical messages in the incoming parse
     against one stored occurrence is new content, so the comparison counts
     occurrences rather than testing set membership.
     """
-    existing_signatures = Counter(
-        signature for _message_id, signature in _composed_db_signatures(conn, payload.session_id)
-    )
-    incoming_signatures = Counter(_parsed_message_signature(message) for message in session_to_write.messages)
-    return any(count > existing_signatures[signature] for signature, count in incoming_signatures.items())
+    message_ids = [message_id for message_id, _signature in _composed_db_signatures(conn, payload.session_id)]
+    existing_identities: Counter[str] = Counter()
+    for start in range(0, len(message_ids), 500):
+        batch = message_ids[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        existing_identities.update(
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT content_identity FROM messages WHERE message_id IN ({placeholders})", batch
+            )
+            if row[0] is not None
+        )
+    incoming_identities = Counter(message_content_identity(message) for message in session_to_write.messages)
+    return any(count > existing_identities[identity] for identity, count in incoming_identities.items())
 
 
 def _preacquire_sidecar_blobs(
@@ -2748,6 +2857,7 @@ def _consume_ingest_results(
         if suspend_fts_triggers:
             from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
+            summary.unscoped_foreign_key_watermarks = _unscoped_foreign_key_watermarks(conn)
             suspend_fts_triggers_sync(conn, mark_stale=mark_fts_stale_on_suspend)
         transaction_started = True
 
@@ -3049,20 +3159,22 @@ _DRIVE_REVISION_COLUMNS = (
     "acquisition_generation",
     "revision_authority",
 )
-_DRIVE_COHORT_MAX_ROWS = 1000
-_DRIVE_COHORT_MAX_BYTES = 128 * 1024 * 1024
 
 
 def _source_snapshot(
     conn: sqlite3.Connection, table: str, predicate: str, parameters: tuple[str, ...]
 ) -> _SourceSnapshot:
+    """Copy one cohort relation's metadata rows, whole.
+
+    The rows are revision metadata, never payload bytes, so the snapshot is
+    as large as the cohort the classification must see. A row or byte cap
+    here marked an oversized cohort stale on every attempt, so its raw was
+    retried forever and never converged.
+    """
     cursor = conn.execute(f"SELECT * FROM {table} WHERE {predicate} LIMIT 0", parameters)
     columns = tuple(column[0] for column in cursor.description)
     order = ", ".join(str(index + 1) for index in range(len(columns)))
-    rows = conn.execute(
-        f"SELECT * FROM {table} WHERE {predicate} ORDER BY {order} LIMIT ?",
-        (*parameters, _DRIVE_COHORT_MAX_ROWS + 1),
-    ).fetchall()
+    rows = conn.execute(f"SELECT * FROM {table} WHERE {predicate} ORDER BY {order}", parameters).fetchall()
     return _SourceSnapshot(table, predicate, parameters, columns, tuple(tuple(row) for row in rows))
 
 
@@ -3144,23 +3256,17 @@ def _prepare_ingest_unit_sync(
         # Membership classification queries source-generation ownership
         # (#5630), so the scratch needs the relation's shape. The Drive route
         # classifies without a source generation (``raw_membership_raw_ids``
-        # in ``_bind_drive_revision_lineage``), so no ownership row can match:
-        # copying the cohort's rows would only let a raw retained across many
-        # generations exceed the row cap and go permanently stale.
+        # in ``_bind_drive_revision_lineage``), so no ownership row can match
+        # and none is copied.
         generation_members = _source_snapshot(source, "source_item_raw_members", "0", ())
         artifacts = _source_snapshot(source, "raw_artifacts", "raw_id=?", (raw_id,))
     snapshots = (raw, members, census, generation_members, artifacts)
     raw_id_position = raw.columns.index("raw_id")
     stale = not any(row[raw_id_position] == raw_id and row == input_row for row in raw.rows)
-    stale |= any(len(snapshot.rows) > _DRIVE_COHORT_MAX_ROWS for snapshot in snapshots)
-    stale |= (
-        sum(int(cast(int, row[raw.columns.index("blob_size")])) for row in raw.rows if row[raw_id_position] != raw_id)
-        > _DRIVE_COHORT_MAX_BYTES
-    )
     plans: dict[str, RevisionReplayPlan | None] = {}
     updates: tuple[tuple[object, ...], ...] = ()
     if not stale:
-        # This private, bounded scratch relation lets the existing Drive
+        # This private scratch relation lets the existing Drive
         # governance code calculate its exact updates without an archive writer.
         # Only the revision column delta survives; no SQL or connection escapes.
         with closing(sqlite3.connect(":memory:")) as scratch:
@@ -3405,7 +3511,9 @@ def _process_ingest_batch_sync(
             transaction_started = True
         if transaction_started:
             if suspend_fts_triggers:
-                fk_violations = _foreign_key_violations_for_sessions(conn, materialized_ids)
+                fk_violations = _foreign_key_violations_for_sessions(
+                    conn, materialized_ids, unscoped_since=summary.unscoped_foreign_key_watermarks
+                )
                 if fk_violations:
                     detail = _format_foreign_key_violations(fk_violations)
                     raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {detail}")
