@@ -1523,12 +1523,13 @@ def test_expired_staged_ingest_releases_its_queued_compute_reservation(
             assert not caller.is_alive()
             assert len(envelopes) == 1
             assert envelopes[0]["outcome"] == "timed-out"
-            # The operation's ``finally`` queues independent publisher cleanup.
-            # Exactly that one queued control reservation remains. The expired
-            # phase must have released its own reservation without becoming a
+            # The operation's ``finally`` discards staged publications without
+            # an admission (a full control class would refuse the cleanup and
+            # leak the staging), so no control reservation remains: the
+            # expired phase must have released its own without becoming a
             # completed dispatch.
             control = stack.execution_kernel.snapshot().by_class("control")
-            assert control.used_units == control.queued_units == 1
+            assert control.used_units == control.queued_units == 0
             assert control.completed == 0
         finally:
             release.set()
