@@ -497,15 +497,19 @@ def test_schema_generate_handles_missing_archive_evidence(
 def test_schema_module_cli_preserves_configured_archive_location(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without the location argument the real evidence binder looks beside the external index."""
+    """The module CLI binds evidence to the configured root, not the generation directory.
+
+    Anti-vacuity: drop the ``archive_location`` argument and the real binder
+    resolves the generation directory as the archive root and refuses.
+    """
     from polylogue.schemas.operator import schema_inference
     from polylogue.schemas.sampling_db import _schema_archive_location
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
-    external_index = tmp_path / "generation" / "index.db"
-    external_index.parent.mkdir()
+    external_index = root / ".index-generations" / "generation-1" / "index.db"
+    external_index.parent.mkdir(parents=True)
     external_index.write_bytes((root / "index.db").read_bytes())
     (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
     selected = ArchiveLocation.resolve(root)

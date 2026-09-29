@@ -963,9 +963,11 @@ def test_dispatch_preserves_structured_tool_results() -> None:
 
     Anti-vacuity: keep only string results and every case here has text=None.
     """
+    # OTLP JSON carries int64 as a string or a number; the decoded value is
+    # what the result block must serialize.
     cases: list[tuple[object, dict[str, object]]] = [
         (
-            {"found": [1, False]},
+            {"found": ["1", False]},
             {
                 "kvlistValue": {
                     "values": [
@@ -977,8 +979,9 @@ def test_dispatch_preserves_structured_tool_results() -> None:
                 }
             },
         ),
-        (["item", 2], {"arrayValue": {"values": [{"stringValue": "item"}, {"intValue": "2"}]}}),
-        (0, {"intValue": "0"}),
+        (["item", 2], {"arrayValue": {"values": [{"stringValue": "item"}, {"intValue": 2}]}}),
+        (0, {"intValue": 0}),
+        (1.5, {"doubleValue": 1.5}),
         (False, {"boolValue": False}),
     ]
     for expected, value in cases:
