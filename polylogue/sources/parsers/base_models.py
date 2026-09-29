@@ -411,6 +411,12 @@ class ParsedMessage(BaseModel):
     variant_index: int | None = None
     is_active_path: bool | None = None
     is_active_leaf: bool | None = None
+    # Private lowering evidence: ``is_active_leaf`` above is the storage
+    # default (the last message) because the producer marked no single leaf.
+    # It is never provider evidence, so a later lowering pass does not read
+    # it as a producer leaf and infer an active path from it. It qualifies a
+    # marked leaf only; on any other message it means nothing.
+    active_leaf_fallback: bool = Field(default=False, exclude=True, repr=False)
     # Token usage flows through from provider raw records to MaterializedMessage.
     # Parsers populate when the raw record carries usage info; otherwise None.
     # Materialization writes these into the messages table, where they drive

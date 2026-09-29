@@ -43,8 +43,14 @@ from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 from polylogue.sources.value_bounds import require_storable_string
 
-_ACTIVE_PARENT_LOOKUP_SQL = (
-    "SELECT parent_id FROM prepared_message INDEXED BY prepared_message_provider "
+# The occurrence a parent id names (see ``polylogue.sources.active_branch``):
+# the nearest earlier occurrence, else the last one.
+_EARLIER_PARENT_OCCURRENCE_SQL = (
+    "SELECT message_ordinal, parent_id FROM prepared_message INDEXED BY prepared_message_provider "
+    "WHERE session_ordinal = ? AND provider_id = ? AND message_ordinal < ? ORDER BY message_ordinal DESC LIMIT 1"
+)
+_LAST_PARENT_OCCURRENCE_SQL = (
+    "SELECT message_ordinal, parent_id FROM prepared_message INDEXED BY prepared_message_provider "
     "WHERE session_ordinal = ? AND provider_id = ? ORDER BY message_ordinal DESC LIMIT 1"
 )
 
@@ -191,6 +197,8 @@ def _message_json(value: ParsedMessage) -> str:
     payload = value.model_dump(mode="json")
     payload["parent_message_position"] = value.parent_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
+    if value.active_leaf_fallback:
+        payload["active_leaf_fallback"] = True
     # Each serialized record is one SQLite cell: individually storable
     # values can still combine into an unstorable row.
     return require_storable_string(_text_json(payload), kind="serialized message")
@@ -207,6 +215,8 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["message_position"] = value.message_position
     payload["message_variant_index"] = value.message_variant_index
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
+    if value.active_leaf_fallback:
+        payload["active_leaf_fallback"] = True
     payload["precomputed_blob"] = value.precomputed_blob
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
@@ -641,57 +651,81 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         )
 
     def normalize_active_path(self) -> SqliteMessageSink:
-        """Apply the writer's leaf/path normalization without a message list."""
+        """Lower leaf and path values as ``normalize_active_branch`` does, without a message list."""
         if self._writer is None:
             # Publication artifacts are immutable. The worker has already
             # normalized them before sealing.
             return self
-        leaf_count = self._writer.execute(
-            "SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
-            (self.session_ordinal,),
-        ).fetchone()[0]
         if not self._count:
             return self
-        if leaf_count != 1:
-            for ordinal, active in self._writer.execute(
-                "SELECT message_ordinal, active_leaf FROM prepared_message WHERE session_ordinal = ?",
-                (self.session_ordinal,),
-            ):
-                expected = ordinal == self._count - 1
-                if bool(active) != expected:
-                    message = self[ordinal]
-                    self[ordinal] = message.model_copy(update={"is_active_leaf": expected})
-            return self
-        leaf, leaf_parent = self._writer.execute(
-            "SELECT provider_id, parent_id FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
+        leaves = self._writer.execute(
+            "SELECT message_ordinal, provider_id, parent_id, message_json FROM prepared_message "
+            "WHERE session_ordinal = ? AND active_leaf = 1 ORDER BY message_ordinal LIMIT 2",
             (self.session_ordinal,),
-        ).fetchone()
-        if not leaf:
+        ).fetchall()
+        if len(leaves) != 1 or _from_text_json(ParsedMessage, leaves[0][3]).active_leaf_fallback:
+            self._settle_fallback_leaf()
+            return self
+        leaf_ordinal, leaf_id, leaf_parent, _leaf_json = leaves[0]
+        if not leaf_id:
             return self
         self._writer.execute("DROP TABLE IF EXISTS temp.prepared_active_path")
-        self._writer.execute("CREATE TEMP TABLE prepared_active_path (provider_id TEXT PRIMARY KEY)")
-        # The walk starts at the leaf row itself: a later message repeating
-        # the leaf's provider id may name a different parent.
-        self._writer.execute("INSERT INTO prepared_active_path VALUES (?)", (leaf,))
-        cursor: str | None = leaf_parent
-        while cursor:
-            result = self._writer.execute("INSERT OR IGNORE INTO prepared_active_path VALUES (?)", (cursor,))
+        self._writer.execute("CREATE TEMP TABLE prepared_active_path (message_ordinal INTEGER PRIMARY KEY)")
+        # The walk starts at the leaf occurrence itself and follows each
+        # occurrence's own parent id: another occurrence repeating a provider
+        # id may name a different parent.
+        self._writer.execute("INSERT INTO prepared_active_path VALUES (?)", (leaf_ordinal,))
+        child_ordinal: int = leaf_ordinal
+        parent_id: str | None = leaf_parent
+        while parent_id:
+            parent = (
+                self._writer.execute(
+                    _EARLIER_PARENT_OCCURRENCE_SQL, (self.session_ordinal, parent_id, child_ordinal)
+                ).fetchone()
+                or self._writer.execute(_LAST_PARENT_OCCURRENCE_SQL, (self.session_ordinal, parent_id)).fetchone()
+            )
+            if parent is None:
+                break
+            result = self._writer.execute("INSERT OR IGNORE INTO prepared_active_path VALUES (?)", (parent[0],))
             if result.rowcount == 0:
                 break
-            parent = self._writer.execute(
-                _ACTIVE_PARENT_LOOKUP_SQL,
-                (self.session_ordinal, cursor),
+            child_ordinal, parent_id = parent
+        ordinal = -1
+        while True:
+            row = self._writer.execute(
+                "SELECT message_ordinal FROM temp.prepared_active_path WHERE message_ordinal > ? "
+                "ORDER BY message_ordinal LIMIT 1",
+                (ordinal,),
             ).fetchone()
-            cursor = parent[0] if parent is not None else None
-        for (ordinal,) in self._writer.execute(
-            "SELECT message_ordinal FROM prepared_message WHERE session_ordinal = ? "
-            "AND provider_id IN (SELECT provider_id FROM prepared_active_path)",
-            (self.session_ordinal,),
-        ):
+            if row is None:
+                break
+            ordinal = row[0]
             message = self[ordinal]
-            self[ordinal] = message.model_copy(update={"is_active_path": True})
+            if message.is_active_path is not True:
+                self[ordinal] = message.model_copy(update={"is_active_path": True})
         self._writer.execute("DROP TABLE temp.prepared_active_path")
         return self
+
+    def _settle_fallback_leaf(self) -> None:
+        """Make the last message the storage-default leaf, marked as not producer evidence."""
+        assert self._writer is not None
+        last = self._count - 1
+        ordinal = -1
+        while True:
+            row = self._writer.execute(
+                "SELECT message_ordinal FROM prepared_message WHERE session_ordinal = ? AND message_ordinal > ? "
+                "AND (active_leaf = 1 OR message_ordinal = ?) ORDER BY message_ordinal LIMIT 1",
+                (self.session_ordinal, ordinal, last),
+            ).fetchone()
+            if row is None:
+                return
+            ordinal = row[0]
+            expected = ordinal == last
+            message = self[ordinal]
+            if bool(message.is_active_leaf) != expected or message.active_leaf_fallback != expected:
+                self[ordinal] = message.model_copy(
+                    update={"is_active_leaf": expected, "active_leaf_fallback": expected}
+                )
 
     @contextmanager
     def atomic_edit(self) -> Iterator[None]:

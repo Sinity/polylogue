@@ -31,7 +31,8 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, Pars
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
-    _ACTIVE_PARENT_LOOKUP_SQL,
+    _EARLIER_PARENT_OCCURRENCE_SQL,
+    _LAST_PARENT_OCCURRENCE_SQL,
     ChatGPTNodeMapping,
     ScratchSessionSpill,
     SqliteAttachmentSink,
@@ -110,8 +111,12 @@ def _prepared_artifact(tmp_path: Path) -> tuple[PreparedJsonl, MessageOwnerCoord
 def test_prepared_active_path_parent_lookup_uses_provider_index(tmp_path: Path) -> None:
     store = SqliteMessageStore(tmp_path / "active-path.db")
     try:
-        plan = store.conn.execute("EXPLAIN QUERY PLAN " + _ACTIVE_PARENT_LOOKUP_SQL, (0, "tail")).fetchall()
-        assert any("prepared_message_provider" in str(row[3]) for row in plan)
+        for sql, parameters in (
+            (_EARLIER_PARENT_OCCURRENCE_SQL, (0, "tail", 7)),
+            (_LAST_PARENT_OCCURRENCE_SQL, (0, "tail")),
+        ):
+            plan = store.conn.execute("EXPLAIN QUERY PLAN " + sql, parameters).fetchall()
+            assert any("prepared_message_provider" in str(row[3]) for row in plan)
 
         messages = store.new_sink()
         for index in range(500):
@@ -2580,15 +2585,14 @@ def _stored_messages(session: ParsedSession) -> list[dict[str, object]]:
     write time. Comparing this form compares what either route publishes.
     """
     from polylogue.core.sources import origin_from_provider
+    from polylogue.sources.active_branch import normalize_active_branch
     from polylogue.sources.tool_outcomes import derive_tool_outcomes
-    from polylogue.storage.sqlite.archive_tiers.write import _normalized_messages
 
     if isinstance(session.messages, SqliteMessageSink):
-        # Already lowered in place when its shard was built; the lowering is
-        # not idempotent (a settled fallback leaf reads as provider evidence).
+        # Already lowered in place when its shard was built.
         return [message.model_dump(mode="json") for message in session.messages]
     messages = derive_tool_outcomes(
-        _normalized_messages(list(session.messages)),
+        normalize_active_branch(list(session.messages)),
         list(session.session_events),
         origin=origin_from_provider(session.source_name),
     )

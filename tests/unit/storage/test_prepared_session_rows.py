@@ -579,7 +579,7 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
         def _boom(*args: object, **kwargs: object) -> object:
             raise AssertionError("prepared lineage write must not lower inside the writer")
 
-        monkeypatch.setattr(archive_tier_write, "_normalized_messages", _boom)
+        monkeypatch.setattr(archive_tier_write, "normalize_active_branch", _boom)
         monkeypatch.setattr(archive_tier_write, "_extract_prefix_tail", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
