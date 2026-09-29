@@ -55,6 +55,10 @@ DAEMON_REQUIRED = "daemon_required"
 #: tell a machine caller to start a second daemon for the archive whose first
 #: one is exactly what refused it.
 ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE = "archive_writer_ownership_unavailable"
+#: The daemon accepted a write and no outcome came back, so it may have
+#: applied. Never a retryable failure: ``details.recovery`` carries the
+#: operation's declared way to settle it.
+OPERATION_INDETERMINATE = "operation_indeterminate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +206,26 @@ def error_daemon_required(
         details["archive_root"] = archive_root
     return MachineError(
         code=DAEMON_REQUIRED,
+        message=message,
+        command=tuple(command or ()),
+        details=details,
+    )
+
+
+def error_operation_indeterminate(
+    message: str,
+    *,
+    command: list[str] | None = None,
+    operation: str,
+    recovery: str,
+    request_id: str | None = None,
+) -> MachineError:
+    """Build the machine envelope for a write whose outcome is unknown."""
+    details: JSONDocument = {"operation": operation, "recovery": recovery}
+    if request_id:
+        details["request_id"] = request_id
+    return MachineError(
+        code=OPERATION_INDETERMINATE,
         message=message,
         command=tuple(command or ()),
         details=details,
@@ -412,6 +436,7 @@ __all__ = [
     "error_invalid_arguments",
     "error_invalid_path",
     "error_no_results",
+    "error_operation_indeterminate",
     "error_runtime",
     "error_unsupported_environment",
     "extract_command",
