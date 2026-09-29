@@ -291,9 +291,12 @@ CREATE TABLE IF NOT EXISTS daemon_events (
     ts_ms          INTEGER NOT NULL,
     kind           TEXT NOT NULL,
     operation_id   TEXT,
+    idempotency_key TEXT,
     payload_json   TEXT NOT NULL DEFAULT '{{}}'
 ) STRICT;
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daemon_events_idempotency
+ON daemon_events(kind, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC);

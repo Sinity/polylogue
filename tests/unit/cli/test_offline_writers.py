@@ -30,6 +30,7 @@ Two directions per row, and the second is what keeps the first honest:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sys
@@ -369,8 +370,9 @@ def test_status_and_agent_views_open_no_writable_tier(
     root = _prepare_root(monkeypatch, tmp_path, _NEEDS_TIERS)
     before = _tier_digest(root)
     opened: list[Path] = []
-    with refuse_writable_tier_opens(opened.append):
-        _invoke(argv, monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["polylogue", "--plain", *argv])
+    with refuse_writable_tier_opens(opened.append), contextlib.suppress(SystemExit):
+        run_machine_entry(cli, ["--plain", *argv])
 
     assert opened == []
     assert _tier_digest(root) == before

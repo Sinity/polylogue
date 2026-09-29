@@ -27,17 +27,6 @@ from polylogue.storage.sqlite.connection_profile import open_daemon_connection, 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-_DAEMON_EVENTS_DDL = """
-CREATE TABLE IF NOT EXISTS daemon_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts_ms INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    operation_id TEXT,
-    idempotency_key TEXT,
-    payload_json TEXT NOT NULL
- ) STRICT;
-"""
-
 
 def _events_db_path() -> Path:
     """Return the path to the daemon events SQLite database."""
@@ -60,14 +49,9 @@ def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
         initialize_archive_database(path, ArchiveTier.OPS)
         _CONVERGED_EVENT_DBS.add(path)
-    conn = open_daemon_connection(path, archive_root=path.parent)
-    conn.executescript(_DAEMON_EVENTS_DDL)
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_daemon_events_idempotency "
-        "ON daemon_events(kind, idempotency_key) WHERE idempotency_key IS NOT NULL"
-    )
-    conn.commit()
-    return conn
+    # The ops tier's DDL owns ``daemon_events`` and its idempotency index; an
+    # emitter no longer restates or alters it (polylogue-l91i8).
+    return open_daemon_connection(path, archive_root=path.parent)
 
 
 def _open_events_reader(path: Path | None = None) -> sqlite3.Connection | None:

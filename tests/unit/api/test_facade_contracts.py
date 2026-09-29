@@ -5761,6 +5761,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
             write_session_profile(
                 conn,
                 parent_id,
+                materializer_version=5,
                 workflow_shape="agentic_loop",
                 workflow_shape_confidence=0.91,
                 terminal_state="question_left",
