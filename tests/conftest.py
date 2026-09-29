@@ -300,7 +300,11 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.failed:
         original = _SHORTENED_NODEIDS.get(report.nodeid)
         if original is not None:
-            _record_long_nodeids({report.nodeid: original})
+            from devtools.pytest_rerun import report_nodeid_to_selector
+
+            # Both sides in selector form: an xdist ``@group`` suffix in either
+            # one is not collectible, and the rerun strips it before lookup.
+            _record_long_nodeids({report_nodeid_to_selector(report.nodeid): report_nodeid_to_selector(original)})
     # Teardown is the last report for an item. Discard the runtime mapping so
     # a full corpus does not accumulate one entry per executed test.
     if report.when == "teardown":

@@ -1902,6 +1902,12 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     assert report_nodeid_to_selector("tests/a.py::T::test_x[p]@grp") == "tests/a.py::T::test_x[p]"
     assert report_nodeid_to_selector("tests/a.py::test_x[a@b]") == "tests/a.py::test_x[a@b]"
     assert report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
+    # A long id is shortened after xdist names its group, which leaves the
+    # group between the name and the shortened label (baseline job 3431).
+    assert (
+        report_nodeid_to_selector("tests/a.py::test_x@web-reader[param-7494436ed9e73275]")
+        == "tests/a.py::test_x[param-7494436ed9e73275]"
+    )
 
 
 def test_unavailable_pytest_counts_remain_absent_and_flakes_are_aggregated() -> None:
