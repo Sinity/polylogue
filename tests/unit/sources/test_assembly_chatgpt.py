@@ -997,3 +997,58 @@ def test_zip_export_retains_asset_members_and_maps_byte_exact(tmp_path: Path) ->
     assert "conversation_asset_file_names.json" in acquired
     asset = acquired["dalle-generations/file-ABC.webp"]
     assert store.read_all(asset.blob_hash or "") == asset_bytes
+
+
+def test_inbox_zip_export_is_sniffed_before_its_asset_members_are_admitted(tmp_path: Path) -> None:
+    """A provider-agnostic inbox retains a ChatGPT export's raw-only assets.
+
+    ``Source(name="inbox")`` names no provider, so the export's provider is
+    sniffed from its conversations before members are admitted, as the
+    daemon's inbox ZIP route does.
+
+    Anti-vacuity: admit members under the source name's ``UNKNOWN`` provider
+    and ``file-abc.png`` matches no artifact rule: it is filtered out before
+    acquisition and its bytes are never retained.
+    """
+    from polylogue.config import Source
+    from polylogue.sources.source_acquisition import iter_source_raw_data
+
+    root = tmp_path / "inbox"
+    root.mkdir()
+    conversation = {
+        "id": "conv-1",
+        "title": "synthetic",
+        "create_time": 1.0,
+        "update_time": 2.0,
+        "current_node": "n2",
+        "mapping": {
+            "n1": {"id": "n1", "parent": None, "children": ["n2"], "message": None},
+            "n2": {
+                "id": "n2",
+                "parent": "n1",
+                "children": [],
+                "message": {
+                    "id": "n2",
+                    "author": {"role": "user"},
+                    "create_time": 1.0,
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                },
+            },
+        },
+    }
+    asset_bytes = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+    with zipfile.ZipFile(root / "export.zip", "w") as handle:
+        handle.writestr("conversations.json", json.dumps([conversation]))
+        handle.writestr("file-abc.png", asset_bytes)
+
+    store = BlobStore(tmp_path / "blobs")
+    acquired = {
+        raw.source_path.rsplit(":", 1)[-1]: raw
+        for raw in iter_source_raw_data(Source(name="inbox", path=root), blob_store=store, cursor_state={})
+    }
+
+    assert "file-abc.png" in acquired
+    asset = acquired["file-abc.png"]
+    assert asset.provider_hint is Provider.CHATGPT
+    assert store.read_all(asset.blob_hash or "") == asset_bytes
+    assert acquired["conversations.json"].provider_hint is Provider.CHATGPT

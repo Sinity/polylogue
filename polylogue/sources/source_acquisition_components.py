@@ -15,7 +15,7 @@ from typing import IO, TypeAlias, cast
 import ijson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
-from polylogue.archive.zip_admission import ZipBombError
+from polylogue.archive.zip_admission import ZipAdmission, ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import (
     ContentIdentityRefusal,
@@ -48,6 +48,12 @@ from .acquisition_boundary import (
     refuse_declared_foreign,
     release_captures_on_refusal,
     release_refused_capture,
+)
+from .decoder_zip import (
+    ZIP_JSON_SUFFIXES,
+    declared_artifact_provider,
+    is_declared_artifact_path,
+    provider_detection_path,
 )
 from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
@@ -907,6 +913,47 @@ def sniff_zip_provider(
     return ranked[0][0]
 
 
+@dataclass(frozen=True, slots=True)
+class ZipMemberAdmission:
+    """The provider a ZIP's members are admitted under, fixed before any is read."""
+
+    provider_hint: Provider
+    #: Member relevance when no provider is known: declared artifact paths.
+    allowed_path: Callable[[str], bool] | None
+
+    def entry_provider_hint(self, filename: str) -> Provider:
+        """A member's hint: the ZIP's provider, or its path declaration's."""
+        if self.provider_hint is Provider.UNKNOWN:
+            return declared_artifact_provider(filename) or self.provider_hint
+        return self.provider_hint
+
+
+def zip_member_admission(
+    zf: zipfile.ZipFile,
+    zip_path: Path,
+    central_directory: list[zipfile.ZipInfo],
+    fallback_provider: Provider,
+) -> ZipMemberAdmission:
+    """Resolve an export ZIP's provider before its members are admitted.
+
+    A provider-agnostic location (an import inbox) names no provider, and a
+    member validator without one relates no member to an artifact rule, so a
+    raw-only export member (a ChatGPT ``file-*`` asset) would be filtered out
+    before acquisition. The dominant provider is sniffed from the safe JSON
+    members first; a ZIP with no strict winner is admitted by declared
+    artifact paths, each member hinted by its own declaration.
+    """
+    provider = fallback_provider
+    if fallback_provider is Provider.UNKNOWN:
+        safe_json_entries = ZipAdmission(zip_path=zip_path).filter_entries(
+            central_directory,
+            allowed_suffixes=ZIP_JSON_SUFFIXES,
+        )
+        detection_entries = [info for info in safe_json_entries if provider_detection_path(info.filename)]
+        provider = sniff_zip_provider(zf, detection_entries) or fallback_provider
+    return ZipMemberAdmission(provider, is_declared_artifact_path if provider is Provider.UNKNOWN else None)
+
+
 def iter_zip_entry_raw_data(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
@@ -968,6 +1015,7 @@ __all__ = [
     "SplitPayloadBuffer",
     "StatusCallback",
     "ZipEntryReadContext",
+    "ZipMemberAdmission",
     "iter_entry_payloads",
     "open_replayed_zip_unit",
     "replay_zip_entry_acquisition_revisions",
@@ -979,4 +1027,5 @@ __all__ = [
     "raw_data_record",
     "read_plain_source_file",
     "stream_preserved_zip_entry_raw_data",
+    "zip_member_admission",
 ]

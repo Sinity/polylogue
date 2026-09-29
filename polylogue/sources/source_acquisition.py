@@ -29,6 +29,7 @@ from .source_acquisition_components import (
     iter_entry_payloads,
     iter_zip_entry_raw_data,
     read_plain_source_file,
+    zip_member_admission,
 )
 from .source_root_admission import refuse_non_capture_source_root
 from .source_walk import _setup_source_walk
@@ -110,13 +111,15 @@ def iter_source_raw_data(
                 continue
 
             if path.suffix.lower() == ".zip":
-                validator = _ZipEntryValidator(
-                    provider_hint,
-                    cursor_state=cursor_state,
-                    zip_path=path,
-                )
                 with zipfile.ZipFile(path) as zf:
-                    for info in validator.filter_entries(zf.infolist()):
+                    central_directory = zf.infolist()
+                    admission = zip_member_admission(zf, path, central_directory, provider_hint)
+                    validator = _ZipEntryValidator(
+                        admission.provider_hint,
+                        cursor_state=cursor_state,
+                        zip_path=path,
+                    )
+                    for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
                         entry_path = f"{path}:{info.filename}"
                         if info.file_size == 0:
                             empty_artifact_count += 1
@@ -131,7 +134,7 @@ def iter_source_raw_data(
                                     zip_path=path,
                                     entry=info,
                                     file_mtime=file_mtime,
-                                    provider_hint=provider_hint,
+                                    provider_hint=admission.entry_provider_hint(info.filename),
                                     blob_store=blob_store,
                                     observation_callback=observation_callback,
                                     status_callback=status_callback,
