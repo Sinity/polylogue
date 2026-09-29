@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import itertools
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
@@ -27,7 +28,7 @@ from polylogue.analysis.archive import (
     UsageTimelineInsightQuery,
 )
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.analysis.cost_enrichment import enrich_session_cost_insights
+from polylogue.analysis.cost_enrichment import enrich_session_cost_insight, enrich_session_cost_insights
 from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT, CompactLineageGraph
 from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
@@ -115,6 +116,48 @@ if TYPE_CHECKING:
             self,
             query: ArchiveDebtInsightQuery | None = None,
         ) -> list[ArchiveDebtInsight]: ...
+
+
+def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsightQuery) -> list[SessionCostInsight]:
+    """One page of enriched session cost insights, filtered before the page cut.
+
+    ``status`` and ``model`` are decided on the *enriched* estimate, so neither
+    can be pushed into the archive query: filtering an already-cut page would
+    answer "of the newest N, the matching ones". The matched scope is scanned
+    in one forward pass until the requested page is full.
+    """
+
+    def scan(*, limit: int | None = None, offset: int = 0) -> Iterator[SessionCostInsight]:
+        return archive.iter_session_cost_insights(
+            session_id=request.session_id,
+            origin=request.origin,
+            since_ms=_archive_query_date_ms("since", request.since),
+            until_ms=_archive_query_date_ms("until", request.until),
+            limit=limit,
+            offset=offset,
+        )
+
+    if request.status is None and request.model is None:
+        return enrich_session_cost_insights(archive, list(scan(limit=request.limit, offset=request.offset)))
+
+    def matches(insight: SessionCostInsight) -> bool:
+        if request.status is not None and insight.estimate.status != request.status:
+            return False
+        return request.model is None or request.model in {
+            insight.estimate.normalized_model,
+            insight.estimate.model_name,
+        }
+
+    # One forward scan of the matched scope: ``islice`` skips the offset
+    # without retaining it and stops as soon as the page is full.
+    matching = (
+        enriched
+        for enriched in (enrich_session_cost_insight(archive, insight) for insight in scan())
+        if matches(enriched)
+    )
+    start = max(int(request.offset), 0)
+    stop = None if request.limit is None else start + max(int(request.limit), 0)
+    return list(itertools.islice(matching, start, stop))
 
 
 class _RepositorySurface(Protocol):
@@ -334,35 +377,17 @@ class PolylogueInsightsMixin:
                 "origin": request.origin,
                 "since": request.since,
                 "until": request.until,
+                "status": request.status,
+                "model": request.model,
                 "limit": request.limit,
                 "offset": request.offset,
             },
-            work=lambda archive: enrich_session_cost_insights(
-                archive,
-                archive.list_session_cost_insights(
-                    session_id=request.session_id,
-                    origin=request.origin,
-                    status=None,
-                    model=None,
-                    since_ms=_archive_query_date_ms("since", request.since),
-                    until_ms=_archive_query_date_ms("until", request.until),
-                    limit=request.limit,
-                    offset=request.offset,
-                ),
-            ),
+            work=lambda archive: _session_cost_insight_page(archive, request),
             page_size=request.limit,
             offset=request.offset,
             projection="session-cost",
             stable_order="time,session_id",
         )
-        if request.status is not None:
-            insights = [insight for insight in insights if insight.estimate.status == request.status]
-        if request.model is not None:
-            insights = [
-                insight
-                for insight in insights
-                if request.model in {insight.estimate.normalized_model, insight.estimate.model_name}
-            ]
         return insights
 
     async def get_session_latency_profile_insight(

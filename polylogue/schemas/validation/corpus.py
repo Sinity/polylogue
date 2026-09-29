@@ -258,7 +258,7 @@ def verify_raw_corpus(
     total_records = 0
     provider_filter = set(request.providers or [])
 
-    conn = open_connection(source_db_path)
+    conn = open_connection(source_db_path, archive_root=location.configured_root)
     conn.row_factory = sqlite3.Row
     try:
         quarantine_updates: list[VerificationUpdate] = []

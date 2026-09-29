@@ -1483,6 +1483,30 @@ def write_parsed_session_to_archive(
     repeated id is an assertion failure rather than an implicit duplicate or
     overwrite; live ingest never enables this mode.
     """
+    # A work-event raw carries one event and no session header. Writing it as
+    # an ordinary session would upsert default header values over the stored
+    # session (and, on a same-raw full replay, replace its transcript), so it
+    # is an event-only append that keeps every session-owned field. The rule
+    # keys on the retained raw identity, so events retained before this
+    # writer existed replay the same way.
+    stored_header = (
+        _stored_session_header(
+            conn,
+            archive_session_id(
+                origin_from_provider(session.source_name).value,
+                _stored_session_native_id(session.provider_session_id),
+            ),
+        )
+        if is_work_event_raw_id(raw_id) and not session.messages and not session.attachments
+        else None
+    )
+    event_only = stored_header is not None
+    if event_only:
+        # The session already exists in this generation, so even a cold build
+        # appends to it rather than asserting a fresh, absent session.
+        merge_append = True
+        force_replace = False
+        fresh_build = False
     if fresh_build and (merge_append or force_replace):
         raise ValueError("fresh_build is only valid for an untouched full-replace session")
     t0 = time.perf_counter()
@@ -1858,6 +1882,8 @@ def write_parsed_session_to_archive(
                 # parser-side tally.
                 **{measure.column: 0 for measure in SESSION_SUMMARY_MEASURES},
             }
+            if stored_header is not None:
+                session_row_values.update(stored_header)
             sessions_spec = archive_tiers_specs.SESSIONS_SPEC
             conn.execute(
                 f"""
@@ -1880,7 +1906,8 @@ def write_parsed_session_to_archive(
                 ),
             )
             add_timing("index.session_upsert", t0)
-            invalidated_identity_children = _write_session_identity_claims(conn, session_id, origin.value, session)
+            if not event_only:
+                invalidated_identity_children = _write_session_identity_claims(conn, session_id, origin.value, session)
             position_offset = 0
             stale_attachment_ids: set[str] = set()
             projection_carry_forward: _ProjectionCarryForward | None = None
@@ -1888,27 +1915,29 @@ def write_parsed_session_to_archive(
             if merge_append:
                 position_offset = _next_message_position(conn, session_id)
                 _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
-                conn.execute(
-                    """
-                    UPDATE messages
-                    SET is_active_leaf = 0
-                    WHERE session_id = ?
-                      AND is_active_path = 1
-                      AND is_active_leaf = 1
-                    """,
-                    (session_id,),
-                )
-                active_leaf_message_id = _active_leaf_message_id(
-                    session_id,
-                    messages,
-                    session.active_leaf_message_provider_id,
-                    content_identities=content_identities,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                )
-                conn.execute(
-                    "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
-                    (active_leaf_message_id, session_id),
-                )
+                if not event_only:
+                    # An append without messages cannot move the active leaf.
+                    conn.execute(
+                        """
+                        UPDATE messages
+                        SET is_active_leaf = 0
+                        WHERE session_id = ?
+                          AND is_active_path = 1
+                          AND is_active_leaf = 1
+                        """,
+                        (session_id,),
+                    )
+                    active_leaf_message_id = _active_leaf_message_id(
+                        session_id,
+                        messages,
+                        session.active_leaf_message_provider_id,
+                        content_identities=content_identities,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                    )
+                    conn.execute(
+                        "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
+                        (active_leaf_message_id, session_id),
+                    )
                 add_timing("index.merge_prepare", t0)
                 # The append frontier has two coordinates now: the next
                 # position, and the per-digest occurrence counts the stored
@@ -2162,15 +2191,16 @@ def write_parsed_session_to_archive(
                 t0 = time.perf_counter()
                 _restore_captured_provider_usage_rows(conn, projection_carry_forward)
                 add_timing("index.restore_provider_usage", t0)
-            t0 = time.perf_counter()
-            _write_working_dirs(conn, session_id, session.working_directories)
-            add_timing("index.working_dirs", t0)
-            t0 = time.perf_counter()
-            _write_session_refs(conn, session_id, session)
-            add_timing("index.session_refs", t0)
-            t0 = time.perf_counter()
-            _write_repo_edges(conn, session_id, session)
-            add_timing("index.repo_edges", t0)
+            if not event_only:
+                t0 = time.perf_counter()
+                _write_working_dirs(conn, session_id, session.working_directories)
+                add_timing("index.working_dirs", t0)
+                t0 = time.perf_counter()
+                _write_session_refs(conn, session_id, session)
+                add_timing("index.session_refs", t0)
+                t0 = time.perf_counter()
+                _write_repo_edges(conn, session_id, session)
+                add_timing("index.repo_edges", t0)
             t0 = time.perf_counter()
             _seed_session_model_usage_rows(
                 conn,
@@ -8735,6 +8765,46 @@ def _increment_provider_usage_model_rollup(
             None if catalog_cost is None else catalog_cost.value,
         ),
     )
+
+
+#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.append_work_event``).
+WORK_EVENT_RAW_ID_PREFIX = "agent-work-event:"
+
+#: Session-owned header columns an event-only write keeps from the stored row.
+_EVENT_ONLY_PRESERVED_COLUMNS: tuple[str, ...] = (
+    "branch_type",
+    "active_leaf_message_id",
+    "title",
+    "session_kind",
+    "title_source",
+    "title_ref",
+    "display_name",
+    "pending_drafts_json",
+    "git_branch",
+    "git_repository_url",
+    "commit_hash",
+    "instructions_text",
+    "reported_duration_ms",
+    "reported_cost_usd",
+    "provider_project_ref",
+    "created_at_ms",
+    "updated_at_ms",
+)
+
+
+def is_work_event_raw_id(raw_id: str | None) -> bool:
+    return raw_id is not None and raw_id.startswith(WORK_EVENT_RAW_ID_PREFIX)
+
+
+def _stored_session_header(
+    conn: sqlite3.Connection, session_id: str
+) -> dict[str, bytes | str | int | float | None] | None:
+    """The stored session-owned header, or ``None`` when the session is absent."""
+    row = conn.execute(
+        f"SELECT {', '.join(_EVENT_ONLY_PRESERVED_COLUMNS)} FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return None if row is None else dict(zip(_EVENT_ONLY_PRESERVED_COLUMNS, tuple(row), strict=True))
 
 
 def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_directories: Iterable[str]) -> None:

@@ -26,10 +26,11 @@ that is a real identity strengthening, not a guess.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from polylogue.core.enums import Provider
@@ -338,6 +339,7 @@ class ChatGPTAssemblySpec:
             return conv
         if index is None:
             index = ChatGPTAssetIndex.empty()
+        member_keys_by_asset = _member_keys_by_asset(asset_blobs)
 
         if isinstance(conv.attachments, SqliteAttachmentSink):
             attachments = conv.attachments
@@ -351,20 +353,42 @@ class ChatGPTAssemblySpec:
             conn = attachments._writer
             savepoint = "chatgpt_sidecar_enrichment"
             event_count = len(events)
+            attachment_count = len(attachments)
             conn.execute(f"SAVEPOINT {savepoint}")
             try:
-                for position, attachment in enumerate(attachments):
-                    resolved, event = _resolve_attachment(
-                        attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
+                # Write the expanded sequence in place, in the same order the
+                # in-memory route produces: each pointer's renditions sit
+                # together. A rendition can overwrite a slot not yet read;
+                # that input is kept aside until its turn, so only displaced
+                # rows are held, never the whole attachment list.
+                displaced: dict[int, ParsedAttachment] = {}
+                write_position = 0
+                for position in range(attachment_count):
+                    attachment = displaced.pop(position) if position in displaced else attachments[position]
+                    resolved_items, resolved_events = _resolve_attachment_renditions(
+                        attachment,
+                        index,
+                        thread_id=conv.provider_session_id,
+                        asset_blobs=asset_blobs,
+                        member_keys_by_asset=member_keys_by_asset,
                     )
-                    if resolved is not attachment:
-                        attachments[position] = resolved
-                    if event is not None:
-                        events.append(event)
+                    for item in resolved_items:
+                        if write_position >= attachment_count:
+                            attachments.append(item)
+                        elif write_position == position:
+                            if item is not attachment:
+                                attachments[write_position] = item
+                        else:
+                            if write_position not in displaced:
+                                displaced[write_position] = attachments[write_position]
+                            attachments[write_position] = item
+                        write_position += 1
+                    events.extend(resolved_events)
             except BaseException:
                 conn.execute(f"ROLLBACK TO {savepoint}")
                 conn.execute(f"RELEASE {savepoint}")
                 events._count = event_count
+                attachments._count = attachment_count
                 raise
             conn.execute(f"RELEASE {savepoint}")
             return conv
@@ -373,14 +397,17 @@ class ChatGPTAssemblySpec:
         new_events: list[ParsedSessionEvent] = []
         changed = False
         for attachment in conv.attachments:
-            resolved, event = _resolve_attachment(
-                attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
+            resolved_items, resolved_events = _resolve_attachment_renditions(
+                attachment,
+                index,
+                thread_id=conv.provider_session_id,
+                asset_blobs=asset_blobs,
+                member_keys_by_asset=member_keys_by_asset,
             )
-            new_attachments.append(resolved)
-            if resolved is not attachment:
+            new_attachments.extend(resolved_items)
+            if resolved_items != [attachment] or resolved_items[0] is not attachment:
                 changed = True
-            if event is not None:
-                new_events.append(event)
+            new_events.extend(resolved_events)
         if not changed and not new_events:
             return conv
         return conv.model_copy(
@@ -389,6 +416,91 @@ class ChatGPTAssemblySpec:
                 "session_events": [*conv.session_events, *new_events],
             }
         )
+
+
+def _member_keys_by_asset(asset_blobs: Mapping[str, tuple[str, int]]) -> dict[str, list[str]]:
+    """Index ambiguous ``asset_id#member`` blob keys once per sidecar set."""
+    index: dict[str, list[str]] = {}
+    for key in sorted(asset_blobs):
+        asset_id, separator, _member = key.partition("#")
+        if separator:
+            index.setdefault(asset_id, []).append(key)
+    return index
+
+
+def _resolve_attachment_renditions(
+    attachment: ParsedAttachment,
+    index: ChatGPTAssetIndex,
+    *,
+    thread_id: str,
+    asset_blobs: Mapping[str, tuple[str, int]],
+    member_keys_by_asset: Mapping[str, Sequence[str]],
+) -> tuple[list[ParsedAttachment], list[ParsedSessionEvent]]:
+    """Resolve one attachment into every physical member it names.
+
+    Discovery keys a single member by its bare asset id and, once a second
+    member normalizes to the same id, every member by ``asset_id#member``.
+    No member of an ambiguous set is authoritatively the attachment's primary
+    bytes, so each becomes its own attachment carrying its own blob; the
+    pointer's own bytes, when it carries any, are kept as well.
+    """
+    asset_id = _normalize_file_id(attachment.provider_attachment_id)
+    prefix = f"{asset_id}#"
+    member_keys = (
+        member_keys_by_asset.get(asset_id, ())
+        if attachment.attachment_kind != "sandbox_file" and asset_id not in asset_blobs
+        else ()
+    )
+    if not member_keys:
+        resolved, event = _resolve_attachment(attachment, index, thread_id=thread_id, asset_blobs=asset_blobs)
+        return [resolved], [] if event is None else [event]
+    base, base_event = _resolve_asset_attachment(attachment, index, {})
+    items: list[ParsedAttachment] = []
+    events: list[ParsedSessionEvent] = [] if base_event is None else [base_event]
+    if attachment.inline_bytes is not None or attachment.precomputed_blob is not None:
+        items.append(base)
+    for key in member_keys:
+        member = key[len(prefix) :]
+        blob_hash, blob_size = asset_blobs[key]
+        name = ParsedAttachment.sanitize_name(Path(member).name)
+        rendition_id = _asset_rendition_key(attachment.provider_attachment_id, member)
+        rendition = base.model_copy(
+            update={
+                "provider_attachment_id": rendition_id,
+                # A provider file id the pointer or library already carried
+                # is the provider's identity; the member's id is the fallback.
+                "provider_file_id": base.provider_file_id or asset_id,
+                "name": name,
+                # A member name without a known extension keeps the media
+                # type the pointer or library already declared.
+                "mime_type": mimetypes.guess_type(name or "")[0] or base.mime_type,
+                "size_bytes": blob_size,
+                "path": None,
+                "inline_bytes": None,
+                "precomputed_blob": (blob_hash, blob_size),
+                "prepared_carrier_key": None,
+            }
+        )
+        items.append(rendition)
+        events.append(
+            ParsedSessionEvent(
+                event_type="chatgpt_asset_resolution",
+                source_message_provider_id=attachment.message_provider_id,
+                payload={
+                    "attachment_id": rendition_id,
+                    # A provider file id the pointer or library already carried
+                    # is the provider's identity; the member's id is the fallback.
+                    "provider_file_id": base.provider_file_id or asset_id,
+                    "member_name": member,
+                    "resolved_name": name,
+                    "resolved_mime_type": rendition.mime_type,
+                    "resolved_size_bytes": blob_size,
+                    "resolution_source": "asset_member",
+                    "blob_acquired": True,
+                },
+            )
+        )
+    return items, events
 
 
 def _resolve_attachment(
@@ -413,11 +525,9 @@ def _resolve_asset_attachment(
 ) -> tuple[ParsedAttachment, ParsedSessionEvent | None]:
     resolved = index.resolve_dat(attachment.provider_attachment_id)
     asset_id = _normalize_file_id(attachment.provider_attachment_id)
+    # Only the bare key is this attachment's own blob; an ambiguous member set
+    # is expanded by ``_resolve_attachment_renditions``.
     blob = asset_blobs.get(asset_id)
-    if blob is None:
-        rendition_keys = sorted(key for key in asset_blobs if key.startswith(f"{asset_id}#"))
-        if rendition_keys:
-            blob = asset_blobs[rendition_keys[0]]
     if resolved is None and blob is None:
         return attachment, None
     update: dict[str, object] = {}

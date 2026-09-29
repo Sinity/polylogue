@@ -50,6 +50,8 @@ const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
 const ACCEPTED_MESSAGE_IDENTITIES_KEY = "polylogueAcceptedMessageIdentities";
+// Version 2 keys each session's accepted identities by message ref.
+const ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY = "polylogueAcceptedMessageIdentitiesVersion";
 const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
 const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
 const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -86,6 +88,21 @@ function serializeStorageMutation(mutation) {
   const result = storageMutationQueue.then(mutation, mutation);
   storageMutationQueue = result.then(() => undefined, () => undefined);
   return result;
+}
+
+function replaceLegacyAcceptedMessageIdentities() {
+  // The accepted-identity cache is derived from receiver responses. A cache
+  // written in the version 1 scalar shape is dropped rather than read; the
+  // capture the extension runs on install or update rewrites it keyed by
+  // message ref.
+  return serializeStorageMutation(async () => {
+    const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]: 1 });
+    if (Number(current[ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]) >= 2) return;
+    await runtimeChrome.storage.local.set({
+      [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {},
+      [ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]: 2,
+    });
+  });
 }
 
 function serializeCaptureQueueMutation(mutation) {
@@ -3193,7 +3210,10 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     : [];
   const settings = await receiverSettings();
   const intelligence = await missionIntelligenceProjection(state, settings.baseUrl);
-  const acceptedIdentityMap = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
+  // Queued behind the startup migration and any capture's identity write.
+  const acceptedIdentityMap = await serializeStorageMutation(
+    () => runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} }),
+  );
   const acceptedIdentities = state.provider && state.provider_session_id
     ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || {}
     : null;
@@ -3257,6 +3277,7 @@ export function startBackgroundRuntime(adapters) {
   runtimeChrome = adapters;
   runtimeNetwork = adapters.network;
 void loadCaptureQueueIntoCache();
+void replaceLegacyAcceptedMessageIdentities();
 void ensureBrowserActionAlarm();
 void ensureCaptureFreshnessAlarms();
 
@@ -3416,15 +3437,17 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (sender.tab) await requirePairedTrustedReceiver();
         result = await postJson("/v1/browser-captures", envelope);
         if (Array.isArray(result?.accepted_identities)) {
-          const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
           const key = sessionKey(summary.provider, summary.providerSessionId);
           const identities = Object.fromEntries(
             result.accepted_identities
               .filter((item) => item?.fidelity === "native" && typeof item?.message_ref === "string" && item.message_ref)
               .map((item) => [item.message_ref, item]),
           );
-          await runtimeChrome.storage.local.set({
-            [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: identities },
+          await serializeStorageMutation(async () => {
+            const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
+            await runtimeChrome.storage.local.set({
+              [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: identities },
+            });
           });
         }
       } catch (error) {

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, MutableSequence, Sequence
 from datetime import datetime, timezone
 from typing import cast
 
@@ -21,10 +21,13 @@ from .base import (
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
-    fill_linear_parent_chain,
     human_authored_override,
-    mark_last_occurrence_as_active_leaf,
     parser_admission,
+)
+from .base_models import upgrade_chat_export_user_authorship
+from .drive_support import (
+    TimestampBounds,
+    extract_text_from_chunk,
 )
 from .drive_support import (
     _attachment_from_doc as _attachment_from_doc_impl,
@@ -42,13 +45,7 @@ from .drive_support import (
     collect_chunk_attachments as _collect_chunk_attachments,
 )
 from .drive_support import (
-    extract_text_from_chunk,
-)
-from .drive_support import (
     parsed_blocks_from_meta as _parsed_blocks_from_meta,
-)
-from .drive_support import (
-    select_timestamp as _select_timestamp,
 )
 from .drive_support import (
     session_events_from_meta_blocks as _session_events_from_meta_blocks,
@@ -205,7 +202,7 @@ def _branch_child_provider_id(value: object) -> str | None:
     return _string_field(json_document(value), "id", "messageId")
 
 
-def _branch_session_child_ids(chunks: Sequence[object]) -> frozenset[str]:
+def _branch_session_child_ids(chunks: Iterable[object]) -> frozenset[str]:
     """Return child ids whose branch declaration names a prompt/session."""
     unresolved: set[str] = set()
     for chunk in chunks:
@@ -220,7 +217,7 @@ def _branch_session_child_ids(chunks: Sequence[object]) -> frozenset[str]:
     return frozenset(unresolved)
 
 
-def _branch_child_parent_map(chunks: Sequence[object]) -> tuple[dict[str, str], frozenset[str]]:
+def _branch_child_parent_map(chunks: Iterable[object]) -> tuple[dict[str, str], frozenset[str]]:
     """Resolve unambiguous branch parents, plus the set of genuinely ambiguous child ids.
 
     A child declared under more than one parent's ``branchChildren`` has no
@@ -383,37 +380,96 @@ def _gemini_usage_event(
     )
 
 
+def _payload_chunks(payload: JSONDocument) -> Sequence[object]:
+    prompt = json_document(payload.get("chunkedPrompt"))
+    if prompt:
+        prompt_chunks = prompt.get("chunks")
+        return prompt_chunks if isinstance(prompt_chunks, list) else []
+    payload_chunks = payload.get("chunks")
+    return payload_chunks if isinstance(payload_chunks, list) else ()
+
+
 @parser_admission("drive")
 def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedSession:
+    chunks = _payload_chunks(payload)
+    return _parse_chunked_records(provider, payload, lambda: chunks, fallback_id)
+
+
+def parse_chunked_prompt_stream(
+    provider: Provider | str,
+    envelope: JSONDocument,
+    chunks: Callable[[], Iterable[object]],
+    fallback_id: str,
+    *,
+    messages: MutableSequence[ParsedMessage],
+    session_events: MutableSequence[ParsedSessionEvent],
+    attachments: MutableSequence[ParsedAttachment],
+) -> ParsedSession:
+    """Lower a proved chunked prompt without retaining its chunk array.
+
+    ``envelope`` holds the document's fields except the selected chunk list,
+    which ``chunks`` re-reads for each pass. Admission runs over a stub that
+    carries the document's first future wire type, so accounting and the
+    typed unknown event match ``parse_chunked_prompt`` on the whole document.
+    """
+    future_type = envelope.get("__admission_future_type")
+    payload = {key: value for key, value in envelope.items() if key != "__admission_future_type"}
+    session = _parse_chunked_records(
+        provider,
+        payload,
+        chunks,
+        fallback_id,
+        messages=messages,
+        session_events=session_events,
+        attachments=attachments,
+    )
+    admission_stub: JSONDocument = {"chunks": []}
+    if isinstance(future_type, str):
+        admission_stub["type"] = future_type
+    admitted = parse_chunked_prompt(provider, admission_stub, fallback_id)
+    session_events.extend(admitted.session_events)
+    return session.model_copy(update={"unit_accounting": admitted.unit_accounting})
+
+
+def _parse_chunked_records(
+    provider: Provider | str,
+    payload: JSONDocument,
+    chunk_records: Callable[[], Iterable[object]],
+    fallback_id: str,
+    *,
+    messages: MutableSequence[ParsedMessage] | None = None,
+    session_events: MutableSequence[ParsedSessionEvent] | None = None,
+    attachments: MutableSequence[ParsedAttachment] | None = None,
+) -> ParsedSession:
+    """Normalize chunks read once per pass into the supplied message rows.
+
+    Branch evidence and the linear parent chain need every chunk, so this
+    keeps one small ordering row per message and rewrites only the rows
+    whose parent or leaf flag the whole-prompt passes change.
+    """
     runtime_provider = Provider.from_string(provider)
     run_settings = json_document(payload.get("runSettings"))
     default_model_name = _string_field(run_settings, "model", "modelName", "model_name")
     prompt = json_document(payload.get("chunkedPrompt"))
-    chunks: Sequence[object] = ()
-    if prompt:
-        prompt_chunks = prompt.get("chunks")
-        chunks = prompt_chunks if isinstance(prompt_chunks, list) else []
-    else:
-        payload_chunks = payload.get("chunks")
-        if isinstance(payload_chunks, list):
-            chunks = payload_chunks
 
     # Fallback timestamp from session metadata
     create_time = payload.get("createTime")
     default_timestamp = str(create_time) if create_time else None
 
-    messages: list[ParsedMessage] = []
-    session_events: list[ParsedSessionEvent] = []
-    attachments: list[ParsedAttachment] = []
-    observed_timestamps: list[str | None] = []
+    message_rows: MutableSequence[ParsedMessage] = messages if messages is not None else []
+    event_rows: MutableSequence[ParsedSessionEvent] = session_events if session_events is not None else []
+    attachment_rows: MutableSequence[ParsedAttachment] = attachments if attachments is not None else []
+    observed_timestamps = TimestampBounds()
+    # (chain instant, position, provider id, explicit parent) per message.
+    chain_rows: list[tuple[datetime, int, str, str | None]] = []
     models_used: set[str] = set()
     if default_model_name is not None:
         models_used.add(default_model_name)
     if model_event := _model_config_event(run_settings, timestamp=default_timestamp):
-        session_events.append(model_event)
-    session_events.extend(_citation_events(payload))
-    branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunks)
-    prompt_branch_child_ids = _branch_session_child_ids(chunks)
+        event_rows.append(model_event)
+    event_rows.extend(_citation_events(payload))
+    branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunk_records())
+    prompt_branch_child_ids = _branch_session_child_ids(chunk_records())
     branch_child_parents = {
         child_id: parent_id
         for child_id, parent_id in branch_child_parents.items()
@@ -423,7 +479,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     prompt_parent_ids: set[str] = set()
     unresolved_branch_message_ids: set[str] = set(prompt_branch_child_ids)
     message_position = 0
-    for _idx, chunk in enumerate(chunks, start=1):
+    for _idx, chunk in enumerate(chunk_records(), start=1):
         if isinstance(chunk, str):
             chunk_obj: JSONDocument = {"text": chunk}
         elif isinstance(chunk, dict):
@@ -453,7 +509,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
             message_id=msg_id,
             timestamp=message_timestamp,
         ):
-            session_events.append(usage_event)
+            event_rows.append(usage_event)
         chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id, role=role)
         # Attachment identifiers describe the attachment, not the message
         # that owns it.  Using them as the message's stable owner key makes a
@@ -478,7 +534,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
             )
             for attachment in chunk_attachments
         ]
-        observed_timestamps.append(message_timestamp)
+        observed_timestamps.observe(message_timestamp)
         used_typed_model = False
 
         # Try to parse via the rich GeminiMessage typed model for structured extraction.
@@ -495,7 +551,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         if not text and not chunk_attachments and not content_block_payloads:
             continue
 
-        session_events.extend(
+        event_rows.extend(
             _session_events_from_meta_blocks(
                 content_block_payloads,
                 source_message_provider_id=msg_id,
@@ -513,50 +569,54 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         resolved_message_type = (
             classify_block_message_type(tuple(block.type for block in message_blocks)) or MessageType.MESSAGE
         )
-        messages.append(
-            ParsedMessage(
-                provider_message_id=msg_id,
-                role=role,
-                text=text,
-                timestamp=message_timestamp,
-                blocks=message_blocks,
-                message_type=resolved_message_type,
-                position=message_position,
-                variant_index=0,
-                is_active_path=True,
-                parent_message_provider_id=(
-                    _branch_parent_message_provider_id(chunk_obj) or branch_child_parents.get(msg_id)
-                ),
-                owner_coordinate=owner_coordinate,
-                input_tokens=usage_fields["input_tokens"],
-                output_tokens=usage_fields["output_tokens"],
-                model_name=model_name,
-                duration_ms=_non_negative_int_field(chunk_obj, "durationMs", "duration_ms", "elapsed_ms"),
-                delivery_status=_delivery_status(chunk_obj),
-                end_turn=(
-                    True
-                    if _string_field(chunk_obj, "finishReason", "finish_reason", "errorMessage", "error_message")
-                    is not None
-                    else None
-                ),
-                # polylogue-gzgyl: AI-Studio/Drive has no agent/subagent
-                # artifact ambiguity for a plain user turn -- positive-
-                # evidence override for the shared classify_material_origin
-                # no-fallthrough (#2502).
-                material_origin=human_authored_override(
-                    role,
-                    resolved_message_type,
-                    classify_material_origin(
-                        role=role,
-                        message_type=resolved_message_type,
-                        text=text,
-                        block_types=tuple(block.type for block in message_blocks),
+        parent_message_provider_id = _branch_parent_message_provider_id(chunk_obj) or branch_child_parents.get(msg_id)
+        message_rows.append(
+            upgrade_chat_export_user_authorship(
+                runtime_provider,
+                ParsedMessage(
+                    provider_message_id=msg_id,
+                    role=role,
+                    text=text,
+                    timestamp=message_timestamp,
+                    blocks=message_blocks,
+                    message_type=resolved_message_type,
+                    position=message_position,
+                    variant_index=0,
+                    is_active_path=True,
+                    is_active_leaf=False,
+                    parent_message_provider_id=parent_message_provider_id,
+                    owner_coordinate=owner_coordinate,
+                    input_tokens=usage_fields["input_tokens"],
+                    output_tokens=usage_fields["output_tokens"],
+                    model_name=model_name,
+                    duration_ms=_non_negative_int_field(chunk_obj, "durationMs", "duration_ms", "elapsed_ms"),
+                    delivery_status=_delivery_status(chunk_obj),
+                    end_turn=(
+                        True
+                        if _string_field(chunk_obj, "finishReason", "finish_reason", "errorMessage", "error_message")
+                        is not None
+                        else None
+                    ),
+                    # polylogue-gzgyl: AI-Studio/Drive has no agent/subagent
+                    # artifact ambiguity for a plain user turn -- positive-
+                    # evidence override for the shared classify_material_origin
+                    # no-fallthrough (#2502).
+                    material_origin=human_authored_override(
+                        role,
+                        resolved_message_type,
+                        classify_material_origin(
+                            role=role,
+                            message_type=resolved_message_type,
+                            text=text,
+                            block_types=tuple(block.type for block in message_blocks),
+                        ),
                     ),
                 ),
             )
         )
+        chain_rows.append((_sort_instant(message_timestamp), message_position, msg_id, parent_message_provider_id))
         message_position += 1
-        attachments.extend(chunk_attachments)
+        attachment_rows.extend(chunk_attachments)
 
     title_val = payload.get("title")
     title_source: TitleSource | None = TitleSource.ORIGIN
@@ -569,16 +629,17 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     create_time_str = (
         str(payload.get("createTime"))
         if payload.get("createTime")
-        else _select_timestamp(observed_timestamps, latest=False)
+        else (observed_timestamps.earliest[1] if observed_timestamps.earliest is not None else None)
     )
     update_time_str = (
         str(payload.get("updateTime"))
         if payload.get("updateTime")
-        else _select_timestamp(observed_timestamps, latest=True)
+        else (observed_timestamps.latest[1] if observed_timestamps.latest is not None else None)
     )
     pending_drafts = _pending_drafts(prompt.get("pendingInputs"))
-    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    messages = mark_last_occurrence_as_active_leaf(messages)
+    active_leaf_message_provider_id = chain_rows[-1][2] if chain_rows else None
+    if chain_rows:
+        message_rows[-1] = message_rows[-1].model_copy(update={"is_active_leaf": True})
     # bd polylogue-ksgg: real Gemini branch evidence (``_branch_parent_message_provider_id``
     # / ``branch_child_parents`` above) already sets ``parent_message_provider_id``
     # for messages that carry it; most AI Studio Drive sessions have none
@@ -587,52 +648,42 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     # the active path -- without touching real branch evidence already set.
     # A genuinely ambiguous branch child (more than one declared parent, see
     # _branch_child_parent_map) must keep parent_message_provider_id=None --
-    # fill_linear_parent_chain cannot tell that apart from "no branch data at
-    # all" on its own, so those specific ids are excluded from the gap-fill
-    # and restored to None afterward. Prompt-grain branch evidence is also
-    # explicitly unresolved at message grain: no local message id is guessed.
+    # the linear fill cannot tell that apart from "no branch data at all" on
+    # its own, so those specific ids are excluded from the gap-fill.
+    # Prompt-grain branch evidence is also explicitly unresolved at message
+    # grain: no local message id is guessed.
     # chunkedPrompt's array order is not guaranteed chronological (a Drive
     # payload can legitimately list chunks in a different order than they
     # occurred -- ai-studio-drive normalization laws require native facts,
     # including the reconstructed parent chain, to be order-independent).
-    # fill_linear_parent_chain chains by LIST POSITION, so it must run
-    # against a temporally-sorted view, not the raw chunk-input order.
-    by_position = {id(message): position for position, message in enumerate(messages)}
-    temporally_sorted = sorted(
-        messages,
-        key=lambda message: (
-            _sort_instant(message.timestamp),
-            by_position[id(message)],
-        ),
-    )
-    filled_sorted = fill_linear_parent_chain(temporally_sorted)
-    parent_by_position = {
-        message.position: (message.parent_message_provider_id, message.parent_message_position)
-        for message in filled_sorted
-    }
-    messages = [
-        message
-        if message.provider_message_id in ambiguous_branch_child_ids
-        or message.provider_message_id in unresolved_branch_message_ids
-        else message.model_copy(
-            update={
-                "parent_message_provider_id": parent_by_position[message.position][0],
-                "parent_message_position": parent_by_position[message.position][1],
-            }
-        )
-        for message in messages
-    ]
-    return ParsedSession(
+    # The linear fill chains by order, so it runs over a temporally-sorted
+    # view, not the raw chunk-input order. Every Drive message is on the
+    # active path, so each one is the next message's chain predecessor.
+    previous: tuple[datetime, int, str, str | None] | None = None
+    for row in sorted(chain_rows, key=lambda row: (row[0], row[1])):
+        _instant, position, message_id, explicit_parent = row
+        if (
+            previous is not None
+            and explicit_parent is None
+            and message_id not in ambiguous_branch_child_ids
+            and message_id not in unresolved_branch_message_ids
+        ):
+            update: dict[str, object] = (
+                {"parent_message_provider_id": previous[2]} if previous[2] else {"parent_message_position": previous[1]}
+            )
+            message_rows[position] = message_rows[position].model_copy(update=update)
+        previous = row
+    session = ParsedSession(
         source_name=runtime_provider,
         provider_session_id=str(payload.get("id") or fallback_id),
         title=title,
         title_source=title_source,
         created_at=create_time_str,
         updated_at=update_time_str,
-        messages=messages,
-        session_events=session_events,
+        messages=message_rows if isinstance(message_rows, list) else [],
+        session_events=event_rows if isinstance(event_rows, list) else [],
         active_leaf_message_provider_id=active_leaf_message_provider_id,
-        attachments=attachments,
+        attachments=attachment_rows if isinstance(attachment_rows, list) else [],
         instructions_text=_instruction_text(payload),
         models_used=sorted(models_used),
         # polylogue-o4j2: pendingInputs draft(s), kept off session_events on
@@ -641,6 +692,11 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         # axes).
         pending_drafts=pending_drafts,
         parent_session_provider_id=(next(iter(prompt_parent_ids)) if len(prompt_parent_ids) == 1 else None),
+    )
+    if isinstance(message_rows, list) and isinstance(event_rows, list) and isinstance(attachment_rows, list):
+        return session
+    return session.model_copy(
+        update={"messages": message_rows, "session_events": event_rows, "attachments": attachment_rows}
     )
 
 

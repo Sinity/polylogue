@@ -320,6 +320,50 @@ def test_topology_truncation_keeps_every_edge_endpoint() -> None:
     assert all(edge["parent_id"] in retained and edge["child_id"] in retained for edge in edges)
 
 
+def test_topology_truncation_keeps_unresolved_edges_of_retained_children() -> None:
+    """An unresolved parent reference survives truncation with its retained child.
+
+    Anti-vacuity: require a retained parent node for every edge and the
+    unresolved edge (``parent_id`` is None) is dropped, hiding the unresolved
+    relationship behind a generic observation-limit gap.
+    """
+    from polylogue.analysis.orchestration_evidence import build_session_orchestration
+    from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.session.domain_models import Session
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
+
+    root = SessionId("codex-session:wide-root")
+    children = [SessionId(f"codex-session:wide-child-{index}") for index in range(1000)]
+    unresolved = TopologyEdge(
+        child_id=root,
+        parent_id=None,
+        dst_origin="codex-session",
+        dst_native_id="missing-parent",
+        kind=TopologyEdgeKind.CONTINUATION,
+        resolved=False,
+    )
+    topology = SessionTopology(
+        target_id=root,
+        root_id=root,
+        nodes=(TopologyNode(session_id=root), *(TopologyNode(session_id=child) for child in children)),
+        edges=(
+            unresolved,
+            *(TopologyEdge(parent_id=root, child_id=child, kind=TopologyEdgeKind.SUBAGENT) for child in children),
+        ),
+    )
+    session = Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection(messages=[]))
+
+    payload = build_session_orchestration(session, topology).topology
+
+    assert payload is not None
+    edges = cast(list[dict[str, object]], payload["edges"])
+    assert any(edge["child_id"] == root and edge["parent_id"] is None for edge in edges)
+    retained = {node["session_id"] for node in cast(list[dict[str, object]], payload["nodes"])}
+    assert all(edge["child_id"] in retained for edge in edges)
+
+
 def test_unmeasured_token_lanes_are_a_distinct_bucket_from_measured_zero() -> None:
     """A nullable lane must neither crash the projection nor read as a measured zero.
 
