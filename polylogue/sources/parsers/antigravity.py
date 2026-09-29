@@ -751,7 +751,7 @@ def _trajectory_message(
     tool_name = payload.get("tool_name") or payload.get("toolName") or payload.get("name")
     tool_id = payload.get("tool_id") or payload.get("toolId") or payload.get("call_id") or payload.get("callId")
     if toolish and normalized_type in {"tool_result", "tool_output", "command_result"}:
-        is_error, exit_code, unknown_reason = _tool_outcome(payload, row)
+        is_error, exit_code, outcome_unknown = _tool_outcome(payload, row)
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -760,7 +760,7 @@ def _trajectory_message(
                 tool_id=str(tool_id) if tool_id is not None else None,
                 is_error=is_error,
                 exit_code=exit_code,
-                outcome_unknown_reason=unknown_reason,
+                outcome_unknown_reason=outcome_unknown,
                 file_edit=_file_edit(payload),
             )
         )
