@@ -459,7 +459,9 @@ def _resolve_attachment_renditions(
                 # is the provider's identity; the member's id is the fallback.
                 "provider_file_id": base.provider_file_id or asset_id,
                 "name": name,
-                "mime_type": mimetypes.guess_type(name or "")[0],
+                # A member name without a known extension keeps the media
+                # type the pointer or library already declared.
+                "mime_type": mimetypes.guess_type(name or "")[0] or base.mime_type,
                 "size_bytes": blob_size,
                 "path": None,
                 "inline_bytes": None,

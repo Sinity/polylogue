@@ -87,25 +87,32 @@ def test_every_duplicate_asset_rendition_becomes_its_own_attachment() -> None:
 
 
 def test_renditions_keep_a_provider_file_id_the_pointer_already_carried() -> None:
-    """A provider-native file id on the pointer survives rendition expansion.
+    """Provider identity and media type the pointer carried survive expansion.
 
     Anti-vacuity: overwrite ``provider_file_id`` with the member's normalized
-    asset id and every rendition reports ``file_000...cc4c...`` instead.
+    asset id, or ``mime_type`` with a failed extension guess, and every
+    rendition loses the pointer's value.
     """
     pointer = ParsedAttachment(
         provider_attachment_id=f"sediment://{_RENDITION_ID}",
         provider_file_id="file-provider-native",
+        mime_type="image/png",
         message_provider_id="m1",
     )
+    extensionless = {
+        f"{_RENDITION_ID}#03adfe6a4b1e5a0#{_RENDITION_ID}#p_0": ("b0" * 32, 11),
+        f"{_RENDITION_ID}#03adfe6a4b1e5a0#{_RENDITION_ID}#p_1": ("b1" * 32, 18),
+    }
     session = ParsedSession(
         source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[], attachments=[pointer]
     )
-    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": _RENDITION_BLOBS}
+    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": extensionless}
 
     returned = ChatGPTAssemblySpec().enrich_session(session, sidecars)
 
     assert len(returned.attachments) == 2
     assert {attachment.provider_file_id for attachment in returned.attachments} == {"file-provider-native"}
+    assert {attachment.mime_type for attachment in returned.attachments} == {"image/png"}
 
 
 def test_prepared_carrier_appends_renditions_and_rolls_them_back(

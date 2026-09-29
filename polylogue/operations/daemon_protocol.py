@@ -653,7 +653,8 @@ class AssertionCandidateCaptureRequest(_OperationPayload):
     kind: str = Field(min_length=1, max_length=64)
     refs: list[str] = Field(default_factory=list, max_length=64)
     scope_refs: list[str] = Field(default_factory=list, max_length=64)
-    evidence_refs: list[str] = Field(default_factory=list, max_length=64)
+    # Bounded by the operation's request body size, not by a count.
+    evidence_refs: list[str] = Field(default_factory=list)
     cwd: str | None = None
     author_ref: str = Field(default="user:local", min_length=1, max_length=512)
     author_kind: str = Field(default="user", min_length=1, max_length=64)
