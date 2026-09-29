@@ -155,7 +155,7 @@ class _PreflightAccumulator:
         )
 
     def _status(self) -> ImportPreflightStatus:
-        if self.supported_count > 0 and (self.unsupported_count > 0 or self.malformed_count > 0):
+        if self.supported_count > 0 and (self.unsupported_count > 0 or self.malformed_count > 0 or self.caveats):
             return ImportPreflightStatus.DEGRADED
         if self.supported_count > 0:
             return ImportPreflightStatus.SUPPORTED

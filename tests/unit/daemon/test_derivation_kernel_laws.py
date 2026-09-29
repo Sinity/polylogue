@@ -1113,6 +1113,102 @@ def test_a_revision_staged_during_compute_is_refused_at_publication() -> None:
     assert [(item.outcome, item.reason) for item in report.outcomes] == [(Outcome.PENDING, PendingReason.BLOCKED)]
 
 
+def test_a_failed_key_says_whether_its_failure_can_clear_unchanged() -> None:
+    """A deterministic failure is not transient; lock contention is.
+
+    Anti-vacuity (Codex): with no classification on the outcome, the raw
+    and hook intake callbacks reported every derivation failure as transient,
+    so an unchanged poison carrier was retried each cooldown forever instead
+    of being isolated.
+    """
+    import sqlite3
+
+    class LockedDerivation(RecordingDerivation):
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            locked = sqlite3.OperationalError("database is locked")
+            locked.sqlite_errorcode = 5  # SQLITE_BUSY
+            raise locked
+
+    poisoned = converge(DerivationRegistry([RecordingDerivation("d", required=("a",), poison=frozenset({"a"}))]), FRAME)
+    locked = converge(DerivationRegistry([LockedDerivation("d", required=("a",))]), FRAME)
+    assert [item.transient for item in poisoned.by_outcome(Outcome.FAILED)] == [False]
+    assert [item.transient for item in locked.by_outcome(Outcome.FAILED)] == [True]
+
+
+def test_a_failure_signature_names_its_exception_type() -> None:
+    """Distinct exceptions in one phase are distinct failure signatures.
+
+    Anti-vacuity (Codex): a phase-first reason such as ``compute: ...`` gave
+    a KeyError and a TypeError the same signature, so alternating defects
+    extended one exhaustion streak and isolated the item.
+    """
+    from polylogue.daemon.intake import _failure_signature
+
+    class TypeErrorDerivation(RecordingDerivation):
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            raise TypeError("wrong shape")
+
+    runtime = converge(DerivationRegistry([RecordingDerivation("d", required=("a",), poison=frozenset({"a"}))]), FRAME)
+    typed = converge(DerivationRegistry([TypeErrorDerivation("d", required=("a",))]), FRAME)
+    (runtime_failure,) = runtime.by_outcome(Outcome.FAILED)
+    (type_failure,) = typed.by_outcome(Outcome.FAILED)
+    assert _failure_signature(runtime_failure.error) == "compute RuntimeError"
+    assert _failure_signature(type_failure.error) == "compute TypeError"
+
+
+def test_a_requiredness_recheck_failure_is_classified_and_typed() -> None:
+    """The post-publication requiredness recheck classifies and names its error.
+
+    Anti-vacuity: a FAILED outcome recorded there without ``transient`` and
+    with a phase-only ``requiredness inspection: ...`` reason turns lock
+    contention into a deterministic defect sharing one signature with every
+    other recheck error, so the item is isolated.
+    """
+    import sqlite3
+
+    from polylogue.daemon.intake import _failure_signature
+
+    class LockedRecheck(RecordingDerivation):
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            del frame, replacement
+            self._required = ()
+            return True
+
+        def is_required_key(self, frame: DerivationFrame, key: str) -> bool:
+            locked = sqlite3.OperationalError("database is locked")
+            locked.sqlite_errorcode = 5  # SQLITE_BUSY
+            raise locked
+
+    report = converge(DerivationRegistry([LockedRecheck("d", required=("vanishing",))]), FRAME)
+    (failed,) = report.by_outcome(Outcome.FAILED)
+    assert failed.transient is True
+    assert _failure_signature(failed.error) == "requiredness inspection OperationalError"
+
+
+def test_a_per_key_inspection_failure_is_classified_and_typed() -> None:
+    """The per-key inspection fallback classifies and names its exception.
+
+    Anti-vacuity (Codex): the fallback outcome inherited ``transient=False``
+    and an ``inspect: ...`` reason, so lock contention during inspection
+    counted as a deterministic defect and shared one signature with every
+    other inspection error.
+    """
+    import sqlite3
+
+    from polylogue.daemon.intake import _failure_signature
+
+    class LockedInspection(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            locked = sqlite3.OperationalError("database is locked")
+            locked.sqlite_errorcode = 5  # SQLITE_BUSY
+            raise locked
+
+    report = converge(DerivationRegistry([LockedInspection("d", required=("a",))]), FRAME)
+    (failed,) = report.by_outcome(Outcome.FAILED)
+    assert failed.transient is True
+    assert _failure_signature(failed.error) == "inspect OperationalError"
+
+
 def test_required_and_excess_pagers_may_reuse_a_cursor_value() -> None:
     """The two discovery phases are independent keysets.
 

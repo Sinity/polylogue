@@ -711,7 +711,7 @@ FairIntakeDispatcher.run_once
   -> plan the page against the class byte share          (never split below one file)
   -> FileIntakeAdapter.admit_page(page)                  (one call for the page)
        -> cursor authority gate, then cursor.initialize
-       -> LiveWatcher.select_ingest_candidates           (bulk cursor comparison)
+       -> LiveWatcher.classify_ingest_candidates         (bulk cursor comparison)
        -> LiveWatcher._ingest_files                      (one batch, one parse-stage warm)
        -> one embedding + one session-profile convergence for the page
   -> one outcome per item: admitted / duplicate / excluded / deferred /

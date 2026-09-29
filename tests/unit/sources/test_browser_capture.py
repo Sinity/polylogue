@@ -1793,6 +1793,52 @@ def test_envelope_attachment_merge_matches_same_descriptor_rows_by_bytes() -> No
     assert by_id["native-1"].inline_bytes == b"abc\x01"
 
 
+def test_census_reports_a_browser_capture_envelope_it_cannot_validate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (polylogue-hu24g): an envelope failing validation was
+    skipped by a bare ``continue``, so the conservation census undercounted
+    with no record of why."""
+    from polylogue.browser_capture.models import BrowserCaptureEnvelope
+    from polylogue.logging import capture
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    def refuse(_record: object) -> object:
+        raise ValueError("envelope schema drift")
+
+    monkeypatch.setattr(BrowserCaptureEnvelope, "model_validate", staticmethod(refuse))
+    with capture() as records:
+        documents = lower_chatgpt_documents(_compact_capture_payload(), "fallback")
+
+    assert documents == []
+    invalid = [record for record in records if record["event"] == "sources.census.browser_capture_envelope_invalid"]
+    assert len(invalid) == 1
+    assert invalid[0]["error_type"] == "ValueError"
+
+
+def test_census_never_logs_the_invalid_envelope_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex): the event carried the validation error's
+    rendering, which quotes the offending input -- the operator's captured
+    conversation text -- into structured daemon logs."""
+    from pydantic import BaseModel
+
+    from polylogue.browser_capture.models import BrowserCaptureEnvelope
+    from polylogue.logging import capture
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    class _Strict(BaseModel):
+        turns: int
+
+    def refuse(_record: object) -> object:
+        return _Strict.model_validate({"turns": "private transcript words"})
+
+    monkeypatch.setattr(BrowserCaptureEnvelope, "model_validate", staticmethod(refuse))
+    with capture() as records:
+        lower_chatgpt_documents(_compact_capture_payload(), "fallback")
+
+    (invalid,) = [record for record in records if record["event"] == "sources.census.browser_capture_envelope_invalid"]
+    assert "private transcript" not in repr(invalid)
+    assert invalid["error_detail"] == "turns: int_parsing"
+
+
 def test_claude_file_uuid_merges_into_native_attachment_identity() -> None:
     """Anti-vacuity: retaining `claude-file:abc` as a second row duplicates one file."""
     import base64

@@ -672,3 +672,19 @@ class TestPerChunkTimestamps:
             "2025-04-01T12:00:00Z",
             "2025-04-01T12:30:00Z",
         ]
+
+
+def test_a_defect_in_typed_block_extraction_surfaces_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity (polylogue-hu24g): the handler caught ``Exception`` beside
+    ``ValidationError``, so a bug in typed extraction silently took the
+    fallback, dropping structured blocks and changing the content hash."""
+    import polylogue.sources.parsers.drive as drive
+
+    def broken(*_args: object, **_kwargs: object) -> object:
+        raise TypeError("typed extraction defect")
+
+    monkeypatch.setattr(drive, "_gemini_content_block_payloads", broken)
+    with pytest.raises(TypeError, match="typed extraction defect"):
+        _parse(_load_catalog("text_only_prompt.json"))

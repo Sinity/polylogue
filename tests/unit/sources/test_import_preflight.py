@@ -223,7 +223,7 @@ def test_preflight_bounds_a_large_trajectory_store_and_says_so(tmp_path: Path) -
 
     result = preflight_import_source(source)
 
-    assert result.status is ImportPreflightStatus.SUPPORTED
+    assert result.status is ImportPreflightStatus.DEGRADED
     assert result.providers == (Provider.ANTIGRAVITY,)
     assert any("the remainder was not inspected" in caveat for caveat in result.caveats)
 

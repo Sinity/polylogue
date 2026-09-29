@@ -2735,7 +2735,8 @@ def count_assertion_claims(
     conn: sqlite3.Connection,
     *,
     kinds: Sequence[str | AssertionKind],
-    statuses: Sequence[str | AssertionStatus],
+    statuses: Sequence[str | AssertionStatus] | None,
+    target_ref: str | None = None,
     annotation_schema_prefix: str | None = None,
     annotation_schema_qualified_id: str | None = None,
     annotation_schema_excluded_qualified_id: str | None = None,
@@ -2743,17 +2744,20 @@ def count_assertion_claims(
 ) -> int:
     """Count a typed assertion selection without materializing claim rows."""
 
-    if not _table_exists(conn, "assertions") or not kinds or not statuses:
+    if not _table_exists(conn, "assertions") or not kinds or (statuses is not None and not statuses):
         return 0
     normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
-    normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
     kind_placeholders = ", ".join("?" for _ in normalized_kinds)
-    status_placeholders = ", ".join("?" for _ in normalized_statuses)
-    where = [
-        f"kind IN ({kind_placeholders})",
-        f"COALESCE(status, ?) IN ({status_placeholders})",
-    ]
-    params: list[object] = [*normalized_kinds, ASSERTION_DEFAULT_STATUS.value, *normalized_statuses]
+    where = [f"kind IN ({kind_placeholders})"]
+    params: list[object] = list(normalized_kinds)
+    if statuses is not None:
+        normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
+        status_placeholders = ", ".join("?" for _ in normalized_statuses)
+        where.append(f"COALESCE(status, ?) IN ({status_placeholders})")
+        params.extend((ASSERTION_DEFAULT_STATUS.value, *normalized_statuses))
+    if target_ref is not None:
+        where.append("target_ref = ?")
+        params.append(target_ref)
     if annotation_schema_prefix is not None:
         where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
         params.extend((annotation_schema_prefix, annotation_schema_prefix))

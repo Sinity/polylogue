@@ -871,3 +871,59 @@ def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: 
         prepared.close()
     finally:
         conn.close()
+
+
+def test_a_dropped_prepared_union_still_refreshes_replaced_attachments(tmp_path: Path) -> None:
+    """A union the writer's precedence overrules leaves no stale attachment.
+
+    Anti-vacuity: when the union was dropped only inside the row replacement,
+    the caller still saw a prepared union and skipped collecting the
+    session's attachment ids, so the replaced message's attachment kept its
+    reference count and pinned its blob. The prepared route must end with the
+    same attachment rows as the unprepared force-replace route.
+    """
+    from polylogue.sources.parsers.base import ParsedAttachment
+
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="union-overruled",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="first")],
+        attachments=[ParsedAttachment(provider_attachment_id="att-old", message_provider_id="m1", name="old.txt")],
+    )
+    second = first.model_copy(
+        update={
+            "messages": [ParsedMessage(provider_message_id="m1", role=Role.USER, text="second")],
+            "attachments": [],
+        }
+    )
+    tables = ("attachments", "attachment_refs")
+    snapshots = []
+    for prepared_route in (False, True):
+        conn = _connect(tmp_path / f"index-{prepared_route}.db")
+        try:
+            write_parsed_session_to_archive(conn, first, raw_id="old", content_hash=str(session_content_hash(first)))
+            prepared = (
+                prepare_session_write(conn, second, merge_append=False, raw_id="second") if prepared_route else None
+            )
+            if prepared is not None:
+                assert prepared.cross_acquisition_union is not None
+            write_parsed_session_to_archive(
+                conn,
+                second,
+                raw_id="second",
+                content_hash=str(session_content_hash(second)),
+                force_replace=True,
+                prepared_write=prepared,
+                prepared_required=prepared is not None,
+            )
+            snapshots.append(
+                {
+                    table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                    for table in tables
+                }
+            )
+            if prepared is not None:
+                prepared.close()
+        finally:
+            conn.close()
+    assert snapshots[1] == snapshots[0]

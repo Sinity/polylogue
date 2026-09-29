@@ -163,6 +163,7 @@ read from the per-session evidence rows rather than adjudicated for you.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, MutableSequence, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
@@ -860,13 +861,43 @@ def parse_atif_document(
     raw_steps: list[JSONValue] = steps_value if isinstance(steps_value, list) else []
     subagents_value = payload.get("subagent_trajectories")
     raw_subagents: list[JSONValue] = subagents_value if isinstance(subagents_value, list) else []
-    return _atif_sessions(payload, raw_steps, raw_subagents, fallback_id, profile_root=profile_root)
+    return _atif_sessions(
+        payload,
+        raw_steps,
+        (AtifSubagent.from_entry(entry) for entry in raw_subagents),
+        fallback_id,
+        profile_root=profile_root,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AtifSubagent:
+    """One ``subagent_trajectories`` entry with its step list held apart.
+
+    ``fields`` is the entry without a list-valued ``steps`` (``{}`` for a
+    non-object entry); ``step_count`` is that list's length, or ``None`` when
+    the entry has no step list. ``steps`` re-reads the list, so a streamed
+    entry can keep its steps in scratch rather than in memory.
+    """
+
+    fields: JSONDocument
+    step_count: int | None
+    steps: Callable[[], Iterable[JSONValue]]
+
+    @classmethod
+    def from_entry(cls, entry: JSONValue) -> AtifSubagent:
+        document = json_document(entry)
+        steps = document.get("steps")
+        if isinstance(steps, list):
+            fields = {key: value for key, value in document.items() if key != "steps"}
+            return cls(fields, len(steps), lambda: steps)
+        return cls(document, None, tuple)
 
 
 def parse_atif_stream(
     envelope: JSONDocument,
     steps: Iterable[JSONValue],
-    subagents: Iterable[JSONValue],
+    subagents: Iterable[AtifSubagent],
     fallback_id: str,
     *,
     profile_root: Path | None,
@@ -876,7 +907,8 @@ def parse_atif_stream(
 
     ``envelope`` holds every document field except ``steps`` and
     ``subagent_trajectories``; each session's events go to its own sequence
-    from ``new_events``. A subagent entry is read whole, one at a time.
+    from ``new_events``. Subagent entries arrive one at a time, each with its
+    steps held apart from its fields.
     """
     return _atif_sessions(envelope, steps, subagents, fallback_id, profile_root=profile_root, new_events=new_events)
 
@@ -884,7 +916,7 @@ def parse_atif_stream(
 def _atif_sessions(
     payload: JSONDocument,
     raw_steps: Iterable[JSONValue],
-    raw_subagents: Iterable[JSONValue],
+    raw_subagents: Iterable[AtifSubagent],
     fallback_id: str,
     *,
     profile_root: Path | None,
@@ -940,12 +972,11 @@ def _atif_sessions(
     summary_text = f"Hermes ATIF trajectory: {session_id}"
 
     child_sessions: list[ParsedSession] = []
-    for index, raw_subagent in enumerate(raw_subagents):
-        subagent = json_document(raw_subagent)
-        if not subagent:
+    for index, subagent in enumerate(raw_subagents):
+        if not subagent.fields and subagent.step_count is None:
             skipped += 1
             continue
-        subagent_session_id = _optional_str(subagent.get("session_id"))
+        subagent_session_id = _optional_str(subagent.fields.get("session_id"))
         delegation_edge_asserted = bool(profile_key_value and subagent_session_id and subagent_session_id != session_id)
         events.append(_subagent_span_event(subagent, index, delegation_edge_asserted=delegation_edge_asserted))
         if delegation_edge_asserted and subagent_session_id is not None:
@@ -991,7 +1022,7 @@ def _atif_ingest_flags(payload: JSONDocument, *flags: str) -> list[str]:
 
 
 def _atif_subagent_child_session(
-    subagent: JSONDocument,
+    subagent: AtifSubagent,
     subagent_session_id: str,
     *,
     parent_provider_session_id: str,
@@ -1007,10 +1038,8 @@ def _atif_subagent_child_session(
     so a real subagent trajectory's evidence is retained with the same
     fidelity as its parent's, never a bare summary stub.
     """
-    agent = json_document(subagent.get("agent")) or {}
+    agent = json_document(subagent.fields.get("agent")) or {}
     model_name = _optional_str(agent.get("model_name"))
-    steps_value = subagent.get("steps")
-    raw_steps: list[JSONValue] = steps_value if isinstance(steps_value, list) else []
 
     provider_session_id = atif_session_provider_id(subagent_session_id, profile_key)
     event_rows: MutableSequence[ParsedSessionEvent] = events if events is not None else []
@@ -1031,7 +1060,7 @@ def _atif_subagent_child_session(
             },
         )
     )
-    for index, raw_step in enumerate(raw_steps):
+    for index, raw_step in enumerate(subagent.steps()):
         step = json_document(raw_step)
         if not step:
             continue
@@ -1307,17 +1336,16 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
 
 
 def _subagent_span_event(
-    subagent: JSONDocument, index: int, *, delegation_edge_asserted: bool = False
+    subagent: AtifSubagent, index: int, *, delegation_edge_asserted: bool = False
 ) -> ParsedSessionEvent:
-    agent = json_document(subagent.get("agent")) or {}
-    steps = subagent.get("steps")
+    agent = json_document(subagent.fields.get("agent")) or {}
     return ParsedSessionEvent(
         event_type="hermes_subagent_span",
         payload={
             "subagent_index": index,
-            "subagent_session_id": _optional_str(subagent.get("session_id")),
+            "subagent_session_id": _optional_str(subagent.fields.get("session_id")),
             "subagent_agent_name": _optional_str(agent.get("name")),
-            "subagent_step_count": len(steps) if isinstance(steps, list) else None,
+            "subagent_step_count": subagent.step_count,
             # Whether this subagent_trajectories entry's own session_id was
             # producer-positive, distinct from this document's own id, and
             # backed by a known profile root -- the exact conditions under
@@ -1673,6 +1701,7 @@ def _optional_str(value: object) -> str | None:
 
 __all__ = [
     "ATIF_SCHEMA_VERSION_PREFIX",
+    "AtifSubagent",
     "HermesSpanEventType",
     "atif_session_provider_id",
     "atof_session_provider_id",
