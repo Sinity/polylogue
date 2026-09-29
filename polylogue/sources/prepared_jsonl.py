@@ -2048,18 +2048,8 @@ def prepare_jsonl_blob(
             enrichment_index_path=enrichment_index_path,
             parsed_prefix_size=parse_prefix_size,
             resolved_provider=provider,
-            positive_evidence_filtered=stream_prefix is not None
-            or chatgpt_envelope is not None
-            or gemini_envelope is not None
-            or generic_envelope is not None
-            or hermes_envelope is not None
-            or design_envelope is not None
-            or claude_ai_envelope is not None
-            or drive_chunked is not None
-            or atif is not None
-            or otel is not None
-            or (grok_count is not None and classify_grok_export is not None)
-            or (prepare_sessions is None and prepare_session is not None),
+            # Every branch above admits its sessions before sealing.
+            positive_evidence_filtered=True,
             attempt_directory=attempt_directory,
         )
         sealed = True

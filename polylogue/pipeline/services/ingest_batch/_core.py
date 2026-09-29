@@ -20,7 +20,7 @@ import sqlite3
 import time
 import unicodedata
 import uuid
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, BrokenExecutor, Future, ProcessPoolExecutor, wait
 from contextlib import AsyncExitStack, closing
@@ -2283,13 +2283,17 @@ def _iter_ingest_results_chunk(
         return
     raw_iter = iter(raw_artifacts)
     futures: dict[Future[IngestRecordResult], str] = {}
-    unattempted: list[IngestRecordResult] = []
+    # The pool each future ran on, and for a pool that broke, how many raws it
+    # held at the break: one is attributable to that raw, several are not.
+    future_pools: dict[Future[IngestRecordResult], object] = {}
+    broken_cohorts: dict[object, int] = {}
+    unattempted: deque[IngestRecordResult] = deque()
     executor: Any = None
     stalled = False
 
     def settle_unattempted() -> Iterable[IngestRecordResult]:
         while unattempted:
-            result = unattempted.pop(0)
+            result = unattempted.popleft()
             if progress is not None:
                 progress.completed_raw_count += 1
             yield result
@@ -2346,6 +2350,7 @@ def _iter_ingest_results_chunk(
                     )
                     continue
                 futures[future] = raw_record.raw_id
+                future_pools[future] = executor
                 if progress is not None:
                     progress.in_flight_raw_ids[:] = list(futures.values())
                 return True
@@ -2395,6 +2400,7 @@ def _iter_ingest_results_chunk(
                                 ),
                             )
                         futures.clear()
+                        future_pools.clear()
                         # ``Future.cancel()`` cannot stop a task that is already
                         # executing in a worker process, and neither can
                         # ``shutdown(cancel_futures=True)``. Without an explicit
@@ -2422,20 +2428,26 @@ def _iter_ingest_results_chunk(
             last_progress_at = time.monotonic()
             for future in done:
                 raw_id = futures.pop(future)
+                pool = future_pools.pop(future, None)
                 if progress is not None:
                     progress.in_flight_raw_ids[:] = list(futures.values())
                 try:
                     result = future.result()
                 except BrokenExecutor as exc:
                     # A worker died (for example, killed by the kernel). Every
-                    # raw in flight on that pool sees this, not only the one
-                    # that caused it, so it is retryable, not a parser defect.
+                    # raw in flight on that pool sees the break, not only the
+                    # one that caused it. With one raw held the death is that
+                    # raw's; with several it is nobody's in particular, so
+                    # each of them is retryable rather than a parser defect.
+                    held = broken_cohorts.setdefault(
+                        pool, 1 + sum(1 for other in futures if future_pools.get(other) is pool)
+                    )
                     result = _disposed_result(
                         raw_id,
                         f"worker: {exc}",
-                        transient_error_disposition(
+                        (parser_defect_disposition if held == 1 else transient_error_disposition)(
                             evidence_ref=f"worker:{type(exc).__name__}",
-                            diagnostic=str(exc),
+                            diagnostic=f"{exc} ({held} raw(s) held by the pool when a worker died)",
                         ),
                     )
                 except Exception as exc:

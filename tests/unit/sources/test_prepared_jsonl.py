@@ -1653,7 +1653,13 @@ def test_grok_single_object_corrupt_suffix_leaves_no_artifact(tmp_path: Path) ->
     assert list(directory.glob("*.db")) == []
 
 
-def test_grok_empty_conversation_keeps_direct_parse_session(tmp_path: Path) -> None:
+def test_grok_empty_conversation_is_refused_at_preparation(tmp_path: Path) -> None:
+    """The preparation owner admits sessions on every branch, callback or not.
+
+    Anti-vacuity: before the owner applied the rule itself, a Grok export
+    prepared without a callback sealed the empty conversation that every
+    publishing route then refuses.
+    """
     record = {"conversations": [{"conversation": {"title": "Empty"}, "responses": []}]}
     source = tmp_path / "empty-grok.json"
     source.write_text(json.dumps(record), encoding="utf-8")
@@ -1666,14 +1672,11 @@ def test_grok_empty_conversation_keeps_direct_parse_session(tmp_path: Path) -> N
         shard_directory=str(tmp_path / "prepared"),
     )
     assert artifact.error is None
-    assert artifact.positive_evidence_filtered is False
-    [actual] = artifact.iter_sessions()
-    [expected] = parse_payload(Provider.GROK, record, "fallback")
-    assert (actual.provider_session_id, actual.title, list(actual.messages)) == (
-        expected.provider_session_id,
-        expected.title,
-        expected.messages,
-    )
+    assert artifact.positive_evidence_filtered is True
+    assert list(artifact.iter_sessions()) == []
+    direct = parse_payload(Provider.GROK, record, "fallback")
+    assert len(direct) == 1
+    assert require_positive_conversational_evidence(direct, provider=Provider.GROK, source_path=str(source)) == []
     artifact.discard()
 
 
