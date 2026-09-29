@@ -157,6 +157,50 @@ async def test_valid_only_raw_pages_keep_the_service_moving_then_become_idle(
     assert not discovery.discovery_pending
 
 
+def test_a_resweep_pages_promptly_only_after_resting_nine_sweep_durations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
+    """Prompt paging holds a bounded share of wall time on any archive size.
+
+    A valid-only page keeps the first sweep prompt (07.F032), but a sweep that
+    follows a completed one must not keep the service at its prompt cadence
+    forever. Anti-vacuity: drop the rest window and ``discovery_pending`` is
+    true for the whole second sweep.
+    """
+    bootstrap_archive_root(tmp_path)
+
+    class ValidPages:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            frozen_clock.advance(1)  # Each page costs one second of sweep time.
+            start = int(cursor or 0)
+            end = min(start + limit, 96)
+            return tuple(f"valid-{index}" for index in range(start, end)), str(end) if end < 96 else None
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            return dict.fromkeys(keys, "valid")
+
+    monkeypatch.setattr(raw_derivation, "RawObservationDerivation", ValidPages)
+    discovery = RawMaterializationDiscovery(tmp_path)
+
+    discovery.discover_pending_raw_ids(32)
+    assert discovery.discovery_pending  # the first sweep is prompt
+    discovery.discover_pending_raw_ids(32)
+    discovery.discover_pending_raw_ids(32)
+    assert not discovery.discovery_pending  # a three-second sweep completed
+
+    discovery.discover_pending_raw_ids(32)
+    assert not discovery.discovery_pending  # one second into a 27-second rest
+    frozen_clock.advance(25)
+    assert not discovery.discovery_pending
+    frozen_clock.advance(1)
+    assert discovery.discovery_pending
+
+
 def test_process_halts_remain_visible_without_persisting_and_operator_halts_survive(tmp_path: Path) -> None:
     registry = HaltRegistry(tmp_path)
     registry.halt(

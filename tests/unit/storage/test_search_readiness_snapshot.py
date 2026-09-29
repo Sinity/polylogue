@@ -94,3 +94,44 @@ def test_search_hits_come_from_the_snapshot_its_readiness_admitted(
     assert committed > admitted
     assert result.hits
     assert {hit.session_id for hit in result.hits} == admitted
+
+
+def test_fts_partition_inspection_reads_one_snapshot_for_every_caller(tmp_path: Path) -> None:
+    """The FTS owner, not each caller, keeps its COUNTs in one snapshot.
+
+    ``inspect_partition`` backs search admission, the daemon status component
+    and the archive readiness check. A commit landing after its first COUNT
+    must not reach the later ones, or a consistent archive reads as having
+    more FTS rows than indexable blocks.
+
+    Anti-vacuity: drop the ``BEGIN`` in ``FtsDerivationAdapter.inspect_partition``
+    and ``present_rows`` counts the concurrently committed block while
+    ``required_rows`` does not, so the inspection is invalid.
+    """
+    from typing import Any, cast
+
+    from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as facade:
+        writer = facade._conn
+        write_parsed_session_to_archive(writer, _text_session("inspected-first", "counted before the commit"))
+        writer.commit()
+
+        def concurrent_commit() -> None:
+            write_parsed_session_to_archive(writer, _text_session("inspected-second", "committed mid-inspection"))
+            writer.commit()
+
+        reader = open_readonly_connection(facade.index_db_path)
+        try:
+            probe = CommitBetweenStatements(
+                reader, trigger_sql="SELECT COUNT(*) FROM blocks WHERE search_text != ''", commit=concurrent_commit
+            )
+            inspection = FtsDerivationAdapter().inspect_partition(cast(Any, probe), GLOBAL_PARTITION)
+        finally:
+            reader.close()
+
+    assert probe.fired
+    assert inspection.required_rows == inspection.present_rows > 0
+    assert inspection.valid

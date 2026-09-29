@@ -339,12 +339,15 @@ class TestResetCommandDeletion:
 
             cache = cache_home()
             cache.mkdir(parents=True, exist_ok=True)
-            with pytest.raises(DaemonOperationRejectedError):
-                stack.client.operation_to_completion(
+            try:
+                changed = stack.client.operation_to_completion(
                     "maintenance.reset",
                     {"index": True, "cache": True, "confirm": True, "expected_targets": preview},
                     archive_root=str(stack.archive_root),
                 )
+            except DaemonOperationRejectedError:
+                changed = None
+            assert changed is None or changed["outcome"] == "rejected", changed
             assert cache.exists()
 
             staged = stack.client.operation_to_completion(
@@ -487,14 +490,16 @@ class TestResetCommandDeletion:
         # Ordinary recovery runs after tiers open: it must leave the plan pending.
         with declared_unguarded_write("test: startup recovery outside the tier seam"):
             recover_interrupted_operations(archive_root)
-        assert self._reset_runs(archive_root) == [(operation_id, "running")]
-        assert all(path.exists() for path in tier_files)
+        # It may mark the dead attempt interrupted, but the plan stays nonterminal.
+        [(_operation_id, status)] = self._reset_runs(archive_root)
+        assert status in {"running", "interrupted"}
+        assert all((archive_root / name).exists() for name in deleted_tiers)
 
         with declared_unguarded_write("test: daemon startup seam"):
             assert apply_staged_archive_resets(archive_root) == (operation_id,)
 
         [(_operation_id, status)] = self._reset_runs(archive_root)
-        assert status != "running"
+        assert status not in {"running", "interrupted"}
         for name in deleted_tiers:
             for suffix in ("", "-wal", "-shm"):
                 assert not (archive_root / f"{name}{suffix}").exists(), f"{name}{suffix}"
@@ -519,16 +524,19 @@ class TestResetCommandDeletion:
 
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
             archive_root = stack.archive_root
-            with (
-                patch("polylogue.paths.blob_store_root", return_value=archive_root),
-                pytest.raises(DaemonOperationRejectedError) as refused,
-            ):
-                stack.client.operation_to_completion(
-                    "maintenance.reset",
-                    {"blob": True, "confirm": True},
-                    archive_root=str(archive_root),
-                )
-            assert "reset_unresettable_archive_tier" in f"{refused.value.outcome} {refused.value.detail}"
+            with patch("polylogue.paths.blob_store_root", return_value=archive_root):
+                try:
+                    envelope = stack.client.operation_to_completion(
+                        "maintenance.reset",
+                        {"blob": True, "confirm": True},
+                        archive_root=str(archive_root),
+                    )
+                except DaemonOperationRejectedError as exc:
+                    code = f"{exc.outcome} {exc.detail}"
+                else:
+                    assert envelope is not None and envelope["outcome"] == "rejected", envelope
+                    code = str(envelope["error"]["code"])
+            assert "reset_unresettable_archive_tier" in code
             assert self._reset_runs(archive_root) == []
             for name in ("source.db", "user.db", "audit.db", "index.db"):
                 assert (archive_root / name).exists(), name

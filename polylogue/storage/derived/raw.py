@@ -1008,10 +1008,10 @@ class RawObservationDerivation:
         the bytes reappear. When the raw's recorded direct source still holds
         a window whose SHA-256 and size equal the raw's, those bytes are
         staged here and published by the writer in ``publish``; the next pass
-        then prepares over present bytes. Otherwise the refusal names why
-        (``source_missing``, ``hash_mismatch``, ``container_member`` ...), so
-        an unrecoverable raw fails deterministically instead of as a vanished
-        file.
+        then prepares over present bytes. Otherwise the retryable refusal
+        names why (``source_missing``, ``hash_mismatch``, ``container_member``
+        ...) instead of reporting a vanished file; it stays retryable because
+        the source or a restored backup can still bring the bytes back.
         """
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
 

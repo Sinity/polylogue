@@ -82,6 +82,12 @@ __all__ = [
 
 
 _RAW_DISCOVERY_INSPECTION_LIMIT = 32
+#: A raw sweep that follows a completed one pages at the service's idle
+#: cadence until this multiple of the previous sweep's duration has passed,
+#: then at the prompt one. Prompt paging therefore holds at most about a tenth
+#: of wall time however large the archive grows, while a raw that becomes owed
+#: without an arrival is still reached within about ten sweep durations.
+_RAW_RESWEEP_REST_FACTOR = 9.0
 _FILE_DISCOVERY_STEP_LIMIT = 256
 #: Fresh paths discovered beyond the offered page, so the next page's parsing
 #: can be prefetched while the current page publishes.
@@ -1465,11 +1471,24 @@ class RawMaterializationDiscovery:
         #: Pending project scans: (project directory, last served path,
         #: last served rowid). Paged by ``_dependents_selected``.
         self._evidence_projects: deque[tuple[str, str, int]] = deque()
+        #: Monotonic start of the sweep in progress, and the end and duration
+        #: of the last completed one, which pace the next (see
+        #: ``_RAW_RESWEEP_REST_FACTOR``).
+        self._sweep_started_at: float | None = None
+        self._last_sweep_finished_at: float | None = None
+        self._last_sweep_duration_s = 0.0
 
     @property
     def discovery_pending(self) -> bool:
-        """An unfinished bounded traversal, not a claim that rows owe work."""
-        return self._cursor is not None or bool(self._evidence_projects)
+        """An unfinished bounded traversal due for prompt paging, not a claim that rows owe work."""
+        if self._evidence_projects:
+            return True
+        if self._cursor is None:
+            return False
+        if self._last_sweep_finished_at is None:
+            return True
+        rest_s = _RAW_RESWEEP_REST_FACTOR * self._last_sweep_duration_s
+        return time.monotonic() >= self._last_sweep_finished_at + rest_s
 
     def _raw_frontier(self) -> int:
         """Return the durable high-water mark for admitted raw observations."""
@@ -1547,6 +1566,9 @@ class RawMaterializationDiscovery:
             self._held_page = None
             self._frontier = self._raw_frontier()
             self._lane_turn = 0
+            # A new generation owes a fresh sweep now, not after a rest.
+            self._sweep_started_at = None
+            self._last_sweep_finished_at = None
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = make_raw_observation_derivation(self._archive_root)
@@ -1635,6 +1657,8 @@ class RawMaterializationDiscovery:
         # costs one extra bounded page read rather than the whole cycle.
         for _attempt in range(2):
             page_cursor = self._cursor
+            if page_cursor is None:
+                self._sweep_started_at = time.monotonic()
             page, next_cursor = adapter.required_page(frame, cursor=page_cursor, limit=limit)
             # An empty or fully valid page is progress through the required-key
             # space. ``None`` is the completed-traversal marker; the following
@@ -1645,16 +1669,14 @@ class RawMaterializationDiscovery:
                 statuses = adapter.inspect(frame, page)
                 selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
             if not selected:
-                self._cursor = next_cursor
-                self._held_page = None
+                self._advance_sweep(next_cursor)
                 return ()
             held = self._held_page
             if held is not None and held[0] == page_cursor and set(held[1]) == set(selected):
                 # Re-inspected the same page and nothing moved: the blockage is
                 # not budget pressure, so stop pinning the traversal behind it
                 # and go on to the next page in this same call.
-                self._cursor = next_cursor
-                self._held_page = None
+                self._advance_sweep(next_cursor)
                 continue
             # Hold the continuation over keys this page still owes. The
             # dispatcher admits the offered items only until its class budget
@@ -1668,6 +1690,15 @@ class RawMaterializationDiscovery:
             self._cursor = page_cursor
             return selected
         return ()
+
+    def _advance_sweep(self, next_cursor: str | None) -> None:
+        self._cursor = next_cursor
+        self._held_page = None
+        if next_cursor is None and self._sweep_started_at is not None:
+            now = time.monotonic()
+            self._last_sweep_duration_s = max(0.0, now - self._sweep_started_at)
+            self._last_sweep_finished_at = now
+            self._sweep_started_at = None
 
     def _with_costs(self, selected: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
         from polylogue.operations.operation_context import open_operation_read

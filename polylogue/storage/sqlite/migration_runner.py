@@ -742,9 +742,11 @@ def _validate_blob_inventory(
     return frozenset(str(blob["blob_hash"]) for blob in current)
 
 
-# Keyed by the same stat signature as the inventory cache: an unchanged tree
-# has an unchanged closure, so a repeated gate does not re-project source.db.
-_backup_blob_closure_cache: dict[Path, tuple[tuple[tuple[str, int, int], ...], frozenset[str]]] = {}
+# One slot, keyed by package root and the same stat signature as the
+# inventory cache: an unchanged tree has an unchanged closure, so the repeated
+# gate over one package does not re-project source.db. A closure holds every
+# blob hash of the archive, so only the most recent package's is kept.
+_backup_blob_closure_cache: tuple[Path, tuple[tuple[str, int, int], ...], frozenset[str]] | None = None
 
 
 def _validate_package_blob_closure(backup_root: Path, carried: frozenset[str]) -> None:
@@ -755,18 +757,20 @@ def _validate_package_blob_closure(backup_root: Path, carried: frozenset[str]) -
     acquisition file could reproduce it is refused here: once that file is
     gone, restoring the package would leave a row whose bytes are absent.
     """
+    global _backup_blob_closure_cache
     resolved = backup_root.resolve(strict=True)
     signature = _backup_root_stat_signature(resolved)
-    cached = _backup_blob_closure_cache.get(resolved)
-    if cached is not None and cached[0] == signature:
-        required = cached[1]
+    cached = _backup_blob_closure_cache
+    if cached is not None and cached[0] == resolved and cached[1] == signature:
+        required = cached[2]
     else:
         try:
             required = package_blob_closure(resolved).required
         except (RuntimeError, sqlite3.Error, OSError) as exc:
             raise MigrationError(f"migration backup blob closure is unreadable: {exc}") from exc
-        if _backup_root_stat_signature(resolved) == signature:
-            _backup_blob_closure_cache[resolved] = (signature, required)
+        _backup_blob_closure_cache = (
+            (resolved, signature, required) if _backup_root_stat_signature(resolved) == signature else None
+        )
     missing = sorted(required - carried)
     if missing:
         raise MigrationError(
@@ -840,7 +844,7 @@ def _validate_backup_manifest_covers_tier(
 
     ``require_attestation`` gates the cryptographic HMAC attestation check.
     Attestations are only ever minted for durable tiers (source, user, audit) by
-    ``daemon/backup.py``'s ``_write_successful_verification_receipt`` -- a
+    ``operations/archive_backup.py``'s ``_write_successful_verification_receipt`` -- a
     derived tier (index, embeddings) can never carry one, by design, so
     requiring it for those tiers would make backup-manifest validation
     permanently unsatisfiable rather than merely strict. Callers protecting a
