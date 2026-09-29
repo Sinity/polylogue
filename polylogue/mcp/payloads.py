@@ -112,6 +112,12 @@ class MCPErrorPayload(SurfacePayloadModel):
     # operator message ``polylogue ops embed status`` does.
     readiness_status: str | None = None
     valid_values: tuple[str, ...] = ()
+    # Query refinement (polylogue-z9gh.3.3): the declared names nearest an
+    # unknown field, and the caller's own expression with only that field
+    # renamed when the correction is unambiguous and compiles. A suggestion;
+    # the server never runs it.
+    candidates: tuple[str, ...] = ()
+    corrected_expression: str | None = None
     is_error: Literal[True] = True
 
 

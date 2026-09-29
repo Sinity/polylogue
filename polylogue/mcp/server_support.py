@@ -482,11 +482,22 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       paths, or other internal state.
     """
     from polylogue.api.facade_client import FacadeDaemonRequiredError
-    from polylogue.archive.query.expression import ExpressionCompileError
+    from polylogue.archive.query.expression import ExpressionCompileError, UnknownQueryFieldError
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
     from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError, DaemonOperationRejectedError
 
-    if isinstance(exc, QuerySpecError | ExpressionCompileError):
+    if isinstance(exc, UnknownQueryFieldError):
+        payload = MCPErrorPayload(
+            message=f"invalid {exc.field}: {exc}.",
+            code="invalid_query",
+            error="invalid_query",
+            detail=type(exc).__name__,
+            field=exc.field,
+            tool=fn_name,
+            candidates=exc.candidates,
+            corrected_expression=exc.corrected_expression,
+        )
+    elif isinstance(exc, QuerySpecError | ExpressionCompileError):
         field = exc.field
         valid_values = _QUERY_ERROR_VALID_VALUES.get(field, ()) if field is not None else ()
         valid_hint = f" Valid values: {', '.join(valid_values)}." if valid_values else ""

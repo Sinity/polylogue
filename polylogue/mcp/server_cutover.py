@@ -1427,7 +1427,17 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             except QueryArchiveEpochUnreadableError as exc:
                 return hooks.error_json(str(exc), code=exc.code, tool="query")
 
-        return await hooks.async_safe_call("query", run)
+        async def run_with_refinement() -> str:
+            from polylogue.archive.query.expression import UnknownQueryFieldError, propose_field_correction
+
+            try:
+                return await run()
+            except UnknownQueryFieldError as exc:
+                if expression is not None:
+                    exc.corrected_expression = propose_field_correction(expression, exc)
+                raise
+
+        return await hooks.async_safe_call("query", run_with_refinement)
 
     async def read(
         ref: str,

@@ -198,6 +198,23 @@ class ExpressionCompileError(PolylogueError):
         self.field = field
 
 
+class UnknownQueryFieldError(ExpressionCompileError):
+    """An expression names a field the executable grammar does not declare.
+
+    ``candidates`` are the declared field names closest to the unknown one.
+    ``corrected_expression`` is filled in by :func:`propose_field_correction`
+    at a surface boundary that holds the caller's whole expression: it is the
+    same expression with only that field name replaced, offered when exactly
+    one candidate exists and the corrected text compiles. It is a suggestion;
+    nothing executes it.
+    """
+
+    def __init__(self, message: str, *, field: str, candidates: tuple[str, ...]) -> None:
+        super().__init__(message, field=field)
+        self.candidates = candidates
+        self.corrected_expression: str | None = None
+
+
 class UnsupportedSessionTerminalActionError(ExpressionCompileError):
     """Raised when a session-source terminal action is not supported."""
 
@@ -1344,15 +1361,79 @@ _FIELD_CLAUSE_RE = re.compile(
 )
 
 
-def _unknown_query_field_message(field_name: str, *, include_structural: bool = False) -> str:
+def _unknown_query_field_error(field_name: str, *, include_structural: bool = False) -> UnknownQueryFieldError:
     recognized = sorted(EXPRESSION_FIELD_REGISTRY)
     message = f"unknown query field {field_name!r}; recognized fields: " + ", ".join(recognized)
-    suggestions = get_close_matches(field_name, recognized, n=3, cutoff=0.6)
+    vocabulary = [*recognized, *sorted(_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS)] if include_structural else recognized
+    suggestions = tuple(get_close_matches(field_name, vocabulary, n=3, cutoff=0.6))
     if suggestions:
         message += "; did you mean: " + ", ".join(suggestions)
     if include_structural:
         message += "; structural fields: " + ", ".join(sorted(_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS))
-    return message
+    return UnknownQueryFieldError(message, field=field_name, candidates=suggestions)
+
+
+def _quoted_spans(expression: str) -> list[tuple[int, int]]:
+    """Half-open spans of double-quoted literals, honouring backslash escapes."""
+    spans: list[tuple[int, int]] = []
+    start: int | None = None
+    index = 0
+    while index < len(expression):
+        character = expression[index]
+        if start is not None and character == "\\":
+            index += 2
+            continue
+        if character == '"':
+            if start is None:
+                start = index
+            else:
+                spans.append((start, index + 1))
+                start = None
+        index += 1
+    if start is not None:
+        spans.append((start, len(expression)))
+    return spans
+
+
+def propose_field_correction(expression: str, error: UnknownQueryFieldError) -> str | None:
+    """Return ``expression`` with only the unknown field renamed, or ``None``.
+
+    A correction is offered only when it cannot change what the caller asked
+    for beyond the misspelt field: exactly one declared candidate, every
+    occurrence of the field as a clause key (outside quoted literals) renamed
+    to a name with the same dotted shape, values, operators, order and bounds
+    left byte-for-byte, and the result compiles through the same grammar. An
+    ambiguous, reshaping or non-compiling guess is no correction.
+    """
+    if len(error.candidates) != 1 or error.field is None:
+        return None
+    replacement = error.candidates[0]
+    if replacement.count(".") != error.field.count("."):
+        # ``sesion.tag`` is nearest ``session`` by spelling, but renaming a
+        # scoped field to a bare one would change what the clause selects.
+        return None
+    quoted = _quoted_spans(expression)
+    pattern = re.compile(rf"(?<![A-Za-z0-9_.]){re.escape(error.field)}(?=:)")
+    pieces: list[str] = []
+    cursor = 0
+    renamed = 0
+    for match in pattern.finditer(expression):
+        if any(start <= match.start() < end for start, end in quoted):
+            continue
+        pieces.append(expression[cursor : match.start()])
+        pieces.append(replacement)
+        cursor = match.end()
+        renamed += 1
+    if renamed == 0:
+        return None
+    pieces.append(expression[cursor:])
+    corrected = "".join(pieces)
+    try:
+        if parse_unit_source_expression(corrected) is None:
+            compile_expression(corrected)
+    except ExpressionCompileError:
+        return None
+    return corrected
 
 
 def _decode_escaped_string(token: Token) -> str:
@@ -1552,10 +1633,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
         and not is_value_path_field
     ):
-        raise ExpressionCompileError(
-            _unknown_query_field_message(field_name, include_structural=True),
-            field=field_name,
-        )
+        raise _unknown_query_field_error(field_name, include_structural=True)
     if (
         validation_field not in _BOOLEAN_SUPPORTED_FIELDS
         and validation_field not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
@@ -4043,10 +4121,7 @@ class _SpecAccumulator:
             )
 
         else:
-            raise ExpressionCompileError(
-                _unknown_query_field_message(fname),
-                field=fname,
-            )
+            raise _unknown_query_field_error(fname)
 
     def to_spec(self) -> SessionQuerySpec:
         return SessionQuerySpec(
@@ -4332,6 +4407,8 @@ __all__ = [
     "date_query_operators",
     "explain_expression",
     "ExpressionCompileError",
+    "UnknownQueryFieldError",
+    "propose_field_correction",
     "EXPRESSION_FIELD_REGISTRY",
     "SESSION_SOURCE_UNIT",
     "SESSION_TERMINAL_ACTIONS",
