@@ -71,6 +71,10 @@ _STAGED_OPERATIONS = frozenset(
 )
 
 
+#: Name prefix of the ingest owner's re-drive task on its owner loop.
+REDRIVE_TASK_PREFIX = "polylogue-ingest-redrive:"
+
+
 class BeforeAcceptanceCancelledError(RuntimeError):
     """Cancellation won the lock before durable prepare could begin."""
 
@@ -85,11 +89,18 @@ class _StagedTask(Generic[_T]):
     takes the task's terminal state only when the task has actually finished.
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, start: Callable[[], Coroutine[Any, Any, _T]]) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        start: Callable[[], Coroutine[Any, Any, _T]],
+        *,
+        name: str | None = None,
+    ) -> None:
         self.future: Future[_T] = Future()
         self._loop = loop
         self._task: asyncio.Task[_T] | None = None
         self._cancelled = False
+        self._name = name
         loop.call_soon_threadsafe(self._start, start)
 
     def cancel(self) -> None:
@@ -101,7 +112,7 @@ class _StagedTask(Generic[_T]):
         # order, so a cancellation either precedes the task or reaches it.
         if self._cancelled:
             return
-        self._task = self._loop.create_task(start())
+        self._task = self._loop.create_task(start(), name=self._name)
         self._task.add_done_callback(self._settle)
 
     def _cancel(self) -> None:
@@ -216,7 +227,11 @@ class DaemonOperationRuntime:
                         error_detail=str(exc)[:512],
                     )
 
-            self._redrive = asyncio.run_coroutine_threadsafe(redrive(), self._owner_loop)
+            # Named: the re-drive is this runtime's own declared child on the
+            # owner loop, not an anonymous task.
+            self._redrive = _StagedTask(
+                self._owner_loop, redrive, name=f"{REDRIVE_TASK_PREFIX}{self.archive_root}"
+            ).future
             redrive_future = self._redrive
         try:
             on_owner_loop = asyncio.get_running_loop() is self._owner_loop

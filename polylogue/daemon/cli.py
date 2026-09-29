@@ -1900,6 +1900,35 @@ async def _shutdown_writer_coordinator_with_rebuild_exclusion(
     return writer_drained
 
 
+def compose_ingest_owner(
+    archive_root: Path, write_bridge: DaemonWriteThreadBridge
+) -> tuple[DaemonOperationRuntime, ComposedSessionProfiles]:
+    """The ingest owner of a daemon that serves no API: its operation runtime.
+
+    It shares the daemon's compute capacity and session-profile maintenance
+    and re-drives accepted ingests exactly as the API server's runtime does;
+    the caller starts the re-drive and shuts the runtime down.
+    """
+    from polylogue.daemon.execution import daemon_compute_adapter
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+    profiles = compose_session_profile_callback(
+        archive_root,
+        compute_adapter=daemon_compute_adapter(),
+        write_bridge=write_bridge,
+        now=time.time,
+    )
+    runtime = DaemonOperationRuntime(
+        archive_root,
+        write_bridge=write_bridge,
+        execution_kernel=daemon_compute_adapter(),
+        owner_loop=write_bridge.owner_loop,
+        session_maintenance=profiles.maintenance,
+    )
+    return runtime, profiles
+
+
 async def run_daemon_services(
     *,
     sources: tuple[WatchSource, ...],
@@ -2642,23 +2671,8 @@ async def _run_daemon_services_under_active_writer_lease(
             # The ingest owner does not depend on the HTTP surface: accepted
             # ingests that startup recovery left for it are re-driven by a
             # watcher-only daemon too.
-            from polylogue.daemon.execution import daemon_compute_adapter
-            from polylogue.daemon.operation_runtime import DaemonOperationRuntime
-            from polylogue.daemon.session_profile_composition import compose_session_profile_callback
-
-            owner_bridge = DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop())
-            owner_session_profiles = compose_session_profile_callback(
-                archive_root_path,
-                compute_adapter=daemon_compute_adapter(),
-                write_bridge=owner_bridge,
-                now=time.time,
-            )
-            ingest_owner_runtime = DaemonOperationRuntime(
-                archive_root_path,
-                write_bridge=owner_bridge,
-                execution_kernel=daemon_compute_adapter(),
-                owner_loop=owner_bridge.owner_loop,
-                session_maintenance=owner_session_profiles.maintenance,
+            ingest_owner_runtime, owner_session_profiles = compose_ingest_owner(
+                archive_root_path, DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop())
             )
             ingest_owner_runtime.start_accepted_ingest_redrive()
             await ingest_owner_runtime.accepted_ingest_redrive_claimed()

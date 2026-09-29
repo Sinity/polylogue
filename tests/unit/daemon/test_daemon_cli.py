@@ -2315,7 +2315,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 thread_name_prefix="test-daemon-api",
             )
             self.operation_runtime = SimpleNamespace(
-                shutdown=self._shutdown_operation_runtime, embedding_convergence=None
+                shutdown=self._shutdown_operation_runtime,
+                embedding_convergence=None,
+                accepted_ingest_redrive_claimed=_no_redrive_claims,
             )
 
         async def _shutdown_operation_runtime(self) -> None:
@@ -3200,7 +3202,9 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     async def shutdown_operation_runtime() -> None:
         return None
 
-    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime)
+    api_server.operation_runtime = SimpleNamespace(
+        shutdown=shutdown_operation_runtime, accepted_ingest_redrive_claimed=_no_redrive_claims
+    )
     interrupted_cleanup_calls = 0
 
     def mark_interrupted_cleanup() -> None:
@@ -4408,11 +4412,16 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
 #: has to be declared in :mod:`polylogue.daemon.services` instead of being
 #: added here. An anonymous ``Task-N`` matches nothing and fails the
 #: inventory, which is why every one of these carries a name.
+async def _no_redrive_claims() -> None:
+    """A fake ingest owner with no interrupted accepted ingest to claim."""
+
+
 _DECLARED_UNSUPERVISED_TASK_PREFIXES: dict[str, str] = {
     "polylogue-writer:": "DaemonWriteCoordinator: one admitted mutation",
     "polylogue-writer-staged:": "DaemonWriteThreadBridge: one staged publication",
     "polylogue-managed:": "DaemonWriteCoordinator: one tracked post-write effect",
     "polylogue-drive-catchup:": "DriveCatchupExecution: one settled catch-up step",
+    "polylogue-ingest-redrive:": "DaemonOperationRuntime: the ingest owner's accepted-ingest re-drive",
 }
 
 
@@ -4604,6 +4613,8 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
             thread_orphans=thread_orphans,
         )
     assert created, "the task factory recorded nothing; the inventory never observed the route"
+    # A daemon serving no API still composes its ingest owner (Codex P1, #5717).
+    assert any(entry.name.startswith("polylogue-ingest-redrive:") for entry in created)
     assert orphans == [], f"the composition route returned with live children: {orphans}"
     assert thread_orphans == [], f"the composition route returned with live threads: {thread_orphans}"
 

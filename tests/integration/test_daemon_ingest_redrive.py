@@ -897,50 +897,29 @@ async def test_a_failed_redrive_construction_releases_every_claim(
     assert _session_titles(archive_root) == ["Retained Redrive", "Second Redrive"]
 
 
-@pytest.mark.timeout(300)
 async def test_a_watcher_only_daemon_redrives_accepted_ingests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``polylogued run --no-api`` still materializes an accepted generation.
+    """The ingest owner a no-API daemon composes materializes an accepted generation.
 
     Anti-vacuity (Codex P1, #5717): compose the ingest owner only inside the
-    API server and the watcher-only daemon never claims the run, so no
-    session appears.
+    API server and ``polylogued run --no-api`` has no runtime to re-drive the
+    run, so no session appears (the composition-route test pins that the
+    watcher-only daemon starts this owner's re-drive).
     """
-    import contextlib
-
-    from polylogue.daemon import cli as daemon_cli
-    from tests.unit.daemon.test_daemon_cli import _daemon_startup_stubs
+    from polylogue.daemon.cli import compose_ingest_owner
+    from polylogue.daemon.http import _StandaloneWriteRuntime
 
     archive_root, source = _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     source.unlink()
 
-    def titles() -> list[str]:
-        index = ArchiveLocation.resolve(archive_root).active_index_path
-        with contextlib.closing(sqlite3.connect(f"file:{index}?mode=ro", uri=True)) as conn:
-            return [str(row[0]) for row in conn.execute("SELECT title FROM sessions ORDER BY title")]
+    writer = _StandaloneWriteRuntime(archive_root)
+    runtime, _profiles = compose_ingest_owner(archive_root, writer.bridge)
+    try:
+        await asyncio.to_thread(runtime.start_accepted_ingest_redrive)
+        redrive = runtime._redrive
+        assert redrive is not None
+        await asyncio.wrap_future(redrive)
+    finally:
+        await asyncio.to_thread(writer.close, before_drain=runtime.shutdown, after_drain=lambda: None)
 
-    with contextlib.ExitStack() as stack:
-        _daemon_startup_stubs(stack, daemon_cli, archive_root)
-        task = asyncio.create_task(
-            daemon_cli.run_daemon_services(
-                sources=(),
-                enable_watch=False,
-                enable_browser_capture=False,
-                browser_capture_host="127.0.0.1",
-                browser_capture_port=8765,
-                browser_capture_spool_path=None,
-                enable_api=False,
-                service_profile=ServiceProfile.REPLAY,
-            )
-        )
-        try:
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + 120
-            while titles() != ["Retained Redrive"]:
-                assert not task.done(), task.exception() if not task.cancelled() else "cancelled"
-                assert loop.time() < deadline, "the watcher-only daemon never re-drove the accepted ingest"
-                await asyncio.sleep(0.1)
-        finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=30.0)
+    assert _session_titles(archive_root) == ["Retained Redrive"]
