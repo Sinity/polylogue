@@ -20,17 +20,17 @@ value its declared vocabulary never admitted.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from polylogue import Polylogue
+from polylogue.config import Config
+from polylogue.operations.facade_writers import record_manual_continuation_product
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _archive_with_sessions(tmp_path: Path) -> Polylogue:
+def _archive_with_sessions(tmp_path: Path) -> Config:
     with ArchiveStore(tmp_path):
         pass
     conn = sqlite3.connect(tmp_path / "index.db")
@@ -43,7 +43,9 @@ def _archive_with_sessions(tmp_path: Path) -> Polylogue:
         conn.commit()
     finally:
         conn.close()
-    return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    # The facade forwards this mutation to the resident daemon; the daemon
+    # runs the product writer exercised here.
+    return Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
 
 
 def test_manual_continuation_records_a_storable_lineage_edge(tmp_path: Path) -> None:
@@ -59,7 +61,7 @@ def test_manual_continuation_records_a_storable_lineage_edge(tmp_path: Path) -> 
     """
     archive = _archive_with_sessions(tmp_path)
 
-    asyncio.run(archive.record_manual_continuation("codex-session:child", "codex-session:parent"))
+    record_manual_continuation_product(archive, "codex-session:child", "codex-session:parent")
 
     conn = sqlite3.connect(tmp_path / "index.db")
     try:
@@ -95,4 +97,27 @@ def test_manual_continuation_still_refuses_an_absent_parent(tmp_path: Path) -> N
     archive = _archive_with_sessions(tmp_path)
 
     with pytest.raises(ValueError, match="parent session does not exist"):
-        asyncio.run(archive.record_manual_continuation("codex-session:child", "codex-session:absent"))
+        record_manual_continuation_product(archive, "codex-session:child", "codex-session:absent")
+
+
+def test_manual_continuation_refuses_an_edge_that_closes_a_cycle(tmp_path: Path) -> None:
+    """With child already under parent, recording parent as child's continuation is refused.
+
+    Anti-vacuity: write the resolved edge without the explicit cycle check and
+    the resolver never examines it, so both sessions publish each other as
+    ``parent_session_id``.
+    """
+    archive = _archive_with_sessions(tmp_path)
+    record_manual_continuation_product(archive, "codex-session:child", "codex-session:parent")
+
+    with pytest.raises(ValueError, match="manual continuation refused"):
+        record_manual_continuation_product(archive, "codex-session:parent", "codex-session:child")
+
+    conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        links = conn.execute("SELECT src_session_id, resolved_dst_session_id FROM session_links").fetchall()
+        parents = dict(conn.execute("SELECT session_id, parent_session_id FROM sessions").fetchall())
+    finally:
+        conn.close()
+    assert links == [("codex-session:child", "codex-session:parent")]
+    assert parents["codex-session:parent"] is None

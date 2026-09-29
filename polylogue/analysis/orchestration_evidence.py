@@ -375,7 +375,9 @@ def build_session_orchestration(
         topology_payload["edges"] = [
             edge
             for edge in topology_payload["edges"][:_LIMIT]
-            if edge["parent_id"] in retained_ids and edge["child_id"] in retained_ids
+            # An unresolved edge has no parent node to retain; it survives
+            # with its retained child so the unresolved relationship stays visible.
+            if edge["child_id"] in retained_ids and (edge["parent_id"] is None or edge["parent_id"] in retained_ids)
         ]
         truncated.append("topology")
         gaps.append("observation_limit")
