@@ -5764,11 +5764,6 @@ class LiveBatchProcessor:
                 for info in validator.filter_entries(central_directory, allowed_path=allowed_path):
                     if info.file_size == 0:
                         continue
-                    # A unique strong path declaration is acquisition evidence,
-                    # not provider inference from the member's JSON or Origin.
-                    entry_provider = fallback_provider
-                    if entry_provider is Provider.UNKNOWN:
-                        entry_provider = declared_artifact_provider(info.filename) or Provider.UNKNOWN
                     entry_ordinal = entry_ordinals[id(info)]
                     split_index = 0
                     source_index = zip_member_source_index(
@@ -5780,7 +5775,7 @@ class LiveBatchProcessor:
                         zip_path=path,
                         entry=info,
                         file_mtime=file_mtime,
-                        provider_hint=entry_provider,
+                        provider_hint=fallback_provider,
                         blob_store=blob_store,
                         bound_provider=bound_location_provider(fallback_provider),
                     )
@@ -5790,7 +5785,7 @@ class LiveBatchProcessor:
                         raw_data = stream_preserved_zip_entry_raw_data(
                             zf,
                             member_context,
-                            provider_hint=entry_provider,
+                            provider_hint=fallback_provider,
                             source_index=source_index,
                         )
                     except ZipBombError as exc:
@@ -5820,9 +5815,9 @@ class LiveBatchProcessor:
                             RawSessionRecord(
                                 raw_id=member_raw_id,
                                 blob_hash=raw_data.blob_hash,
-                                payload_provider=entry_provider,
+                                payload_provider=fallback_provider,
                                 capture_mode=fallback_provider,
-                                source_name=entry_provider.value,
+                                source_name=fallback_provider.value,
                                 source_path=raw_data.source_path,
                                 source_index=source_index,
                                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,

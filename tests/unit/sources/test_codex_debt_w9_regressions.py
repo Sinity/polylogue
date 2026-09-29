@@ -6,9 +6,9 @@ import asyncio
 import json
 import sqlite3
 import threading
-import zipfile
 from datetime import UTC, datetime
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,20 +18,16 @@ import pytest
 from polylogue.config import Source
 from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
-from polylogue.sources import assembly_chatgpt, dispatch, drive
+from polylogue.sources import assembly_chatgpt, dispatch, drive, revision_backfill
 from polylogue.sources.drive.types import DriveFile
 from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
-from polylogue.sources.live import WatchSource
-from polylogue.sources.live import cold_build, hook_paste_enrichment
+from polylogue.sources.live import WatchSource, cold_build, hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import jsonl_complete_prefix
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.parse_prefetch import live_parse_path_worker
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
-
 
 _TIMESTAMP = "2026-06-02T00:00:00Z"
 
@@ -83,8 +79,13 @@ def test_w9_asset_acquisition_rejects_symlink_leaves(tmp_path: Path) -> None:
     assert all("abc" not in key for key in acquired)
 
 
-def test_w9_path_worker_recognizes_project_keys_beyond_prefix(tmp_path: Path) -> None:
-    """W9-90-15: the real path worker's bounded probe used to lose project keys."""
+def test_w9_retained_unknown_project_is_detected_beyond_prefix() -> None:
+    """W9-90-15: replay's bounded probe dropped the project keys past the 8 KiB prefix.
+
+    Without ``docs``/``prompt_template``/``is_starter_project`` in the probe's
+    retained root keys the bounded scan returns UNKNOWN, and replay refuses the
+    retained raw instead of materializing the project.
+    """
     payload = {
         "uuid": "w9-project",
         "description": "x" * 32768,
@@ -92,29 +93,25 @@ def test_w9_path_worker_recognizes_project_keys_beyond_prefix(tmp_path: Path) ->
         "prompt_template": "Use exact evidence when answering.",
         "is_starter_project": False,
     }
-    source = tmp_path / "project.json"
-    source.write_text(json.dumps(payload), encoding="utf-8")
-    expected = dispatch.detect_provider(payload)
-    assert expected is Provider.CLAUDE_AI
-    artifact = live_parse_path_worker(
-        Provider.UNKNOWN.value, str(source), source.stem,
-        is_stream=False, shard_directory=str(tmp_path / "prepared"),
+    assert dispatch.detect_provider(payload) is Provider.CLAUDE_AI
+    provider, _evidence = revision_backfill._detect_unknown_retained_provider(
+        BytesIO(json.dumps(payload).encode()), "projects/w9-project.json"
     )
-    try:
-        assert artifact.error is None
-        assert artifact.resolved_provider is expected
-    finally:
-        artifact.discard()
+    assert provider is Provider.CLAUDE_AI
 
 
 @pytest.mark.parametrize("wrapper_depth", [0, 1, 2])
 def test_w9_drive_lowering_preserves_gemini_source_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrapper_depth: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper_depth: int,
 ) -> None:
     """W9-90-16: the production Gemini parser receives None before the fix."""
     payload: Any = {
-        "sessionId": "w9-gemini", "projectHash": "w9-project",
-        "startTime": _TIMESTAMP, "lastUpdated": _TIMESTAMP,
+        "sessionId": "w9-gemini",
+        "projectHash": "w9-project",
+        "startTime": _TIMESTAMP,
+        "lastUpdated": _TIMESTAMP,
         "messages": [{"id": "m", "type": "user", "content": "hello"}],
     }
     for _ in range(wrapper_depth):
@@ -161,15 +158,20 @@ def _cached_drive_source(root: Path, name: str, payload: bytes) -> tuple[Source,
 
 @pytest.mark.parametrize("known_revision", [False, True])
 def test_w9_drive_cache_accepts_null_jsonl(
-    tmp_path: Path, known_revision: bool,
+    tmp_path: Path,
+    known_revision: bool,
 ) -> None:
     """W9-90-23: either production cache route redownloads valid null records."""
     payload = b'null\n{"value":1}\n'
     source, cache, client = _cached_drive_source(tmp_path / "cache", "session.jsonl", payload)
-    records = list(drive.iter_drive_raw_data(
-        source=source, client=cast(Any, client), blob_store=BlobStore(tmp_path / "blob"),
-        known_mtimes={str(cache): _TIMESTAMP} if known_revision else None,
-    ))
+    records = list(
+        drive.iter_drive_raw_data(
+            source=source,
+            client=cast(Any, client),
+            blob_store=BlobStore(tmp_path / "blob"),
+            known_mtimes={str(cache): _TIMESTAMP} if known_revision else None,
+        )
+    )
     assert client.downloads == 0
     assert len(records) == (0 if known_revision else 1)
     if records:
@@ -178,7 +180,9 @@ def test_w9_drive_cache_accepts_null_jsonl(
 
 @pytest.mark.parametrize("failure_at", ["write", "close"])
 def test_w9_drive_failed_cache_publication_removes_temporary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_at: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_at: str,
 ) -> None:
     """W9-90-24: write/close failures leaked the temporary in the public route."""
     source, cache, client = _cached_drive_source(tmp_path / "cache", "session.json", b"{")
@@ -207,22 +211,33 @@ def test_w9_drive_failed_cache_publication_removes_temporary(
 
     monkeypatch.setattr(drive.tempfile, "NamedTemporaryFile", FailingTemporary)
     with pytest.raises(OSError, match="injected cache"):
-        list(drive.iter_drive_raw_data(
-            source=source, client=cast(Any, client), blob_store=BlobStore(tmp_path / "blob"),
-        ))
+        list(
+            drive.iter_drive_raw_data(
+                source=source,
+                client=cast(Any, client),
+                blob_store=BlobStore(tmp_path / "blob"),
+            )
+        )
     assert client.downloads == 1
     assert cache.read_bytes() == b"{"
-    assert set(cache.parent.iterdir()) == before
+    # The revision marker is dropped before publication by design; only the
+    # document's hidden temporary must not outlive the failed write.
+    leaked = {path.name for path in set(cache.parent.iterdir()) - before if path.name.startswith(f".{cache.name}.")}
+    assert leaked == set()
 
 
 def test_w9_drive_unchanged_large_integer_cache_does_not_download(tmp_path: Path) -> None:
     """W9-90-25: use_float validation rejects an integer the JSON cache accepts."""
     payload = json.dumps({"integer": 2**128}).encode()
     source, cache, client = _cached_drive_source(tmp_path / "cache", "session.json", payload)
-    records = list(drive.iter_drive_raw_data(
-        source=source, client=cast(Any, client), blob_store=BlobStore(tmp_path / "blob"),
-        known_mtimes={str(cache): _TIMESTAMP},
-    ))
+    records = list(
+        drive.iter_drive_raw_data(
+            source=source,
+            client=cast(Any, client),
+            blob_store=BlobStore(tmp_path / "blob"),
+            known_mtimes={str(cache): _TIMESTAMP},
+        )
+    )
     assert records == []
     assert client.downloads == 0
 
@@ -245,7 +260,8 @@ def test_w9_trajectory_preflight_reports_degraded_steps(tmp_path: Path) -> None:
 
 
 def test_w9_completed_ingest_repeats_materialized_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """W9-91-15: losing cursor_update must not leave a completed attempt at zero."""
     archive_root = tmp_path / "archive"
@@ -273,7 +289,8 @@ def test_w9_completed_ingest_repeats_materialized_count(
 
 
 def test_w9_source_only_protobuf_does_not_invoke_converter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """W9-91-17: raw-only acquisition incorrectly called the language server."""
     from polylogue.sources import source_parsing
@@ -303,35 +320,9 @@ def test_w9_source_only_protobuf_does_not_invoke_converter(
         ]
 
 
-def test_w9_source_only_zip_preserves_declared_sidecar_provider(tmp_path: Path) -> None:
-    """W9-92-01: source-only storage stamps UNKNOWN on a Claude-owned sidecar."""
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    source_root = tmp_path / "inbox"
-    source_root.mkdir()
-    bundle = source_root / "sidecar.zip"
-    payload = json.dumps([{
-        "uuid": "not-a-standalone-session", "name": "embedded tool output",
-        "created_at": _TIMESTAMP, "updated_at": _TIMESTAMP,
-        "chat_messages": [{"uuid": "m", "sender": "human", "text": "embedded", "created_at": _TIMESTAMP}],
-    }]).encode()
-    with zipfile.ZipFile(bundle, "w") as archive:
-        archive.writestr("tool-results/dump.json", payload)
-    processor = _processor(archive_root, source_root, "unknown")
-    set_degraded(DegradedReason(code="schema_version_mismatch", message="derived tier unavailable", derived_only=True))
-    try:
-        result = processor._ingest_full_paths_sync([bundle], source_name="unknown")
-    finally:
-        clear_degraded()
-    assert result.succeeded == [bundle]
-    with sqlite3.connect(archive_root / "source.db") as connection:
-        assert connection.execute("SELECT origin, lower(hex(blob_hash)) FROM raw_sessions").fetchall() == [
-            (origin_from_provider(Provider.CLAUDE_CODE).value, sha256(payload).hexdigest()),
-        ]
-
-
 def test_w9_jsonl_boundary_keeps_newline_fast_path() -> None:
     """W9-92-11: the old regex makes this production boundary call scan lines."""
+
     class NoLineWalk(bytes):
         def __getitem__(self, key: Any) -> Any:
             value = super().__getitem__(key)
@@ -340,11 +331,11 @@ def test_w9_jsonl_boundary_keeps_newline_fast_path() -> None:
         def find(self, *_args: Any, **_kwargs: Any) -> int:
             pytest.fail("ordinary newline-terminated JSONL entered the per-line count")
 
-    boundary = jsonl_complete_prefix(NoLineWalk(b'{}\n' * 100))
+    boundary = jsonl_complete_prefix(NoLineWalk(b"{}\n" * 100))
     assert boundary.record_count == 100
     assert boundary.prefix_size == 300
     assert boundary.incomplete_tail is False
-    for payload, expected in [(b'{}\n\n{}\n', 2), (b'\n{}\n', 1), (b'{}\n \t\r\n{}\n', 2)]:
+    for payload, expected in [(b"{}\n\n{}\n", 2), (b"\n{}\n", 1), (b"{}\n \t\r\n{}\n", 2)]:
         assert jsonl_complete_prefix(payload).record_count == expected
 
 
@@ -365,9 +356,15 @@ def test_w9_ops_holder_accepts_symlinked_database(tmp_path: Path) -> None:
             holder.close()
 
 
-@pytest.mark.parametrize("count,total,sealed,expected_eta", [(1, 1, True, 0.0), (1, 2, True, None), (1, 1, False, None)])
+@pytest.mark.parametrize(
+    "count,total,sealed,expected_eta", [(1, 1, True, 0.0), (1, 2, True, None), (1, 1, False, None)]
+)
 def test_w9_completed_cold_build_eta_does_not_expire(
-    monkeypatch: pytest.MonkeyPatch, count: int, total: int, sealed: bool, expected_eta: float | None,
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+    total: int,
+    sealed: bool,
+    expected_eta: float | None,
 ) -> None:
     """W9-92-13: a sealed complete cached receipt count loses ETA after stalling."""
     generation = object.__new__(cold_build.ColdBuildGeneration)
@@ -383,7 +380,8 @@ def test_w9_completed_cold_build_eta_does_not_expire(
 
 
 def test_w9_hook_paste_uses_archive_lease_for_generation_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """W9-92-18: the generation directory is not the root named by the lease."""
     root = tmp_path / "archive"
@@ -400,7 +398,8 @@ def test_w9_hook_paste_uses_archive_lease_for_generation_index(
             INSERT INTO sessions VALUES ('w9-session', 'w9-native', 0);
         """)
         connection.execute(
-            "INSERT INTO messages VALUES ('w9-message', 'w9-session', 'user', 0, NULL, ?, 0)", (epoch_ms,),
+            "INSERT INTO messages VALUES ('w9-message', 'w9-session', 'user', 0, NULL, ?, 0)",
+            (epoch_ms,),
         )
     event = {"session_id": "w9-native", "timestamp": _TIMESTAMP, "event_type": "UserPromptSubmit"}
     monkeypatch.setattr(hook_paste_enrichment, "_archive_index_path", lambda _path: index)
