@@ -493,9 +493,7 @@ def corpus_from_files(
             raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0].suffixes)})")
         # The suffix makes a file observable, not a session: production's own
         # source classifier decides (a Gemini tool-output sidecar is raw-only).
-        recognition = recognize_source_class(
-            Provider(admitted[0].origin), resolved, source_size_bytes=resolved.stat().st_size
-        )
+        recognition = recognize_source_class(Provider(admitted[0].origin), resolved)
         if recognition is not None and recognition.source_class != "session":
             raise ValueError(f"{file} is not a session transcript: {recognition.reason}")
         _copy_private(resolved, out / "home" / resolved.relative_to(home))
