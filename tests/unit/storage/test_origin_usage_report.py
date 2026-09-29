@@ -59,17 +59,33 @@ def _write_blob(archive_root: Path, payload: str) -> bytes:
 
 
 def test_provider_usage_event_identity_requires_a_message_anchor() -> None:
-    identity = provider_usage_event_identity(
+    resolved = provider_usage_event_identity(
         {
             "source_message_id": "codex-session:s:n:m1",
+            "source_message_provider_id": "m1",
             "provider_event_type": "token_count",
             "model_name": " gpt-5-codex ",
         }
     )
-    assert identity == ("source_message", "codex-session:s:n:m1", "token_count", "gpt-5-codex")
+    assert resolved == ("provider_message", "m1", "token_count", "gpt-5-codex")
+    # The same observation recorded before its message was stored.
+    unresolved = provider_usage_event_identity(
+        {
+            "source_message_id": None,
+            "source_message_provider_id": "m1",
+            "provider_event_type": "token_count",
+            "model_name": "gpt-5-codex",
+        }
+    )
+    assert unresolved == resolved
     assert (
         provider_usage_event_identity(
-            {"source_message_id": None, "provider_event_type": "token_count", "model_name": "gpt-5-codex"}
+            {
+                "source_message_id": None,
+                "source_message_provider_id": None,
+                "provider_event_type": "token_count",
+                "model_name": "gpt-5-codex",
+            }
         )
         is None
     )

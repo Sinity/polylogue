@@ -246,8 +246,9 @@ MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cut
 #: all, so the report claimed completeness while one derived relation was never
 #: inspected. A rollup row is expected for every (session, model) pair named by
 #: persisted evidence -- a message carrying a model name, or a provider usage
-#: event -- which is exactly the set ``_reconcile_session_model_usage_rows``
-#: keeps and ``_aggregate_message_tokens_into_model_usage`` populates.
+#: event. ``_reconcile_session_model_usage_rows`` keeps those rows (and a
+#: parser-declared row, which is present but never missing) and
+#: ``_aggregate_message_tokens_into_model_usage`` populates them.
 _PROVIDER_USAGE_EXPECTED_PAIRS_SQL = """
     SELECT DISTINCT m.session_id AS session_id, m.model_name AS model_name
     FROM messages AS m

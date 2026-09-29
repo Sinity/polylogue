@@ -5169,16 +5169,54 @@ def _provider_usage_event_key(
     return (*base, str(occurrence))
 
 
+_USAGE_SOURCE_MESSAGE_INDEX = _PROVIDER_USAGE_EVENT_COLUMNS.index("source_message_id")
+_USAGE_RESOLUTION_INDEX = _PROVIDER_USAGE_EVENT_COLUMNS.index("source_message_resolution")
+
+
+def _carried_usage_source_message_id(
+    conn: sqlite3.Connection,
+    carry_forward: _ProjectionCarryForward,
+    source_message_id: object,
+) -> tuple[bool, str | None]:
+    """Decide whether an older usage row survives the union, and its message.
+
+    Returns ``(retained, message_id)``. A row with no message is session-scoped
+    and always survives. A row whose message the union dropped -- remapped to
+    nothing, or absent from the rows this write stored -- describes usage that
+    is no longer part of the session, so it does not survive; keeping it with
+    a NULL message would still count its tokens.
+    """
+    if source_message_id is None:
+        return True, None
+    message_id = carry_forward.message_id_remap.get(cast(str, source_message_id), cast(str, source_message_id))
+    if message_id is None:
+        return False, None
+    if conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is None:
+        return False, None
+    return True, message_id
+
+
 def _merge_provider_usage_event_rows(
     incoming: tuple[object, ...],
     existing: tuple[object, ...],
+    *,
+    carried_source_message_id: str | None,
 ) -> tuple[object, ...]:
-    """Keep the richer observation for one reconciled usage-event identity."""
+    """Keep the richer observation for one reconciled usage-event identity.
+
+    ``carried_source_message_id`` is the older row's message as it stands after
+    the union (see ``_carried_usage_source_message_id``), never its raw stored
+    id, which may name a message this write removed.
+    """
     merged = list(incoming)
     # Nullable text/timestamp lanes: an acquisition that simply did not report
     # one keeps the older observation. ``source_message_resolution`` is NOT
-    # NULL and states how *this* write resolved the id, so it is never merged.
-    for index in (1, 4, 17, 18, 19, 21, 22, 23):
+    # NULL and states how the stored row is attributed: it is this write's,
+    # unless the message comes from the older row, which resolved it.
+    if merged[_USAGE_SOURCE_MESSAGE_INDEX] is None and carried_source_message_id is not None:
+        merged[_USAGE_SOURCE_MESSAGE_INDEX] = carried_source_message_id
+        merged[_USAGE_RESOLUTION_INDEX] = "resolved"
+    for index in (4, 17, 18, 19, 21, 22, 23):
         if merged[index] is None:
             merged[index] = existing[index]
     # NULL means unreported. Across proven-distinct acquisitions retain an
@@ -5199,10 +5237,11 @@ def _restore_captured_provider_usage_rows(
     """Union provider usage evidence after the incoming event write.
 
     Usage rows are a sibling typed projection, not part of the message/block
-    union. Reconcile anchored rows by source-message/type/model and retain
-    unmatched older rows at a fresh position. This preserves richer evidence
-    when a poorer acquisition omits it or reports zero, without turning a
-    cumulative observation or model switch into an additive delta.
+    union. Reconcile anchored rows by provider message/type/model and retain
+    unmatched older rows at a fresh position, unless the union dropped the
+    message an older row describes. This preserves richer evidence when a
+    poorer acquisition omits it or reports zero, without turning a cumulative
+    observation or model switch into an additive delta.
     """
     captured = carry_forward.captured.provider_usage_events
     if not captured:
@@ -5249,10 +5288,20 @@ def _restore_captured_provider_usage_rows(
             row = incoming_by_key[key]
             matched_old_row = captured_by_key.get(key)
             if matched_old_row is not None:
-                row = _merge_provider_usage_event_rows(row, matched_old_row)
+                _retained, carried_message_id = _carried_usage_source_message_id(
+                    conn, carry_forward, matched_old_row[_USAGE_SOURCE_MESSAGE_INDEX]
+                )
+                row = _merge_provider_usage_event_rows(
+                    row, matched_old_row, carried_source_message_id=carried_message_id
+                )
         else:
             row_list = list(captured_by_key[key])
-            row_list[1] = carry_forward.message_id_remap.get(cast(str, row_list[1]), row_list[1])
+            retained, carried_message_id = _carried_usage_source_message_id(
+                conn, carry_forward, row_list[_USAGE_SOURCE_MESSAGE_INDEX]
+            )
+            if not retained:
+                continue
+            row_list[_USAGE_SOURCE_MESSAGE_INDEX] = carried_message_id
             row = tuple(row_list)
         row_list = list(row)
         row_list[0] = session_id
@@ -5289,9 +5338,21 @@ def _restore_captured_provider_usage_rows_disk(
     db.execute("DROP TABLE IF EXISTS old_usage_only")
     db.execute("CREATE TABLE old_usage_only (anchor TEXT, ordinal INTEGER PRIMARY KEY)")
     db.execute("CREATE INDEX old_usage_only_anchor ON old_usage_only(anchor, ordinal)")
+    # Decided before the session's rows are deleted and while the merged
+    # messages are readable: whether each older row survives, and its message.
+    db.execute("DROP TABLE IF EXISTS old_usage_carry")
+    db.execute("CREATE TABLE old_usage_carry (ordinal INTEGER PRIMARY KEY, retained INTEGER NOT NULL, message_id TEXT)")
 
     def spool(side: str, rows: Iterable[tuple[object, ...]]) -> None:
         for ordinal, row in enumerate(rows):
+            if side == "old":
+                retained, carried_message_id = _carried_usage_source_message_id(
+                    conn, carry_forward, row[_USAGE_SOURCE_MESSAGE_INDEX]
+                )
+                db.execute(
+                    "INSERT INTO old_usage_carry VALUES (?, ?, ?)",
+                    (ordinal, int(retained), carried_message_id),
+                )
             values = dict(zip(_PROVIDER_USAGE_EVENT_COLUMNS, row, strict=True))
             stable = provider_usage_event_identity(values)
             base = (
@@ -5344,13 +5405,14 @@ def _restore_captured_provider_usage_rows_disk(
 
         def emit_old(anchor_key: str | None) -> Iterator[tuple[object, ...]]:
             nonlocal position
-            for (blob,) in db.execute(
-                "SELECT old_usage.row_blob FROM old_usage_only "
-                "JOIN old_usage USING (ordinal) WHERE anchor IS ? ORDER BY ordinal",
+            for blob, carried_message_id in db.execute(
+                "SELECT old_usage.row_blob, old_usage_carry.message_id FROM old_usage_only "
+                "JOIN old_usage USING (ordinal) JOIN old_usage_carry USING (ordinal) "
+                "WHERE anchor IS ? AND old_usage_carry.retained = 1 ORDER BY ordinal",
                 (anchor_key,),
             ):
                 values = list(pickle.loads(blob))
-                values[1] = carry_forward.message_id_remap.get(cast(str, values[1]), values[1])
+                values[_USAGE_SOURCE_MESSAGE_INDEX] = carried_message_id
                 values[0], values[2] = session_id, position
                 position += 1
                 yield tuple(values)
@@ -5358,9 +5420,15 @@ def _restore_captured_provider_usage_rows_disk(
         yield from emit_old(None)
         for key, blob in db.execute("SELECT key, row_blob FROM new_usage ORDER BY ordinal"):
             values = pickle.loads(blob)
-            old = db.execute("SELECT row_blob FROM old_usage WHERE key = ?", (key,)).fetchone()
+            old = db.execute(
+                "SELECT old_usage.row_blob, old_usage_carry.message_id FROM old_usage "
+                "JOIN old_usage_carry USING (ordinal) WHERE old_usage.key = ?",
+                (key,),
+            ).fetchone()
             if old is not None:
-                values = _merge_provider_usage_event_rows(values, pickle.loads(old[0]))
+                values = _merge_provider_usage_event_rows(
+                    values, pickle.loads(old[0]), carried_source_message_id=old[1]
+                )
             row = list(values)
             row[0], row[2] = session_id, position
             position += 1
@@ -9314,52 +9382,76 @@ def _provider_usage_has_cumulative_total(conn: sqlite3.Connection, session_id: s
 
 
 def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *, keep_model: str) -> None:
-    """Zero stale cumulative-rollup token totals for all models except ``keep_model``.
+    """Return every model except ``keep_model`` to its per-message token totals.
 
     The Codex cumulative total is session-global, so exactly one rollup row
     should carry it. When an append window's latest cumulative is attributed to
     a different model than a previous window, the earlier model's rollup still
     holds a (now-subsumed) cumulative; left in place it would be summed back in
-    on read. This resets those stale token counts to zero while keeping the
-    model row itself (#2472).
+    on read (#2472).
 
-    Scoped to models with no genuine per-message token evidence (``NOT
-    EXISTS`` in ``messages``): a row's tokens can only have come from the
-    (now-stale) provider-usage-event cumulative mechanism this function is
-    cleaning up after, never from ``_aggregate_message_tokens_into_model_usage``.
-    Before polylogue-shnc this was scoped by ``cost_provenance =
-    'origin_reported'``, which worked only because that label was, at the
-    time, written exclusively by the cumulative-rollup path; it no longer
-    discriminates cleanly once provider-usage-token rollups are catalog-priced
-    onto the same ``'priced'`` label real per-message pricing uses (see
-    ``_price_provider_usage_tokens``), so this checks the real per-message
-    evidence directly instead of a provenance string that used to be a proxy
-    for it.
+    Each other row is set to exactly what a full write leaves it holding once
+    the cumulative goes to ``keep_model``: the sum of its own messages' token
+    columns, zero when it has none. Whether a message reported a counter is
+    not the test -- a message that reported an explicit zero is a measurement
+    of zero, and exempting its model kept a whole stale cumulative on the row.
+
+    A row already at zero cannot hold a stale cumulative, and it is never below
+    its message totals (the message aggregate only raises a row), so only the
+    rows that carry tokens are compared with their messages.
     """
-    conn.execute(
+    stored_rows = conn.execute(
         """
-        UPDATE session_model_usage
-        SET input_tokens = 0,
-            output_tokens = 0,
-            cache_read_tokens = 0,
-            cache_write_tokens = 0,
-            catalog_cost_usd = NULL
-        WHERE session_id = ?
-          AND model_name != ?
-          AND NOT EXISTS (
-              SELECT 1 FROM messages m
-              WHERE m.session_id = session_model_usage.session_id
-                AND m.model_name = session_model_usage.model_name
-                AND (
-                    m.input_tokens IS NOT NULL
-                    OR m.output_tokens IS NOT NULL
-                    OR m.cache_read_tokens IS NOT NULL
-                    OR m.cache_write_tokens IS NOT NULL
-                )
-          )
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name != ?
+          AND input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0
         """,
         (session_id, keep_model),
-    )
+    ).fetchall()
+    if not stored_rows:
+        return
+    candidate_models = [str(row[0]) for row in stored_rows]
+    message_totals = {
+        str(row[0]): (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0))
+        for row in conn.execute(
+            f"""
+            SELECT model_name,
+                   SUM(input_tokens), SUM(output_tokens),
+                   SUM(cache_read_tokens), SUM(cache_write_tokens)
+            FROM messages
+            WHERE session_id = ?
+              AND model_name IN ({", ".join("?" for _ in candidate_models)})
+            GROUP BY model_name
+            """,
+            (session_id, *candidate_models),
+        )
+    }
+    for row in stored_rows:
+        model_name = str(row[0])
+        totals = message_totals.get(model_name, (0, 0, 0, 0))
+        if (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)) == totals:
+            continue
+        catalog_cost = _price_provider_usage_tokens(
+            conn,
+            model_name,
+            input_tokens=totals[0],
+            output_tokens=totals[1],
+            cache_read_tokens=totals[2],
+            cache_write_tokens=totals[3],
+        )
+        conn.execute(
+            """
+            UPDATE session_model_usage
+            SET input_tokens = ?,
+                output_tokens = ?,
+                cache_read_tokens = ?,
+                cache_write_tokens = ?,
+                catalog_cost_usd = ?
+            WHERE session_id = ? AND model_name = ?
+            """,
+            (*totals, None if catalog_cost is None else catalog_cost.value, session_id, model_name),
+        )
 
 
 def _price_provider_usage_tokens(
@@ -9611,7 +9703,8 @@ def _seed_session_model_usage_rows(
     column is what feeds ``_session_level_estimate``'s real ``status ==
     "exact"`` cost path; nothing here writes it a second time.
     """
-    model_names = {model_name.strip() for model_name in session.models_used if model_name.strip()}
+    declared_names = {model_name.strip() for model_name in session.models_used if model_name.strip()}
+    model_names = set(declared_names)
     model_names.update(message.model_name.strip() for message in session.messages if message.model_name)
     # NULL, not 'origin_reported': this is a skeleton placeholder for a
     # session's declared model before any pricing pass has run (typically
@@ -9620,24 +9713,27 @@ def _seed_session_model_usage_rows(
     # no cost claim yet, so it must not carry a provenance string that
     # asserts one -- 'origin_reported' now means a genuine provider-reported
     # dollar figure (polylogue-shnc/polylogue-gt1z), which this row does not
-    # have.
+    # have. ``declared`` records the parser's model declaration, the one
+    # fact re-derivation cannot recover from messages or usage events; an
+    # append only ever adds a declaration.
     model_usage_sql = (
         """
         INSERT OR REPLACE INTO session_model_usage (
-            session_id, model_name
-        ) VALUES (?, ?)
+            session_id, model_name, declared
+        ) VALUES (?, ?, ?)
         """
         if replace_existing_model_rows
         else """
         INSERT INTO session_model_usage (
-            session_id, model_name
-        ) VALUES (?, ?)
-        ON CONFLICT(session_id, model_name) DO NOTHING
+            session_id, model_name, declared
+        ) VALUES (?, ?, ?)
+        ON CONFLICT(session_id, model_name) DO UPDATE SET
+            declared = MAX(session_model_usage.declared, excluded.declared)
         """
     )
     stored_model_names = [cast(str, _sqlite_text(model_name)) for model_name in sorted(model_names)]
-    for stored_model_name in stored_model_names:
-        conn.execute(model_usage_sql, (session_id, stored_model_name))
+    for model_name, stored_model_name in zip(sorted(model_names), stored_model_names, strict=True):
+        conn.execute(model_usage_sql, (session_id, stored_model_name, int(model_name in declared_names)))
     if aggregate_message_tokens:
         _aggregate_message_tokens_into_model_usage(conn, session_id)
     # After aggregation: the catalog dollars that weight the provider total's
@@ -9758,18 +9854,42 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 
 
 def _reconcile_session_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
-    """Remove usage rows unsupported by persisted message or provider evidence.
+    """Reset a session's usage rows to the evidence the aggregates re-derive from.
 
-    A session-insight rebuild may run after a usage/cost correction updates a
-    message's model name in place. Aggregating the corrected message then adds
-    its new model row, but the old message-only row has no source left to
-    justify it. Provider usage events are independent evidence, so rows named
-    by one remain even when no current message carries that model.
+    Every row's measured values are cleared, so the message and provider-event
+    aggregates that follow rebuild them from stored evidence alone: a
+    session-global cumulative the latest event no longer attributes to a model
+    cannot survive on that model's row. A row is then kept only when evidence
+    still names its model: a message, a provider usage event, or the parser's
+    declaration. A usage/cost correction that renames a message in place
+    leaves the old message-only row without a source, so it goes. A declared
+    row stays even with no message naming it -- it is the row an unnamed
+    ``token_count`` is attributed to when it is the session's only model, and
+    deleting it first would drop that event's tokens.
+
+    ``declared`` is written by the session write that also writes this rollup,
+    so it never moves without the rollup being rewritten in the same
+    transaction. Returns the number of rows deleted.
     """
+    conn.execute(
+        """
+        UPDATE session_model_usage
+        SET input_tokens = 0,
+            output_tokens = 0,
+            cache_read_tokens = 0,
+            cache_write_tokens = 0,
+            message_count = 0,
+            provider_cost_usd = NULL,
+            catalog_cost_usd = NULL
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    )
     return conn.execute(
         """
         DELETE FROM session_model_usage
         WHERE session_id = ?
+          AND declared = 0
           AND NOT EXISTS (
               SELECT 1
               FROM messages AS m
@@ -10966,8 +11086,9 @@ def _reextract_prefix_tail_db(
     # own write path, so usage must be rebuilt here: it is aggregated at write
     # time and nothing else revisits it. Derived session rows converge on their
     # own -- the refreshed counts move the child's high-water mark, which is
-    # what the staleness comparison reads.
-    conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (child_session_id,))
+    # what the staleness comparison reads. The reset keeps parser-declared
+    # model rows, which neither aggregate below can recreate.
+    _reconcile_session_model_usage_rows(conn, child_session_id)
     _aggregate_message_tokens_into_model_usage(conn, child_session_id)
     _aggregate_provider_usage_into_model_usage(conn, child_session_id)
     # Derived session products cache the pre-extraction message set. Their
@@ -11985,7 +12106,7 @@ def _materialize_inherited_prefix(
     _rehash_session_messages(conn, child)
     refresh_action_pairs(conn, child)
     refresh_session_summary(conn, child)
-    conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (child,))
+    _reconcile_session_model_usage_rows(conn, child)
     _aggregate_message_tokens_into_model_usage(conn, child)
     _aggregate_provider_usage_into_model_usage(conn, child)
     conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child,))
@@ -12514,6 +12635,10 @@ def _reextract_provider_usage_tail_db(
     companion "drop all-zero rows" delete then destroyed the evidence outright
     -- including the ``request_id``/``finish_reason``-only rows that
     :func:`_provider_usage_event_has_evidence` deliberately admits.
+
+    The model rollup is not touched here: the caller re-derives it once the
+    prefix messages are gone, from the surviving events and messages, and a
+    partial clear before that would delete a declared model row it keeps.
     """
     if not prefix_message_ids:
         return
@@ -12526,34 +12651,6 @@ def _reextract_provider_usage_tail_db(
         """,
         (child_session_id, *prefix_message_ids),
     )
-    # Clear rows populated by the (now stale) provider-usage-event rollup
-    # before re-deriving them below, scoped the same way
-    # _clear_stale_cumulative_rollups is (polylogue-shnc): a model with no
-    # genuine per-message token evidence can only hold provider-usage-rollup
-    # tokens, never real message-derived pricing, so it is always safe to
-    # clear and re-derive. Before polylogue-shnc this was scoped by
-    # ``cost_provenance = 'origin_reported'``, which stopped discriminating
-    # once provider-usage rollups started sharing the 'priced' label with
-    # real message-derived pricing.
-    conn.execute(
-        """
-        DELETE FROM session_model_usage
-        WHERE session_id = ?
-          AND NOT EXISTS (
-              SELECT 1 FROM messages m
-              WHERE m.session_id = session_model_usage.session_id
-                AND m.model_name = session_model_usage.model_name
-                AND (
-                    m.input_tokens IS NOT NULL
-                    OR m.output_tokens IS NOT NULL
-                    OR m.cache_read_tokens IS NOT NULL
-                    OR m.cache_write_tokens IS NOT NULL
-                )
-          )
-        """,
-        (child_session_id,),
-    )
-    _aggregate_provider_usage_into_model_usage(conn, child_session_id)
 
 
 def _extract_prefix_tail(

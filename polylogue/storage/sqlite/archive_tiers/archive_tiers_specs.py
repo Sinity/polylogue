@@ -1575,6 +1575,16 @@ SESSION_MODEL_USAGE_SPEC = _make_table_spec(
         _raw_column("provider_cost_usd", """provider_cost_usd       REAL"""),
         _raw_column("catalog_cost_usd", """catalog_cost_usd        REAL"""),
         _raw_column("cost_credits", """cost_credits            REAL"""),
+        _raw_column(
+            "declared",
+            """-- 1 when the session's parser declared this model
+    -- (ParsedSession.models_used). The declaration is the only evidence for a
+    -- model no stored message or named usage event carries, and a Codex
+    -- token_count without a model is attributed to a session's sole model
+    -- row; re-derivation keeps a declared row instead of deleting it for
+    -- lack of message evidence.
+    declared                INTEGER NOT NULL DEFAULT 0 CHECK(declared IN (0, 1))""",
+        ),
     ),
     table_constraints=(
         """CHECK (provider_cost_usd IS NULL OR provider_cost_usd >= 0)""",
