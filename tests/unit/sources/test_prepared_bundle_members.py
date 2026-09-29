@@ -257,11 +257,11 @@ def test_bundle_member_with_an_unstorable_ignored_field_keeps_the_collecting_rou
     import polylogue.sources.value_bounds as value_bounds
 
     member = _conversation(9)
-    member["ignored_blob"] = "x" * 4096
+    member["ignored_blob"] = "x" * 16384
     source = tmp_path / "bundle.json"
     source.write_text(json.dumps([member, {**_conversation(10), "uuid": "second"}]), encoding="utf-8")
     expected = _expected(Provider.CLAUDE_AI, source)
-    monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 1024)
+    monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 8192)
     collected = _collected_members(monkeypatch)
     artifact = prepare_jsonl_blob(
         str(source),
