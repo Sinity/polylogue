@@ -278,7 +278,7 @@ class ArchiveTupleManifest:
             # The seal is recomputed from the dataclass, so the serialized
             # shape is checked exactly first: an unknown, missing, or coerced
             # field would otherwise normalize away and still match the seal.
-            if not isinstance(payload_any, dict) or set(payload_any) != _MANIFEST_KEYS:
+            if set(payload_any) != _MANIFEST_KEYS:
                 raise TypeError("manifest has missing or unknown fields")
             for key in _MANIFEST_INTEGER_KEYS:
                 if type(payload_any[key]) is not int:

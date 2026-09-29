@@ -283,14 +283,16 @@ def test_one_node_pages_advance_past_the_seed(tmp_path: Path) -> None:
         _seed_family(conn)
         offset = 0
         seen: list[str] = []
+        has_more: list[bool] = []
         for _ in range(2):
             page = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=offset)
             assert page is not None
             assert page.node_page.returned == 1
             seen.extend(str(node.session_id) for node in page.nodes if not node.is_seed)
+            has_more.append(page.node_page.has_more)
             offset += page.node_page.returned
         assert set(seen) == {_PARENT, _SPAWNED}
         assert len(seen) == len(set(seen))
-        assert not page.node_page.has_more
+        assert has_more == [True, False]
     finally:
         conn.close()
