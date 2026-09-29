@@ -308,7 +308,16 @@ def archive_census(archive: Path, promoted_index: str | None) -> dict[str, Any]:
     return result
 
 
-def _fts_postings(read: sqlite3.Connection) -> dict[str, Any]:
+#: A compared relation the candidate's schema does not have: an output
+#: mismatch against any archive that has it, never an aborted receipt.
+_ABSENT_TABLE: Final = {"absent": True, "rows": None, "sha256": None}
+
+
+def _has_table(read: sqlite3.Connection, name: str) -> bool:
+    return read.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (name,)).fetchone() is not None
+
+
+def _fts_postings(read: sqlite3.Connection, *, cancelled: Callable[[], bool] = lambda: False) -> dict[str, Any]:
     """Digest every posting ``messages_fts`` holds, keyed by block identity.
 
     ``messages_fts`` is contentless, so its text cannot be read back and the
@@ -320,6 +329,8 @@ def _fts_postings(read: sqlite3.Connection) -> dict[str, Any]:
     digests, so the pass streams in constant memory whatever the archive
     size and still sees a moved, dropped or added posting for any term.
     """
+    if not _has_table(read, "messages_fts") or not _has_table(read, "blocks"):
+        return dict(_ABSENT_TABLE)
     read.execute("DROP TABLE IF EXISTS temp.bench_fts_postings")
     read.execute("CREATE VIRTUAL TABLE temp.bench_fts_postings USING fts5vocab(main, messages_fts, instance)")
     total = 0
@@ -331,6 +342,8 @@ def _fts_postings(read: sqlite3.Connection) -> dict[str, Any]:
             "SELECT v.term, b.block_id, v.col, v.offset FROM temp.bench_fts_postings v "
             "LEFT JOIN blocks b ON b.rowid = v.doc"
         ):
+            if postings % 10_000 == 0 and cancelled():
+                raise FingerprintCancelledError("cancelled during the FTS posting digest")
             payload = json.dumps([term, block_id, column, offset], ensure_ascii=True, separators=(",", ":"))
             total = (total + int.from_bytes(hashlib.sha256(payload.encode()).digest(), "big")) % (1 << 256)
             postings += 1
@@ -340,6 +353,15 @@ def _fts_postings(read: sqlite3.Connection) -> dict[str, Any]:
     finally:
         read.execute("DROP TABLE IF EXISTS temp.bench_fts_postings")
     return {"rows": postings, "terms": terms, "sha256": f"{total:064x}"}
+
+
+def refreshed_identity(recorded: str, refreshing: str) -> str:
+    """The identity of a receipt refreshed by ``refreshing``: the recording one, then it.
+
+    Replaced, never extended: refreshing an already refreshed receipt keeps
+    its recording identity and names only the latest refreshing one.
+    """
+    return f"{recorded.split('+refresh:', 1)[0]}+refresh:{refreshing}"
 
 
 class FingerprintCancelledError(RuntimeError):
@@ -371,6 +393,9 @@ def output_fingerprint(
         spool.execute("PRAGMA synchronous=OFF")
         for table in compared_table_census():
             volatile = _VOLATILE_COLUMNS[table]
+            if not _has_table(read, table):
+                tables[table] = dict(_ABSENT_TABLE)
+                continue
             columns = [
                 str(row["name"])
                 for row in read.execute(f'PRAGMA table_xinfo("{table}")')
@@ -405,7 +430,7 @@ def output_fingerprint(
                 digest.update(payload.encode())
                 digest.update(b"\n")
             tables[table] = {"rows": rows, "sha256": digest.hexdigest()}
-        tables["messages_fts:postings"] = _fts_postings(read)
+        tables["messages_fts:postings"] = _fts_postings(read, cancelled=cancelled)
     spool_path.unlink(missing_ok=True)
     overall = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
     return {"digest": overall, "tables": tables}
@@ -1126,8 +1151,10 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     # The refreshed sections were reduced by this implementation, the rest by
     # the recording one: the identity names both, so a refreshed receipt
     # compares only with receipts refreshed the same way.
-    receipt["benchmark_implementation_sha256"] = (
-        f"{receipt.get('benchmark_implementation_sha256')}+refresh:{benchmark_implementation_sha256()}"
+    # Replaced, never extended: refreshing an already refreshed receipt with
+    # the same implementation keeps the same identity.
+    receipt["benchmark_implementation_sha256"] = refreshed_identity(
+        str(receipt.get("benchmark_implementation_sha256")), benchmark_implementation_sha256()
     )
     # Atomic: the receipt is replaced only by a complete document.
     staging = receipt_path.with_name(receipt_path.name + ".tmp")

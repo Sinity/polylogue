@@ -647,7 +647,7 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
     polls = {"count": 0}
     ready = dict.fromkeys(REQUIRED_READINESS_DOMAINS, True)
 
-    def observe(_archive: Path, started: float) -> Observation:
+    def observe(_archive: Path, started: float, **_kwargs: object) -> Observation:
         clock["now"] += 3600.0  # every poll is an hour later
         polls["count"] += 1
         done = polls["count"] >= 9
@@ -684,6 +684,7 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
     monkeypatch.setattr(run, "_stop", lambda _process, _timeout: (0, 0.0))
     monkeypatch.setattr(run, "verify_manifest", lambda *_args: None)
     monkeypatch.setattr(run, "candidate_identity", lambda _candidate: {})
+    monkeypatch.setattr(run, "candidate_stamp", lambda _candidate: {})
     monkeypatch.setattr(report, "build_receipt", lambda **kwargs: {"outcome": kwargs["outcome"]})
     config = RunConfig(
         corpus=tmp_path,
@@ -700,6 +701,7 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
         manifest={},
         paths=paths,
         identity={"git_sha": None, "dirty": None, "tracked_diff_sha256": None},
+        candidate_files={},
         env_summary={},
         command=[],
         daemon_env={},
@@ -957,14 +959,23 @@ def _scripted_run(
     *,
     stall_timeout_s: float,
     wall_jump: float = 0.0,
+    interrupt_at_stop: bool = False,
 ) -> dict[str, Any]:
     """Drive ``_measure_and_write_receipt`` through scripted observations, one per 600 s poll."""
     from devtools.fresh_build_bench import report, run
 
     clock = {"now": 0.0, "wall": 1_000.0}
     index = {"i": 0}
+    observe_kwargs: list[dict[str, object]] = []
+    interrupted: list[int] = []
 
-    def observe(_archive: Path, started: float) -> Observation:
+    def stop(_process: object, _timeout: float) -> tuple[int, float]:
+        if interrupt_at_stop:
+            interrupted.append(15)
+        return 0, 0.0
+
+    def observe(_archive: Path, started: float, **kwargs: object) -> Observation:
+        observe_kwargs.append(kwargs)
         clock["now"] += 600.0
         clock["wall"] += 600.0 + (wall_jump if index["i"] == 0 else 0.0)
         frame = frames[min(index["i"], len(frames) - 1)]
@@ -999,9 +1010,10 @@ def _scripted_run(
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
     monkeypatch.setattr(run, "TreeSampler", Sampler)
     monkeypatch.setattr(run, "observe", observe)
-    monkeypatch.setattr(run, "_stop", lambda _process, _timeout: (0, 0.0))
+    monkeypatch.setattr(run, "_stop", stop)
     monkeypatch.setattr(run, "verify_manifest", lambda *_args: None)
     monkeypatch.setattr(run, "candidate_identity", lambda _candidate: {})
+    monkeypatch.setattr(run, "candidate_stamp", lambda _candidate: {})
     monkeypatch.setattr(report, "build_receipt", build_receipt)
     config = RunConfig(
         corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="l", stall_timeout_s=stall_timeout_s
@@ -1012,13 +1024,15 @@ def _scripted_run(
         manifest={},
         paths=paths,
         identity={"git_sha": None, "dirty": None, "tracked_diff_sha256": None},
+        candidate_files={},
         env_summary={},
         command=[],
         daemon_env={},
-        interrupted=[],
+        interrupted=interrupted,
         progress=lambda _line: None,
     )
     captured["clock"] = clock
+    captured["observe_kwargs"] = observe_kwargs
     return captured
 
 
@@ -1267,3 +1281,111 @@ def test_a_source_rewritten_during_its_copy_is_refused(tmp_path: Path, monkeypat
     monkeypatch.setattr(shutil, "copyfile", rewrite_while_copying)
     with pytest.raises(ValueError, match="changed while it was being copied"):
         corpus._copy_private(source, tmp_path / "out" / "t.jsonl")
+
+
+def test_a_file_added_and_removed_during_the_run_changes_the_corpus_stamp(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): stamp files only and a transcript created,
+    ingested and deleted before the end leaves the stamp unchanged."""
+    from devtools.fresh_build_bench.corpus import change_stamp
+
+    project = tmp_path / "home" / "p"
+    project.mkdir(parents=True)
+    (project / "sealed.jsonl").write_bytes(b"sealed\n")
+    before = change_stamp(tmp_path)
+    transient = project / "transient.jsonl"
+    transient.write_bytes(b"transient\n")
+    transient.unlink()
+
+    assert change_stamp(tmp_path) != before
+
+
+def test_a_candidate_edit_restored_before_the_end_is_a_change(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): compare the Git identity only at the
+    endpoints and a module edited, imported and restored passes."""
+    import os
+
+    from devtools.fresh_build_bench.run import candidate_identity, candidate_stamp
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    module = tmp_path / "module.py"
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "module.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "c"],
+        check=True,
+    )
+    before = candidate_stamp(tmp_path)
+    identity = candidate_identity(tmp_path)
+    status = module.stat()
+    module.write_text("VALUE = 2\n", encoding="utf-8")
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    os.utime(module, ns=(status.st_atime_ns, status.st_mtime_ns))
+
+    assert candidate_identity(tmp_path) == identity
+    assert candidate_stamp(tmp_path) != before
+
+
+def test_readiness_is_rechecked_within_the_stall_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5678): cache readiness for a fixed 60 s and a
+    30 s stall window declares a build stalled before its next census."""
+    captured = _scripted_run(tmp_path, monkeypatch, [_terminal_frame()], stall_timeout_s=30.0)
+
+    ages = {kwargs.get("readiness_max_age_s") for kwargs in captured["observe_kwargs"] if kwargs}
+    assert ages == {15.0}
+
+
+def test_a_cancellation_after_the_loop_marks_the_receipt_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P1, #5678): keep the loop's ``terminal`` outcome and a
+    SIGTERM during shutdown still yields a qualified receipt."""
+    captured = _scripted_run(tmp_path, monkeypatch, [_terminal_frame()], stall_timeout_s=7200.0, interrupt_at_stop=True)
+
+    assert captured["outcome"] == "interrupted"
+
+
+def test_the_fingerprint_reports_tables_an_older_candidate_lacks(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): select from every current table and a
+    candidate without one raises instead of recording a mismatch."""
+    import sqlite3
+    from contextlib import closing
+
+    from devtools.fresh_build_bench.report import output_fingerprint
+
+    index = tmp_path / "index.db"
+    with closing(sqlite3.connect(index)) as conn:
+        conn.execute("CREATE TABLE unrelated (x)")
+        conn.commit()
+
+    fingerprint = output_fingerprint(tmp_path, str(index), tmp_path / "scratch")
+
+    assert fingerprint["tables"]
+    assert all(entry.get("absent") is True for entry in fingerprint["tables"].values())
+
+
+def test_refreshing_a_refreshed_receipt_keeps_one_refresh_identity() -> None:
+    """Anti-vacuity (Codex P2, #5678): append ``+refresh:`` on every refresh and
+    two refreshes by one implementation stop comparing with one."""
+    from devtools.fresh_build_bench.report import refreshed_identity
+
+    once = refreshed_identity("recorded", "current")
+    assert refreshed_identity(once, "current") == once == "recorded+refresh:current"
+    assert refreshed_identity(once, "newer") == "recorded+refresh:newer"
+
+
+def test_sampling_follows_symlinked_source_directories(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): sample with ``rglob`` and the transcripts
+    behind a linked directory are missing from the sample and its population."""
+    from devtools.fresh_build_bench.corpus import SampleSource, _units
+
+    elsewhere = tmp_path / "mnt" / "sessions"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "rollout.jsonl").write_bytes(b"{}\n")
+    root = tmp_path / "home" / ".codex" / "sessions"
+    root.mkdir(parents=True)
+    (root / "team").symlink_to(elsewhere, target_is_directory=True)
+    source = SampleSource("codex", root, "home/.codex/sessions", (".jsonl",))
+
+    units = _units(source)
+
+    assert [Path(key).name for key, _paths, _size in units] == ["rollout.jsonl"]

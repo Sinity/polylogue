@@ -213,18 +213,23 @@ def load_manifest(root: Path) -> dict[str, Any]:
     return manifest
 
 
-def change_stamp(root: Path) -> dict[str, tuple[int, int]]:
-    """``{relative path: (inode, ctime_ns)}`` for every corpus file.
+def change_stamp(root: Path) -> dict[str, tuple[int, int, int]]:
+    """``{relative path: (inode, mtime_ns, ctime_ns)}`` for every corpus file and directory.
 
     A write changes a file's ctime even when its bytes are later restored
-    and its mtime set back, so two equal stamps mean no file was written or
-    replaced in between -- the endpoint content check alone cannot tell.
+    and its mtime set back, and creating, renaming or deleting an entry
+    changes its directory's mtime and ctime, so two equal stamps mean no file
+    was written, replaced, added or removed in between -- even one added and
+    removed again. The endpoint content check alone cannot tell. The root
+    itself is stamped under ``"."``.
     """
-    stamps: dict[str, tuple[int, int]] = {}
-    for path in sorted(root.rglob("*")):
-        if path.is_file() and not path.is_symlink():
-            status = path.stat()
-            stamps[path.relative_to(root).as_posix()] = (status.st_ino, status.st_ctime_ns)
+    stamps: dict[str, tuple[int, int, int]] = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            continue
+        status = path.stat()
+        relative = path.relative_to(root).as_posix() if path != root else "."
+        stamps[relative] = (status.st_ino, status.st_mtime_ns, status.st_ctime_ns)
     return stamps
 
 
@@ -333,9 +338,12 @@ def _units(source: SampleSource) -> list[tuple[str, list[Path], int]]:
     """Group a source into sampling units: (key, files, bytes)."""
     if not source.root.is_dir():
         return []
-    files = sorted(
-        path for path in source.root.rglob("*") if path.is_file() and not path.is_symlink() and _admitted(source, path)
-    )
+    # Production discovery's own traversal (it follows directory links, as
+    # an operator's ``sessions/team -> /mnt/sessions`` needs), so the sample
+    # and its population denominator see the files the daemon would.
+    from polylogue.sources.source_walk import _iter_source_entries
+
+    files = [path for path in _iter_source_entries(source.root) if path.is_file() and _admitted(source, path)]
     if not source.session_units:
         return [(str(path), [path], path.stat().st_size) for path in files]
     grouped: dict[str, list[Path]] = defaultdict(list)

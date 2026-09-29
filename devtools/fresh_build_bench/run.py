@@ -271,7 +271,7 @@ def _promoted_index(archive: Path) -> str | None:
     return str(target)
 
 
-def observe(archive: Path, started: float) -> Observation:
+def observe(archive: Path, started: float, *, readiness_max_age_s: float | None = None) -> Observation:
     observation = Observation(t=round(time.monotonic() - started, 3))
     ops_path, source_path = archive / "ops.db", archive / "source.db"
     if not ops_path.exists() or not source_path.exists():
@@ -342,7 +342,7 @@ def observe(archive: Path, started: float) -> Observation:
             cached_at = _last_readiness.get("at")
             if (
                 isinstance(cached_at, float)
-                and now - cached_at < _READINESS_POLL_S
+                and now - cached_at < (_READINESS_POLL_S if readiness_max_age_s is None else readiness_max_age_s)
                 and _last_readiness.get("archive") == str(archive)
             ):
                 observation.readiness = dict(_last_readiness["readiness"])  # type: ignore[call-overload]
@@ -502,6 +502,26 @@ def candidate_identity(candidate: Path) -> dict[str, Any]:
     }
 
 
+def candidate_stamp(candidate: Path) -> dict[str, tuple[int, int]]:
+    """``{path: (inode, ctime_ns)}`` of every tracked and untracked, unignored file.
+
+    An edit changes a file's ctime even when its bytes are restored before
+    the run ends, so equal stamps mean no module the daemon could import was
+    written in between; the endpoint identity alone cannot tell. A deleted
+    tracked file stamps as ``(0, 0)``.
+    """
+    names = _git(candidate, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+    stamps: dict[str, tuple[int, int]] = {}
+    for name in sorted({name for name in names if name}):
+        try:
+            status = os.lstat(candidate / name)
+        except FileNotFoundError:
+            stamps[name] = (0, 0)
+            continue
+        stamps[name] = (status.st_ino, status.st_ctime_ns)
+    return stamps
+
+
 # ---------------------------------------------------------------------------
 # run
 
@@ -630,6 +650,9 @@ def _stop(process: subprocess.Popen[bytes], timeout_s: float) -> tuple[int | Non
 def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> dict[str, Any]:
     manifest = load_manifest(config.corpus)
     paths = _prepare_paths(config)
+    # Stamped before the identity is read, so an edit between the two is
+    # still a changed stamp at the end.
+    candidate_files = candidate_stamp(config.candidate)
     identity = candidate_identity(config.candidate)
     env_summary = environment(config)
     command = _daemon_command(config)
@@ -648,6 +671,7 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
             manifest=manifest,
             paths=paths,
             identity=identity,
+            candidate_files=candidate_files,
             env_summary=env_summary,
             command=command,
             daemon_env=daemon_env,
@@ -665,6 +689,7 @@ def _measure_and_write_receipt(
     manifest: dict[str, Any],
     paths: dict[str, Path],
     identity: dict[str, Any],
+    candidate_files: dict[str, tuple[int, int]],
     env_summary: dict[str, Any],
     command: list[str],
     daemon_env: dict[str, str],
@@ -701,7 +726,12 @@ def _measure_and_write_receipt(
             if process.poll() is not None:
                 outcome = "daemon_exited"
                 break
-            observation = observe(paths["archive"], started)
+            # A cached readiness census may be no older than half the stall
+            # window: a domain turning ready right after one census must be
+            # seen before the no-progress deadline can fire.
+            observation = observe(
+                paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
+            )
             observations.append(observation)
             if observation.error is not None:
                 # A failed read (a busy database) says nothing about progress:
@@ -765,6 +795,10 @@ def _measure_and_write_receipt(
         exit_code, shutdown_s = _stop(process, 300.0)
         sampler.finish()
         log_stream.close()
+    if interrupted:
+        # A cancellation after the loop settled (during shutdown, or before
+        # the fingerprint) still skips post-processing; the receipt says so.
+        outcome = "interrupted"
     finished = time.monotonic()
     finished_wall = time.time()
     final = observe(paths["archive"], started)
@@ -778,9 +812,13 @@ def _measure_and_write_receipt(
         corpus_unchanged = False
     # Lazy imports run whatever the candidate tree holds when they execute; a
     # checkout or commit during the build makes the recorded SHA a guess.
-    identity["unchanged_during_run"] = candidate_identity(config.candidate) == {
-        key: identity[key] for key in ("git_sha", "dirty", "tracked_diff_sha256")
-    }
+    # Endpoint equality misses an edit restored before the end, which the
+    # daemon may already have imported; file ctimes do not.
+    identity["unchanged_during_run"] = (
+        candidate_identity(config.candidate)
+        == {key: identity[key] for key in ("git_sha", "dirty", "tracked_diff_sha256")}
+        and candidate_stamp(config.candidate) == candidate_files
+    )
     # A cancellation that arrived after the loop skips the fingerprint, the
     # one step that scales with the archive, as an in-loop one does.
     receipt = build_receipt(
