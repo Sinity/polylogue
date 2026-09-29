@@ -3391,7 +3391,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
             items.append(row)
 
-        list_outcome = decide_outcome(matched=total)
+        list_outcome = decide_outcome(matched=len(items))
         route_state_name, route_state_reason = _session_list_state(list_outcome, filtered=spec.has_filters())
         from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
 
@@ -3637,7 +3637,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         **_filter_kw,  # type: ignore[arg-type]
                     ),
                 )
-                search_outcome = decide_outcome(matched=total)
+                search_outcome = decide_outcome(matched=len(hits))
                 route_state_name, route_state_reason = _session_list_state(search_outcome, filtered=True)
                 from polylogue.archive.query.spec import session_count_unit_label
 
@@ -3705,7 +3705,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
                 )
             )
-            archive_list_outcome = decide_outcome(matched=total)
+            archive_list_outcome = decide_outcome(matched=len(summaries))
             route_state_name, route_state_reason = _session_list_state(archive_list_outcome, filtered=filtered)
             from polylogue.archive.query.spec import session_count_unit_label
 

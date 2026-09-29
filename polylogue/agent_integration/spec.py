@@ -529,7 +529,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         name="status",
         source_names=_STATUS_SOURCES,
-        purpose="Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.",
+        purpose="Report status by scope: aggregate archive statistics, one source's freshness, embedding readiness, coordination, Sinex publication, or operation readiness.",
         arguments=(
             _arg(
                 "scope",
@@ -543,10 +543,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         examples=(
             _example(
                 "status-archive",
-                "Establish archive authority before making a broad claim",
+                "Read aggregate archive statistics",
                 "Archive session/message counts and origin totals only. These aggregate statistics do not establish archive identity, source coverage, freshness, or readiness.",
                 scope="archive",
-                include=["identity", "coverage", "freshness", "readiness"],
             ),
         ),
         supports_continuation=False,

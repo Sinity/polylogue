@@ -225,7 +225,7 @@ A bounded context snapshot plus receipt describing selected refs, omissions, pol
 - result semantics: `single_object`, `aggregate`
 - continuation: `none`
 - emits result ref: `no`
-- purpose: Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.
+- purpose: Report status by scope: aggregate archive statistics, one source's freshness, embedding readiness, coordination, Sinex publication, or operation readiness.
 
 Arguments:
 
@@ -235,17 +235,11 @@ Arguments:
 | `include` | `array` | no | Named status facets requested from that scope. |
 | `ref` | `string` | no | Specific operation/receipt/object ref for status lookup. |
 
-Example — Establish archive authority before making a broad claim:
+Example — Read aggregate archive statistics:
 
 ```json
 {
   "arguments": {
-    "include": [
-      "identity",
-      "coverage",
-      "freshness",
-      "readiness"
-    ],
     "scope": "archive"
   },
   "name": "status"

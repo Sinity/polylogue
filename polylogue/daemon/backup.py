@@ -31,6 +31,7 @@ from polylogue.core.content_identity import payload_content_identity
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
+from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import require_write_lease, write_lease
 from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
@@ -709,7 +710,8 @@ def _blob_reference_evidence(
 
 def _resolved_source_path(source_path: str, root: Path) -> str:
     """Resolve an acquisition path against the archive root in force."""
-    outer, separator, member = source_path.partition(":")
+    split = split_zip_member_text(source_path)
+    outer, member = split if split is not None else (source_path, None)
     path = Path(outer)
     parts = path.parts
     for directory in ("inbox", "browser-capture", "hooks"):
@@ -718,7 +720,7 @@ def _resolved_source_path(source_path: str, root: Path) -> str:
             if candidate.exists():
                 path = candidate
                 break
-    return f"{path}:{member}" if separator else str(path)
+    return f"{path}:{member}" if member is not None else str(path)
 
 
 def _append_segment_payload(path: str, start: int, end: int) -> tuple[bytes | None, str | None]:

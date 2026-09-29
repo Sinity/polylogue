@@ -47,7 +47,7 @@ Every declared tool is listed. A tool requiring a capability is registered only 
 | `get` | Resolve one exact stable identity without search or ranking ambiguity. | `read` | `single_object` |
 | `explain` | Explain query grammar, fields, values, lowering, result semantics, refs, capabilities, or recovery before guessing. | `read` | `single_object` |
 | `context` | Compile a bounded, policy-gated context image with receipts and evidence refs for resumption or investigation. | `read` | `bounded_context` |
-| `status` | Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state. | `read` | `single_object`, `aggregate` |
+| `status` | Report status by scope: aggregate archive statistics, one source's freshness, embedding readiness, coordination, Sinex publication, or operation readiness. | `read` | `single_object`, `aggregate` |
 | `write` | Apply one declaration-owned reversible mutation with actor, target, conflict policy, and receipt. | `write` | `mutation` |
 | `record_work_event` | Record one typed live-agent work event against a session so later sessions can retrieve it as evidence. | `write` | `mutation` |
 | `emit_decision` | Record a typed decision with its evidence references, using the shared work-event vocabulary. | `write` | `mutation` |
@@ -150,21 +150,15 @@ Result semantics declared by the t46.8 source rows: `bounded_context`.
 
 Expected discipline: A bounded context snapshot plus receipt describing selected refs, omissions, policy, and budget use.
 
-### `status` — Establish archive authority before making a broad claim
+### `status` — Read aggregate archive statistics
 
-Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.
+Report status by scope: aggregate archive statistics, one source's freshness, embedding readiness, coordination, Sinex publication, or operation readiness.
 
 Result semantics declared by the t46.8 source rows: `single_object, aggregate`.
 
 ```json
 {
   "arguments": {
-    "include": [
-      "identity",
-      "coverage",
-      "freshness",
-      "readiness"
-    ],
     "scope": "archive"
   },
   "name": "status"

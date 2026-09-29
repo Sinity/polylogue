@@ -111,10 +111,22 @@ class CorpusCompactionPack(ArchiveInsightModel):
         return render_compaction_markdown(self)
 
 
+#: Characters one estimated word stands for before a run counts as more than
+#: one. Ordinary words fit in one; an unbroken run (``"!" * 100000``, a long
+#: hash, a base64 blob) is weighted by its length instead of collapsing into a
+#: single word, so the advertised budget keeps bounding the payload size.
+_CHARS_PER_ESTIMATED_WORD = 8
+
+
+def _weighted_words(runs: Iterable[str]) -> int:
+    return sum(max(1, -(-len(run) // _CHARS_PER_ESTIMATED_WORD)) for run in runs)
+
+
 def estimate_tokens(text: str) -> int:
     """Stable proxy used by both context and compact renderers."""
 
-    return max(1, int(len(text.split()) * 1.3)) if text.strip() else 0
+    words = _weighted_words(text.split())
+    return max(1, int(words * 1.3)) if words else 0
 
 
 def _estimate_serialized_tokens(payload: str) -> int:
@@ -128,7 +140,8 @@ def _estimate_serialized_tokens(payload: str) -> int:
     # Letter runs and digit runs count, and so does a standalone punctuation
     # token (``= = =`` in a tool result), bounded by whitespace or a string
     # quote. Punctuation inside a value (ids, paths) and JSON structure do not.
-    words = len(re.findall(r'[A-Za-z]+|\d+|(?:(?<=\s)|(?<="))[^\w\s"{}\[\],:]+(?=\s|")', payload))
+    # Every run is weighted by its length, so a long unbroken run stays large.
+    words = _weighted_words(re.findall(r'[A-Za-z]+|\d+|(?:(?<=\s)|(?<="))[^\w\s"{}\[\],:]+(?=\s|")', payload))
     return max(1, int(words * 1.3)) if words else 0
 
 

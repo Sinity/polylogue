@@ -719,7 +719,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=mark_offset,
                     next_offset=mark_next_offset,
-                    outcome=decide_outcome(matched=mark_total),
+                    outcome=decide_outcome(matched=len(mark_page)),
                 )
             )
 
@@ -748,7 +748,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=annotation_offset,
                     next_offset=annotation_next_offset,
-                    outcome=decide_outcome(matched=annotation_total),
+                    outcome=decide_outcome(matched=len(annotation_page)),
                 )
             )
 
@@ -765,7 +765,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=view_offset,
                     next_offset=view_next_offset,
-                    outcome=decide_outcome(matched=view_total),
+                    outcome=decide_outcome(matched=len(view_page)),
                 )
             )
 
@@ -782,7 +782,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=pack_offset,
                     next_offset=pack_next_offset,
-                    outcome=decide_outcome(matched=pack_total),
+                    outcome=decide_outcome(matched=len(pack_page)),
                 )
             )
 
@@ -799,7 +799,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=workspace_offset,
                     next_offset=workspace_next_offset,
-                    outcome=decide_outcome(matched=workspace_total),
+                    outcome=decide_outcome(matched=len(workspace_page)),
                 )
             )
 
@@ -826,7 +826,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                         "limit": clamped_limit,
                         "offset": correction_offset,
                         "next_offset": correction_next_offset,
-                        "outcome": decide_outcome(matched=correction_total).to_dict(),
+                        "outcome": decide_outcome(matched=len(correction_page)).to_dict(),
                     }
                 )
             )
@@ -843,7 +843,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                 limit=clamped_limit,
                 offset=note_offset,
                 next_offset=note_next_offset,
-                outcome=decide_outcome(matched=note_total),
+                outcome=decide_outcome(matched=len(note_page)),
             )
         )
 
@@ -1729,7 +1729,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         limit=clamped_limit,
                         offset=page_offset,
                         next_offset=next_offset,
-                        outcome=decide_outcome(matched=matched),
+                        outcome=decide_outcome(matched=len(page)),
                     )
                 )
             payload = await hooks.get_polylogue().context_image_payload(

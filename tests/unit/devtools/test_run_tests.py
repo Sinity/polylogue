@@ -1177,3 +1177,16 @@ def test_a_queued_run_keeps_its_slot_receipt_and_any_recorded_killer(
     assert timed_out["diagnosis"] == "pytest_failed"
     assert timed_out["termination_killer"] == "timeout"
     assert timed_out["termination_unit"] == "u"
+
+
+@pytest.mark.parametrize("selection", ["all", "affected", "descriptor"])
+def test_verify_pytest_command_keeps_plain_assertions(selection: str) -> None:
+    """Anti-vacuity: the verify step clears configured addopts; without
+    ``--assert=plain`` in the shared closed-world args the corpus run rewrites
+    assertions and retains their ASTs.
+    """
+    from devtools import verify
+
+    cmd = verify._pytest_command(selection=selection, worker_args=(), hypothesis_profile=None, explicit_tests=())
+    assert CLEAR_CONFIGURED_ADDOPTS in cmd
+    assert "--assert=plain" in cmd

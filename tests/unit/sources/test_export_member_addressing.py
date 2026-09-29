@@ -674,3 +674,17 @@ def test_zip_member_coordinate_splits_after_a_colon_in_the_container_path(tmp_pa
     loose = tmp_path / "plain:file.json"
     loose.write_text("{}")
     assert zip_member_coordinate(str(loose)) is None
+
+
+def test_split_zip_member_text_separates_after_the_zip_suffix_when_the_container_is_gone() -> None:
+    """Anti-vacuity: a first-colon split names ``C`` as the container of a
+    Windows-style coordinate, and relocation and heartbeat labels lose the ZIP.
+    """
+    from polylogue.core.raw_coordinates import split_zip_member_text
+
+    assert split_zip_member_text(r"C:\imports\chat.zip:conversations.json") == (
+        r"C:\imports\chat.zip",
+        "conversations.json",
+    )
+    assert split_zip_member_text("/gone/odd:name.ZIP:a:b.json") == ("/gone/odd:name.ZIP", "a:b.json")
+    assert split_zip_member_text("/gone/plain:file.json") is None

@@ -164,3 +164,15 @@ def test_compaction_uses_repository_words_to_tokens_ratio() -> None:
     from polylogue.surfaces.compaction import estimate_tokens
 
     assert estimate_tokens("one two three four five six seven eight nine ten") == 13
+
+
+def test_long_unbroken_runs_are_weighted_by_their_size() -> None:
+    """Anti-vacuity: counting a run as one word estimates ``"!" * 100000`` at
+    one or two tokens in both estimators, so a tiny budget would accept it.
+    """
+    from polylogue.surfaces.compaction import _estimate_serialized_tokens, estimate_tokens
+
+    run = "!" * 100_000
+    assert estimate_tokens(run) >= 10_000
+    assert _estimate_serialized_tokens(f'{{"text":"{run}"}}') >= 10_000
+    assert estimate_tokens("one two three") == 3

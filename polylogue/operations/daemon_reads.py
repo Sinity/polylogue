@@ -381,7 +381,7 @@ def _query_payload(
     # Decided after the projection runs: the attached-unit row ceiling is one
     # of this operation's own facts, and an envelope carrying a cut projection
     # is not an ``ok`` answer about those sessions.
-    outcome = decide_outcome(matched=total, degraded=attached_gaps)
+    outcome = decide_outcome(matched=len(summaries), degraded=attached_gaps)
     lineage_edges = _lineage_edges_payload(session_ids, spec=spec, archive=archive)
     return {
         "outcome": outcome.to_dict(),

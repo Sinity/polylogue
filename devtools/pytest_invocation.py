@@ -136,6 +136,7 @@ def managed_plugin_args(*, testmon: bool, xdist: bool = True) -> tuple[str, ...]
 #: Ini overrides plus the collection root. These define the corpus exactly.
 CLOSED_WORLD_COLLECTION_ARGS: Final[tuple[str, ...]] = (
     CLEAR_CONFIGURED_ADDOPTS,
+    ASSERT_PLAIN_ARGS,
     "--override-ini=python_files=test_*.py *_test.py fuzz_*.py",
     "--override-ini=python_classes=Test",
     "--override-ini=python_functions=test",

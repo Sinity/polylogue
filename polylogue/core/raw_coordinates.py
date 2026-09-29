@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import zipfile
 from hashlib import sha256
 from math import isqrt
@@ -106,6 +107,27 @@ def zip_member_coordinate(source_path: str) -> tuple[Path, str] | None:
     return None
 
 
+_ZIP_MEMBER_SEPARATOR = re.compile(r"\.zip:", re.IGNORECASE)
+
+
+def split_zip_member_text(source_path: str) -> tuple[str, str] | None:
+    """Split ``<container>:<member>`` where the container may not exist here.
+
+    A container present on disk is located by :func:`zip_member_coordinate`.
+    A relocated or removed one is split lexically after its ``.zip`` suffix,
+    so a colon earlier in the container path (a Windows drive, a legal POSIX
+    filename) is not taken as the separator.
+    """
+    located = zip_member_coordinate(source_path)
+    if located is not None:
+        container, member = located
+        return source_path[: len(source_path) - len(member) - 1], member
+    match = _ZIP_MEMBER_SEPARATOR.search(source_path)
+    if match is None or match.end() == len(source_path):
+        return None
+    return source_path[: match.end() - 1], source_path[match.end() :]
+
+
 def zip_member_container(source_path: str) -> Path | None:
     """The ZIP container a recorded ``<container>:<member>`` coordinate names."""
     coordinate = zip_member_coordinate(source_path)
@@ -115,6 +137,7 @@ def zip_member_container(source_path: str) -> Path | None:
 __all__ = [
     "zip_member_container",
     "zip_member_coordinate",
+    "split_zip_member_text",
     "MemberAddressingMode",
     "zip_member_identity_coordinate",
     "zip_member_raw_id",

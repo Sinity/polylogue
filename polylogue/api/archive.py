@@ -2772,16 +2772,26 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         def read(archive: ArchiveStore) -> list[ArchiveAssertionEnvelope]:
             archive.require_user_tier()
-            return list_assertion_claims(
-                archive._conn,
-                schema="user_tier",
-                kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
-                target_ref=target_ref,
-                scope_ref=scope_ref,
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            )
+            try:
+                return list_assertion_claims(
+                    archive._conn,
+                    schema="user_tier",
+                    kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+                    target_ref=target_ref,
+                    scope_ref=scope_ref,
+                    statuses=statuses,
+                    context_inject=context_inject,
+                    limit=limit,
+                )
+            except sqlite3.Error as exc:
+                # A durable read failure is a typed refusal, never an empty
+                # (and therefore clean-looking) claim list.
+                raise ArchiveTierUnavailableError(
+                    tier="user.db",
+                    path=str(archive.user_db_path.resolve(strict=False)),
+                    reason=f"cannot read assertions ({exc})",
+                    guidance="restore the durable user tier at this path, then retry",
+                ) from exc
 
         return await run_archive_read(
             root,
