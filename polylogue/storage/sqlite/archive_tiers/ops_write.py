@@ -63,10 +63,11 @@ def _record_ops_schema_state(conn: sqlite3.Connection, schema_digest: str) -> No
     recorded = [row[0] for row in conn.execute("SELECT schema_digest FROM polylogue_ops_schema_state")]
     if recorded == [schema_digest]:
         return
-    conn.execute(
-        "DELETE FROM polylogue_ops_schema_state WHERE schema_digest <> ?",
-        (schema_digest,),
-    )
+    if recorded:
+        conn.execute(
+            "DELETE FROM polylogue_ops_schema_state WHERE schema_digest <> ?",
+            (schema_digest,),
+        )
     conn.execute(
         "INSERT OR IGNORE INTO polylogue_ops_schema_state(schema_digest) VALUES (?)",
         (schema_digest,),

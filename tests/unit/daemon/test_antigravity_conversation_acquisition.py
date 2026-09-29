@@ -399,12 +399,20 @@ def test_vendor_cohort_checks_the_pass_budget_between_conversations(
     assert all(processor._cursor.get_record(path) is None for path in paths[1:])
 
 
-def test_vendor_cohort_propagates_writer_budget_refusal_without_poisoning_items(
+def test_vendor_cohort_finishes_the_acquired_conversation_when_the_writer_budget_is_spent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     frozen_clock: Any,
 ) -> None:
-    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+    """A conversation whose export outlasts the writer bound is published, not discarded.
+
+    The rest stay unattempted backlog and the unit reports the spent hold.
+    Anti-vacuity: raising at the next admission (the predecessor) discards
+    the exported conversation, so a conversation that always outlasts the
+    bound is re-exported and refused on every pass and never lands.
+    """
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
+    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET
 
     processor, paths, exported = _live_vendor_cohort(
         tmp_path,
@@ -413,13 +421,15 @@ def test_vendor_cohort_propagates_writer_budget_refusal_without_poisoning_items(
     )
     token = enter_write_hold("watcher.live_ingest.full", 30)
     try:
-        with pytest.raises(WriteHoldBudgetError) as caught:
-            processor._ingest_full_paths_sync(paths, source_name="antigravity")
-        assert caught.value.checkpoint == "full_acquisition_file"
+        result = processor._ingest_full_paths_sync(paths, source_name="antigravity")
     finally:
         exit_write_hold(token)
     assert exported == [paths[0].stem]
-    assert all(processor._cursor.get_record(path) is None for path in paths)
+    assert result.write_hold_exhausted
+    assert result.failed == []
+    assert result.excluded == dict.fromkeys(paths[1:], REFUSED_UNATTEMPTED_TIME_BUDGET)
+    assert paths[0] in result.succeeded or paths[0] in result.raw_deferred
+    assert all(processor._cursor.get_record(path) is None for path in paths[1:])
 
 
 def test_vendor_admission_refusal_happens_before_server_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

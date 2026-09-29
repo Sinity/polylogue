@@ -56,9 +56,14 @@ def action_pairs_refresh_sql(session_expr: str, *, session_index_hint: str = "")
     """
 
 
-def refresh_action_pairs(conn: sqlite3.Connection, session_id: str) -> None:
-    """Rebuild action pairs for one changed session inside its write transaction."""
-    conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
+def refresh_action_pairs(conn: sqlite3.Connection, session_id: str, *, prior_rows: bool = True) -> None:
+    """Rebuild action pairs for one changed session inside its write transaction.
+
+    ``prior_rows`` is false when the session's messages are all new, so it
+    can hold no pairs to delete first.
+    """
+    if prior_rows:
+        conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
     has_session_index = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_session_position'"
     ).fetchone()

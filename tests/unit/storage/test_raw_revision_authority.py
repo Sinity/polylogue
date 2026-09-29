@@ -1000,3 +1000,30 @@ def test_prefix_forest_placement_matches_all_pairs_with_linear_comparisons() -> 
     } == expected
     # All-pairs would cost 27 * 26 / 2 = 351 comparisons on this cohort.
     assert len(comparisons) <= 4 * len(node_ids)
+
+
+def test_a_lone_full_revision_is_classified_without_reading_its_bytes() -> None:
+    """A single-revision cohort has nothing to compare, so its payload is never opened.
+
+    The decision matches the eager classifier's for the same bytes.
+    Anti-vacuity: hash every stream first regardless of cohort size (the
+    predecessor) and the opener is called once.
+    """
+    payload = b"only\nrevision\n"
+    opened: list[str] = []
+
+    def open_payload() -> BinaryIO:
+        opened.append("only")
+        from io import BytesIO
+
+        return BytesIO(payload)
+
+    streamed = classify_historical_full_revision_streams(
+        [HistoricalRawRevisionStream("only", len(payload), open_payload)]
+    )
+    eager = classify_historical_full_revisions([HistoricalRawRevision("only", payload)])
+
+    assert opened == []
+    assert [(item.raw_id, item.relation, item.predecessor_raw_id, item.authority) for item in streamed] == [
+        (item.raw_id, item.relation, item.predecessor_raw_id, item.authority) for item in eager
+    ]

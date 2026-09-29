@@ -426,20 +426,10 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
                 _record_tier_init(tier, "prototype_hit")
                 return
             _initialize_archive_tier_ddl(conn, tier)
-            if tier is ArchiveTier.INDEX:
-                from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-
-                ensure_runtime_indexes_sync(conn)
             _record_tier_prototype(conn, tier, spec.version)
             _record_tier_init(tier, "ddl_fresh")
             return
         _initialize_archive_tier_ddl(conn, tier)
-        if tier is ArchiveTier.INDEX:
-            from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-
-            # Same obligation as both sibling branches above: a tier reaching
-            # the manifest assertion without its runtime indexes is refused.
-            ensure_runtime_indexes_sync(conn)
         _record_tier_init(tier, "ddl_reapply")
         return
     # Explicit escape hatch for a future tier that cannot safely be restored
@@ -458,7 +448,20 @@ def _initialize_archive_tier_ddl(conn: sqlite3.Connection, tier: ArchiveTier) ->
         loaded, error = try_load_sqlite_vec(conn)
         if not loaded:
             raise RuntimeError("archive embeddings initialization requires sqlite-vec") from error
-    conn.executescript(spec.ddl)
+    # One transaction for the whole schema. In autocommit every CREATE is
+    # its own commit, and each commit is a sync of the journal: a fresh tier
+    # paid one per statement (hundreds on the index tier), which under host
+    # I/O load stretched a fresh root's bootstrap into minutes. The
+    # transaction stays open through the convergence steps, whose final
+    # commit publishes schema, stamp and version together, so an interrupted
+    # initialization leaves an empty file rather than a partial schema.
+    conn.executescript(f"BEGIN;\n{spec.ddl}\n;")
+    if tier is ArchiveTier.INDEX:
+        from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+
+        # The manifest assertion refuses an index tier without its runtime
+        # indexes; they belong to the same schema transaction.
+        ensure_runtime_indexes_sync(conn)
     _apply_archive_tier_convergence(conn, tier, spec)
 
 

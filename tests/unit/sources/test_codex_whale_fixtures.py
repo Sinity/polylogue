@@ -159,77 +159,74 @@ def test_stream_dispatch_retention_does_not_grow_with_the_record_count() -> None
 
 
 # polylogue-ro922. Codex session files are untrusted input, so the parser's
-# per-record lookahead retention is a memory amplifier. Bounds below are traced
-# Python allocation peaks measured in-test; each names what head measured with
-# the fix reverted, which is what makes it non-vacuous.
-_CODE_MODE_ITEM_COUNT = 200_000
-# Head with ``_CodexExecItemRecord`` retaining the whole ``payload.item``:
-# 794.9 MB traced peak for this shape. With the append-time reduction: 367.2 MB.
-_CODE_MODE_ITEM_PEAK_BYTES_MAX = 600 * 1024 * 1024
+# per-record lookahead retention is a memory amplifier. The bound below is a
+# traced Python allocation peak measured in-test; it names what head measured
+# with the fix reverted, which is what makes it non-vacuous.
 _REPLACEMENT_CONTEXT_COUNT = 200_000
 # Head with no aggregate ceiling: 461.7 MB traced peak and 200_002 session
 # events. With the ceiling: 219.3 MB and 515 events.
 
 
-def _code_mode_item_stream() -> Iterator[dict[str, object]]:
-    yield {"type": "session_meta", "payload": {"id": "code-mode-flood"}}
-    for index in range(_CODE_MODE_ITEM_COUNT):
-        yield {
-            "type": "event_msg",
-            "payload": {
-                "type": "item_completed",
-                "item": {
-                    "type": "CommandExecution",
-                    "id": f"exec-{index}",
-                    "command": ["bash", "-lc", f"echo {index}"],
-                    "cwd": "/w",
-                    "exit_code": 0,
-                    "status": "completed",
-                    "aggregated_output": f"out-{index}",
-                    "stdout": f"out-{index}",
-                    "stderr": "",
-                    "formatted_output": f"$ echo {index}\nout-{index}\n",
-                    "parsed_cmd": [{"cmd": f"echo {index}", "type": "read", "name": "echo"}],
-                    "duration_ms": 12,
-                    "turn_id": f"turn-{index}",
-                    "started_at": "2025-01-01T00:00:00Z",
-                    "completed_at": "2025-01-01T00:00:01Z",
-                    "sandbox_policy": "workspace-write",
-                    "approval": "on-request",
-                    "env": {"PATH": "/usr/bin:/bin", "HOME": "/w"},
-                    "truncated": False,
-                },
+def _code_mode_item_record(index: int) -> dict[str, object]:
+    return {
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "item": {
+                "type": "CommandExecution",
+                "id": f"exec-{index}",
+                "command": ["bash", "-lc", f"echo {index}"],
+                "cwd": "/w",
+                "exit_code": 0,
+                "status": "completed",
+                "aggregated_output": f"out-{index}",
+                "stdout": f"out-{index}",
+                "stderr": "",
+                "formatted_output": f"$ echo {index}\nout-{index}\n",
+                "parsed_cmd": [{"cmd": f"echo {index}", "type": "read", "name": "echo"}],
+                "duration_ms": 12,
+                "turn_id": f"turn-{index}",
+                "started_at": "2025-01-01T00:00:00Z",
+                "completed_at": "2025-01-01T00:00:01Z",
+                "sandbox_policy": "workspace-write",
+                "approval": "on-request",
+                "env": {"PATH": "/usr/bin:/bin", "HOME": "/w"},
+                "truncated": False,
             },
-        }
+        },
+    }
 
 
-def test_code_mode_item_lookahead_does_not_retain_whole_payload_items() -> None:
-    """Anti-vacuity: restoring ``item=executed`` (the unreduced mapping) blows the traced-peak bound.
+def test_code_mode_item_lookahead_stores_only_the_reduced_item() -> None:
+    """polylogue-ro922: the lookahead keeps the evidence item readers consult, not the whole item.
 
-    The reduction keeps every key the item readers consult plus the one
-    selected output text, so the parse result is unchanged; only the retained
-    bytes per item change.
+    Items wait in the parse's disk-backed scratch index, so their memory is
+    bounded by construction; what the reduction still decides is what each
+    stored item carries. Anti-vacuity: store ``executed`` unreduced and the
+    row carries ``env``, ``sandbox_policy`` and every duplicate output text.
+
+    This replaces a 200,000-item traced-peak test whose two arms measured the
+    same 234.3 MB once items moved to the scratch index, so restoring the
+    whole item could no longer turn it red.
     """
-    import tracemalloc
+    import pickle
+    import sqlite3
 
-    from polylogue.sources.dispatch import parse_stream_payload
+    from polylogue.sources.parsers import codex as codex_module
 
-    tracemalloc.start()
-    try:
-        sessions = parse_stream_payload(
-            "codex",
-            _code_mode_item_stream(),
-            "code-mode-flood",
-            source_path="code-mode-flood.jsonl",
-        )
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+    with sqlite3.connect("") as connection:
+        index = codex_module._CodexLookaheadIndex(connection)
+        observer = codex_module._CodexLookaheadObserver(index)
+        observer.observe(1, _code_mode_item_record(7))
+        rows = connection.execute("SELECT item FROM codex_items").fetchall()
+        index.close()
 
-    assert len(sessions) == 1
-    assert peak < _CODE_MODE_ITEM_PEAK_BYTES_MAX, (
-        f"code-mode item lookahead traced peak {peak} exceeds {_CODE_MODE_ITEM_PEAK_BYTES_MAX}"
-    )
+    assert len(rows) == 1
+    stored = pickle.loads(rows[0][0])
+    assert set(stored) <= {*codex_module._CODE_MODE_ITEM_MATCH_KEYS, "paths", "byte_count", "aggregated_output"}
+    assert stored["command"] == ["bash", "-lc", "echo 7"]
+    assert stored["aggregated_output"] == "out-7"
+    assert "env" not in stored and "stdout" not in stored and "formatted_output" not in stored
 
 
 def _replacement_history_stream() -> Iterator[dict[str, object]]:

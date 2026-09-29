@@ -42,6 +42,7 @@ from polylogue.sources.live.tool_result_sidecars import (
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSessionEvent
 from polylogue.sources.parsers.base_models import SINK_JSON_CONTEXT
 from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 from polylogue.sources.value_bounds import require_storable_string
 
@@ -89,9 +90,20 @@ def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
     differently in JSON mode (a paste digest's hex) read the
     :data:`SINK_JSON_CONTEXT` flag and parse as JSON mode would.
     """
-    if _ESCAPED_SURROGATE.search(encoded) is None:
+    if not _may_hold_escaped_surrogate(encoded) or _ESCAPED_SURROGATE.search(encoded) is None:
         return model.model_validate_json(encoded)
     return model.model_validate(json.loads(encoded), context=SINK_JSON_CONTEXT)
+
+
+def _may_hold_escaped_surrogate(encoded: str) -> bool:
+    """Whether ``encoded`` contains the ``\\u`` + ``d``/``D`` an escaped surrogate starts with.
+
+    Every ``_ESCAPED_SURROGATE`` match contains one of these two substrings,
+    so their absence -- a C substring scan -- decides the common case. The
+    regex alone, with its backslash-run prefix, tried a match at every
+    offset of every decoded row: 40 s of a 440 MB rollout's preparation.
+    """
+    return "\\ud" in encoded or "\\uD" in encoded
 
 
 def _read_uri(path: Path) -> str:
@@ -184,15 +196,72 @@ class _DecodedSessions:
 
 _DECODED_SESSIONS = _DecodedSessions(DECODED_SESSION_BUDGET_BYTES)
 
+#: Oversized sealed sessions whose decoded walk is kept as a pickle spool.
+#: Only a speed tier: an evicted session's next walk decodes its carrier again.
+DECODED_SPOOL_SLOTS = 4
+
+
+class _DecodedSpools:
+    """Disk-backed decoded walks of sealed sessions too large for the LRU.
+
+    A whale session is walked as many times as a small one, but keeping it
+    decoded in memory would make memory proportional to it, so each walk
+    used to re-run pydantic JSON validation over every message. The first
+    complete walk now also spools the decoded messages; later walks unpickle
+    them, several times cheaper, with memory still bounded by one message.
+    """
+
+    def __init__(self, slots: int) -> None:
+        self.slots = slots
+        self._entries: OrderedDict[_DecodedKey, PickleSpool[ParsedMessage]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: _DecodedKey) -> PickleSpool[ParsedMessage] | None:
+        with self._lock:
+            spool = self._entries.get(key)
+            if spool is not None:
+                self._entries.move_to_end(key)
+            return spool
+
+    def put(self, key: _DecodedKey, spool: PickleSpool[ParsedMessage]) -> None:
+        # Dropped spools are released by their last holder, so a replay in
+        # flight keeps reading one that was evicted or discarded meanwhile.
+        with self._lock:
+            if key in self._entries:
+                return
+            self._entries[key] = spool
+            while len(self._entries) > self.slots:
+                self._entries.popitem(last=False)
+
+    def discard_path(self, path: str) -> None:
+        with self._lock:
+            for key in [key for key in self._entries if key[0] == path]:
+                del self._entries[key]
+
+    def discard_under(self, directory: str) -> None:
+        prefix = directory.rstrip(os.sep) + os.sep
+        with self._lock:
+            for key in [key for key in self._entries if key[0].startswith(prefix)]:
+                del self._entries[key]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+_DECODED_SPOOLS = _DecodedSpools(DECODED_SPOOL_SLOTS)
+
 
 def discard_decoded_sessions(path: Path) -> None:
     """Release retained decodes of one sealed carrier before it is removed."""
     _DECODED_SESSIONS.discard_path(str(path))
+    _DECODED_SPOOLS.discard_path(str(path))
 
 
 def discard_decoded_sessions_under(directory: Path) -> None:
     """Release retained decodes of every carrier in a scratch tree being removed."""
     _DECODED_SESSIONS.discard_under(str(directory))
+    _DECODED_SPOOLS.discard_under(str(directory))
 
 
 def _message_json(value: ParsedMessage) -> str:
@@ -682,7 +751,12 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         if decoded is not None:
             yield from decoded[start:]
             return
+        spooled = _DECODED_SPOOLS.get(key) if key is not None else None
+        if spooled is not None:
+            yield from spooled.iter_from(start)
+            return
         retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
+        spool: PickleSpool[ParsedMessage] | None = None
         retained_bytes = 0
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
             # The budget is in stored bytes: ``len`` of the decoded text
@@ -697,15 +771,24 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 if retained is not None:
                     retained_bytes += int(row[1])
                     if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
+                        # Too large to keep decoded in memory: the rest of
+                        # this walk goes to a spool the next walks replay.
+                        spool = PickleSpool[ParsedMessage](indexed=True)
+                        for earlier in retained:
+                            spool.append(earlier)
                         retained = None
                     else:
                         retained.append(message)
+                if spool is not None:
+                    spool.append(message)
                 yield message
         # Only a walk that reached the end holds the whole session.
         # An empty session costs nothing to decode and would occupy an LRU
         # entry the byte budget never charges for.
         if key is not None and retained and len(retained) == self._count:
             _DECODED_SESSIONS.put(key, tuple(retained), retained_bytes)
+        elif key is not None and spool is not None and len(spool) == self._count:
+            _DECODED_SPOOLS.put(key, spool)
 
     def _decoded_key(self) -> _DecodedKey | None:
         """Identify this sealed session's bytes, or ``None`` when unreadable."""

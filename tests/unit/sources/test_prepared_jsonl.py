@@ -232,9 +232,8 @@ def test_sealed_session_decodes_once_across_walks(tmp_path: Path, monkeypatch: p
     assert session.messages[0] is first[0]
 
 
-def test_discarded_or_oversized_sessions_are_decoded_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A discarded carrier releases its decode, and a session above half the
-    budget is never retained, so memory stays bounded by the budget."""
+def test_discarded_sessions_are_decoded_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A discarded carrier releases its retained decode."""
     from polylogue.sources import prepared_message_sink
 
     artifact, _coordinate = _prepared_artifact(tmp_path)
@@ -246,11 +245,39 @@ def test_discarded_or_oversized_sessions_are_decoded_again(tmp_path: Path, monke
     list(session.messages)
     assert decodes[0] == 2
 
+
+def test_oversized_session_walks_replay_a_spool_not_the_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A session above half the budget stays out of memory, and its later walks unpickle.
+
+    Anti-vacuity: without the spool every walk of an oversized session
+    re-validates each message from JSON, so the second and third walks
+    raise the count to three decodes per message.
+    """
+    from polylogue.sources import prepared_message_sink
+
+    artifact, coordinate = _prepared_artifact(tmp_path)
+    assert artifact.sessions_path is not None
     prepared_message_sink.discard_decoded_sessions(artifact.sessions_path)
     monkeypatch.setattr(prepared_message_sink._DECODED_SESSIONS, "budget_bytes", 8)
+    (session,) = list(artifact.iter_sessions())
+    assert isinstance(session.messages, SqliteMessageSink)
+    decodes = _count_message_decodes(monkeypatch)
+    first = list(session.messages)
+    second = list(session.messages)
+    suffix = list(session.messages.iter_from(1))
+    assert decodes[0] == len(first)
+    retained = [
+        key for key in prepared_message_sink._DECODED_SESSIONS._entries if key[0] == str(artifact.sessions_path)
+    ]
+    assert retained == []
+    assert second == first
+    assert second[0] is not first[0]
+    assert suffix == first[1:]
+    assert first[0].owner_coordinate == coordinate
+
+    prepared_message_sink.discard_decoded_sessions(artifact.sessions_path)
     list(session.messages)
-    list(session.messages)
-    assert decodes[0] == 4
+    assert decodes[0] == 2 * len(first)
 
 
 def _claude_document(session_id: str) -> dict[str, object]:

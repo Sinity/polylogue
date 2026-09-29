@@ -59,6 +59,9 @@ from polylogue.sources.live.batch_support import (
     _parse_payload_as_session_artifact,
     encode_cursor_hash_authority,
     jsonl_complete_prefix,
+    jsonl_complete_prefix_path,
+    jsonl_parse_prefix_size,
+    jsonl_parse_prefix_size_of_handle,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -4839,6 +4842,9 @@ def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
         return result
 
     monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_during_prefix_proof)
+    # This drives the re-hash proof racing growth; a slow host must not let the
+    # capture observation settle and skip that proof.
+    monkeypatch.setattr(live_batch, "_SETTLED_OBSERVATION_MARGIN_NS", 1 << 62)
 
     first = asyncio.run(processor.ingest_files([path]))
 
@@ -4947,6 +4953,9 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         return result
 
     monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_on_every_prefix_proof)
+    # This drives the re-hash proof racing growth; a slow host must not let the
+    # capture observation settle and skip that proof.
+    monkeypatch.setattr(live_batch, "_SETTLED_OBSERVATION_MARGIN_NS", 1 << 62)
     first = asyncio.run(processor.ingest_files([path]))
 
     assert first.full_file_count == 1
@@ -9961,3 +9970,192 @@ def test_claude_live_append_keeps_latest_relocated_directory_first(tmp_path: Pat
             ]
         assert paths[0] == moved
         assert "/a/original" in paths
+
+
+def _settled_proof_fixture(tmp_path: Path) -> tuple[Path, bytes, os.stat_result, CursorStore, LiveBatchProcessor]:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "settled-proof.jsonl"
+    captured = (
+        b'{"type":"session_meta","payload":{"id":"settled-proof"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-a","role":"user",'
+        b'"content":[{"type":"input_text","text":"alpha"}]}}\n'
+    )
+    path.write_bytes(captured)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    return path, captured, path.stat(), cursor, processor
+
+
+def _observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+@pytest.mark.parametrize("settled", [True, False], ids=["settled", "racy"])
+def test_full_cursor_reuses_a_settled_unchanged_capture_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settled: bool
+) -> None:
+    """An unchanged source whose last change predates the capture is not re-hashed.
+
+    A change time within the timestamp margin of the observation is the racy
+    case and is proved by reading the bytes again. Anti-vacuity: drop the
+    margin comparison and the racy case skips its re-read too; drop the
+    settled shortcut and the settled case reads every byte.
+    """
+    path, captured, captured_stat, cursor, processor = _settled_proof_fixture(tmp_path)
+    hashed: list[int] = []
+
+    def counting_hash(source_path: Path, *, start_offset: int, end_offset: int) -> tuple[str, int]:
+        hashed.append(end_offset - start_offset)
+        return sha256_range_from_path(source_path, start_offset=start_offset, end_offset=end_offset)
+
+    monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", counting_hash)
+    margin = live_batch._SETTLED_OBSERVATION_MARGIN_NS
+    observed_at_ns = captured_stat.st_ctime_ns + (margin + 1 if settled else margin // 2)
+
+    processor._record_full_cursor(
+        path,
+        raw_fingerprint=sha256(captured).hexdigest(),
+        raw_byte_size=len(captured),
+        source_name="codex",
+        captured_content_hash=sha256(captured).hexdigest(),
+        captured_file_observation=_observation(captured_stat),
+        captured_observed_at_ns=observed_at_ns,
+    )
+
+    assert processor._last_cursor_write_stale is False
+    record = cursor.get_record(path)
+    assert record is not None
+    assert record.byte_offset == len(captured)
+    assert record.content_fingerprint == sha256(captured).hexdigest()
+    # The racy case proves the prefix before and after deriving the cursor.
+    assert hashed == ([] if settled else [len(captured), len(captured)])
+
+
+def test_settled_observation_does_not_hide_a_same_size_rewrite(tmp_path: Path) -> None:
+    """A rewrite after capture with its mtime restored still changes the change time.
+
+    Anti-vacuity: compare only size and mtime and the rewritten bytes are
+    accepted under the captured hash.
+    """
+    path, captured, captured_stat, cursor, processor = _settled_proof_fixture(tmp_path)
+    rewritten = captured.replace(b"alpha", b"bravo")
+    assert len(rewritten) == len(captured)
+    path.write_bytes(rewritten)
+    os.utime(path, ns=(captured_stat.st_atime_ns, captured_stat.st_mtime_ns))
+    after = path.stat()
+    if after.st_ctime_ns == captured_stat.st_ctime_ns:
+        pytest.skip("filesystem did not advance ctime for the rewrite within this test's resolution")
+
+    processor._record_full_cursor(
+        path,
+        raw_fingerprint=sha256(captured).hexdigest(),
+        raw_byte_size=len(captured),
+        source_name="codex",
+        captured_content_hash=sha256(captured).hexdigest(),
+        captured_file_observation=_observation(captured_stat),
+        captured_observed_at_ns=captured_stat.st_ctime_ns + live_batch._SETTLED_OBSERVATION_MARGIN_NS + 1,
+    )
+
+    assert processor._last_cursor_write_stale is True
+    record = cursor.get_record(path)
+    assert record is None or record.content_fingerprint != sha256(captured).hexdigest()
+
+
+_FRONTIER_PIECES = (
+    b'{"a":1}',
+    b'{"b":"x y"}',
+    b"",
+    b"  ",
+    b"\t",
+    b'{"bad"',
+    b"[1,2]",
+    b"\x0b",
+    b'{"u":"\xc3\xa9"}',
+    b"\xff",
+)
+
+
+@pytest.mark.parametrize("window", [1, 2, 3, 7, 1 << 20])
+def test_file_frontier_matches_the_bytes_frontier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window: int) -> None:
+    """The tail-first file routes decide every frontier exactly as the bytes route does.
+
+    Both the path frontier and the handle parse prefix are held to the bytes
+    route. Payloads mix records, blank and whitespace-only lines, CRLF, malformed
+    and unterminated tails; small read windows put every boundary across a
+    window edge. Anti-vacuity: take the candidate from the last physical line
+    instead of the last non-blank one, and blank-tail payloads disagree.
+    """
+    import random
+
+    from polylogue.sources.live import batch_support
+
+    monkeypatch.setattr(batch_support, "_JSONL_TAIL_READ_BYTES", window)
+    rng = random.Random(window)
+    path = tmp_path / "frontier.jsonl"
+    for _ in range(600):
+        payload = b"".join(
+            rng.choice(_FRONTIER_PIECES) + rng.choice((b"\n", b"\n", b"\r\n", b"")) for _ in range(rng.randint(0, 6))
+        )
+        path.write_bytes(payload)
+        expected = jsonl_complete_prefix(payload)
+        frontier = jsonl_complete_prefix_path(path)
+        assert (frontier.prefix_size, frontier.incomplete_tail, frontier.malformed_record) == (
+            expected.prefix_size,
+            expected.incomplete_tail,
+            expected.malformed_record,
+        ), payload
+        with path.open("rb") as handle:
+            assert jsonl_parse_prefix_size_of_handle(handle) == jsonl_parse_prefix_size(expected, len(payload)), payload
+            assert handle.tell() == 0
+
+
+def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deciding the frontier of a large file reads its last record, not the file.
+
+    Anti-vacuity: walk every line (the predecessor) and the bytes read equal
+    the file size.
+    """
+    from polylogue.sources.live import batch_support
+
+    monkeypatch.setattr(batch_support, "_JSONL_TAIL_READ_BYTES", 4096)
+    path = tmp_path / "large.jsonl"
+    record = b'{"type":"response_item","payload":{"text":"' + b"r" * 900 + b'"}}\n'
+    path.write_bytes(record * 4000 + b'{"partial":')
+    read = 0
+    real_open = Path.open
+
+    class CountingHandle:
+        def __init__(self, handle: Any) -> None:
+            self._handle = handle
+
+        def __enter__(self) -> CountingHandle:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self._handle.close()
+
+        def seek(self, offset: int) -> int:
+            return int(self._handle.seek(offset))
+
+        def read(self, size: int = -1) -> bytes:
+            nonlocal read
+            data: bytes = self._handle.read(size)
+            read += len(data)
+            return data
+
+    class CountingPath(type(path)):  # type: ignore[misc]
+        def open(self, *args: Any, **kwargs: Any) -> Any:
+            return CountingHandle(real_open(self, *args, **kwargs))
+
+    frontier = jsonl_complete_prefix_path(CountingPath(path))
+
+    assert frontier.prefix_size == len(record) * 4000
+    assert frontier.incomplete_tail and not frontier.malformed_record
+    assert read < 4 * 4096

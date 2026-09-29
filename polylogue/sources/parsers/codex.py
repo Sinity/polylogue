@@ -30,6 +30,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import DEBUG, WARNING, emit, get_logger
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -154,11 +155,9 @@ class _CodexLookaheadIndex:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
+        self._spool: PickleSpool[object] | None = None
         connection.executescript(
             """
-            CREATE TABLE IF NOT EXISTS codex_records (
-                record_index INTEGER PRIMARY KEY, record BLOB NOT NULL
-            );
             CREATE TABLE IF NOT EXISTS codex_signatures (value BLOB PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS codex_calls (
                 record_index INTEGER PRIMARY KEY, tool_id BLOB, occurrence INTEGER,
@@ -199,8 +198,8 @@ class _CodexLookaheadIndex:
                 record_index INTEGER PRIMARY KEY, envelope BLOB NOT NULL
             );
             CREATE TABLE IF NOT EXISTS codex_instruction_revisions (
-                kind TEXT NOT NULL, value BLOB NOT NULL,
-                PRIMARY KEY (kind, value)
+                kind TEXT NOT NULL, key BLOB NOT NULL, value BLOB NOT NULL,
+                PRIMARY KEY (kind, key)
             );
             CREATE TABLE IF NOT EXISTS codex_workdirs (value BLOB PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS codex_task_texts (
@@ -234,8 +233,8 @@ class _CodexLookaheadIndex:
         """Keep ``records`` in memory while they fit ``budget_bytes``, else spool them all.
 
         Returns the list when the whole stream fits. Otherwise every record,
-        the ones already retained first, goes to ``codex_records`` in stream
-        order and the result is ``None``: replay then reads this index.
+        the ones already retained first, goes to the record spool in stream
+        order and the result is ``None``: replay then reads the spool.
         """
         retained: list[object] = []
         retained_bytes = sys.getsizeof(retained)
@@ -249,15 +248,18 @@ class _CodexLookaheadIndex:
         return retained
 
     def spool_records(self, records: Iterable[object]) -> None:
-        for record_index, record in enumerate(records, start=1):
-            self.connection.execute(
-                "INSERT INTO codex_records VALUES (?, ?)",
-                (record_index, pickle.dumps(record, protocol=pickle.HIGHEST_PROTOCOL)),
-            )
+        spool = self._spool = PickleSpool[object]()
+        for record in records:
+            spool.append(record)
 
     def replay_records(self) -> Iterator[object]:
-        for (record,) in self.connection.execute("SELECT record FROM codex_records ORDER BY record_index"):
-            yield pickle.loads(record)
+        if self._spool is not None:
+            yield from self._spool
+
+    def close(self) -> None:
+        if self._spool is not None:
+            self._spool.close()
+            self._spool = None
 
     def __iter__(self) -> Iterator[object]:
         return self.replay_records()
@@ -275,14 +277,21 @@ class _CodexLookaheadIndex:
     def add_signature(self, signature: tuple[str, str]) -> None:
         self.connection.execute(
             "INSERT OR IGNORE INTO codex_signatures(value) VALUES (?)",
-            (_sql_key(signature),),
+            (_signature_key(signature),),
         )
 
     def __contains__(self, signature: object) -> bool:
+        if not (
+            isinstance(signature, tuple)
+            and len(signature) == 2
+            and isinstance(signature[0], str)
+            and isinstance(signature[1], str)
+        ):
+            return False
         return (
             self.connection.execute(
                 "SELECT 1 FROM codex_signatures WHERE value = ?",
-                (_sql_key(signature),),
+                (_signature_key(signature),),
             ).fetchone()
             is not None
         )
@@ -400,6 +409,18 @@ _CODE_MODE_ITEM_MATCH_KEYS = ("type", "id", "command", "parsed_cmd", "cwd", "cha
 
 def _sql_key(value: object) -> bytes:
     return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _signature_key(signature: tuple[str, str]) -> bytes:
+    """Fixed-size scratch key of a message signature.
+
+    A signature carries the message's whole normalized text; keying the
+    B-tree by the pickled text put multi-kilobyte keys on overflow pages and
+    made every membership probe read them back. The SHA-256 of the role and
+    the exact code points is the same equality at 32 bytes.
+    """
+    role, text = signature
+    return _text_digest(f"{role}\0{text}")
 
 
 _DIGEST_WINDOW_CHARS = 1 << 20
@@ -675,7 +696,7 @@ def _validate_record(item: object, *, index: int, context: str = "record") -> Co
             "parser.codex.record_skipped",
             level=DEBUG,
             outcome="degraded",
-            reason="record failed CodexRecord validation",
+            reason="codex_record_validation_failed",
             context=context,
             index=index,
             errors=_redacted_validation_errors(exc),
@@ -1640,10 +1661,12 @@ class _CodexInstructionRevisions:
 
     def __contains__(self, value: object) -> bool:
         if self._index is not None:
+            if not isinstance(value, str):
+                return False
             return (
                 self._index.connection.execute(
-                    "SELECT 1 FROM codex_instruction_revisions WHERE kind = ? AND value = ?",
-                    (self._kind, _sql_key(value)),
+                    "SELECT 1 FROM codex_instruction_revisions WHERE kind = ? AND key = ?",
+                    (self._kind, _text_digest(value)),
                 ).fetchone()
                 is not None
             )
@@ -1661,7 +1684,8 @@ class _CodexInstructionRevisions:
     def add(self, value: str) -> None:
         if self._index is not None:
             self._index.connection.execute(
-                "INSERT OR IGNORE INTO codex_instruction_revisions VALUES (?, ?)", (self._kind, _sql_key(value))
+                "INSERT OR IGNORE INTO codex_instruction_revisions VALUES (?, ?, ?)",
+                (self._kind, _text_digest(value), _sql_key(value)),
             )
             return
         self._order.append(value)
@@ -3177,15 +3201,26 @@ def _response_inner_record(item: object) -> dict[str, object] | None:
     return inner if inner is not None and not _is_message(inner) else None
 
 
-def _codex_lookahead(
-    records: Iterable[object],
-    index_store: _CodexLookaheadIndex,
-) -> _CodexLookaheadIndex:
-    """Resolve code-mode calls and duplicate signatures with disk-backed indexes."""
-    connection = index_store.connection
-    open_call_index: int | None = None
-    last_call_index: int | None = None
-    for record_index, item in enumerate(records, start=1):
+class _CodexLookaheadObserver:
+    """The per-record half of the lookahead: facts a later record may need.
+
+    Records are observed once, in stream order, while the stream is being
+    retained for replay -- so a streamed rollout is read once for retention
+    and lookahead together, then replayed once for materialization.
+    ``finish`` resolves the collected facts after the last record.
+    """
+
+    __slots__ = ("_index", "_open_call_index", "_last_call_index", "_finished")
+
+    def __init__(self, index_store: _CodexLookaheadIndex) -> None:
+        self._index = index_store
+        self._open_call_index: int | None = None
+        self._last_call_index: int | None = None
+        self._finished = False
+
+    def observe(self, record_index: int, item: object) -> None:
+        index_store = self._index
+        connection = index_store.connection
         record = _dict_record(item)
         if record is not None:
             message_record = _message_record(record)
@@ -3196,7 +3231,7 @@ def _codex_lookahead(
                     index_store.add_signature(_message_signature(Role.normalize(raw_role), text))
         inner = _response_inner_record(item)
         if inner is None:
-            continue
+            return
         payload = _record_payload(inner)
         record_type = _record_type(inner)
         if record_type == "item_completed":
@@ -3207,11 +3242,11 @@ def _codex_lookahead(
                     (
                         record_index,
                         pickle.dumps(_reduced_code_mode_item(executed), protocol=pickle.HIGHEST_PROTOCOL),
-                        open_call_index,
-                        last_call_index,
+                        self._open_call_index,
+                        self._last_call_index,
                     ),
                 )
-            continue
+            return
         if record_type in {
             "function_call",
             "custom_tool_call",
@@ -3223,7 +3258,7 @@ def _codex_lookahead(
             if not isinstance(tool_name, str) or not tool_name:
                 tool_name = payload.get("execution")
             if not isinstance(tool_name, str) or tool_name.lower() not in _CODE_MODE_EXEC_TOOL_NAMES:
-                continue
+                return
             raw_arguments = payload.get("arguments")
             if raw_arguments is None:
                 raw_arguments = payload.get("input")
@@ -3231,7 +3266,7 @@ def _codex_lookahead(
                 raw_arguments = payload.get("action")
             children = _code_mode_children(raw_arguments)
             if not children:
-                continue
+                return
             raw_tool_id = payload.get("call_id") or payload.get("id")
             tool_id = str(raw_tool_id) if raw_tool_id else None
             envelope = _CodexExecEnvelope(
@@ -3250,15 +3285,15 @@ def _codex_lookahead(
                     pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL),
                 ),
             )
-            open_call_index = record_index
-            last_call_index = record_index
+            self._open_call_index = record_index
+            self._last_call_index = record_index
         elif record_type in {
             "function_call_output",
             "custom_tool_call_output",
             "tool_search_output",
             "web_search_output",
         }:
-            open_call_index = None
+            self._open_call_index = None
             raw_tool_id = payload.get("call_id") or payload.get("id")
             if raw_tool_id:
                 tool_id = str(raw_tool_id)
@@ -3272,6 +3307,32 @@ def _codex_lookahead(
                     ),
                 )
 
+    def observed(self, records: Iterable[object]) -> Iterator[object]:
+        """Yield ``records`` unchanged, observing each one as it passes."""
+        for record_index, item in enumerate(records, start=1):
+            self.observe(record_index, item)
+            yield item
+
+    def finish(self) -> _CodexLookaheadIndex:
+        if self._finished:
+            raise RuntimeError("codex lookahead finished twice")
+        self._finished = True
+        return _resolve_codex_lookahead(self._index)
+
+
+def _codex_lookahead(
+    records: Iterable[object],
+    index_store: _CodexLookaheadIndex,
+) -> _CodexLookaheadIndex:
+    """Resolve code-mode calls and duplicate signatures with disk-backed indexes."""
+    observer = _CodexLookaheadObserver(index_store)
+    for record_index, item in enumerate(records, start=1):
+        observer.observe(record_index, item)
+    return observer.finish()
+
+
+def _resolve_codex_lookahead(index_store: _CodexLookaheadIndex) -> _CodexLookaheadIndex:
+    connection = index_store.connection
     slot = 0
     for call_index, envelope_blob in connection.execute(
         "SELECT record_index, envelope FROM codex_calls ORDER BY record_index"
@@ -3285,7 +3346,7 @@ def _codex_lookahead(
                     call_index,
                     child_index,
                     child.registry_type,
-                    _sql_key(command) if (command := _code_mode_child_command(child)) is not None else None,
+                    _text_digest(command) if (command := _code_mode_child_command(child)) is not None else None,
                 ),
             )
             slot += 1
@@ -3300,7 +3361,7 @@ def _codex_lookahead(
             candidate = connection.execute(
                 "SELECT slot, call_index, child_index, registry_type FROM codex_slots "
                 "WHERE command = ? AND claimed = 0 ORDER BY slot LIMIT 1",
-                (_sql_key(command),),
+                (_text_digest(command),),
             ).fetchone()
             if candidate is not None and candidate[3] in compatible and (chosen is None or candidate[0] < chosen[0]):
                 chosen = (candidate[0], candidate[1], candidate[2])
@@ -4233,6 +4294,7 @@ def _parse_records(
     message_sink: MutableSequence[ParsedMessage] | None = None,
     event_sink: MutableSequence[ParsedSessionEvent] | None = None,
     _index: _CodexLookaheadIndex | None = None,
+    _lookahead: _CodexLookaheadIndex | None = None,
 ) -> ParsedSession:
     """Parse Codex JSONL session file using typed CodexRecord model.
 
@@ -4252,25 +4314,29 @@ def _parse_records(
             connection.execute("PRAGMA temp_store = FILE")
             connection.execute("PRAGMA journal_mode = OFF")
             connection.execute("PRAGMA synchronous = OFF")
-            index_store = _CodexLookaheadIndex(connection)
-            if isinstance(records, Sequence):
+            with closing(_CodexLookaheadIndex(connection)) as index_store:
+                if isinstance(records, Sequence):
+                    return _parse_records(
+                        records,
+                        fallback_id,
+                        message_sink=message_sink,
+                        event_sink=event_sink,
+                        _index=index_store,
+                    )
+                # One read of the stream both retains it for replay and feeds
+                # the lookahead, so the materializing pass is the only replay.
+                observer = _CodexLookaheadObserver(index_store)
+                in_memory = index_store.retain_records(observer.observed(records), _CODEX_REPLAY_MEMORY_BUDGET_BYTES)
                 return _parse_records(
-                    records,
+                    in_memory if in_memory is not None else index_store,
                     fallback_id,
                     message_sink=message_sink,
                     event_sink=event_sink,
                     _index=index_store,
+                    _lookahead=observer.finish(),
                 )
-            in_memory = index_store.retain_records(records, _CODEX_REPLAY_MEMORY_BUDGET_BYTES)
-            return _parse_records(
-                in_memory if in_memory is not None else index_store,
-                fallback_id,
-                message_sink=message_sink,
-                event_sink=event_sink,
-                _index=index_store,
-            )
 
-    code_mode_envelopes = _codex_lookahead(records, _index)
+    code_mode_envelopes = _lookahead if _lookahead is not None else _codex_lookahead(records, _index)
     response_signatures = code_mode_envelopes
     messages: MutableSequence[ParsedMessage] = message_sink if message_sink is not None else []
     session_events: MutableSequence[ParsedSessionEvent] = event_sink if event_sink is not None else []

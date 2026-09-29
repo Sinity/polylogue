@@ -322,6 +322,8 @@ class _FullIngestResult:
     raw_source_fingerprints: dict[Path, str] = field(default_factory=dict)
     captured_content_hashes: dict[Path, str] = field(default_factory=dict)
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = field(default_factory=dict)
+    #: Wall-clock ns taken just before each captured observation's ``stat``.
+    captured_observation_times_ns: dict[Path, int] = field(default_factory=dict)
     worker_count: int = 0
     ingested_session_count: int = 0
     ingested_message_count: int = 0
@@ -367,6 +369,7 @@ def _full_ingest_result_from_summary(
     raw_source_fingerprints: dict[Path, str] | None = None,
     captured_content_hashes: dict[Path, str] | None = None,
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
+    captured_observation_times_ns: dict[Path, int] | None = None,
     summary: object | None,
     excised_skips: int = 0,
     excised_paths: tuple[Path, ...] = (),
@@ -390,6 +393,7 @@ def _full_ingest_result_from_summary(
         raw_source_fingerprints=raw_source_fingerprints or {},
         captured_content_hashes=captured_content_hashes or {},
         captured_file_observations=captured_file_observations or {},
+        captured_observation_times_ns=captured_observation_times_ns or {},
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
         ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
@@ -511,41 +515,102 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
     return JsonlBoundary(complete_end, _jsonl_record_count(payload[:complete_end]), complete_end != len(payload))
 
 
-def jsonl_complete_prefix_path(path: Path) -> JsonlBoundary:
-    """Find the same JSONL frontier from a sealed blob without loading its session."""
-    size = path.stat().st_size
-    offset = 0
-    complete_end = 0
-    record_count = 0
-    preceding_count = 0
-    candidate_start = 0
-    candidate = b""
-    candidate_terminated = False
+@dataclass(frozen=True, slots=True)
+class JsonlFrontier:
+    """The proven record frontier of a JSONL file, decided from its tail.
+
+    The same ``prefix_size``/``incomplete_tail``/``malformed_record`` a
+    :class:`JsonlBoundary` carries, without a record count: counting needs
+    every byte, and no caller of the file route reads it.
+    """
+
+    prefix_size: int
+    incomplete_tail: bool
+    malformed_record: bool = False
+
+
+#: The bytes ``bytes.strip()`` removes, so a line is blank exactly when the
+#: bytes route would find it blank.
+_JSONL_STRIP_BYTES = b" \t\n\r\x0b\x0c"
+_JSONL_TAIL_READ_BYTES = 1 << 20
+
+
+def jsonl_complete_prefix_path(path: Path) -> JsonlFrontier:
+    """Find the same JSONL frontier as :func:`jsonl_complete_prefix` from a file's tail."""
     with path.open("rb") as handle:
-        for line in handle:
-            terminated = line.endswith(b"\n")
-            if terminated:
-                complete_end = offset + len(line)
-            stripped = line.strip()
-            if stripped:
-                preceding_count = record_count
-                record_count += 1
-                candidate_start = offset
-                candidate = stripped
-                candidate_terminated = terminated
-            offset += len(line)
-    if not candidate:
-        return JsonlBoundary(complete_end, 0, complete_end != size)
+        return jsonl_frontier_of_handle(handle, path.stat().st_size)
+
+
+def jsonl_frontier_of_handle(handle: IO[bytes], size: int) -> JsonlFrontier:
+    """The JSONL frontier of the first ``size`` bytes of a seekable handle, read from the tail.
+
+    A physical newline cannot occur inside a valid JSON string, so the last
+    non-blank line decides the frontier; it is located by reading backwards
+    from the end and is the only record decoded. Earlier bytes are never
+    read -- the whole-file line walk this replaces read a 440 MB rollout in
+    full, under the writer hold, to count records no caller used. This is
+    the one file-side owner of the rule; :func:`jsonl_complete_prefix` is
+    its in-memory twin, and the two are held equal by a differential test.
+    """
+    last_newline = _last_newline_before(handle, size)
+    complete_end = last_newline + 1
+    last_content = _last_content_byte_before(handle, size)
+    if last_content < 0:
+        return JsonlFrontier(complete_end, complete_end != size)
+    candidate_start = _last_newline_before(handle, last_content) + 1
+    candidate_end = _next_newline_at_or_after(handle, last_content + 1, size)
+    candidate_terminated = candidate_end < size
+    handle.seek(candidate_start)
+    candidate = handle.read(candidate_end - candidate_start).strip()
     try:
         json.loads(candidate)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return JsonlBoundary(candidate_start, preceding_count, True, candidate_terminated)
+        return JsonlFrontier(candidate_start, True, candidate_terminated)
     if candidate_terminated:
-        return JsonlBoundary(complete_end, record_count, complete_end != size)
-    return JsonlBoundary(size, record_count, False)
+        return JsonlFrontier(complete_end, complete_end != size)
+    return JsonlFrontier(size, False)
 
 
-def jsonl_parse_prefix_size(boundary: JsonlBoundary, size: int) -> int | None:
+def _last_newline_before(handle: IO[bytes], end: int) -> int:
+    """Offset of the last ``\\n`` before ``end``, or ``-1``."""
+    while end > 0:
+        start = max(0, end - _JSONL_TAIL_READ_BYTES)
+        handle.seek(start)
+        index = handle.read(end - start).rfind(b"\n")
+        if index >= 0:
+            return start + index
+        end = start
+    return -1
+
+
+def _last_content_byte_before(handle: IO[bytes], end: int) -> int:
+    """Offset of the last byte before ``end`` that ``bytes.strip`` keeps, or ``-1``."""
+    while end > 0:
+        start = max(0, end - _JSONL_TAIL_READ_BYTES)
+        handle.seek(start)
+        kept = handle.read(end - start).rstrip(_JSONL_STRIP_BYTES)
+        if kept:
+            return start + len(kept) - 1
+        end = start
+    return -1
+
+
+def _next_newline_at_or_after(handle: IO[bytes], start: int, size: int) -> int:
+    """Offset of the first ``\\n`` at or after ``start``, or ``size``."""
+    offset = start
+    while offset < size:
+        handle.seek(offset)
+        window = handle.read(min(_JSONL_TAIL_READ_BYTES, size - offset))
+        if not window:
+            break
+        index = window.find(b"\n")
+        if index >= 0:
+            return offset + index
+        offset += len(window)
+    return size
+
+
+def jsonl_parse_prefix_size(boundary: JsonlBoundary | JsonlFrontier, size: int) -> int | None:
     """The complete-record prefix a strict JSONL parse reads, or ``None`` for all of it.
 
     Only an unterminated tail -- an append in progress -- is left out, even
@@ -560,45 +625,17 @@ def jsonl_parse_prefix_size(boundary: JsonlBoundary, size: int) -> int | None:
     return boundary.prefix_size if 0 <= boundary.prefix_size < size and not boundary.malformed_record else None
 
 
-def jsonl_parse_prefix_size_of_handle(handle: IO[bytes], *, chunk_size: int = 64 * 1024) -> int | None:
+def jsonl_parse_prefix_size_of_handle(handle: IO[bytes]) -> int | None:
     """:func:`jsonl_parse_prefix_size` of a whole seekable handle, reading only its tail.
 
-    Only the final non-blank physical line decides the prefix, so this
-    seeks backward from the end until that line is whole instead of reading
-    every record twice; it holds at most that line plus one chunk. The
-    handle is left at offset 0 for the decoder.
+    The frontier comes from :func:`jsonl_frontier_of_handle`, the same
+    tail-first rule every file route uses. The handle is left at offset 0
+    for the decoder.
     """
-    position = handle.seek(0, 2)
-    tail = b""
-    newline_after = False
-    candidate_end = 0
-    line_start = 0
-    while True:
-        candidate_end = len(tail.rstrip())
-        if candidate_end:
-            line_start = tail.rfind(b"\n", 0, candidate_end) + 1
-            if line_start or position == 0:
-                break
-        else:
-            # Trailing whitespace only: keep whether it ended a line, not its bytes.
-            newline_after = newline_after or b"\n" in tail
-            tail = b""
-        if position == 0:
-            break
-        read = min(chunk_size, position)
-        position -= read
-        handle.seek(position)
-        tail = handle.read(read) + tail
+    size = handle.seek(0, 2)
+    frontier = jsonl_frontier_of_handle(handle, size)
     handle.seek(0)
-    if not candidate_end:
-        return None
-    candidate = tail[line_start:candidate_end].strip()
-    terminated = newline_after or b"\n" in tail[candidate_end:]
-    try:
-        json.loads(candidate)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None if terminated else position + line_start
-    return None
+    return jsonl_parse_prefix_size(frontier, size)
 
 
 def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:
