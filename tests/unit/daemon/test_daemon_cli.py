@@ -3248,7 +3248,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     async def shutdown_operation_runtime() -> None:
         return None
 
-    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime)
+    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime, embedding_convergence=None)
     interrupted_cleanup_calls = 0
 
     def mark_interrupted_cleanup() -> None:
@@ -3674,11 +3674,18 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     assert held == 0
 
 
-def test_raw_owner_cancellation_settles_publication_and_fts(
+def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Cancelling preparation still settles the shielded canonical publication."""
+    """A cancelled owner stops its preparation; the raw stays pending, not lost.
+
+    Since #5691 the owner publishes its cancellation to the compute pass
+    (``compute_cancel``), and retained preparation stops at its next check
+    instead of publishing after the owner is gone. Anti-vacuity: a cancelled
+    pass that publishes anyway fails the zero-session check, and one that
+    leaves the raw terminal fails the next pass's session and FTS checks.
+    """
     from polylogue.core.enums import Provider
     from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
     from polylogue.daemon.execution import BoundedComputeAdapter
@@ -3748,6 +3755,9 @@ def test_raw_owner_cancellation_settles_publication_and_fts(
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            with sqlite3.connect(tmp_path / "index.db") as conn:
+                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            await owner.converge_raw_id(raw_id)
             with sqlite3.connect(tmp_path / "index.db") as conn:
                 assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
                 assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
