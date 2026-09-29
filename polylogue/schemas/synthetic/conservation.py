@@ -266,11 +266,14 @@ def collect_planted_values(
                 if key in declared_properties or key in visited_keys or _is_coverage_extra_key(key):
                     continue
                 visited_keys.add(key)
+                # A dynamic key names no schema position, so the value sits at
+                # the schema's ``*`` position, where a pin can address it
+                # without also covering a declared sibling.
                 found.extend(
                     collect_planted_values(
                         additional_properties,
                         value,
-                        path=f"{path}.{key}",
+                        path=f"{path}.*",
                         depth=depth + 1,
                     )
                 )

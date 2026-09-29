@@ -12,6 +12,12 @@
       "role": "message_body",
       "action": "reject",
       "reason": "body/comments/labels/number/state entered the conversation schema from non-conversation JSON documents in the source frontier; ChatGPT conversation text lives under mapping."
+    },
+    {
+      "path": "$.*",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Only the export asset index has top-level dynamic keys: asset ids mapping to asset metadata. It is enrichment evidence, not a session document, so no value under an asset id is a title."
     }
   ]
 }
