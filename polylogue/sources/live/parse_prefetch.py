@@ -21,12 +21,12 @@ task it held. Each task marks its parent-assigned attempt directory when a
 worker takes it and when the worker lets go, so the tasks held at a pool break
 are exactly those started and not finished. One held task is charged; several
 are all deferred uncharged, and each is then prepared alone until a worker
-comes back from it, so every later loss names a single file. Required work has no wall-clock
-deadline, but a process worker whose attempt directory has not grown for its
-hang bound (a floor far beyond any healthy parse, scaled by source size) is
-stopped by the same pool restart that reaps read-ahead, and charged. Losses
-on one unchanged observation of a file escalate to a terminal failure the
-writer records, instead of a deferral retried for the whole build.
+comes back from it, so every later loss names a single file. Required work
+has no wall-clock deadline, but a process worker whose attempt directory has
+not grown for its hang bound (a floor far beyond any healthy parse, scaled by
+source size) is stopped by the same pool restart that reaps read-ahead, and
+charged. Losses on one unchanged observation of a file escalate to a terminal
+failure the writer records, instead of a deferral retried for the whole build.
 
 Publication order is enforced once, in reconciliation: a warm reconciles its
 paths in intake order against a snapshot taken after every earlier

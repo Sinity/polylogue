@@ -283,10 +283,14 @@ class DelegationPageKey:
 
     @classmethod
     def after_row(cls, row: ArchiveDelegationQueryRow) -> DelegationPageKey:
+        # NULL-coalescing exactly as the SQL order does: an empty-string id is
+        # a value, not an absence, so ``or`` would key on the wrong column.
+        block_id = row.instruction_tool_use_block_id
+        order_key = block_id if block_id is not None else row.child_session_id
         return cls(
             parent_session_id=row.parent_session_id,
-            order_key=row.instruction_tool_use_block_id or row.child_session_id or "",
-            edge_only=row.instruction_tool_use_block_id is None,
+            order_key=order_key if order_key is not None else "",
+            edge_only=block_id is None,
         )
 
 

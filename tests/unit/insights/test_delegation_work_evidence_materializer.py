@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -482,6 +482,27 @@ def test_keyset_delegation_pages_equal_the_one_pass_read(tmp_path: Path, directi
             after = DelegationPageKey.after_row(page[-1])
     assert len(whole) == 4
     assert paged == whole
+
+
+def test_a_keyset_key_coalesces_only_absent_ids_as_the_sql_order_does() -> None:
+    """An empty-string block id is a key value, exactly as ``COALESCE`` sees it.
+
+    Anti-vacuity: keying with ``or`` resumes after the child session id for
+    such a row, a position the SQL order never had, so the next page skips or
+    repeats rows.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
+
+    empty = DelegationPageKey.after_row(
+        cast(Any, SimpleNamespace(parent_session_id="p", instruction_tool_use_block_id="", child_session_id="c"))
+    )
+    assert (empty.order_key, empty.edge_only) == ("", False)
+    edge = DelegationPageKey.after_row(
+        cast(Any, SimpleNamespace(parent_session_id="p", instruction_tool_use_block_id=None, child_session_id="c"))
+    )
+    assert (edge.order_key, edge.edge_only) == ("c", True)
 
 
 def test_materializer_reads_delegations_by_keyset_not_offset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
