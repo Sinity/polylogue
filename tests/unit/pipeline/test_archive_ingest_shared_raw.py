@@ -18,7 +18,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.config import Source
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -185,8 +185,8 @@ async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_ide
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions")
     sources = [Source(name="claude-code", path=journal)]
 
-    first = await parse_sources_archive(archive_root, sources, parse_workers=1)
-    second = await parse_sources_archive(archive_root, sources, parse_workers=1)
+    first = await ingest_one_shot_archive(archive_root, sources, parse_workers=1)
+    second = await ingest_one_shot_archive(archive_root, sources, parse_workers=1)
 
     assert first.parse_failures == 0
     assert first.counts["sessions"] == 1
@@ -211,7 +211,7 @@ async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
     archive_root = one_shot_workspace_env["archive_root"]
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions")
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=journal)],
         parse_workers=1,
@@ -246,7 +246,7 @@ async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     expected_mtime_ms = 1_735_689_600_123
     _set_mtime_ms(journal, expected_mtime_ms)
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=journal)],
         parse_workers=1,
@@ -273,8 +273,8 @@ async def test_archive_ingest_zip_workflow_journal_scans_delayed_session_evidenc
     journal_zip = _write_workflow_journal_zip(tmp_path / "sessions")
     sources = [Source(name="claude-code", path=journal_zip)]
 
-    first = await parse_sources_archive(archive_root, sources, parse_workers=1)
-    second = await parse_sources_archive(archive_root, sources, parse_workers=1)
+    first = await ingest_one_shot_archive(archive_root, sources, parse_workers=1)
+    second = await ingest_one_shot_archive(archive_root, sources, parse_workers=1)
 
     assert first.parse_failures == 0
     assert first.counts["sessions"] == 1
@@ -296,7 +296,7 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
     expected_mtime_ms = 1_735_689_601_456
     _set_mtime_ms(journal_zip, expected_mtime_ms)
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=journal_zip)],
         parse_workers=1,
@@ -340,7 +340,9 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
 
     monkeypatch.setattr("polylogue.sources.decoder_zip.open_bounded_zip_entry", reject_unbounded_read)
 
-    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1)
+    result = await ingest_one_shot_archive(
+        archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1
+    )
 
     assert result.parse_failures == 0
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -371,7 +373,9 @@ async def test_archive_ingest_large_ordinary_zip_jsonl_skips_delayed_artifact_sc
 
     monkeypatch.setattr(decoder_zip, "zip_entry_session_artifact", fail_unexpected_scan)
 
-    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=session_zip)], parse_workers=1)
+    result = await ingest_one_shot_archive(
+        archive_root, [Source(name="claude-code", path=session_zip)], parse_workers=1
+    )
 
     assert result.parse_failures == 0
     assert result.counts["sessions"] == 1
@@ -411,7 +415,7 @@ async def test_archive_ingest_path_classified_zip_json_record_array_reaches_pars
         ).encode(),
     )
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=journal_zip)],
         parse_workers=1,
@@ -435,7 +439,9 @@ async def test_archive_ingest_records_file_mtime_through_canonical_acquisition(
     expected_mtime_ms = 1_777_632_000_000
     _set_mtime_ms(source_path, expected_mtime_ms)
 
-    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=source_path)], parse_workers=1)
+    result = await ingest_one_shot_archive(
+        archive_root, [Source(name="claude-code", path=source_path)], parse_workers=1
+    )
 
     assert result.parse_failures == 0
     assert result.counts["sessions"] == 2
@@ -459,7 +465,7 @@ async def test_grouped_carryover_sessions_share_one_raw_row(
     _parent_file, child_file = _write_carryover_chain(root)
     sources = [Source(name="claude-code", path=child_file)]
 
-    result = await parse_sources_archive(archive_root, sources)
+    result = await ingest_one_shot_archive(archive_root, sources)
     assert result.parse_failures == 0
 
     rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
@@ -574,7 +580,7 @@ async def test_sibling_fork_carryovers_off_one_ancestor_do_not_collide_identity(
         Source(name="claude-code", path=sibling_b),
     ]
 
-    result = await parse_sources_archive(archive_root, sources)
+    result = await ingest_one_shot_archive(archive_root, sources)
     assert result.parse_failures == 0
 
     conn = sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
@@ -626,14 +632,14 @@ async def test_reingesting_identical_bytes_resolves_to_the_same_raw_id(
     _parent_file, child_file = _write_carryover_chain(root)
     sources = [Source(name="claude-code", path=child_file)]
 
-    await parse_sources_archive(archive_root, sources)
+    await ingest_one_shot_archive(archive_root, sources)
     first_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
     assert len(first_rows) == 1
     first_raw_id = first_rows[0][0]
 
     # Re-ingest the exact same byte-identical file again (simulating the
     # daemon's later catch-up revisit of unchanged content).
-    await parse_sources_archive(archive_root, sources)
+    await ingest_one_shot_archive(archive_root, sources)
     second_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
 
     assert len(second_rows) == 1, f"re-ingest must not create a second raw row, got {second_rows}"
@@ -674,12 +680,12 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     ) -> None:
         nonlocal census_calls
         census_calls += 1
-        assert kwargs["manage_transaction"] is True
+        assert kwargs.get("manage_transaction", True) is True
         original_census(archive, raw_id, sessions, **kwargs)
 
     monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", require_source_transaction)
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=first_child), Source(name="claude-code", path=second_child)],
         parse_workers=1,
@@ -726,7 +732,7 @@ async def test_archive_ingest_refuses_filename_stem_identity_without_authored_co
     ``require_positive_conversational_evidence`` is the archive's admission law
     for "parsed, but no conversation is present". Every other production write
     path applies it -- the daemon decode worker, live batch convergence, the
-    incremental append route, and offline replay. ``parse_sources_archive``
+    incremental append route, and offline replay. ``ingest_one_shot_archive``
     (reached from the public ``Polylogue.parse_file``/``parse_sources`` API and
     the demo seeder) did not, so a JSON document that merely satisfies the
     loose "has a messages list" shape became a session keyed on its own
@@ -741,7 +747,7 @@ async def test_archive_ingest_refuses_filename_stem_identity_without_authored_co
     archive_root = one_shot_workspace_env["archive_root"]
     husk = _write_stem_identity_husk(tmp_path / "corpus", stem)
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=husk)],
         parse_workers=1,
@@ -768,7 +774,7 @@ async def test_archive_ingest_still_admits_a_real_session_through_the_same_gate(
     archive_root = one_shot_workspace_env["archive_root"]
     transcript = _write_session_shaped_workflow_journal(tmp_path / "sessions")
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=transcript)],
         parse_workers=1,

@@ -176,20 +176,14 @@ async def test_compile_and_record_context_refuses_assertion_read_failure(
             now_ms=1_700_000_000_000,
         )
 
-    import polylogue.api.archive as archive_api
+    import polylogue.storage.sqlite.archive_tiers.user_write as user_write
 
-    # archive_api imports this rather than exporting it, so take the same
-    # object from where it is defined and patch the name archive_api binds.
-    from polylogue.storage.sqlite.connection_profile import (
-        open_readonly_connection as original_open,
-    )
+    # The facade reads claims through the controlled archive transaction and
+    # imports the reader from its module at call time, so fail it there.
+    def fail_assertion_read(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("injected durable user.db read failure")
 
-    def fail_user_db_read(path: Path) -> sqlite3.Connection:
-        if path.name == "user.db":
-            raise sqlite3.OperationalError("injected durable user.db read failure")
-        return original_open(path)
-
-    monkeypatch.setattr(archive_api, "open_readonly_connection", fail_user_db_read)
+    monkeypatch.setattr(user_write, "list_assertion_claims", fail_assertion_read)
 
     async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
         with pytest.raises(ArchiveTierUnavailableError, match="injected durable user.db read failure"):

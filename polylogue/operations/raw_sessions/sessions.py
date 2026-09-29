@@ -663,7 +663,7 @@ class SessionLogService:
         cursor_key: bytes | None = None,
         scan_bytes: int = DEFAULT_SCAN_BYTES,
     ) -> dict[str, Any]:
-        if max_results < 1:
+        if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
             raise SessionError("max_results must be a positive integer")
         return self.observe_timeline(provider, start_ns, end_ns, query).page(
             max_results, cursor=cursor, cursor_key=cursor_key, scan_bytes=scan_bytes

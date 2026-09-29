@@ -277,15 +277,22 @@ def _model_config_event(
     )
 
 
-def _citations_event(payload: JSONDocument) -> ParsedSessionEvent | None:
-    """Retain the export envelope's grounding citations as session evidence."""
+def _citation_events(payload: JSONDocument) -> list[ParsedSessionEvent]:
+    """Retain the export envelope's grounding citations as session evidence.
+
+    One event per citation, in list order. AI Studio appends to this list as
+    the conversation grows, so a later export of the same session is ``[A, B]``
+    after ``[A]``. One event holding the whole list changed identity on every
+    append, which made revision membership classify an ordinary grown session
+    as ambiguous; per-citation events keep ``A`` identical across revisions.
+    """
     citations = payload.get("citations")
-    if not isinstance(citations, list) or not citations:
-        return None
-    return ParsedSessionEvent(
-        event_type="gemini_citations",
-        payload={"citations": citations},
-    )
+    if not isinstance(citations, list):
+        return []
+    return [
+        ParsedSessionEvent(event_type="gemini_citation", payload={"ordinal": ordinal, "citation": citation})
+        for ordinal, citation in enumerate(citations)
+    ]
 
 
 def _pending_drafts(pending_inputs: object) -> list[dict[str, object]]:
@@ -460,8 +467,7 @@ def _parse_chunked_records(
         models_used.add(default_model_name)
     if model_event := _model_config_event(run_settings, timestamp=default_timestamp):
         event_rows.append(model_event)
-    if citations_event := _citations_event(payload):
-        event_rows.append(citations_event)
+    event_rows.extend(_citation_events(payload))
     branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunk_records())
     prompt_branch_child_ids = _branch_session_child_ids(chunk_records())
     branch_child_parents = {

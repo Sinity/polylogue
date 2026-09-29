@@ -114,6 +114,23 @@ class TestDiagnoseBanner:
         assert "strict command floor will refuse it" in result.output
         assert "interpreting as search query" not in result.output
 
+    def test_search_verb_refusal_suggests_find_without_the_verb(self, runner: CliRunner) -> None:
+        """``polylogue search auth bug`` is refused and pointed at ``find auth bug``.
+
+        The suggestion used to be ``polylogue find search auth bug``, which also
+        searches for the word "search": a first-time caller that copied it got
+        a narrower, wrong result set. Nothing runs automatically; the refusal
+        still exits 2.
+
+        Anti-vacuity: suggest ``find {query}`` for every bare root again and
+        the negative assertion goes red.
+        """
+        result = runner.invoke(cli, ["search", "auth", "bug"])
+        assert result.exit_code == 2
+        assert "No such command 'search auth bug'." in result.output
+        assert "polylogue find auth bug" in result.output
+        assert "polylogue find search" not in result.output
+
     def test_root_status_dispatches_to_operational_status_help(self, runner: CliRunner) -> None:
         """The natural root status instinct reaches the operational owner."""
         result = runner.invoke(cli, ["status", "--help"])

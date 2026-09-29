@@ -94,7 +94,7 @@ def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
     assert environment["POLYLOGUE_API_PORT"] == "48801"
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
     assert environment["XDG_CONFIG_HOME"] == str(
-        tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "xdg-config"
+        tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "home" / ".config"
     )
 
 
@@ -123,6 +123,38 @@ def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pyt
     assert command[token_index + 1] == dev_loop_service._RECEIVER_TOKEN
     api_token_index = command.index("--api-auth-token")
     assert command[api_token_index + 1] == dev_loop_service._API_TOKEN
+
+
+def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The proof daemon never sees the host's canonical source roots.
+
+    Anti-vacuity: copy the inherited environment without replacing ``HOME``
+    and ``XDG_CONFIG_HOME`` and the daemon watches the operator's real
+    ``~/.claude`` and ``~/.codex`` and reads their config.
+    """
+    host = tmp_path / "host-home"
+    monkeypatch.setenv("HOME", str(host))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(host / ".config"))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(host / "polylogue.toml"))
+    monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", str(host / ".hermes"))
+    artifact_root = tmp_path / "artifacts"
+
+    environment = dev_loop_service._proof_environment(
+        archive_root=tmp_path / "archive", artifact_root=artifact_root, api_port=48801, capture_port=48865
+    )
+
+    home = Path(environment["HOME"])
+    assert home.is_dir() and home.is_relative_to(artifact_root)
+    for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
+        assert Path(environment[variable]).is_relative_to(home)
+    # Not merely dropped: an explicit override, pointed at a nonexistent
+    # path under the isolated home, disables the <cwd>/polylogue.toml
+    # fallback that a bare removal would leave live.
+    assert environment["POLYLOGUE_CONFIG"] != str(host / "polylogue.toml")
+    assert Path(environment["POLYLOGUE_CONFIG"]).is_relative_to(home)
+    assert not Path(environment["POLYLOGUE_CONFIG"]).exists()
+    assert "POLYLOGUE_HERMES_ROOT" not in environment
+    assert environment["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
 
 
 def test_convergence_reads_use_the_matching_service_tokens(monkeypatch: pytest.MonkeyPatch) -> None:

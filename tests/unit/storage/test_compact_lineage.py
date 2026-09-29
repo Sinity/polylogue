@@ -266,6 +266,11 @@ def test_compact_execution_reads_no_message_body(tmp_path: Path) -> None:
     for sql in statements:
         assert "blocks" not in sql, sql
         assert "search_text" not in sql, sql
-        # ``messages`` may only be counted or ordered by, never projected.
+        # ``messages`` may only be counted, ordered by, or resolved to its
+        # owning session (an identity, not content), never projected.
         if " from messages" in sql:
-            assert "count(*)" in sql or "select position, variant_index" in sql, sql
+            assert (
+                "count(*)" in sql
+                or "select position, variant_index" in sql
+                or sql.startswith("select session_id from messages where message_id = ?")
+            ), sql

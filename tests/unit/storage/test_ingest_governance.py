@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeAlias
@@ -23,6 +24,7 @@ from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.ingest_governance import (
     CohortMembershipRefusalError,
+    PreparedIngestCohort,
     _census_binding,
     prepare_ingest_cohort,
     prepare_raw_census,
@@ -539,12 +541,7 @@ def test_convertible_multi_session_retirement_preserves_complete_census(tmp_path
             ]
 
 
-def test_precomputed_attachment_is_preserved_without_compute_publication(tmp_path: Path) -> None:
-    """A pre-existing attachment blob is carried into the writer map unchanged.
-
-    Anti-vacuity: omitting the precomputed entry from the map makes the shared
-    attachment writer raise its explicit missing-preacquisition ValueError.
-    """
+def _prepared_precomputed_cohort(tmp_path: Path) -> tuple[PreparedIngestCohort, str]:
     bootstrap_archive_root(tmp_path)
     hash_hex, size = BlobStore(tmp_path / "blob").write_from_bytes(b"precomputed attachment")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -561,10 +558,45 @@ def test_precomputed_attachment_is_preserved_without_compute_publication(tmp_pat
             parse_retained_raw=parse,
             acquired_at_ms=2,
         )
-        assert prepared.prepared_attachment_blobs[0].prepared_blob is None
+    assert prepared.prepared_attachment_blobs[0].prepared_blob is None
+    return prepared, hash_hex
+
+
+def test_precomputed_attachment_is_reserved_and_referenced_by_the_writer(tmp_path: Path) -> None:
+    """A compute-published attachment blob is adopted: referenced, its receipt consumed.
+
+    Anti-vacuity: omitting the precomputed entry from the map makes the shared
+    attachment writer raise its explicit missing-preacquisition ValueError;
+    trusting it without adoption leaves no ``blob_refs`` row protecting it.
+    """
+    prepared, hash_hex = _prepared_precomputed_cohort(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
         assert publish_ingest_cohort(writer, prepared).published
         assert writer._conn.execute("SELECT lower(hex(blob_hash)) FROM attachments").fetchone()[0] == hash_hex
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        blob = bytes.fromhex(hash_hex)
+        assert source.execute("SELECT ref_type FROM blob_refs WHERE blob_hash = ?", (blob,)).fetchall() == [
+            ("attachment",)
+        ]
+        assert source.execute(
+            "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?", (blob,)
+        ).fetchone() == (0,)
+
+
+def test_precomputed_attachment_reclaimed_before_the_writer_is_refused(tmp_path: Path) -> None:
+    """A precomputed blob GC removed before admission fails the publish as a storage fault.
+
+    Anti-vacuity: trusting ``precomputed_blob`` records the attachment
+    ``acquired`` against bytes that no longer exist.
+    """
+    from polylogue.storage.blob_publication import AdoptedBlobEvictedError
+
+    prepared, hash_hex = _prepared_precomputed_cohort(tmp_path)
+    BlobStore(tmp_path / "blob").blob_path(hash_hex).unlink()
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
+        with pytest.raises(AdoptedBlobEvictedError):
+            publish_ingest_cohort(writer, prepared)
+        assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
 
 
 def test_raising_production_parser_records_a_failed_census_instead_of_escaping(tmp_path: Path) -> None:

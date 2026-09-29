@@ -78,11 +78,13 @@ same directory tree.
 
 ## Input Conventions
 
-- `polylogued run` watches typed built-in sources and any configured additional roots, and owns ingestion.
+- `polylogued run` watches each origin at its canonical location and owns ingestion. There are no configurable source roots.
 - Use `polylogue import PATH` to ask the running daemon to import an explicit
   file or directory.
-- Directory names are for organization only; providers are detected from content.
-- Additional roots admit `.json`, `.jsonl`, `.ndjson`, and `.zip` through content detection. Typed provider sources retain their narrower contracts, including SQLite state where declared.
+- A canonical location binds its origin: content there is validated against
+  that origin, and another origin's shape is refused, never reclassified.
+  Only the import inbox and browser-capture envelopes (which declare their
+  provider) detect the provider from content.
 
 ## Configuration Model
 
@@ -163,7 +165,7 @@ configured Voyage key.
 
 | Class | Where it lives | Examples | Reload behavior |
 | --- | --- | --- | --- |
-| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins, source roots | Restart `polylogued` after changing. |
+| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins | Restart `polylogued` after changing. |
 | Deployment policy | TOML/env/Nix/HM/systemd | remote-bind opt-in, auth requirements, systemd memory/IO limits, schema validation mode | Restart the managed service; policy is outside archive content hashes. |
 | Runtime mutable user state | `user.db` | tags, marks, saved views, workspaces, assertions, authored overlays | Mutated through CLI/API; not TOML and not source content. |
 | Provider/cost controls | TOML/env | `embedding.enabled`, `embedding.max_cost_usd`, `VOYAGE_API_KEY` | Embedding loops read the gate/cost controls; no provider call happens unless explicitly enabled and credentials are present. |
@@ -175,10 +177,6 @@ configured Voyage key.
 ```toml
 [archive]
 root = "/home/user/.local/share/polylogue"
-
-[daemon]
-host = "127.0.0.1" # legacy alias used by Nix/HM when api/browser host is omitted
-port = 8766         # legacy API port alias
 
 [daemon.api]
 host = "127.0.0.1"
@@ -192,9 +190,6 @@ allowed_origins = "chrome-extension://*"
 allow_remote = false
 # auth_token = "..."   # required for remote binding or web origins
 # spool_path = "/home/user/.local/share/polylogue/browser-capture"
-
-[sources]
-roots = ["/home/user/.claude/projects", "/home/user/.codex/sessions"]
 
 [embedding]
 enabled = false

@@ -203,3 +203,16 @@ def test_checked_in_fixture_declares_the_current_semantics_version() -> None:
     """
     payload = json.loads((FIXTURE_DIR / "manifest.json").read_text(encoding="utf-8"))
     assert payload["semantics_version"] == SEMANTICS_VERSION
+
+
+def test_public_spec_tracks_v5_message_usage_value_domain() -> None:
+    """The public contract names the version and nullable message counters.
+
+    Anti-vacuity: reverting the record-space label to v4 or removing the
+    unknown-versus-measured-zero contract from the spec makes this fail.
+    """
+    spec = Path(__file__).resolve().parents[4] / "docs" / "material-protocol-v1.md"
+    document = spec.read_text(encoding="utf-8")
+    assert "(semantics v5)" in document
+    assert "Each `message` record's `usage` object has nullable" in document
+    assert "`null` counter means the source did not report a value; `0` means" in document

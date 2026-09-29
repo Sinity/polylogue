@@ -34,7 +34,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import IO, Any, NoReturn
 
 import pytest
 
@@ -630,21 +630,23 @@ async def test_changed_json_after_preparation_uses_captured_provider(
             }
         ]
     ).encode()
-    original_copy = ArchiveBlobPublisher.write_from_path
+    original_copy = ArchiveBlobPublisher.write_from_fileobj
     changed = False
 
-    def change_before_copy(store: ArchiveBlobPublisher, path: Path, **kwargs: object) -> tuple[str, int]:
+    def change_before_copy(store: ArchiveBlobPublisher, stream: IO[bytes], **kwargs: object) -> tuple[str, int]:
         nonlocal changed
-        if path == source and not changed:
+        # The capture streams the file through the acquisition boundary,
+        # whose raw reader names the source path; nothing is read yet.
+        if Path(stream.raw.name) == source and not changed:  # type: ignore[attr-defined]
             if malformed_initial:
                 assert stage._path_results[str(source)].error is not None
             else:
                 assert stage.resolved_path_provider(str(source)) is Provider.GEMINI_CLI
             source.write_bytes(chatgpt)
             changed = True
-        return original_copy(store, path, **kwargs)  # type: ignore[arg-type]
+        return original_copy(store, stream, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", change_before_copy)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", change_before_copy)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
@@ -704,7 +706,9 @@ async def test_identical_json_paths_keep_distinct_prepared_fallback_ids(tmp_path
 
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "shards")
     try:
-        await _ingest(tmp_path / "prepared", paths, parse_stage=stage)
+        # A ChatGPT export is imported through the inbox, which classifies;
+        # a bound location (``codex``) refuses it as foreign.
+        await _ingest(tmp_path / "prepared", paths, parse_stage=stage, source_name="inbox")
     finally:
         stage.shutdown()
     with _connect(tmp_path / "prepared" / "index.db") as conn:

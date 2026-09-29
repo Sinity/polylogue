@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import fcntl
-import hashlib
+import io
 import json
 import os
 import re
@@ -20,7 +18,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
+from polylogue.browser_capture.capture_stream import (
+    CaptureEnvelopeError,
+    CaptureSummary,
+    StagedCapture,
+    read_capture_state_fields,
+    stage_capture_body,
+    summarize_capture_file,
+    summarize_capture_stream,
+)
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_API_SCHEMA,
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
@@ -29,14 +37,12 @@ from polylogue.browser_capture.models import (
     BrowserCaptureAcceptedIdentity,
     BrowserCaptureArchiveLifecycle,
     BrowserCaptureArchiveStatePayload,
-    BrowserCaptureAttachment,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
-    envelope_has_native_provider_payload,
 )
+from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_text_short
-from polylogue.core.json import JSONDecodeError, dumps_bytes
-from polylogue.core.json import loads as json_loads
+from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.timestamps import to_epoch_ms
@@ -57,12 +63,6 @@ _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
 #: Subdirectory of the capture spool that holds mirrored backfill-ledger
 #: checkpoints (polylogue-06zm). One file per extension_instance_id.
 BACKFILL_CHECKPOINT_DIRNAME = "backfill-checkpoints"
-
-# Backfill scheduling identifies the observer that acquired a snapshot rather
-# than a semantic property of the provider session.  Keep it out of the spool
-# deduplication fingerprint, while retaining any future semantic backfill
-# metadata a provider might add.
-_BACKFILL_OBSERVER_ATTRIBUTION_KEYS = frozenset({"job_id", "queue_id", "instance_id"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,8 +284,16 @@ def _safe_token(value: str) -> str:
     return token[:96] if token else "session"
 
 
-def capture_artifact_path(envelope: BrowserCaptureEnvelope, spool_path: Path | None = None) -> Path:
-    """Return the deterministic source artifact path for an envelope."""
+class _CaptureIdentity(Protocol):
+    @property
+    def provider(self) -> Provider: ...
+
+    @property
+    def provider_session_id(self) -> str: ...
+
+
+def capture_artifact_path(envelope: _CaptureIdentity, spool_path: Path | None = None) -> Path:
+    """Return the deterministic source artifact path for a capture identity."""
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     provider = _safe_token(envelope.provider.value)
     session = _safe_token(envelope.provider_session_id)
@@ -293,7 +301,7 @@ def capture_artifact_path(envelope: BrowserCaptureEnvelope, spool_path: Path | N
     return root / provider / f"{session}-{suffix}.json"
 
 
-def capture_artifact_ref(envelope: BrowserCaptureEnvelope, spool_path: Path | None = None) -> str:
+def capture_artifact_ref(envelope: _CaptureIdentity, spool_path: Path | None = None) -> str:
     """Return the bounded receiver-facing artifact reference for an envelope."""
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     return capture_artifact_path(envelope, root).relative_to(root).as_posix()
@@ -308,176 +316,68 @@ def capture_response_id(provider: str, provider_session_id: str, capture_id: str
     return value if value.startswith(prefix) else f"{prefix}{value}"
 
 
-def _semantic_provider_meta(provider_meta: dict[str, object]) -> dict[str, object]:
-    """Return provider metadata without backfill-observer attribution."""
-    semantic_meta = dict(provider_meta)
-    backfill = semantic_meta.get("backfill")
-    if not isinstance(backfill, dict):
-        return semantic_meta
-
-    semantic_backfill = {
-        key: value for key, value in backfill.items() if key not in _BACKFILL_OBSERVER_ATTRIBUTION_KEYS
-    }
-    if semantic_backfill:
-        semantic_meta["backfill"] = semantic_backfill
-    else:
-        semantic_meta.pop("backfill", None)
-    return semantic_meta
+def _capture_has_content_carrier(summary: CaptureSummary) -> bool:
+    return any(fact.carrier is not None for fact in summary.attachments)
 
 
-def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
-    """Hash capture content independently from observation-specific provenance.
-
-    A browser extension instance and its capture timestamp identify *who saw*
-    a snapshot, not a different provider session revision. Keeping them out of
-    this hash lets two concurrently running instances converge on one spool
-    artifact while the receiver can still echo each poster's attribution.
-    """
-    return hashlib.sha256(_capture_hash_bytes(envelope)).hexdigest()
+def _capture_has_invalid_content_carrier(summary: CaptureSummary) -> bool:
+    return any(fact.carrier is not None and not fact.carrier_valid for fact in summary.attachments)
 
 
-def _capture_hash_bytes(
-    envelope: BrowserCaptureEnvelope,
-    *,
-    without_attachment_carriers: bool = False,
-) -> bytes:
-    """Serialize the semantic capture fingerprint."""
-    session = envelope.session.model_dump(mode="json", exclude_none=True)
-    if without_attachment_carriers:
-        for attachment in session.get("attachments", []):
-            attachment.pop("content_base64", None)
-        for turn in session.get("turns", []):
-            for attachment in turn.get("attachments", []):
-                attachment.pop("content_base64", None)
-    session["provider_meta"] = _semantic_provider_meta(envelope.session.provider_meta)
-    payload = {
-        "polylogue_capture_kind": envelope.polylogue_capture_kind,
-        "schema_version": envelope.schema_version,
-        "session": session,
-        "provider_meta": _semantic_provider_meta(envelope.provider_meta),
-        "raw_provider_payload": envelope.raw_provider_payload,
-    }
-    return dumps_bytes(payload, sort_keys=True)
-
-
-_INVALID_ATTACHMENT_CARRIER = object()
-
-
-def _decode_capture_content_base64(value: str) -> bytes | object:
-    """Decode the declared carrier, returning a sentinel for malformed input."""
-    data = value
-    if value.startswith("data:") and ";base64," in value:
-        _, data = value.split(";base64,", 1)
-    try:
-        return base64.b64decode(data, validate=True)
-    except (ValueError, binascii.Error):
-        return _INVALID_ATTACHMENT_CARRIER
-
-
-def _capture_attachments(envelope: BrowserCaptureEnvelope) -> list[BrowserCaptureAttachment]:
-    return [
-        *envelope.session.attachments,
-        *(attachment for turn in envelope.session.turns for attachment in turn.attachments),
-    ]
-
-
-def _capture_has_content_carrier(envelope: BrowserCaptureEnvelope) -> bool:
-    return any(attachment.content_base64 is not None for attachment in _capture_attachments(envelope))
-
-
-def _capture_has_invalid_content_carrier(envelope: BrowserCaptureEnvelope) -> bool:
-    return any(
-        attachment.content_base64 is not None
-        and _decode_capture_content_base64(attachment.content_base64) is _INVALID_ATTACHMENT_CARRIER
-        for attachment in _capture_attachments(envelope)
-    )
-
-
-def _attachment_identity(attachment: BrowserCaptureAttachment) -> tuple[object, ...]:
-    """Return attachment fields that identify the observed object, not bytes."""
-    return (
-        attachment.provider_attachment_id,
-        attachment.message_provider_id,
-        attachment.attachment_kind,
-        attachment.name,
-        attachment.mime_type,
-        attachment.size_bytes,
-        attachment.url,
-        attachment.extracted_content,
-        attachment.inline_base64,
-        attachment.data,
-        attachment.provider_meta,
-    )
-
-
-def _capture_carrier_conflicts(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
+def _capture_carrier_conflicts(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
     """Reject carrier bytes that contradict an existing attachment identity."""
-    incoming_attachments = _capture_attachments(incoming)
-    existing_attachments = _capture_attachments(existing)
+    incoming_attachments = incoming.attachments
+    existing_attachments = existing.attachments
     if len(incoming_attachments) < len(existing_attachments):
         return True
     if any(
-        _attachment_identity(current) != _attachment_identity(previous)
+        current.identity != previous.identity
         for current, previous in zip(
             incoming_attachments[: len(existing_attachments)], existing_attachments, strict=True
         )
     ):
         return True
     for current, previous in zip(incoming_attachments, existing_attachments, strict=False):
-        if current.content_base64 is None or previous.content_base64 is None:
+        if current.carrier is None or previous.carrier is None:
             continue
-        current_bytes = _decode_capture_content_base64(current.content_base64)
-        previous_bytes = _decode_capture_content_base64(previous.content_base64)
-        if (
-            current_bytes is _INVALID_ATTACHMENT_CARRIER
-            or previous_bytes is _INVALID_ATTACHMENT_CARRIER
-            or current_bytes != previous_bytes
-        ):
+        if not current.carrier_valid or not previous.carrier_valid or current.carrier != previous.carrier:
             return True
     return False
 
 
-def _attachment_content_enrichment(
-    incoming: BrowserCaptureEnvelope,
-    existing: BrowserCaptureEnvelope,
-) -> bool:
+def _attachment_content_enrichment(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
     """Accept only a valid carrier added to an otherwise identical capture."""
-    incoming_attachments = _capture_attachments(incoming)
-    existing_attachments = _capture_attachments(existing)
+    incoming_attachments = incoming.attachments
+    existing_attachments = existing.attachments
     if not incoming_attachments or len(incoming_attachments) != len(existing_attachments):
         return False
-    if incoming.provenance.model_dump(mode="json", exclude_none=True) != existing.provenance.model_dump(
+    if incoming.head.provenance.model_dump(mode="json", exclude_none=True) != existing.head.provenance.model_dump(
         mode="json", exclude_none=True
     ):
         return False
-    if _semantic_provider_meta(incoming.provider_meta) != _semantic_provider_meta(existing.provider_meta):
+    if incoming.provenance_meta_digest != existing.provenance_meta_digest:
         return False
-    if _capture_hash_bytes(incoming, without_attachment_carriers=True) != _capture_hash_bytes(
-        existing, without_attachment_carriers=True
-    ):
+    # The envelope and session metadata are part of the carrierless fingerprint.
+    if incoming.carrierless_fingerprint != existing.carrierless_fingerprint:
         return False
 
     added_carrier = False
     for incoming_attachment, existing_attachment in zip(incoming_attachments, existing_attachments, strict=True):
-        incoming_value = incoming_attachment.content_base64
-        existing_value = existing_attachment.content_base64
-        if incoming_value is None:
-            if existing_value is not None:
+        if incoming_attachment.carrier is None:
+            if existing_attachment.carrier is not None:
                 return False
             continue
-        incoming_bytes = _decode_capture_content_base64(incoming_value)
-        if incoming_bytes is _INVALID_ATTACHMENT_CARRIER:
+        if not incoming_attachment.carrier_valid:
             return False
-        if existing_value is None:
+        if existing_attachment.carrier is None:
             added_carrier = True
             continue
-        existing_bytes = _decode_capture_content_base64(existing_value)
-        if existing_bytes is _INVALID_ATTACHMENT_CARRIER or incoming_bytes != existing_bytes:
+        if not existing_attachment.carrier_valid or incoming_attachment.carrier != existing_attachment.carrier:
             return False
     return added_carrier
 
 
-def _session_update_evidence_ms(envelope: BrowserCaptureEnvelope) -> int | None:
+def _session_update_evidence_ms(summary: CaptureSummary) -> int | None:
     """Return a session update timestamp only when it is independent evidence.
 
     Adapters without a provider-side update time fill ``session.updated_at``
@@ -485,8 +385,8 @@ def _session_update_evidence_ms(envelope: BrowserCaptureEnvelope) -> int | None:
     observed, not when the session changed, so it must not participate in the
     session-timestamp ordering below.
     """
-    updated_at = to_epoch_ms(envelope.session.updated_at, numeric_unit="seconds")
-    captured_at = to_epoch_ms(envelope.provenance.captured_at, numeric_unit="seconds")
+    updated_at = to_epoch_ms(summary.head.session.updated_at, numeric_unit="seconds")
+    captured_at = to_epoch_ms(summary.head.provenance.captured_at, numeric_unit="seconds")
     return None if updated_at is not None and updated_at == captured_at else updated_at
 
 
@@ -689,7 +589,9 @@ def _escape_like_suffix(value: str) -> str:
 # unlike a repeat capture of the SAME session, which replaces its existing
 # file in place and never grows the spool. These bounds cap that growth.
 SPOOL_MAX_FILES = 20_000
-SPOOL_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+# Capture bytes have no quota of their own: ``stage_capture_body`` reserves
+# each body's declared length on the spool filesystem before writing it, so
+# the only byte refusal is the physical one (``SpoolStorageExhaustedError``).
 
 
 class SpoolQuotaExceededError(RuntimeError):
@@ -750,23 +652,23 @@ def _check_spool_quota(
     spool_root: Path,
     *,
     max_files: int,
-    max_bytes: int,
+    max_bytes: int | None,
     label: str = "capture spool",
 ) -> None:
     """Callers must pass max_files/max_bytes explicitly (not as defaults
     bound to the module constants) so tests can monkeypatch SPOOL_MAX_FILES/
-    SPOOL_MAX_BYTES/POST_COMMAND_QUEUE_MAX_* and have it take effect --
+    POST_COMMAND_QUEUE_MAX_* and have it take effect --
     a default parameter value binds at function-definition time, before
     any monkeypatch runs."""
     usage = spool_usage(spool_root)
-    if usage.file_count >= max_files or usage.total_bytes >= max_bytes:
+    if usage.file_count >= max_files or (max_bytes is not None and usage.total_bytes >= max_bytes):
         raise SpoolQuotaExceededError(
             f"{label} quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
             f"(limits: {max_files} files, {max_bytes} bytes)"
         )
 
 
-def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
+def _capture_is_newer_or_richer(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
     """Prevent a stale, smaller snapshot from replacing a richer spool item.
 
     Two things are deliberately NOT freshness evidence here. A provider-native
@@ -776,19 +678,17 @@ def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: Brow
     admits exactly that, so discarding it at the spool made the two rules
     disagree and retained the lower-fidelity content permanently. And
     ``provenance.captured_at`` is an observation by one extension instance,
-    not a session revision (see :func:`capture_dedup_content_hash`): with two
-    instances whose clocks are skewed it must not veto a strictly newer
+    not a session revision (see ``CaptureSummary.dedup_content_hash``): with
+    two instances whose clocks are skewed it must not veto a strictly newer
     provider revision or a richer turn set.
     """
     incoming_updated = _session_update_evidence_ms(incoming)
     existing_updated = _session_update_evidence_ms(existing)
-    incoming_captured = to_epoch_ms(incoming.provenance.captured_at, numeric_unit="seconds")
-    existing_captured = to_epoch_ms(existing.provenance.captured_at, numeric_unit="seconds")
-    incoming_turns = len(incoming.session.turns)
-    existing_turns = len(existing.session.turns)
-    native_over_fallback = envelope_has_native_provider_payload(incoming) and not envelope_has_native_provider_payload(
-        existing
-    )
+    incoming_captured = to_epoch_ms(incoming.head.provenance.captured_at, numeric_unit="seconds")
+    existing_captured = to_epoch_ms(existing.head.provenance.captured_at, numeric_unit="seconds")
+    incoming_turns = incoming.turn_count
+    existing_turns = existing.turn_count
+    native_over_fallback = incoming.has_native_provider_payload and not existing.has_native_provider_payload
     if incoming_turns < existing_turns and not native_over_fallback:
         return False
     if incoming_turns > existing_turns or native_over_fallback:
@@ -810,10 +710,7 @@ def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: Brow
     )
 
 
-def capture_convergence(
-    incoming: BrowserCaptureEnvelope,
-    existing: BrowserCaptureEnvelope,
-) -> CaptureConvergence:
+def capture_convergence(incoming: CaptureSummary, existing: CaptureSummary) -> CaptureConvergence:
     """Decide what a resident artifact of the same name does to an incoming capture.
 
     The whole spool-admission rule for a destination that is already occupied,
@@ -824,7 +721,7 @@ def capture_convergence(
         return CaptureConvergence.NAME_COLLISION
     if _capture_has_invalid_content_carrier(incoming):
         return CaptureConvergence.SUPERSEDED
-    if capture_dedup_content_hash(existing) == capture_dedup_content_hash(incoming):
+    if existing.dedup_content_hash == incoming.dedup_content_hash:
         return CaptureConvergence.DUPLICATE
     if _attachment_content_enrichment(incoming, existing):
         return CaptureConvergence.PUBLISH
@@ -838,27 +735,23 @@ def capture_convergence(
     return CaptureConvergence.PUBLISH
 
 
+def summarize_capture_envelope(envelope: BrowserCaptureEnvelope) -> CaptureSummary:
+    """Summarize an in-memory envelope through the streamed admission reader."""
+    return summarize_capture_stream(io.BytesIO(_envelope_bytes(envelope)))
+
+
+def _envelope_bytes(envelope: BrowserCaptureEnvelope) -> bytes:
+    payload = envelope.model_dump(mode="json", exclude_none=True)
+    return dumps_bytes(payload, sort_keys=True, indent=2) + b"\n"
+
+
 def write_capture_envelope(
     envelope: BrowserCaptureEnvelope,
     *,
     spool_path: Path | None = None,
 ) -> BrowserCaptureWriteResult:
-    """Atomically write a browser-capture source artifact into the capture spool.
-
-    Raises :class:`SpoolQuotaExceededError` before writing a NEW artifact
-    (one that does not replace an existing same-session file) once the
-    spool quota is reached — replacing an existing capture never grows the
-    spool and is always allowed. The quota check and the write are
-    serialized against every other call (see ``_SPOOL_WRITE_LOCK``) so
-    concurrent requests cannot all pass the check before any one write
-    lands.
-    """
-    payload = envelope.model_dump(mode="json", exclude_none=True)
-    return _write_capture_envelope(
-        envelope,
-        dumps_bytes(payload, sort_keys=True, indent=2) + b"\n",
-        spool_path=spool_path,
-    )
+    """Serialize an envelope and admit it through the streamed spool route."""
+    return write_capture_envelope_bytes(_envelope_bytes(envelope), spool_path=spool_path)
 
 
 def write_capture_envelope_bytes(
@@ -866,81 +759,92 @@ def write_capture_envelope_bytes(
     *,
     spool_path: Path | None = None,
 ) -> BrowserCaptureWriteResult:
-    """Admit an envelope while preserving its exact source bytes.
+    """Admit envelope bytes already in memory through the streamed spool route.
 
-    The HTTP receiver and controlled source restoration both use this route:
-    Pydantic validates the shape and identity, but the published artifact is
-    the byte sequence that was actually acquired.  This keeps provenance and
-    DOM-degraded markers byte-preserving without adding a historical parser or
-    authority table.
+    The bytes are staged exactly as the HTTP receiver stages a request body,
+    then admitted by :func:`admit_staged_capture`; the published artifact is
+    the byte sequence that was acquired.
     """
+    root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+    staged = stage_capture_body(io.BytesIO(raw).read, len(raw), spool_root=root)
     try:
-        envelope = BrowserCaptureEnvelope.model_validate(json_loads(raw))
-    except (JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
-        raise BrowserCaptureSpoolConflictError("capture envelope is malformed") from exc
-    return _write_capture_envelope(envelope, raw, spool_path=spool_path)
+        try:
+            summary = summarize_capture_file(staged.path)
+        except CaptureEnvelopeError as exc:
+            raise BrowserCaptureSpoolConflictError("capture envelope is malformed") from exc
+        return admit_staged_capture(staged, summary, spool_path=root)
+    finally:
+        staged.discard()
 
 
 def _accepted_identities(
-    envelope: BrowserCaptureEnvelope,
+    summary: CaptureSummary,
     root: Path,
 ) -> tuple[BrowserCaptureAcceptedIdentity, ...]:
     """Project the message identities one retained capture artifact carries."""
-    session_ref = f"{_capture_origin(envelope.provider.value)}:{envelope.provider_session_id}"
-    artifact_ref = capture_artifact_ref(envelope, root)
+    session_ref = f"{_capture_origin(summary.provider.value)}:{summary.provider_session_id}"
+    artifact_ref = capture_artifact_ref(summary, root)
     return tuple(
         BrowserCaptureAcceptedIdentity(
             session_ref=session_ref,
-            message_ref=f"{session_ref}:n:{turn.provider_turn_id}",
-            evidence_ref=f"{artifact_ref}#message:{turn.provider_turn_id}",
-            fidelity="native" if turn.identity_observation.fidelity == "native" else "unknown",
-            adapter_version=envelope.provenance.adapter_version,
+            message_ref=f"{session_ref}:n:{turn_id}",
+            evidence_ref=f"{artifact_ref}#message:{turn_id}",
+            fidelity=fidelity,
+            adapter_version=summary.head.provenance.adapter_version,
         )
-        for turn in envelope.session.turns
-        if turn.provider_turn_id and turn.identity_observation is not None
+        for turn_id, fidelity in summary.turn_identities
     )
 
 
-def _write_capture_envelope(
-    envelope: BrowserCaptureEnvelope,
-    raw: bytes,
+def admit_staged_capture(
+    staged: StagedCapture,
+    summary: CaptureSummary,
     *,
     spool_path: Path | None = None,
 ) -> BrowserCaptureWriteResult:
+    """Publish a staged capture into the spool, or keep the resident artifact.
+
+    ``summary`` is the streamed summary of ``staged``. A resident artifact of
+    the same name is summarized by the same streamed reader under the spool
+    lock, so neither side is held whole. Raises
+    :class:`SpoolQuotaExceededError` before publishing a NEW artifact (one
+    that does not replace an existing same-session file) once the spool's
+    file-count quota is reached — replacing an existing capture never grows the spool and is
+    always allowed. The quota check and the publication are serialized against
+    every other call (see ``_SPOOL_WRITE_LOCK``). The caller discards
+    ``staged`` afterwards; a published file has already been moved away.
+    """
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
-    target = capture_artifact_path(envelope, root)
-    accepted_identities = _accepted_identities(envelope, root)
-    dedup_content_hash = capture_dedup_content_hash(envelope)
+    target = capture_artifact_path(summary, root)
     with _SPOOL_WRITE_LOCK, _spool_file_lock(root):
         replaced = target.exists()
         if replaced:
             try:
-                existing_raw = target.read_bytes()
-                existing = BrowserCaptureEnvelope.model_validate(json_loads(existing_raw))
-            except (OSError, JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+                existing = summarize_capture_file(target)
+            except (OSError, CaptureEnvelopeError) as exc:
                 raise BrowserCaptureSpoolConflictError(
                     f"existing capture artifact is unreadable or malformed: {target.name}"
                 ) from exc
-            convergence = capture_convergence(envelope, existing)
+            convergence = capture_convergence(summary, existing)
             if convergence is CaptureConvergence.NAME_COLLISION:
                 raise BrowserCaptureSpoolConflictError(f"capture artifact name collision for {target.name}")
             if convergence is not CaptureConvergence.PUBLISH:
                 # A duplicate echoes the incoming fingerprint; a superseded
                 # delivery echoes the fingerprint of the revision that stays.
                 return BrowserCaptureWriteResult(
-                    provider=envelope.provider.value,
-                    provider_session_id=envelope.provider_session_id,
+                    provider=summary.provider.value,
+                    provider_session_id=summary.provider_session_id,
                     path=target,
-                    artifact_ref=capture_artifact_ref(envelope, root),
+                    artifact_ref=capture_artifact_ref(summary, root),
                     bytes_written=target.stat().st_size,
                     replaced=True,
                     deduplicated=True,
                     dedup_content_hash=(
-                        dedup_content_hash
+                        summary.dedup_content_hash
                         if convergence is CaptureConvergence.DUPLICATE
-                        else capture_dedup_content_hash(existing)
+                        else existing.dedup_content_hash
                     ),
-                    capture_instance_id=envelope.provenance.extension_instance_id,
+                    capture_instance_id=summary.head.provenance.extension_instance_id,
                     # The retained artifact is `existing`, so the identities
                     # this delivery acknowledges are its identities. Echoing
                     # the rejected incoming envelope told the extension a
@@ -950,39 +854,25 @@ def _write_capture_envelope(
                     convergence=convergence,
                 )
         else:
-            _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
+            _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=None)
         target.parent.mkdir(parents=True, exist_ok=True)
-        temp_path: Path | None = None
+        os.replace(staged.path, target)
+        directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            with tempfile.NamedTemporaryFile(
-                "wb", dir=target.parent, prefix=f".{target.name}.", delete=False
-            ) as handle:
-                temp_path = Path(handle.name)
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, target)
-            directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except BaseException:
-            if temp_path is not None:
-                with suppress(FileNotFoundError):
-                    temp_path.unlink()
-            raise
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     return BrowserCaptureWriteResult(
-        provider=envelope.provider.value,
-        provider_session_id=envelope.provider_session_id,
+        provider=summary.provider.value,
+        provider_session_id=summary.provider_session_id,
         path=target,
-        artifact_ref=capture_artifact_ref(envelope, root),
+        artifact_ref=capture_artifact_ref(summary, root),
         bytes_written=target.stat().st_size,
         replaced=replaced,
         deduplicated=False,
-        dedup_content_hash=dedup_content_hash,
-        capture_instance_id=envelope.provenance.extension_instance_id,
-        accepted_identities=accepted_identities,
+        dedup_content_hash=summary.dedup_content_hash,
+        capture_instance_id=summary.head.provenance.extension_instance_id,
+        accepted_identities=_accepted_identities(summary, root),
         convergence=CaptureConvergence.PUBLISH,
     )
 
@@ -1061,13 +951,11 @@ def existing_capture_state(
     failure_source: str | None = None
     if spooled:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            raw_capture_id = payload.get("capture_id")
-            raw_updated_at = payload.get("session", {}).get("updated_at")
+            raw_capture_id, raw_updated_at = read_capture_state_fields(path)
             capture_id = raw_capture_id if isinstance(raw_capture_id, str) else None
             updated_at = raw_updated_at if isinstance(raw_updated_at, str) else None
             spooled_updated_at_ms = to_epoch_ms(updated_at, numeric_unit="seconds")
-        except (OSError, json.JSONDecodeError, AttributeError):
+        except (OSError, ValueError):
             artifact_readable = False
             latest_failure = "spool_unreadable"
             failure_source = "spool"
@@ -1245,6 +1133,7 @@ __all__ = [
     "BrowserCaptureSpoolConflictError",
     "CaptureConvergence",
     "SpoolUsage",
+    "admit_staged_capture",
     "backfill_checkpoint_root",
     "capture_artifact_ref",
     "capture_convergence",
@@ -1259,6 +1148,7 @@ __all__ = [
     "receiver_identity",
     "receiver_status_payload",
     "resolve_receiver_auth_token",
+    "summarize_capture_envelope",
     "write_backfill_checkpoint",
     "write_capture_envelope",
     "write_capture_envelope_bytes",

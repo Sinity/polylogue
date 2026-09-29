@@ -30,7 +30,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
-from polylogue.core.raw_coordinates import zip_member_identity_coordinate
+from polylogue.core.raw_coordinates import zip_member_coordinate, zip_member_identity_coordinate
 from polylogue.core.sqlite_introspection import column_exists as _column_exists
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
@@ -877,7 +877,8 @@ def _split_container_source_path(source_path: str) -> tuple[Path, str] | None:
     outer, sep, member = source_path.partition(":")
     if not sep or not outer or not member:
         return None
-    return Path(outer), member
+    # A container path may itself hold a colon; prefer the prefix that is a real ZIP.
+    return zip_member_coordinate(source_path) or (Path(outer), member)
 
 
 def _jsonl_payloads(raw_bytes: bytes) -> list[object]:

@@ -19,6 +19,7 @@ from . import cursor as _cursor
 from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
 from .decoders import _ZipEntryValidator
+from .dispatch import ForeignOriginContentError, bound_location_provider
 from .parsers.base import RawSessionData
 from .source_acquisition_components import (
     ObservationCallback,
@@ -134,8 +135,21 @@ def iter_source_raw_data(
                                     blob_store=blob_store,
                                     observation_callback=observation_callback,
                                     status_callback=status_callback,
+                                    bound_provider=bound_location_provider(provider_hint),
                                 ),
                             )
+                        except ForeignOriginContentError as exc:
+                            # One refused member must not discard its admissible
+                            # siblings; the refusal is recorded per member.
+                            failed_count += 1
+                            emit(
+                                "sources.acquisition.foreign_origin_refused",
+                                level=WARNING,
+                                outcome="refused",
+                                source_path=str(entry_path),
+                                reason=f"{exc.code}: {exc}",
+                            )
+                            _record_cursor_failure(cursor_state, entry_path, f"{exc.code}: {exc}")
                         except ContentIdentityRefusal as exc:
                             # The member cannot be stored; record the gap and
                             # acquire the rest of the ZIP.
@@ -167,6 +181,16 @@ def iter_source_raw_data(
                 str(path),
                 f"File not found (may have been deleted): {exc}",
             )
+        except ForeignOriginContentError as exc:
+            failed_count += 1
+            emit(
+                "sources.acquisition.foreign_origin_refused",
+                level=WARNING,
+                outcome="refused",
+                source_path=str(path),
+                reason=f"{exc.code}: {exc}",
+            )
+            _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
         except (UnicodeDecodeError, zipfile.BadZipFile, OSError) as exc:
             failed_count += 1
             logger.warning("Failed to read %s: %s", path, exc)

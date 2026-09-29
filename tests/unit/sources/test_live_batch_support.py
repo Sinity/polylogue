@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast, overload
+from typing import IO, Any, cast, overload
 
 import pytest
 
@@ -207,6 +207,31 @@ def test_claude_frontier_rejects_body_rewrite(tmp_path: Path) -> None:
     )
 
     assert processor._append_plan(path) is None
+
+
+def test_a_foreign_appended_record_falls_back_to_the_refusing_full_route(tmp_path: Path) -> None:
+    """An appended Codex record under Claude Code is not retained as an append.
+
+    Anti-vacuity: skip validating the append delta and this plan carries the
+    Codex bytes as Claude Code raw evidence; the full route, which records the
+    typed foreign-origin refusal, is never taken.
+    """
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="foreign-append",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    assert processor._record_append_cursor(plan)
+    accepted = path.read_bytes()
+    codex = b'{"type":"session_meta","payload":{"id":"codex-session-1","timestamp":"2026-01-01T10:00:00Z"}}\n'
+    path.write_bytes(accepted + codex)
+
+    assert processor._append_plan(path) is None
+
+    own = b'{"type":"assistant","message":{"role":"assistant","content":"two"},"uuid":"message-2"}\n'
+    path.write_bytes(accepted + own)
+    assert isinstance(processor._append_plan(path), _AppendPlan)
 
 
 def test_append_prefix_cursor_refuses_a_rewritten_accepted_prefix_after_persistence(
@@ -979,16 +1004,18 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "degraded-full.jsonl"
-    path.write_bytes(
-        b'{"type":"session_meta","payload":{"id":"degraded-full"}}\n'
-        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
-        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    # Claude Code-shaped payloads: the watch source binds Claude Code, and a
+    # bound location refuses another origin's content even on this route.
+    claude_record = (
+        b'{"type":"user","uuid":"u0","sessionId":"degraded-full","timestamp":"2025-06-13T17:40:00.000Z",'
+        b'"cwd":"/w","message":{"role":"user","content":"zero"}}'
     )
+    path.write_bytes(claude_record + b"\n")
     json_path = root / "degraded-full.json"
-    json_path.write_bytes(b'{"mapping":{"root":{"message":{"author":{"role":"user"}}}}}')
+    json_path.write_bytes(b"[" + claude_record + b"]")
     classified_path = root / "subagents" / "worker" / "agent-degraded.meta.json"
     classified_path.parent.mkdir(parents=True)
-    classified_path.write_bytes(b'{"mapping":{"root":{"message":{"author":{"role":"user"}}}}}')
+    classified_path.write_bytes(b'{"agentType":"worker"}')
     # Source-only acquisition writes source.db and refuses outright when the
     # durable tier is absent ("source-only acquisition refused because the
     # durable source tier is missing"), so this case has to stand up a real
@@ -4535,19 +4562,20 @@ def test_live_append_chain_survives_post_ingest_compaction(
         parser_fingerprint="test-parser",
     )
     original_publish = ArchiveBlobPublisher.write_from_bytes
-    original_path_publish = ArchiveBlobPublisher.write_from_path
+    original_stream_publish = ArchiveBlobPublisher.write_from_fileobj
     published_payloads: list[bytes] = []
 
     def counted_publish(publisher: ArchiveBlobPublisher, raw: bytes) -> tuple[str, int]:
         published_payloads.append(raw)
         return original_publish(publisher, raw)
 
-    def counted_path_publish(publisher: ArchiveBlobPublisher, source: Path, **kwargs: object) -> tuple[str, int]:
-        published_payloads.append(source.read_bytes())
-        return original_path_publish(publisher, source, **kwargs)  # type: ignore[arg-type]
+    def counted_stream_publish(publisher: ArchiveBlobPublisher, source: IO[bytes], **kwargs: object) -> tuple[str, int]:
+        # Full captures stream through the acquisition boundary.
+        published_payloads.append(Path(source.raw.name).read_bytes())  # type: ignore[attr-defined]
+        return original_stream_publish(publisher, source, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(ArchiveBlobPublisher, "write_from_bytes", counted_publish)
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", counted_path_publish)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", counted_stream_publish)
     if not protect_chain:
         from polylogue.storage.raw_retention import RawRetentionAuthority
 
@@ -6765,7 +6793,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
 
     The streaming threshold is patched down (matching the pattern used
     elsewhere in this file, e.g. ``test_full_ingest_reports_heartbeat_stage_events``)
-    so both fixture files route through ``blob_store.write_from_path`` /
+    so both fixture files route through ``capture_bound_path`` /
     ``archive.write_raw_blob_ref`` -> ``write_source_raw_session_blob_ref``,
     the same code path a real >8MB capture takes -- not the small-payload
     ``write_raw_payload`` -> ``write_source_raw_session`` gate, which is a
@@ -6831,7 +6859,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
 
     # Force both fixture files through the streaming blob-ref write path
-    # (>= this threshold uses blob_store.write_from_path + write_raw_blob_ref,
+    # (>= this threshold uses capture_bound_path + write_raw_blob_ref,
     # never populating raw_payloads) rather than the small-payload
     # write_raw_payload path -- see polylogue-re4a.
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
 
@@ -172,14 +173,31 @@ class SqliteVecQueryMixin:
         self._ensure_vec_available()
         self._ensure_tables()
 
-        embeddings = self._get_embeddings([text], input_type="query")
-        if not embeddings:
-            return []
-
-        query_embedding = _serialize_f32(embeddings[0])
-
         conn = self._get_connection()
         try:
+            # Configuration alone is not readiness. Before purchasing a query
+            # embedding, prove the current-recipe message projection addresses
+            # at least one stored vector; an empty or wholly stale store is not
+            # an empty search. ``message_embeddings_meta`` is the writer's own
+            # vector-existence authority and joins on its BLOB primary key.
+            current_vector = conn.execute(
+                """SELECT 1
+                   FROM current_embedding_messages AS r
+                   JOIN message_embeddings_meta AS meta
+                     ON meta.vector_derivation_hash = r.vector_derivation_hash
+                   LIMIT 1"""
+            ).fetchone()
+            if current_vector is None:
+                raise EmbeddingRetrievalNotReadyError(
+                    "semantic retrieval has no vectors for the current archive messages and recipe; "
+                    "run embedding status and backfill before retrying",
+                    readiness_status="empty",
+                )
+            embeddings = self._get_embeddings([text], input_type="query")
+            if not embeddings:
+                return []
+            query_embedding = _serialize_f32(embeddings[0])
+
             rows = conn.execute(
                 """
                 SELECT r.message_id AS message_id, hits.distance AS distance

@@ -13,7 +13,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.sources.dispatch import (
     detect_provider,
     detect_provider_evidence,
@@ -154,7 +154,7 @@ async def test_supported_witnesses_reach_the_production_archive_ingest_seam(
             )
             sources.append(Source(name=witness.parser_claims[0].provider.value, path=source_root))
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         one_shot_workspace_env["archive_root"],
         sources,
         parse_workers=1,

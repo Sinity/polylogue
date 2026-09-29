@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
+from devtools.isolated_environment import isolated_home_environment
 from polylogue.browser_capture.server import make_server
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -70,17 +71,21 @@ def _service_paths() -> tuple[Path, Path]:
 
 
 def _proof_environment(*, archive_root: Path, artifact_root: Path, api_port: int, capture_port: int) -> dict[str, str]:
-    environment = os.environ.copy()
+    """The proof daemon's environment, isolated from the host's sources.
+
+    The daemon watches every origin at its canonical location under ``HOME``,
+    so the proof runs in an empty home of its own: inheriting the host's
+    ``HOME`` or XDG roots would ingest the operator's real transcripts.
+    """
+    home = artifact_root / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    environment = isolated_home_environment(os.environ, home=home)
     environment.update(
         {
             "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
             "POLYLOGUE_API_PORT": str(api_port),
             "POLYLOGUE_BROWSER_CAPTURE_PORT": str(capture_port),
             "POLYLOGUE_DAEMON_URL": f"http://127.0.0.1:{api_port}",
-            "XDG_CACHE_HOME": str(artifact_root / "xdg-cache"),
-            "XDG_DATA_HOME": str(artifact_root / "xdg-data"),
-            "XDG_STATE_HOME": str(artifact_root / "xdg-state"),
-            "XDG_CONFIG_HOME": str(artifact_root / "xdg-config"),
         }
     )
     return environment
@@ -207,13 +212,11 @@ def _start_daemon(
         "-c",
         "from polylogue.daemon.cli import main; main()",
         "run",
-        "--spool",
-        str(spool),
         "--api-port",
         str(api_port),
         "--port",
         str(capture_port),
-        "--root",
+        "--spool",
         str(spool),
         "--browser-capture-auth-token",
         _RECEIVER_TOKEN,

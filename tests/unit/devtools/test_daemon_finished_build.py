@@ -1,6 +1,9 @@
 """Synthetic stop-predicate checks for the ordinary-daemon scratch probe."""
 
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from devtools.daemon_finished_build import REQUIRED_READINESS_DOMAINS, BuildEvidence
 
@@ -109,3 +112,97 @@ def test_convergence_is_not_finished_output_acceptance() -> None:
     )
     assert converged.converged
     assert not converged.ready
+
+
+def test_qualification_environment_isolates_every_discovery_root(tmp_path: Path) -> None:
+    """Inherited XDG roots and path overrides never reach the qualification daemon.
+
+    Anti-vacuity: set only ``HOME`` and the inherited ``XDG_CONFIG_HOME`` (and
+    with it the operator's real config) is passed to the run.
+    """
+    from devtools.daemon_finished_build import qualification_environment
+
+    inherited = {
+        "HOME": "/home/operator",
+        "XDG_CONFIG_HOME": "/home/operator/.config",
+        "XDG_DATA_HOME": "/home/operator/.local/share",
+        "POLYLOGUE_CONFIG": "/home/operator/.config/polylogue/polylogue.toml",
+        "POLYLOGUE_HERMES_ROOT": "/home/operator/.hermes",
+        "PATH": "/usr/bin",
+    }
+    home = tmp_path / "home"
+
+    env = qualification_environment(inherited, home=home, archive=tmp_path / "archive", candidate=tmp_path / "c")
+
+    assert env["HOME"] == str(home)
+    assert env["XDG_CONFIG_HOME"] == str(home / ".config")
+    assert env["XDG_DATA_HOME"] == str(home / ".local/share")
+    # Not merely dropped: an explicit override, pointed at a nonexistent
+    # path under the isolated home, disables the <cwd>/polylogue.toml
+    # fallback that a bare removal would leave live.
+    assert env["POLYLOGUE_CONFIG"] != "/home/operator/.config/polylogue/polylogue.toml"
+    assert Path(env["POLYLOGUE_CONFIG"]).is_relative_to(home)
+    assert "POLYLOGUE_HERMES_ROOT" not in env
+    assert env["POLYLOGUE_SITE_CONFIG"] == ""
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_qualification_home_admits_only_the_declared_input(tmp_path: Path) -> None:
+    """Any other artifact in the isolated home is refused, whatever its suffix.
+
+    Anti-vacuity: enumerate only ``.json``/``.jsonl`` siblings and the Codex
+    state database the daemon would acquire goes unreported.
+    """
+    from devtools.daemon_finished_build import undeclared_source_entries
+
+    home = tmp_path / "home"
+    sessions = home / ".codex" / "sessions" / "2026"
+    sessions.mkdir(parents=True)
+    source = sessions / "rollout.jsonl"
+    source.write_text("{}\n")
+    assert undeclared_source_entries(home, source) == []
+
+    (home / ".codex" / "goals_1.sqlite").write_bytes(b"SQLite format 3\x00")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "projects").symlink_to(tmp_path)
+
+    assert undeclared_source_entries(home, source) == [".claude/projects", ".codex/goals_1.sqlite"]
+
+
+def test_verify_args_rejects_a_suffix_the_watcher_never_admits(tmp_path: Path) -> None:
+    """An input the canonical watcher ignores must fail fast, not time out.
+
+    A correctly sized and hashed file at a canonical location with the wrong
+    suffix passes containment but produces no cursor/raw evidence, so the
+    qualification consumed its full default timeout instead of rejecting the
+    invocation immediately.
+
+    Anti-vacuity: drop the suffix check and this call succeeds instead of
+    raising ``ValueError``.
+    """
+    import argparse
+
+    from devtools.daemon_finished_build import _verify_args
+
+    # The suffix check runs before candidate/source_root are used for
+    # anything but path resolution, so a real git checkout is not needed.
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    source_root = tmp_path / "source-home"
+    sessions = source_root / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    source = sessions / "input.txt"
+    payload = b"not jsonl"
+    source.write_bytes(payload)
+
+    args = argparse.Namespace(
+        receipt=tmp_path / "receipt.json",
+        candidate=candidate,
+        source_root=source_root,
+        input=source,
+        expected_bytes=len(payload),
+        expected_sha256=None,
+        candidate_sha=None,
+    )
+    with pytest.raises(ValueError, match="canonical watcher admits"):
+        _verify_args(args)
