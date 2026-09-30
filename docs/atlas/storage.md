@@ -99,3 +99,24 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 - The `docs/architecture.md` ring diagram draws only source, index, embeddings, user, and ops; code has six tiers and includes `audit.db` (`docs/architecture.md:25`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
 - `docs/architecture.md` calls embeddings plainly rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:52-55`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:62-67`).
+
+## Tool-result association
+
+`storage/sqlite/action_pairs.py` owns associations for both materialized and
+canonical action reads and observed `tool_finished` events. An orphan result
+before the first use of an ID cannot certify that use. A clean alternating
+stream supports sequential ID reuse without a many-to-many join. A missing
+middle result, duplicate receipt, or overlapping same-ID invocation makes
+that invocation and the remaining same-ID suffix unresolved: the action has
+`result_state=outcome_unknown`, `outcome_unknown_reason=ambiguous_tool_id_reuse`,
+and no attributed result block, output, error flag or exit code. A clean final
+use with no result stays `no_result`.
+
+Session IDs isolate fork-local tool IDs. Variant creation order is not a
+causal branch identity: when a same-ID stream involves variants, only an
+otherwise unambiguous result in the same message is attributed; cross-message
+associations remain unknown rather than treating equal variant indexes as a
+branch path. These are evidence refusals, not loss of the underlying blocks.
+Reingesting complete evidence recomputes the relation at its ordinary write
+boundary. The decision does not depend on row insertion order or on whether
+a reader uses the materialized or directly computed relation.

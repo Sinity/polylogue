@@ -10,7 +10,7 @@ from .sources import (
 )
 
 
-class MemoryError(ValueError):
+class MemoryError(SessionError):
     pass
 
 
@@ -155,8 +155,11 @@ class MemoryService:
                     "authority": LOCAL_AUTHORITY,
                     "object_reference": row["reference"],
                     "line": row["line"],
+                    "offset": row["offset"],
                     "text": row["text"],
                     "source_observation": row["source_observation"],
+                    "match_offset": row["match_offset"],
+                    "match_end": row["match_end"],
                 }
                 for row in result["matches"]
             )
@@ -203,18 +206,30 @@ class MemoryService:
             "gaps": gaps,
         }
 
-    def get(self, reference: Any, offset: int = 0, max_bytes: int = 64_000) -> dict[str, Any]:
+    def get(
+        self,
+        reference: Any,
+        offset: int = 0,
+        max_bytes: int = 64_000,
+        *,
+        expected_observation: str | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(reference, str) or not reference or len(reference) > 8_192:
             raise MemoryError("reference must be a bounded non-empty string")
         try:
-            result = self.sessions.read(reference, offset, max_bytes)
+            result = self.sessions.read(reference, offset, max_bytes, expected_observation=expected_observation)
         except SessionError as exc:
-            raise MemoryError(str(exc)) from exc
+            error = MemoryError(str(exc))
+            error.code = exc.code
+            raise error from exc
         return {
             "source": result["provider"],
             "authority": LOCAL_AUTHORITY,
             "availability": "available",
             "object_reference": result["reference"],
+            "observation": result["observation"],
+            "consistency": result["consistency"],
+            "next_offset": result["next_offset"],
             "offset": result["offset"],
             "bytes": result["bytes"],
             "truncated": result["truncated"],
