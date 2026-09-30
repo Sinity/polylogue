@@ -2341,14 +2341,15 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
 
     assert payload["ok"] is expected_ok
     lines = format_daemon_status_lines(payload)
-    if expected_ok:
-        assert not any("Raw failures: unavailable" in line for line in lines)
-    else:
+    if not available:
+        assert any("Raw failures: unavailable" in line for line in lines)
+    elif lifecycle_state == "blocked" or parse_failures:
         assert any("Raw failures:" in line for line in lines)
     if parse_failures:
         assert any("Raw failures:" in line for line in lines)
     if missing_coordinates:
         assert "Retained session bytes missing append coordinates: 1 (degraded)" in lines
+        assert not any("Raw failures:" in line for line in lines)
 
 
 def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:
