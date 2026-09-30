@@ -38,7 +38,8 @@ def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
     clone = tmp_path / "clone"
     with pytest.raises(ValueError, match="symlink"):
         clone_archive_template(template, clone)
-    assert list(clone.iterdir()) == []
+    # Source validation refuses before reserving or copying a destination.
+    assert not clone.exists()
 
 
 def test_clone_preserves_original_proof_and_both_owned_roots_open(

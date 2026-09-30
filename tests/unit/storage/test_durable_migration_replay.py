@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -33,11 +33,44 @@ def _install_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Pat
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: f"{package}.source")
     monkeypatch.setattr(train_module, "_migration_package", lambda _tier: f"{package}.source")
-    monkeypatch.setattr(
-        train_module,
-        "validate_durable_migration_sidecars",
-        lambda _tier, _migrations: (SimpleNamespace(slot=2), SimpleNamespace(slot=3)),
-    )
+    for version, filename, sql in ((2, "002_items.sql", step_2), (3, "003_items_label.sql", step_3)):
+        claim = migration_runner.durable_migration_claim_for_sql(
+            ArchiveTier.SOURCE, filename, sql, owner_ref=f"owner:fixture:{version}"
+        )
+        rider = migration_runner.DurableChangeRider(
+            rider_id=f"rider:fixture:{version}",
+            owner_ref=f"owner:fixture:{version}",
+            schema_objects=("table:items",),
+            runtime_consumers=(
+                migration_runner.DurableRuntimeConsumer(
+                    "fixture-writer",
+                    "polylogue/storage/sqlite/archive_tiers/source_write.py:write_source_raw_session",
+                    "proof:fixture-writer",
+                    ("write",),
+                ),
+                migration_runner.DurableRuntimeConsumer(
+                    "fixture-reader",
+                    "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                    "proof:fixture-reader",
+                    ("read",),
+                ),
+            ),
+            behavior_proof_refs=("proof:fixture-writer", "proof:fixture-reader"),
+        )
+        train = migration_runner.declare_durable_change_train(
+            train_id=f"train:fixture:{version}",
+            tier=ArchiveTier.SOURCE,
+            current_version=version - 1,
+            target_version=version,
+            slot=version,
+            owner_ref=f"owner:fixture:{version}",
+            migration=claim,
+            riders=(rider,),
+            declared_at_ms=1,
+        )
+        (source / f"{version:03d}.train.json").write_text(
+            json.dumps(migration_runner.durable_change_train_to_payload(train)), encoding="utf-8"
+        )
     versions = dict(migration_runner.ARCHIVE_VERSION_BY_TIER)
     versions[ArchiveTier.SOURCE] = 3
     monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)

@@ -2924,6 +2924,24 @@ def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path, offset: int) 
         seal_fixture_tree(root)
 
 
+def test_outer_archive_publication_finalizes_before_manifest_and_freeze(tmp_path: Path) -> None:
+    """Omitting outer finalization leaves WAL headers in the sealed archive."""
+
+    def builder(root: Path) -> None:
+        with ArchiveStore(root):
+            pass
+        assert root.stat().st_mode & stat.S_IWUSR
+        assert not (root / "manifest.json").exists()
+
+    tree = build_immutable_tree(cache_root=tmp_path / "cache", key="outer-finalization", builder=builder)
+    for tier in ArchiveTier:
+        with (tree.root / f"{tier.value}.db").open("rb") as handle:
+            assert handle.read(20)[18:20] == bytes((1, 1))
+    readiness = raw_materialization_readiness_snapshot(tree.root)
+    assert readiness["available"] is True, readiness
+    assert readiness["classification"] == "not_run"
+
+
 @pytest.mark.parametrize("artifact_kind", ["seeded", "immutable"])
 def test_sealed_archive_copy_publication_owns_its_released_train(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact_kind: str
@@ -2939,7 +2957,15 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         if source.parent != destination.parent:
             copies += 1
             payload = json.loads((source / "manifest.json").read_text())
-            source_manifest_id = str(payload.get("manifest_id", payload["key"]))
+            if "facts" in payload:
+                source_manifest_id = artifacts._read_manifest(source / "manifest.json").manifest_id
+            else:
+                source_manifest_id = ImmutableTreeArtifact(
+                    source,
+                    str(payload["key"]),
+                    tuple(payload["files"]),
+                    ArtifactResourceMeasurement(**payload["resources"]),
+                ).manifest_id
             raise PermissionError("synthetic cross-parent sealed rename refusal")
         real_rename(source, destination)
 
@@ -2955,7 +2981,6 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         def builder(root: Path) -> None:
             with ArchiveStore(root):
                 pass
-            _sqlite_integrity(root)
 
         tree = build_immutable_tree(cache_root=tmp_path / "cache", key="sealed-archive-copy", builder=builder)
         root = tree.root

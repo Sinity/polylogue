@@ -350,14 +350,19 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
     def metadata_text(value: object) -> str:
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
-    tables = conn.execute(
+    tables_cursor = conn.execute(
         "SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table' ORDER BY name COLLATE BINARY"
     )
+    try:
+        tables = tuple(tables_cursor)
+    finally:
+        tables_cursor.close()
     for table, without_rowid in tables:
         name = metadata_text(table)
         if name == "sqlite_schema":
             continue
-        columns = tuple(conn.execute("SELECT name, pk FROM pragma_table_xinfo(?) ORDER BY cid", (name,)))
+        with closing(conn.execute("SELECT name, pk FROM pragma_table_xinfo(?) ORDER BY cid", (name,))) as cursor:
+            columns = tuple(cursor)
         selected = [metadata_text(column[0]) for column in columns]
         frame(b"table")
         frame(name.encode("utf-8"))
@@ -405,14 +410,14 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
             # private TEMP table never changes caller storage pragmas.
             locator = _quote_sqlite_identifier("literal_locator_" + uuid.uuid4().hex)
             key_names = [_quote_sqlite_identifier("key_" + str(index)) for index in range(len(order))]
-            conn.execute(f"CREATE TEMP TABLE {locator} (ordinal INTEGER PRIMARY KEY, {','.join(key_names)})")
+            conn.execute(f"CREATE TEMP TABLE {locator} (ordinal INTEGER PRIMARY KEY, {','.join(key_names)})").close()
             try:
                 conn.execute(
                     f"INSERT INTO {locator} SELECT row_number() OVER (ORDER BY {ordering}), "
                     f"{','.join(_quote_sqlite_identifier(column) for column in order)} FROM {table_sql}"
-                )
+                ).close()
             except BaseException:
-                conn.execute(f"DROP TABLE temp.{locator}")
+                conn.execute(f"DROP TABLE temp.{locator}").close()
                 raise
             bindings = " AND ".join(
                 f"t.{_quote_sqlite_identifier(column)} IS k.{key}" for column, key in zip(order, key_names, strict=True)
@@ -453,23 +458,25 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
                         # one cell and may sort complete primary keys. No
                         # currently admitted durable archive uses this shape.
                         column_sql = "t." + _quote_sqlite_identifier(selected[offset // 2])
-                        size = int(
-                            conn.execute(
-                                f"SELECT length(CAST({column_sql} AS BLOB)) {cell_sql}", (row_offset + 1,)
-                            ).fetchone()[0]
-                        )
+                        with closing(
+                            conn.execute(f"SELECT length(CAST({column_sql} AS BLOB)) {cell_sql}", (row_offset + 1,))
+                        ) as cell:
+                            size = int(cell.fetchone()[0])
                         digest.update(size.to_bytes(8, "big"))
                         for byte_offset in range(0, size, 64 * 1024):
-                            chunk = conn.execute(
-                                f"SELECT substr(CAST({column_sql} AS BLOB), ?, ?) {cell_sql}",
-                                (byte_offset + 1, min(64 * 1024, size - byte_offset), row_offset + 1),
-                            ).fetchone()[0]
+                            with closing(
+                                conn.execute(
+                                    f"SELECT substr(CAST({column_sql} AS BLOB), ?, ?) {cell_sql}",
+                                    (byte_offset + 1, min(64 * 1024, size - byte_offset), row_offset + 1),
+                                )
+                            ) as cell:
+                                chunk = cell.fetchone()[0]
                             digest.update(chunk)
         finally:
             if descriptors is not None:
                 descriptors.close()
             if locator is not None:
-                conn.execute(f"DROP TABLE temp.{locator}")
+                conn.execute(f"DROP TABLE temp.{locator}").close()
         frame(b"end-table")
     return digest.hexdigest()
 

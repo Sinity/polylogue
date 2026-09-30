@@ -2002,6 +2002,7 @@ def test_verified_backup_restore_crosses_the_real_machine_operation_route(tmp_pa
     """Dropping registry dispatch or fresh destination authority breaks this route."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.population_admission import POPULATION_PENDING
+    from tests.infra.workload_artifacts import _archive_files
 
     destination = tmp_path / "restored"
     with running_daemon_operations(tmp_path / "archive") as stack:
@@ -2012,12 +2013,17 @@ def test_verified_backup_restore_crosses_the_real_machine_operation_route(tmp_pa
         )
         assert backup is not None and backup["outcome"] == "completed"
         package = backup["result"]["result"]["output_path"]
+        package_path = Path(package)
+        package_before = (_archive_files(package_path), (package_path / "manifest.json").read_bytes())
         restored = stack.client.operation(
             "maintenance.restore_verified_backup",
             {"backup_dir": package, "destination": str(destination)},
             archive_root=str(stack.archive_root),
         )
-    assert restored is not None and restored["outcome"] == "completed"
+        assert (_archive_files(package_path), (package_path / "manifest.json").read_bytes()) == package_before
+        assert not any(package_path.glob("*.db-wal"))
+        assert not any(package_path.glob("*.db-shm"))
+    assert restored is not None and restored["outcome"] == "completed", restored
     assert restored["result"]["result"]["operational_admission"] == "ready"
     assert not (destination / POPULATION_PENDING).exists()
     with ArchiveStore.open_existing(destination, read_only=True):
@@ -2125,7 +2131,7 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
             assert not release.is_set()
             release.set()
             terminal = stack.client.await_operation(request_id, archive_root=str(stack.archive_root))
-            assert terminal is not None and terminal["result"]["outcome"] == "completed"
+            assert terminal is not None and terminal["result"]["outcome"] == "completed", terminal
             assert terminal["result"]["result"]["operational_admission"] == "ready"
             status = stack.client.operation(
                 "operation.status", {"request_id": request_id}, archive_root=str(stack.archive_root)

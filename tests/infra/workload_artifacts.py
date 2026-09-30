@@ -680,6 +680,10 @@ def build_immutable_tree(
             probe = _ConstructionProbe.start()
             try:
                 builder(staging)
+                # The outer publication owns this private builder output.
+                # Finalize SQLite before inventory, then write the manifest
+                # before sealing. Standalone templates have their own seal.
+                _sqlite_integrity(staging)
                 files = _archive_files(staging)
                 manifest = {
                     "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
@@ -747,6 +751,7 @@ def _clone_immutable_tree_unlocked(
     authenticate_copy: Callable[[Path, frozenset[str]], None] | None = None,
 ) -> SeededArchiveClone:
     """Clone an immutable tree into a private writable root."""
+    _assert_no_symlinks(artifact.root)
     _assert_no_symlink_ancestors(destination.parent)
     if destination.resolve(strict=False) == artifact.root.resolve(strict=True):
         raise ValueError("clone source and destination are the same")
@@ -1371,6 +1376,10 @@ def _open_pinned_dir(path: Path, *, allow_missing: bool = False) -> int:
             except FileNotFoundError:
                 if allow_missing:
                     return fd
+                raise
+            except NotADirectoryError:
+                if stat.S_ISLNK(os.stat(part, dir_fd=fd, follow_symlinks=False).st_mode):
+                    raise ValueError(f"symlink ancestor is not allowed: {path}") from None
                 raise
             os.close(fd)
             fd = next_fd

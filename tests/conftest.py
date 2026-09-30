@@ -802,6 +802,15 @@ def workspace_paths(
         _discard_completed_workspace_archive(archive_root)
 
 
+@pytest.fixture
+def sample_sessions_index(tmp_path: Path) -> Path:
+    """Place the declared synthetic Claude index beside its session files."""
+    fixture = Path(__file__).parent / "fixtures" / "claude-sessions-index.json"
+    target = tmp_path / "sessions-index.json"
+    target.write_bytes(fixture.read_bytes())
+    return target
+
+
 @pytest.fixture(scope="session")
 def ready_workspace_archive() -> ImmutableTreeArtifact:
     """Share sealed inputs; every clone still receives fresh physical authority."""
@@ -810,7 +819,7 @@ def ready_workspace_archive() -> ImmutableTreeArtifact:
 
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.migration_runner import durable_preparation_fingerprint
-    from tests.infra.archive_templates import bootstrap_ready_archive_root, finalize_archive_template
+    from tests.infra.archive_templates import bootstrap_ready_archive_root
     from tests.infra.workload_artifacts import build_immutable_tree
 
     with closing(sqlite3.connect(":memory:")) as configuration:
@@ -825,7 +834,6 @@ def ready_workspace_archive() -> ImmutableTreeArtifact:
 
         bootstrap_ready_archive_root(root)
         _clear_connection_cache()
-        finalize_archive_template(root)
 
     return build_immutable_tree(cache_root=None, key="ready-workspace:" + key, builder=build)
 

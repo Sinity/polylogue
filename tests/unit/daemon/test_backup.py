@@ -2801,7 +2801,10 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
                     "index",
                     "INSERT INTO sessions(native_id,origin,title,content_hash) VALUES ('old-derived','codex-session','old title',zeroblob(32))",
                 ),
-                ("ops", "INSERT INTO ingest_cursor(source_path,record_count) VALUES ('/synthetic/old',1)"),
+                (
+                    "ops",
+                    "INSERT INTO ingest_cursor(source_path,record_count,updated_at_ms) VALUES ('/synthetic/old',1,2)",
+                ),
             ):
                 with closing(sqlite3.connect(original / f"{tier}.db")) as conn:
                     conn.execute(statement)
@@ -2832,7 +2835,13 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
         assert migration_runner._durable_literal_rows_digest(conn) == before
     destination = tmp_path / "restored-baseline"
+    from tests.infra.workload_artifacts import _archive_files
+
+    package_before = (_archive_files(package), (package / "manifest.json").read_bytes())
     detail = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    assert (_archive_files(package), (package / "manifest.json").read_bytes()) == package_before
+    assert not any(package.glob("*.db-wal"))
+    assert not any(package.glob("*.db-shm"))
     assert detail["operational_admission"] == "degraded"
     assert detail["requires_convergence"] == ["index.db", "ops.db"]
     assert "index.db" not in detail["restored_tiers"]

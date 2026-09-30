@@ -16,7 +16,8 @@ from polylogue.storage.sqlite import durable_change_train, migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive_plan import (
     ARCHIVE_FORMAT_MARKER_NAME,
-    assert_archive_format_lineage,
+    _assert_archive_format_tier_lineage,
+    _read_archive_format_birth,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
@@ -124,7 +125,7 @@ def _populate_authenticated_archive(
         return None
     if any(relative.endswith((".db-wal", ".db-shm", ".db-journal")) for relative, _, _ in source_files):
         raise ArchivePopulationError("unsealed_source_sqlite_sidecars")
-    assert_archive_format_lineage(source)
+    birth = _read_archive_format_birth(source)
     history_paths = durable_change_train.durable_train_manifest_paths(source / _HISTORY)
     trains = tuple(durable_change_train.load_durable_change_train_manifest(path) for path in history_paths)
     if any(train.state is not DurableChangeTrainState.RELEASED for train in trains):
@@ -145,6 +146,7 @@ def _populate_authenticated_archive(
             path = source / ARCHIVE_TIER_SPECS[tier].filename
             conn = stack.enter_context(closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)))
             conn.execute("BEGIN")
+            _assert_archive_format_tier_lineage(source, tier, conn, birth)
             sources[tier] = conn
             version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             if not ARCHIVE_BASELINE_VERSION_BY_TIER[tier] <= version <= ARCHIVE_VERSION_BY_TIER[tier]:

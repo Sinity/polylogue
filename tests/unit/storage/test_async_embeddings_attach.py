@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -361,5 +362,35 @@ def test_failed_worker_stop_retains_owner_until_actual_thread_exit(
             await backend.close()
         assert not conn._thread.is_alive()
         assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
+
+    asyncio.run(exercise())
+
+
+def test_failed_connection_construction_drains_its_already_stopping_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Queuing a second stop sentinel leaves the production opener suspended."""
+    from polylogue.storage.sqlite import async_sqlite
+
+    connections: list[aiosqlite.Connection] = []
+    connect = async_sqlite.aiosqlite.connect
+
+    def capture_connection(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
+        conn = connect(*args, **kwargs)
+        connections.append(conn)
+        return conn
+
+    monkeypatch.setattr(async_sqlite.aiosqlite, "connect", capture_connection)
+
+    async def exercise() -> None:
+        backend = async_sqlite.SQLiteBackend(tmp_path / "absent.db")
+        with pytest.raises(sqlite3.OperationalError):
+            await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        assert len(connections) == 1
+        conn = connections[0]
+        assert conn._connection is None
+        assert not conn._thread.is_alive()
+        assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
+        await backend.close()
 
     asyncio.run(exercise())

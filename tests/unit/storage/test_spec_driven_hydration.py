@@ -162,6 +162,7 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
         semantic_type=None,
         tool_outcome=ToolOutcome.OK,
         signature=None,
+        name="synthetic document.txt",
     )
     projected = BLOCKS_SPEC.domain_kwargs(record)
     assert set(projected) == {
@@ -172,6 +173,7 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
         "tool_id",
         "tool_input",
         "semantic_type",
+        "name",
         "tool_result_is_error",
         "tool_result_exit_code",
         "tool_outcome",
@@ -183,6 +185,7 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
     assert projected["type"] == "tool_use"
     assert projected["tool_outcome"] == "ok"
     assert projected["tool_input"] == {"command": "ls"}
+    assert projected["name"] == "synthetic document.txt"
 
     message = MessageRecord(
         message_id=MessageId("s:m"),

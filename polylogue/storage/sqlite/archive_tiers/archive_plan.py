@@ -7,6 +7,8 @@ import json
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_FORMAT_FLOOR_VERSION
@@ -103,6 +105,24 @@ def assert_archive_format_lineage(
     """
     if not tiers <= _DURABLE_FORMAT_TIERS:
         raise RuntimeError(f"archive format lineage has no proof for tiers: {sorted(tiers - _DURABLE_FORMAT_TIERS)}")
+    birth = _read_archive_format_birth(archive_root)
+    for tier in tiers:
+        path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
+        try:
+            with closing(open_readonly_connection(path, validate_schema=False)) as connection:
+                _assert_archive_format_tier_lineage(archive_root, tier, connection, birth)
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"cannot inspect archive format tier: {path}") from exc
+
+
+@dataclass(frozen=True)
+class _ArchiveFormatBirth:
+    versions: tuple[tuple[str, int], ...]
+    fingerprints: tuple[tuple[str, str], ...]
+
+
+def _read_archive_format_birth(archive_root: Path) -> _ArchiveFormatBirth:
+    """Decode the complete immutable birth marker without opening SQLite."""
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
     assert_population_admitted(archive_root)
@@ -137,38 +157,62 @@ def assert_archive_format_lineage(
         not isinstance(versions, dict)
         or set(versions) != {tier.value for tier in ArchiveTier}
         or any(
-            not isinstance(versions.get(tier.value), int) or versions[tier.value] < ARCHIVE_FORMAT_FLOOR_VERSION
-            for tier in _DURABLE_FORMAT_TIERS
+            type(versions.get(tier.value)) is not int or versions[tier.value] < ARCHIVE_FORMAT_FLOOR_VERSION
+            for tier in ArchiveTier
         )
     ):
         raise RuntimeError(f"archive format marker has an incomplete six-tier floor: {marker_path}")
-    if not isinstance(fingerprints, dict) or set(fingerprints) != {tier.value for tier in _DURABLE_FORMAT_TIERS}:
+    if (
+        not isinstance(fingerprints, dict)
+        or set(fingerprints) != {tier.value for tier in _DURABLE_FORMAT_TIERS}
+        or any(not isinstance(value, str) for value in fingerprints.values())
+    ):
         raise RuntimeError(f"archive format marker has incomplete durable schema evidence: {marker_path}")
-    for tier in tiers:
-        path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError as exc:
-            raise RuntimeError(f"archive format marker names a missing durable tier: {path}") from exc
-        except OSError as exc:
-            raise RuntimeError(f"cannot inspect archive format tier: {path}") from exc
-        if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
-            raise RuntimeError(f"archive format marker names an unsafe durable tier file: {path}")
-        version = _read_user_version(path)
-        if version is None:
-            raise RuntimeError(f"archive format marker names a missing durable tier: {path}")
-        if version < ARCHIVE_FORMAT_FLOOR_VERSION:
-            raise RuntimeError(f"{path.name} predates the {ARCHIVE_FORMAT_LINEAGE} floor")
-        # The fingerprint identifies the tier shape recorded at birth. Check
-        # it whenever a file's version is at or below that birth version: a
-        # transplanted older-lineage file can share the same version integer
-        # while carrying a different schema. Files advanced by a numbered
-        # migration are above their birth version and follow the migration
-        # lineage's normal admission rules.
-        if version <= versions[tier.value] and fingerprints[tier.value] != _tier_schema_fingerprint(path):
-            raise RuntimeError(
-                f"{path.name} has a historical version-{version} schema and is not part of {ARCHIVE_FORMAT_LINEAGE}"
-            )
+    return _ArchiveFormatBirth(tuple(sorted(versions.items())), tuple(sorted(fingerprints.items())))
+
+
+def _assert_archive_format_tier_lineage(
+    archive_root: Path,
+    tier: ArchiveTier,
+    connection: sqlite3.Connection,
+    birth: _ArchiveFormatBirth,
+) -> None:
+    """Check one actual owned tier handle against the same birth authority."""
+    path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"archive format marker names a missing durable tier: {path}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect archive format tier: {path}") from exc
+    if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
+        raise RuntimeError(f"archive format marker names an unsafe durable tier file: {path}")
+    with closing(connection.execute("PRAGMA database_list")) as cursor:
+        main_path = next(
+            (
+                row[2].decode("utf-8") if isinstance(row[2], bytes) else str(row[2])
+                for row in cursor
+                if (row[1].decode("utf-8") if isinstance(row[1], bytes) else row[1]) == "main"
+            ),
+            None,
+        )
+    if main_path is None or Path(main_path).resolve() != path.resolve():
+        raise RuntimeError(f"archive format tier connection does not own {path}")
+    version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if version < ARCHIVE_FORMAT_FLOOR_VERSION:
+        raise RuntimeError(f"{path.name} predates the {ARCHIVE_FORMAT_LINEAGE} floor")
+    # The fingerprint identifies the tier shape recorded at birth. Check
+    # it whenever a file's version is at or below that birth version: a
+    # transplanted older-lineage file can share the same version integer
+    # while carrying a different schema. Files advanced by a numbered
+    # migration are above their birth version and follow the migration
+    # lineage's normal admission rules.
+    if version <= dict(birth.versions)[tier.value] and dict(birth.fingerprints)[
+        tier.value
+    ] != _connection_schema_fingerprint(connection):
+        raise RuntimeError(
+            f"{path.name} has a historical version-{version} schema and is not part of {ARCHIVE_FORMAT_LINEAGE}"
+        )
 
 
 def _format_digest(payload: dict[str, object]) -> str:
@@ -187,34 +231,24 @@ def _tier_schema_fingerprint(path: Path) -> str:
     except sqlite3.Error as exc:
         raise RuntimeError(f"cannot inspect archive format tier: {path}") from exc
     try:
-        rows = connection.execute(
-            """
-            SELECT type, name, tbl_name, COALESCE(sql, '')
-            FROM sqlite_schema
-            WHERE name NOT LIKE 'sqlite_%'
-            ORDER BY type, name, tbl_name
-            """
-        ).fetchall()
+        return _connection_schema_fingerprint(connection)
     except sqlite3.Error as exc:
         raise RuntimeError(f"cannot read archive format tier schema: {path}") from exc
     finally:
         connection.close()
+
+
+def _connection_schema_fingerprint(connection: sqlite3.Connection) -> str:
+    with closing(
+        connection.execute(
+            "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_schema "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name, tbl_name"
+        )
+    ) as cursor:
+        rows = [tuple(value.decode("utf-8") if isinstance(value, bytes) else value for value in row) for row in cursor]
     return hashlib.sha256(
         (json.dumps(rows, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
     ).hexdigest()
-
-
-def _read_user_version(path: Path) -> int | None:
-    try:
-        conn = open_readonly_connection(path, validate_schema=False)
-    except sqlite3.Error:
-        return None
-    try:
-        return int(conn.execute("PRAGMA user_version").fetchone()[0])
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
 
 
 __all__ = [

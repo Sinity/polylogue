@@ -464,7 +464,7 @@ def _install_synthetic_migration(
         slot=_TARGET_VERSION,
         owner_ref=f"owner:migration:{tier.value}:002",
         migration=_claim(tier, sql),
-        riders=(_rider(),),
+        riders=(_production_rider(),),
         declared_at_ms=1,
     )
     (tier_package / _SYNTHETIC_SIDECAR_NAME).write_text(

@@ -234,7 +234,9 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
     actual_closed = conn._connection is None
     if actual_closed and conn._thread.is_alive():
         try:
-            stopped = conn.stop()
+            # Failed aiosqlite connection construction already queued its stop
+            # sentinel. A second sentinel has no worker left to settle it.
+            stopped = conn.stop() if conn._running else None
             stop_error = None
             if stopped is not None:
                 stop_error, stop_cancellation = await _settled_connection_operation(stopped)
