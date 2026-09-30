@@ -203,11 +203,13 @@ def test_backup_uses_a_valid_external_active_index_target(workspace_env: dict[st
     """
     root = workspace_env["archive_root"]
     conventional = root / "index.db"
+    initialize_archive_database(conventional, ArchiveTier.INDEX)
     with sqlite3.connect(conventional) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker VALUES ('stale')")
     external = tmp_path / "external" / "index.db"
     external.parent.mkdir()
+    initialize_archive_database(external, ArchiveTier.INDEX)
     with sqlite3.connect(external) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker VALUES ('active')")
@@ -247,6 +249,7 @@ def test_backup_maps_a_retired_nested_active_index_without_recursive_search(
     nested = root / "nested"
     generation = nested / ".index-generations" / "gen-retained" / "index.db"
     generation.parent.mkdir(parents=True)
+    initialize_archive_database(generation, ArchiveTier.INDEX)
     with sqlite3.connect(generation) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
     retired_root = root.parent / "retired-archive"
