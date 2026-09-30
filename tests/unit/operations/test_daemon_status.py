@@ -388,6 +388,7 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
     from polylogue.core.enums import BlockType, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.convergence_harness import converge_session_profiles
     from tests.infra.live_ingest import write_index_session
 
     bootstrap_archive_root(tmp_path)
@@ -408,6 +409,7 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
                 ],
             ),
         )
+    converge_session_profiles(tmp_path / "index.db", tmp_path, None, now=lambda: 0.0)
     prepare_operation_journals(tmp_path)
     with open_operation_read(tmp_path) as pinned:
         payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)

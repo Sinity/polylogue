@@ -3934,20 +3934,12 @@ def test_status_diagnostic_models_redact_without_changing_declared_paths(diagnos
     snapshot = StatusSnapshot(
         payload={}, captured_monotonic=0.0, captured_at="", refresh_error=diagnostic, frame_error=diagnostic
     )
-    alert = HealthAlert(
-        check_name="parse",
-        tier=HealthTier.FAST,
-        severity=HealthSeverity.ERROR,
-        message=diagnostic,
-        checked_at="",
-    )
     errors = [
         attempt.model_dump()["error"],
         debt.model_dump()["error"],
         debt.model_dump()["recent"][0]["last_error"],
         snapshot.refresh_error,
         snapshot.frame_error,
-        alert.model_dump()["message"],
     ]
     assert attempt.model_dump()["current_path"] == path
     assert attempt.status == "failed"
@@ -3955,3 +3947,22 @@ def test_status_diagnostic_models_redact_without_changing_declared_paths(diagnos
         assert isinstance(error, str)
         assert "[redacted]" in error
         assert all(fragment not in error for fragment in ("private", "例.json", "leaf.json"))
+
+
+def test_insight_freshness_sqlite_failure_remains_unmeasured_and_private(tmp_path: Path) -> None:
+    path = tmp_path / "index.db"
+    path.touch()
+    with (
+        patch("polylogue.daemon.status._active_status_db_path", return_value=path),
+        patch(
+            "polylogue.daemon.status.open_readonly_connection",
+            side_effect=sqlite3.OperationalError("cannot read '/opt/private space/例.json'"),
+        ),
+    ):
+        result = _insight_freshness_info()
+    assert result["checked"] is False
+    assert result["sessions_with_profiles"] is None
+    assert result["total_sessions"] is None
+    assert "[redacted]" in str(result["reason"])
+    assert "private space" not in str(result["reason"])
+    assert "例.json" not in str(result["reason"])

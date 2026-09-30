@@ -947,63 +947,50 @@ def _fts_readiness_info() -> dict[str, object]:
 
 
 def _insight_freshness_info() -> dict[str, object]:
-    """Inspect session-profile outputs through their domain-owned read model."""
-    # _active_status_db_path() always names "index.db" (resolve_active_index_path
-    # raises otherwise), so the old sibling_index_db(dbf, require_exists=False)
-    # call was provably an identity operation on dbf itself.
+    """Inspect profile outputs, retaining unavailable SQLite evidence explicitly."""
+    from polylogue.core.evidence import Measured, Unavailable
+    from polylogue.storage.tier_access import capture_sqlite_read
+
     dbf = _active_status_db_path()
     if not dbf.exists():
-        index_db: Path | None = dbf
-        if index_db is not None:
-            archive_info = _archive_insight_freshness_info(index_db)
-            if archive_info is not None:
-                return archive_info
         return {
             "checked": False,
             "reason": "index tier is unavailable",
             "sessions_with_profiles": None,
             "total_sessions": None,
         }
-    index_db = dbf
-    if index_db is not None:
-        archive_info = _archive_insight_freshness_info(index_db)
-        if archive_info is not None:
-            return archive_info
-    try:
-        conn = open_readonly_connection(dbf, validate_schema=False)
-        try:
-            return _insight_freshness_from_connection(conn)
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        emit(
-            "daemon.status.query_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="insight_freshness_unreadable",
-            path=dbf,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return {
-            "checked": False,
-            "reason": redact_status_error(str(exc)),
-            "sessions_with_profiles": None,
-            "total_sessions": None,
-        }
 
-
-def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | None:
-    if not archive_db.exists():
-        return None
-    try:
-        conn = open_readonly_connection(archive_db, validate_schema=False)
+    def read() -> dict[str, object]:
         try:
-            return _insight_freshness_from_connection(conn)
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
+            conn = open_readonly_connection(dbf, validate_schema=False)
+            try:
+                return _insight_freshness_from_connection(conn)
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            emit(
+                "daemon.status.query_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="insight_freshness_unreadable",
+                path=dbf,
+                error_type=type(exc).__name__,
+                error_detail=redact_status_error(str(exc)),
+            )
+            raise
+
+    evidence = capture_sqlite_read(read)
+    if isinstance(evidence, Measured):
+        return evidence.value
+    if not isinstance(evidence, Unavailable):
+        raise AssertionError("insight freshness read produced unsupported evidence")
+    reason = redact_status_error(evidence.detail or evidence.reason)
+    return {
+        "checked": False,
+        "reason": reason,
+        "sessions_with_profiles": None,
+        "total_sessions": None,
+    }
 
 
 def _insight_freshness_from_connection(conn: sqlite3.Connection) -> dict[str, object]:
@@ -2850,7 +2837,7 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                                 check_name="check_health",
                                 tier=HealthTier.FAST,
                                 severity=HealthSeverity.ERROR,
-                                message=f"health check itself failed: {exc}",
+                                message=redact_status_error(f"health check itself failed: {exc}"),
                                 checked_at=datetime.now(UTC).isoformat(),
                             )
                         ],
@@ -2991,7 +2978,7 @@ def build_daemon_status(
                         check_name="check_health",
                         tier=HealthTier.FAST,
                         severity=HealthSeverity.ERROR,
-                        message=f"health check itself failed: {exc}",
+                        message=redact_status_error(f"health check itself failed: {exc}"),
                         checked_at=datetime.now(UTC).isoformat(),
                     )
                 ],
