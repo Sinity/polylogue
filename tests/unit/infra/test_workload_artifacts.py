@@ -2911,6 +2911,8 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         real_rename(source, destination)
 
     monkeypatch.setattr(artifacts, "_rename_sealed", force_cross_parent_copy)
+    artifact = None
+    tree = None
     if artifact_kind == "seeded":
         artifact = build_seeded_archive(_SMALL_SPECS, cache_root=tmp_path / "cache")
         root = artifact.root
@@ -2952,10 +2954,12 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         str(path.relative_to(root)) for path in root.rglob("*") if path.is_file() and path.name != "manifest.json"
     }
     if artifact_kind == "seeded":
+        assert artifact is not None
         with clone_seeded_archive(artifact, tmp_path / "clone") as clone:
             with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
                 assert archive.count_sessions() == 2
     else:
+        assert tree is not None
         cloned_tree = clone_immutable_tree(tree, tmp_path / "clone")
         with ArchiveStore.open_existing(cloned_tree.root, read_only=False) as archive:
             assert archive.count_sessions() == 0

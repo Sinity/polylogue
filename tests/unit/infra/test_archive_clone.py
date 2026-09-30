@@ -8,7 +8,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -109,7 +109,7 @@ def test_clone_validates_source_release_before_any_source_backup(
             super().backup(target, **kwargs)
 
     def tracked_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        return connect(*args, **(kwargs | {"factory": ObservedConnection}))
+        return cast(sqlite3.Connection, connect(*args, **(kwargs | {"factory": ObservedConnection})))
 
     monkeypatch.setattr(durable_change_train, "_verify_released_train_live_tier", verified_release)
     monkeypatch.setattr(sqlite3, "connect", tracked_connect)

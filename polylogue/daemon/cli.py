@@ -2222,24 +2222,13 @@ async def _run_daemon_services_under_active_writer_lease(
         # Declared durable migrations are ordinary lifecycle: apply them now,
         # under the same exclusive ownership, before anything serves.
         from polylogue.daemon.durable_migrations import apply_declared_durable_migrations
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import (
-            DURABLE_MIGRATION_TIERS,
-            archive_tier_spec,
-            initialize_active_archive_root,
-        )
+        from polylogue.operations.durable_change_train import initialize_fresh_archive_on_startup
 
-        pending_fresh_bootstrap = (
-            archive_root_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap.pending"
-        ).is_file()
-        absent_durable_tiers = all(
-            not (archive_root_path / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
+        initialize_fresh_archive_on_startup(
+            archive_root_path,
+            archive_owner=archive_owner,
+            write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
         )
-        if pending_fresh_bootstrap or absent_durable_tiers:
-            # The canonical bootstrap authenticates pending fresh intent and
-            # records all-six baseline v1 before running the declared trains.
-            # Established roots keep durable migration ahead of derived opens.
-            with write_lease("daemon.archive_bootstrap.startup", archive_root=archive_root_path):
-                initialize_active_archive_root(archive_root_path)
 
         applied_migrations = apply_declared_durable_migrations(
             archive_root_path,

@@ -610,15 +610,15 @@ def test_memory_probe_cancel_reclaims_file_and_leaves_destination_empty(
     directories: list[Path] = []
     real_temporary_directory = tempfile.TemporaryDirectory
 
-    def owned_directory(*args: object, **kwargs: object):
-        directory = real_temporary_directory(*args, dir=tmp_path, **kwargs)
+    def owned_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
+        directory = real_temporary_directory(prefix=prefix, dir=tmp_path)
         directories.append(Path(directory.name))
         return directory
 
     def cancelled(*args: object, **kwargs: object) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(bootstrap.tempfile, "TemporaryDirectory", owned_directory)
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", owned_directory)
     monkeypatch.setattr(migration_runner, "migrate_archive_tier", cancelled)
     with closing(sqlite3.connect(":memory:")) as conn:
         with pytest.raises(KeyboardInterrupt):
