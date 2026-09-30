@@ -352,7 +352,7 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserCaptureHealthEventAcceptedPayload | BrowserCaptureErrorPayload",
         (
             "Extension-reported capture-health telemetry (gap/error/spool-backlog/"
-            "provider-auth-broken), stored in the ops.db daemon-event ledger under kind "
+            "provider-auth-broken), stored atomically in ops.db capture_health_history and announced under kind "
             "'browser_capture_health' so silent capture incompleteness becomes queryable "
             "history rather than only-visible-in-the-popup-at-that-moment (polylogue-3v1)."
         ),
@@ -362,9 +362,9 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "/v1/capture-health",
         "capture_health_list",
         "bearer_if_configured",
-        "optional limit query parameter",
-        "{ok: true, events: [...]}",
-        "Recent capture-health events, most recent first -- read side of the report route above.",
+        "optional positive page_size and opaque cursor query parameters",
+        "{ok: true, events: [...], next_cursor: string | null} | BrowserCaptureErrorPayload",
+        "Newest-first snapshot pages. New reports stay outside a continued snapshot; an ops reset refuses its cursor with history_cursor_reset.",
     ),
 )
 

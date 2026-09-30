@@ -654,3 +654,32 @@ def test_transient_sqlite_failure_reading_the_manifest_is_retryable_not_a_rebuil
     assert error.lifecycle_action == "retry"
     assert "was not inspected" in str(error)
     assert isinstance(error.__cause__, sqlite3.OperationalError)
+
+
+def test_foreign_index_identity_refuses_before_runtime_index_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing performance index never licenses DDL against a foreign identity."""
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite import runtime_indexes
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import converge_same_version_tier
+
+    conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _ensure_schema(conn)
+        conn.execute("DROP INDEX idx_messages_message_type")
+        conn.execute("UPDATE schema_identity SET identity = 'foreign' WHERE tier = 'index'")
+        called = False
+
+        def forbidden_install(connection: sqlite3.Connection) -> None:
+            nonlocal called
+            called = True
+            raise AssertionError("installer ran before identity admission")
+
+        monkeypatch.setattr(runtime_indexes, "ensure_runtime_indexes_sync", forbidden_install)
+        with pytest.raises(SchemaSkew):
+            converge_same_version_tier(conn, ArchiveTier.INDEX)
+        assert not called
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'idx_messages_message_type'").fetchone() is None
+    finally:
+        conn.close()

@@ -1223,9 +1223,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_health_event")
             return
-        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, emit_daemon_event, get_latest_event_id
+        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, emit_daemon_event
 
-        emit_daemon_event(
+        event_id = emit_daemon_event(
             CAPTURE_HEALTH_EVENT_KIND,
             operation_id=request.extension_instance_id,
             payload={
@@ -1247,19 +1247,30 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
-            BrowserCaptureHealthEventAcceptedPayload(event_id=get_latest_event_id()).model_dump(mode="json"),
+            BrowserCaptureHealthEventAcceptedPayload(event_id=event_id).model_dump(mode="json"),
         )
 
     def _capture_health_list(self) -> None:
-        params = parse_qs(urlparse(self.path).query)
-        try:
-            limit = max(1, min(500, int(params.get("limit", ["100"])[0])))
-        except ValueError:
-            limit = 100
-        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, query_daemon_events
+        from polylogue.daemon.events import CaptureHistoryCursorError, capture_health_page
 
-        events = query_daemon_events(kind=CAPTURE_HEALTH_EVENT_KIND, limit=limit)
-        self._send_json(HTTPStatus.OK, {"ok": True, "events": events})
+        params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+        if set(params) - {"page_size", "cursor"} or any(len(values) != 1 for values in params.values()):
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_history_parameters")
+            return
+        try:
+            page_size = int(params.get("page_size", ["100"])[0])
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_history_page_size")
+            return
+        try:
+            page = capture_health_page(page_size=page_size, cursor=params.get("cursor", [None])[0])
+        except CaptureHistoryCursorError as exc:
+            reason = str(exc)
+            self._safe_error(
+                HTTPStatus.CONFLICT if reason == "history_cursor_reset" else HTTPStatus.BAD_REQUEST, reason
+            )
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True, **page})
 
 
 def make_server(

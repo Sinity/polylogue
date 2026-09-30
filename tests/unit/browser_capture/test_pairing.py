@@ -388,3 +388,49 @@ def test_capture_health_cli_reports_no_events_when_empty(cli_workspace: dict[str
 
     assert result.exit_code == 0
     assert "No capture-health events recorded." in result.output
+
+
+def test_capture_history_http_pages_and_report_id_after_another_emitter(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST uses the committed report id and GET continues its snapshot after append."""
+    from polylogue.daemon import events as events_mod
+
+    original_emit = events_mod.emit_daemon_event
+
+    def racing_emit(kind: str, **kwargs: object) -> int:
+        report_id = original_emit(kind, **kwargs)
+        original_emit("another-emitter")
+        return report_id
+
+    monkeypatch.setattr(events_mod, "emit_daemon_event", racing_emit)
+    token = load_or_mint_receiver_token()
+    headers = {"Origin": _EXTENSION_ORIGIN, "Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    with _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
+
+        def request(method: str, path: str, body: dict[str, str] | None = None) -> tuple[int, dict[str, object]]:
+            conn = HTTPConnection(host, port)
+            conn.request(method, path, body=json.dumps(body) if body is not None else None, headers=headers)
+            response = conn.getresponse()
+            result = json.loads(response.read())
+            conn.close()
+            return response.status, result
+
+        report_ids = []
+        for _ in range(3):
+            status, accepted = request("POST", "/v1/capture-health", {"event": "capture_gap", "provider": "chatgpt"})
+            assert status == HTTPStatus.ACCEPTED
+            report_ids.append(accepted["event_id"])
+        status, first = request("GET", "/v1/capture-health?page_size=1")
+        assert status == HTTPStatus.OK
+        assert first["events"][0]["id"] == report_ids[-1]
+        request("POST", "/v1/capture-health", {"event": "capture_gap", "provider": "chatgpt"})
+        from urllib.parse import quote
+
+        status, second = request("GET", "/v1/capture-health?page_size=2&cursor=" + quote(first["next_cursor"]))
+        assert status == HTTPStatus.OK
+        assert [row["id"] for row in second["events"]] == list(reversed(report_ids[:-1]))
+        assert second["next_cursor"] is None
+        for invalid in ("limit=1", "page_size=0", "cursor=broken", "page_size=1&page_size=2"):
+            status, refused = request("GET", "/v1/capture-health?" + invalid)
+            assert status == HTTPStatus.BAD_REQUEST

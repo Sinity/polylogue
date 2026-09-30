@@ -52,6 +52,9 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     "daemon_stage_events": OpsTableDisposition(
         "daemon", "one row per stage transition", False, "retain pending event map"
     ),
+    "capture_health_history": OpsTableDisposition(
+        "browser capture", "one row per health report", True, "retain independently"
+    ),
     "daemon_events": OpsTableDisposition("daemon", "one row per SSE/event-log event", True, "retain"),
     "judgment_scheduler_receipts": OpsTableDisposition(
         "judgment scheduler", "one typed receipt per operation", True, "retain independently"
@@ -282,6 +285,17 @@ ON daemon_stage_events(attempt_id, observed_at_ms DESC);
 
 CREATE INDEX IF NOT EXISTS idx_daemon_stage_events_stage_observed
 ON daemon_stage_events(stage, observed_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS capture_health_history (
+    id INTEGER PRIMARY KEY,
+    report_key TEXT NOT NULL UNIQUE,
+    ts_ms INTEGER NOT NULL,
+    operation_id TEXT,
+    idempotency_key TEXT,
+    payload_json TEXT NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_health_history_idempotency
+ON capture_health_history(idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS daemon_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,

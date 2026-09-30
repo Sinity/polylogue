@@ -325,7 +325,9 @@ def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> N
 
     Existing index and ops tiers verify their derived identity before any
     schema statement. A stale or absent stamp raises ``SchemaSkew``; only a
-    fresh empty tier is materialized and stamped by this runtime. User-tier
+    fresh empty tier is materialized and stamped by this runtime. An admitted
+    index tier gains only the canonical runtime performance indexes before
+    manifest validation, as on ordinary writable sync and async opens. User-tier
     annotation rows and the embeddings connection's extension remain owned
     by their respective same-version policies.
     """
@@ -333,11 +335,13 @@ def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> N
         from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
 
         # Admission precedes every DDL path, including runtime indexes: an
-        # existing derived tier is never patched or restamped into currency.
+        # foreign derived identity is never patched or restamped into currency.
         assert_tier_schema_supported(conn, f"{tier.value}.db", tier)
         if tier is ArchiveTier.INDEX:
+            from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
+            ensure_runtime_indexes_sync(conn)
             assert_schema_manifest(conn, tier)
     elif tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
@@ -596,8 +600,10 @@ def initialize_archive_database(
             initialize_source_tier_database_mode(conn)
         initialize_fresh_archive_tier(conn, tier, required_version)
         if tier is ArchiveTier.INDEX:
+            from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
+            ensure_runtime_indexes_sync(conn)
             assert_schema_manifest(conn, tier)
     finally:
         conn.close()

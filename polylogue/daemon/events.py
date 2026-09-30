@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import threading
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from polylogue.operations.judgment_scheduler import (
     ArchiveJudgmentSchedulerReceipt,
@@ -215,12 +216,12 @@ def prune_daemon_events(
     - a record superseded by a newer row of the same kind: the in-process
       readers of record kinds (status's last ingestion batch, the judgment
       scheduler's latest receipt) read the newest row of the kind, and the
-      judgment receipts also have their typed table. A history kind
-      (:data:`HISTORY_EVENT_KINDS`) is never superseded: its readers list
-      the rows themselves.
+      judgment receipts also have their typed table. Capture-health frames
+      announce reports in the independently retained history table and are
+      pruned after consumption, just like granular frames.
 
     So the ledger holds what live subscribers have not read, the newest row
-    of each record kind and the history kinds' rows; nothing else grows with
+    of each record kind; nothing else grows with
     time or event volume. The
     highest removed id is kept as the ledger's watermark: removal is not a
     prefix any more, and :func:`query_events_since` refuses a cursor below the
@@ -233,10 +234,8 @@ def prune_daemon_events(
     through = registry.prune_through(int(latest_row[0]))
     if through is None or through <= 0:
         return 0
-    granular = sorted(GRANULAR_EVENT_KINDS)
-    history = sorted(HISTORY_EVENT_KINDS)
+    granular = sorted(GRANULAR_EVENT_KINDS | {CAPTURE_HEALTH_EVENT_KIND})
     granular_placeholders = ",".join("?" for _ in granular)
-    history_placeholders = ",".join("?" for _ in history)
     removed = 0
     watermark = 0
     for row in conn.execute(
@@ -246,13 +245,12 @@ def prune_daemon_events(
               AND (
                 kind IN ({granular_placeholders})
                 OR (
-                  kind NOT IN ({history_placeholders})
-                  AND id < (SELECT MAX(newer.id) FROM daemon_events AS newer WHERE newer.kind = daemon_events.kind)
+                  id < (SELECT MAX(newer.id) FROM daemon_events AS newer WHERE newer.kind = daemon_events.kind)
                 )
               )
             RETURNING id
             """,
-        (through, *granular, *history),
+        (through, *granular),
     ):
         removed += 1
         watermark = max(watermark, int(row[0]))
@@ -296,19 +294,48 @@ def emit_daemon_events(
     conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
     try:
         ts_ms = current_epoch_ms() if observed_at_ms is None else observed_at_ms
-        conn.executemany(
-            "INSERT INTO daemon_events (ts_ms, kind, operation_id, idempotency_key, payload_json) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(kind, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
-            [
-                (ts_ms, record.kind, record.operation_id, record.idempotency_key, json.dumps(record.payload))
-                for record in records
-            ],
-        )
+        for record in records:
+            _insert_daemon_event(conn, record.kind, ts_ms, record.operation_id, record.idempotency_key, record.payload)
         prune_daemon_events(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _insert_daemon_event(
+    conn: sqlite3.Connection,
+    kind: str,
+    ts_ms: int,
+    operation_id: str | None,
+    idempotency_key: str | None,
+    payload: dict[str, object],
+) -> int:
+    # Health history outlives consumed resume frames, including replay deduplication.
+    if kind == CAPTURE_HEALTH_EVENT_KIND and idempotency_key is not None:
+        prior = conn.execute(
+            "SELECT id FROM capture_health_history WHERE idempotency_key = ?", (idempotency_key,)
+        ).fetchone()
+        if prior is not None:
+            return int(prior[0])
+    payload_json = json.dumps(payload)
+    inserted = conn.execute(
+        "INSERT INTO daemon_events (ts_ms, kind, operation_id, idempotency_key, payload_json) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(kind, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id",
+        (ts_ms, kind, operation_id, idempotency_key, payload_json),
+    ).fetchone()
+    if inserted is None:
+        prior = conn.execute(
+            "SELECT id FROM daemon_events WHERE kind = ? AND idempotency_key = ?", (kind, idempotency_key)
+        ).fetchone()
+        assert prior is not None
+        return int(prior[0])
+    event_id = int(inserted[0])
+    if kind == CAPTURE_HEALTH_EVENT_KIND:
+        conn.execute(
+            "INSERT INTO capture_health_history (id, report_key, ts_ms, operation_id, idempotency_key, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (event_id, uuid.uuid4().hex, ts_ms, operation_id, idempotency_key, payload_json),
+        )
+    return event_id
 
 
 def emit_daemon_event(
@@ -319,8 +346,8 @@ def emit_daemon_event(
     payload: dict[str, object] | None = None,
     archive_root_path: Path | None = None,
     observed_at_ms: int | None = None,
-) -> None:
-    """Emit a daemon event to the event ledger."""
+) -> int:
+    """Atomically emit a resume event and its history report; return its actual id."""
     conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
     try:
         if kind == "judgment-automation":
@@ -351,20 +378,17 @@ def emit_daemon_event(
                         receipt_persistence_recovered=receipt_payload.get("receipt_persistence_recovered", False),  # type: ignore[arg-type]
                     ),
                 )
-        conn.execute(
-            "INSERT INTO daemon_events (ts_ms, kind, operation_id, idempotency_key, payload_json) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(kind, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
-            (
-                current_epoch_ms() if observed_at_ms is None else observed_at_ms,
-                kind,
-                operation_id,
-                idempotency_key,
-                json.dumps(payload or {}),
-            ),
+        event_id = _insert_daemon_event(
+            conn,
+            kind,
+            current_epoch_ms() if observed_at_ms is None else observed_at_ms,
+            operation_id,
+            idempotency_key,
+            payload or {},
         )
         prune_daemon_events(conn)
         conn.commit()
+        return event_id
     finally:
         conn.close()
 
@@ -420,40 +444,124 @@ def get_latest_daemon_event(
         conn.close()
 
 
-def query_daemon_events(
+def iter_daemon_events(
     *,
     kind: str | None = None,
     limit: int = 100,
     offset: int = 0,
-) -> Sequence[dict[str, object]]:
-    """Query recent daemon events."""
+) -> Iterator[dict[str, object]]:
+    """Stream recent resume events; close the iterator if stopping before exhaustion.
+
+    Negative SQL limits preserve full-history traversal without materialization.
+    Capture reports use their independent history page owner instead.
+    """
     conn = _open_events_reader()
     if conn is None:
-        return []
+        return
     try:
         if kind:
             rows = conn.execute(
                 "SELECT id, ts_ms, kind, operation_id, payload_json FROM daemon_events WHERE kind = ? ORDER BY id DESC LIMIT ? OFFSET ?",
                 (kind, limit, offset),
-            ).fetchall()
+            )
         else:
             rows = conn.execute(
                 "SELECT id, ts_ms, kind, operation_id, payload_json FROM daemon_events ORDER BY id DESC LIMIT ? OFFSET ?",
                 (limit, offset),
-            ).fetchall()
-        result = []
-        for row in rows:
-            result.append(
-                {
-                    "id": row[0],
-                    "ts": _iso_from_ms(row[1]),
-                    "kind": row[2],
-                    "operation_id": row[3],
-                    "payload": json.loads(row[4]),
-                }
             )
-        return result
+        for row in rows:
+            yield {
+                "id": row[0],
+                "ts": _iso_from_ms(row[1]),
+                "kind": row[2],
+                "operation_id": row[3],
+                "payload": json.loads(row[4]),
+            }
     finally:
+        conn.close()
+
+
+class CaptureHealthPage(TypedDict):
+    events: list[dict[str, object]]
+    next_cursor: str | None
+
+
+class CaptureHistoryCursorError(ValueError):
+    """A malformed continuation or a snapshot lost with the disposable ops tier."""
+
+
+def capture_health_page(*, page_size: int = 100, cursor: str | None = None) -> CaptureHealthPage:
+    """Read one newest-first keyset page from an immutable history snapshot.
+
+    The anchor's random report key distinguishes a replaced ops tier even when
+    SQLite has reused every numeric id. New reports never enter an old snapshot.
+    """
+    if page_size <= 0:
+        raise CaptureHistoryCursorError("invalid_history_page_size")
+    anchor: int | None = None
+    before: int | None = None
+    report_key: str | None = None
+    if cursor is not None:
+        try:
+            decoded = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+            anchor, report_key, before = decoded
+            if (
+                type(anchor) is not int
+                or type(before) is not int
+                or not isinstance(report_key, str)
+                or not (0 < before <= anchor)
+            ):
+                raise ValueError
+        except (ValueError, TypeError, UnicodeError):
+            raise CaptureHistoryCursorError("invalid_history_cursor") from None
+    path = _events_db_path()
+    try:
+        path.stat()
+    except FileNotFoundError:
+        if cursor is not None:
+            raise CaptureHistoryCursorError("history_cursor_reset") from None
+        return {"events": [], "next_cursor": None}
+    conn = open_readonly_connection(path, tier=ArchiveTier.OPS)
+    try:
+        conn.execute("BEGIN")
+        if anchor is None:
+            head = conn.execute("SELECT id, report_key FROM capture_health_history ORDER BY id DESC LIMIT 1").fetchone()
+            if head is None:
+                return {"events": [], "next_cursor": None}
+            anchor, report_key = int(head[0]), str(head[1])
+            before = anchor + 1
+        elif (
+            conn.execute(
+                "SELECT 1 FROM capture_health_history WHERE id = ? AND report_key = ?", (anchor, report_key)
+            ).fetchone()
+            is None
+        ):
+            raise CaptureHistoryCursorError("history_cursor_reset")
+        rows = conn.execute(
+            "SELECT id, ts_ms, operation_id, payload_json FROM capture_health_history WHERE id <= ? AND id < ? ORDER BY id DESC LIMIT ?",
+            (anchor, before, page_size),
+        )
+        events = [
+            {
+                "id": row[0],
+                "ts": _iso_from_ms(row[1]),
+                "kind": CAPTURE_HEALTH_EVENT_KIND,
+                "operation_id": row[2],
+                "payload": json.loads(row[3]),
+            }
+            for row in rows
+        ]
+        next_cursor = None
+        if events:
+            last_id = events[-1]["id"]
+            if (
+                conn.execute("SELECT 1 FROM capture_health_history WHERE id < ? LIMIT 1", (last_id,)).fetchone()
+                is not None
+            ):
+                next_cursor = base64.urlsafe_b64encode(json.dumps([anchor, report_key, last_id]).encode()).decode()
+        return {"events": events, "next_cursor": next_cursor}
+    finally:
+        conn.rollback()
         conn.close()
 
 
@@ -691,15 +799,13 @@ def get_latest_event_id() -> int:
 
 def get_last_ingestion_batch() -> dict[str, object] | None:
     """Return the most recent ingestion_batch event, if any."""
-    events = query_daemon_events(kind="ingestion_batch", limit=1)
-    if events:
-        return events[0]
-    return None
+    with closing(iter_daemon_events(kind="ingestion_batch", limit=1)) as events:
+        return next(events, None)
 
 
-def get_recent_operations(limit: int = 10) -> Sequence[dict[str, object]]:
+def get_recent_operations(limit: int = 10) -> Iterator[dict[str, object]]:
     """Return recent daemon operations."""
-    return query_daemon_events(kind="operation", limit=limit)
+    return iter_daemon_events(kind="operation", limit=limit)
 
 
 # --------------------------------------------------------------------------
@@ -909,12 +1015,6 @@ GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(EVENT_SPECS)
 #: Extension-reported browser capture health (polylogue-3v1).
 CAPTURE_HEALTH_EVENT_KIND = "browser_capture_health"
 
-#: Record kinds whose readers list history rather than read the newest row:
-#: ``polylogued browser capture-health`` and ``GET /v1/capture-health`` show
-#: recent capture-health events, so a newer row does not supersede an older
-#: one (polylogue-ntvf6).
-HISTORY_EVENT_KINDS: frozenset[str] = frozenset({CAPTURE_HEALTH_EVENT_KIND})
-
 
 def event_spec(kind: str) -> EventSpec:
     """Return the declared contract for ``kind``.
@@ -1095,6 +1195,8 @@ __all__ = [
     "get_latest_event_id",
     "get_recent_operations",
     "current_epoch_ms",
-    "query_daemon_events",
+    "iter_daemon_events",
+    "capture_health_page",
+    "CaptureHistoryCursorError",
     "query_events_since",
 ]
