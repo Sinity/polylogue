@@ -996,6 +996,34 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["parse_failures"] == 0
         assert info["validation_failures"] == 0
         assert info["unexplained_failures"] == 0
+        assert info["missing_source_coordinates"] == 0
+
+    def test_raw_failure_info_reports_missing_source_coordinates(self, tmp_path: Path) -> None:
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        kind = RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+        with sqlite3.connect(source_db) as conn:
+            upsert_raw_artifact(
+                conn,
+                "append-without-coordinates",
+                ArchiveSourceArtifact(
+                    artifact_id="missing-coordinates",
+                    origin="codex-session",
+                    source_path="/data/append.jsonl",
+                    source_index=-1,
+                    artifact_kind=kind.value,
+                    support_status=kind.support_status,
+                    classification_reason='{"outcome_code":"terminal_missing_source_coordinates"}',
+                    parse_as_session=False,
+                    schema_eligible=False,
+                ),
+            )
+
+        info = raw_failure_info_for_root(tmp_path)
+
+        assert info["raw_failure_lifecycle_available"] is True
+        assert info["raw_failure_lifecycle_state"] == "degraded"
+        assert info["missing_source_coordinates"] == 1
 
     def test_raw_failure_info_streams_lifecycle_counts_beyond_sample_cap(self, tmp_path: Path) -> None:
         """Lifecycle counts cover every failed raw without bulk-fetching rows."""
