@@ -794,7 +794,7 @@ def record_embedding_failure(
     lifecycle: EmbeddingFailureState = "retryable" if retryable else "terminal"
     applied = False
     stale_attempt = False
-    legacy_projection = False
+    unscoped_projection = False
     with conn:
         if attempt is not None:
             updated = conn.execute(
@@ -811,8 +811,8 @@ def record_embedding_failure(
             applied = updated.rowcount == 1
             stale_attempt = not applied
         else:
-            legacy_projection = not _session_has_embedding_derivation_state(conn, session_id)
-            if not legacy_projection:
+            unscoped_projection = not _session_has_embedding_derivation_state(conn, session_id)
+            if not unscoped_projection:
                 # An unscoped receipt cannot be authoritative once this
                 # session has an exact key/generation. Preserve it only as
                 # superseded evidence; never project it onto current state.
@@ -842,10 +842,9 @@ def record_embedding_failure(
             )
         elif stale_attempt:
             lifecycle = "superseded"
-        elif legacy_projection:
-            # Databases/callers predating the derivation ledger keep their
-            # established failure lifecycle. This branch cannot clobber a
-            # newer generation because no generation exists for the session.
+        elif unscoped_projection:
+            # An unscoped receipt preserves failure lifecycle while no keyed
+            # generation exists for this session.
             conn.execute(
                 """
                 INSERT INTO embedding_status (
@@ -920,7 +919,7 @@ def resolve_embedding_failure(
             "requeue": "resolved",
         }[action],
     )
-    identity_select = _embedding_failure_identity_select(conn)
+    identity_select = _EMBEDDING_FAILURE_IDENTITY_SELECT
     with conn:
         row = conn.execute(
             f"""
@@ -978,9 +977,8 @@ def resolve_embedding_failure(
                     (session_id,),
                 )
         elif generation == 0:
-            # A v2 receipt may outlive a rebuild/first keyed attempt. It may
-            # update the audit ledger, but it can project status only while no
-            # exact derivation generation exists for the session.
+            # An unscoped receipt can project status only while no exact
+            # derivation generation exists for the session.
             has_derivation_state = _session_has_embedding_derivation_state(conn, session_id)
             if not has_derivation_state and action == "requeue":
                 conn.execute(
@@ -998,7 +996,7 @@ def resolve_embedding_failure(
 def list_active_embedding_failures(conn: sqlite3.Connection, *, limit: int = 25) -> tuple[ArchiveEmbeddingFailure, ...]:
     """Return bounded current failure identities for status and agent surfaces."""
 
-    identity_select = _embedding_failure_identity_select(conn)
+    identity_select = _EMBEDDING_FAILURE_IDENTITY_SELECT
     rows = conn.execute(
         f"""
         SELECT failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message,
@@ -1015,7 +1013,7 @@ def list_active_embedding_failures(conn: sqlite3.Connection, *, limit: int = 25)
 
 
 def read_embedding_failure(conn: sqlite3.Connection, failure_id: str) -> ArchiveEmbeddingFailure:
-    identity_select = _embedding_failure_identity_select(conn)
+    identity_select = _EMBEDDING_FAILURE_IDENTITY_SELECT
     row = conn.execute(
         f"""
         SELECT failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message,
@@ -1031,13 +1029,7 @@ def read_embedding_failure(conn: sqlite3.Connection, failure_id: str) -> Archive
 
 
 def _session_has_embedding_derivation_state(conn: sqlite3.Connection, session_id: str) -> bool:
-    """Return whether a keyed generation exists, tolerating pre-v3 fixtures."""
-
-    table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embedding_derivation_state'"
-    ).fetchone()
-    if table is None:
-        return False
+    """Return whether the canonical derivation table holds a keyed generation."""
     return (
         conn.execute(
             "SELECT 1 FROM embedding_derivation_state WHERE session_id = ?",
@@ -1047,18 +1039,8 @@ def _session_has_embedding_derivation_state(conn: sqlite3.Connection, session_id
     )
 
 
-def _embedding_failure_identity_select(conn: sqlite3.Connection) -> str:
-    """Read v3 failure identity columns while tolerating rebuildable v2 fixtures."""
-
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_failures)").fetchall()}
-    return ", ".join(
-        (
-            "generation" if "generation" in columns else "0 AS generation",
-            "derivation_key" if "derivation_key" in columns else "NULL AS derivation_key",
-            "source_hash" if "source_hash" in columns else "NULL AS source_hash",
-            "recipe_hash" if "recipe_hash" in columns else "NULL AS recipe_hash",
-        )
-    )
+#: The failure identity columns of the canonical ``embedding_failures`` table.
+_EMBEDDING_FAILURE_IDENTITY_SELECT = "generation, derivation_key, source_hash, recipe_hash"
 
 
 def _failure_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveEmbeddingFailure:

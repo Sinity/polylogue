@@ -234,6 +234,15 @@
           "unanalyzed_session_count": 0,
           "evidence_refs": []
         }
+      },
+      "outcome": {
+        "state": "degraded",
+        "reason": "longest_tool_gap_unavailable",
+        "detail": {
+          "gaps": [
+            "longest_tool_gap_unavailable"
+          ]
+        }
       }
     }
   }
@@ -636,6 +645,7 @@
   | top_expensive_session | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
   | subagent_branch_count | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
   
+  outcome: DEGRADED (longest_tool_gap_unavailable)
   
   '''
 # ---
@@ -681,6 +691,7 @@
       estimated_cost: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
       top_expensive_session: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
       subagent_branch_count: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
+  outcome: DEGRADED (longest_tool_gap_unavailable)
   
   '''
 # ---

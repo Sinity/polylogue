@@ -521,7 +521,7 @@
     "polylogue/storage/sqlite/queries/mappers.py",
     "polylogue/storage/sqlite/queries/mappers_archive.py",
     "polylogue/storage/sqlite/queries/mappers_insight_aggregates.py",
-    "polylogue/storage/sqlite/queries/mappers_insight_fallback.py",
+    "polylogue/storage/sqlite/queries/mappers_insight_payloads.py",
     "polylogue/storage/sqlite/queries/mappers_insight_profiles.py",
     "polylogue/storage/sqlite/queries/mappers_insight_timelines.py",
     "polylogue/storage/sqlite/queries/mappers_support.py",

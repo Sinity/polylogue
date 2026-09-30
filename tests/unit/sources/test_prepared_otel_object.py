@@ -15,6 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import spill_otlp_spans
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL
 from polylogue.sources.parsers import otel_genai
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import _index_otlp_spans, _otlp_envelope, prepare_jsonl_blob
@@ -112,7 +113,7 @@ def _document(span_count: int = 120) -> dict[str, Any]:
         "resourceSpans": [
             {
                 "scopeSpans": [
-                    {"spans": spans, "schemaUrl": otel_genai.SEMCONV_SCHEMA_URL, "scope": {"name": "synthetic"}},
+                    {"spans": spans, "schemaUrl": SEMCONV_SCHEMA_URL, "scope": {"name": "synthetic"}},
                     {"schemaUrl": "https://example.invalid/genai/99", "spans": unsupported_spans},
                     "not a scope",
                     {"spans": "not an array"},
@@ -257,7 +258,7 @@ def test_otel_object_parser_keeps_order_conflicts_and_inherited_conversations() 
     ]
     assert [(payload["span_id"], payload["schema_url"]) for payload in conflicts] == [
         ("span-0", "https://example.invalid/genai/99"),
-        ("span-3", otel_genai.SEMCONV_SCHEMA_URL),
+        ("span-3", SEMCONV_SCHEMA_URL),
     ]
     assert all(session.models_used == sorted(session.models_used) for session in sessions)
 
@@ -352,7 +353,7 @@ def _topology_document() -> dict[str, Any]:
         "resourceSpans": [
             {
                 "resource": {"attributes": [_attribute("service.name", "neutral-agent")]},
-                "scopeSpans": [{"schemaUrl": otel_genai.SEMCONV_SCHEMA_URL, "spans": agent_spans}],
+                "scopeSpans": [{"schemaUrl": SEMCONV_SCHEMA_URL, "spans": agent_spans}],
             },
             {
                 "resource": {

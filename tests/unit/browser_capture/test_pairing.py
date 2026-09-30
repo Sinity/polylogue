@@ -20,7 +20,7 @@ from http import HTTPStatus
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from click.testing import CliRunner
@@ -388,3 +388,127 @@ def test_capture_health_cli_reports_no_events_when_empty(cli_workspace: dict[str
 
     assert result.exit_code == 0
     assert "No capture-health events recorded." in result.output
+
+
+def test_capture_history_http_pages_and_report_id_after_another_emitter(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST uses the committed report id and GET continues its snapshot after append."""
+    from polylogue.daemon import events as events_mod
+
+    original_emit = events_mod.emit_daemon_event
+
+    def racing_emit(kind: str, **kwargs: Any) -> int:
+        report_id = original_emit(kind, **kwargs)
+        original_emit("another-emitter")
+        return report_id
+
+    monkeypatch.setattr(events_mod, "emit_daemon_event", racing_emit)
+    registry = events_mod.EventSubscriberRegistry()
+    monkeypatch.setattr(events_mod, "EVENT_SUBSCRIBERS", registry)
+    token = load_or_mint_receiver_token()
+    headers = {"Origin": _EXTENSION_ORIGIN, "Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    with registry.owning(), _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
+
+        def request(method: str, path: str, body: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+            conn = HTTPConnection(host, port)
+            conn.request(method, path, body=json.dumps(body) if body is not None else None, headers=headers)
+            response = conn.getresponse()
+            result = json.loads(response.read())
+            conn.close()
+            return response.status, result
+
+        report_ids = []
+        for _ in range(3):
+            status, accepted = request("POST", "/v1/capture-health", {"event": "capture_gap", "provider": "chatgpt"})
+            assert status == HTTPStatus.ACCEPTED
+            report_ids.append(accepted["event_id"])
+        status, first = request("GET", "/v1/capture-health?page_size=1")
+        assert status == HTTPStatus.OK
+        assert first["events"][0]["id"] == report_ids[-1]
+        request("POST", "/v1/capture-health", {"event": "capture_gap", "provider": "chatgpt"})
+        from urllib.parse import quote
+
+        status, second = request("GET", "/v1/capture-health?page_size=2&cursor=" + quote(first["next_cursor"]))
+        assert status == HTTPStatus.OK
+        assert [row["id"] for row in second["events"]] == list(reversed(report_ids[:-1]))
+        assert second["next_cursor"] is None
+        for invalid in ("limit=1", "page_size=0", "cursor=broken", "page_size=1&page_size=2"):
+            status, refused = request("GET", "/v1/capture-health?" + invalid)
+            assert status == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("permanent", [False, True])
+def test_capture_history_http_classifies_storage_refusal_and_fault(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, method: str, permanent: bool
+) -> None:
+    import sqlite3
+
+    from polylogue.daemon import events as events_mod
+
+    events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    with sqlite3.connect(workspace_env["archive_root"] / "ops.db") as conn:
+        conn.execute("UPDATE schema_identity SET identity = 'foreign' WHERE tier = 'ops'")
+    token = load_or_mint_receiver_token()
+    headers = {"Origin": _EXTENSION_ORIGIN, "Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    with _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
+
+        def request() -> tuple[int, dict[str, Any]]:
+            conn = HTTPConnection(host, port)
+            conn.request(
+                method,
+                "/v1/capture-health",
+                body=json.dumps({"event": "capture_gap"}) if method == "POST" else None,
+                headers=headers,
+            )
+            response = conn.getresponse()
+            document = json.loads(response.read())
+            conn.close()
+            return response.status, document
+
+        status, refused = request()
+        assert status == HTTPStatus.CONFLICT
+        assert refused["error"] == "schema_skew"
+
+        def fail_storage(*args: object, **kwargs: object) -> None:
+            raise (
+                sqlite3.IntegrityError("synthetic constraint")
+                if permanent
+                else sqlite3.OperationalError("synthetic read lock")
+            )
+
+        monkeypatch.setattr(
+            events_mod, "open_readonly_connection" if method == "GET" else "_ensure_events_db", fail_storage
+        )
+        status, failed = request()
+        assert status == (HTTPStatus.INTERNAL_SERVER_ERROR if permanent else HTTPStatus.SERVICE_UNAVAILABLE)
+        assert failed["error"] == ("capture_history_storage_failed" if permanent else "capture_history_unavailable")
+
+
+def test_capture_history_http_oversized_page_keeps_continuation(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    from polylogue.daemon import events as events_mod
+
+    ids = [events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND) for _ in range(205)]
+    token = load_or_mint_receiver_token()
+    with _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
+        from urllib.parse import quote
+
+        seen: list[int] = []
+        cursor = None
+        while True:
+            conn = HTTPConnection(host, port)
+            path = "/v1/capture-health?page_size=9223372036854775807"
+            if cursor is not None:
+                path += "&cursor=" + quote(cursor)
+            conn.request("GET", path, headers={"Origin": _EXTENSION_ORIGIN, "Authorization": f"Bearer {token}"})
+            response = conn.getresponse()
+            assert response.status == HTTPStatus.OK
+            page = json.loads(response.read())
+            conn.close()
+            assert 0 < len(page["events"]) <= 100
+            seen.extend(row["id"] for row in page["events"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+    assert seen == list(reversed(ids))

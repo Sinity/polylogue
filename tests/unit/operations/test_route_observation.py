@@ -774,3 +774,36 @@ def test_a_window_reaching_past_retention_is_degraded(tmp_path: Path) -> None:
     assert inside.outcome.state == "empty"
     assert beyond.window_exceeds_retention is True
     assert beyond.outcome.to_dict()["reason"] == WINDOW_EXCEEDS_RETENTION
+
+
+def test_unobserved_client_route_has_a_typed_reason_and_never_opens_ops(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restoring client observation persistence reaches the refused opener."""
+    from polylogue.operations.route_observation import (
+        flush_route_observation_drops,
+        record_unobserved_client_route,
+        reset_route_observation_drops,
+        route_observation_drops,
+    )
+
+    def refuse_open(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a client does not own ops.db")
+
+    monkeypatch.setattr("polylogue.operations.route_observation.open_observation_connection", refuse_open)
+    emitted: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr("polylogue.logging._threshold", 20)
+    monkeypatch.setattr("polylogue.logging._emit_raw", lambda _level, event, fields: emitted.append((event, fields)))
+    reset_route_observation_drops()
+    try:
+        reason = record_unobserved_client_route(surface="cli", route="cli.status")
+        assert reason.value == "client_not_owner"
+        assert emitted == [
+            (
+                "route_observation.unobserved",
+                {"outcome": "skipped", "reason": "client_not_owner", "route": "cli.status"},
+            )
+        ]
+        assert route_observation_drops().by_reason == {"client_not_owner": 1}
+        assert route_observation_drops().accounting_complete is False
+        assert flush_route_observation_drops() == 0
+    finally:
+        reset_route_observation_drops()

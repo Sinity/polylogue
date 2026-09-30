@@ -240,12 +240,12 @@ class TestEventLedgerReadIsolation:
         monkeypatch.setattr(events_mod, "initialize_archive_database", unexpected)
         monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
-        assert events_mod.query_daemon_events() == []
+        assert list(events_mod.iter_daemon_events()) == []
         assert events_mod.query_events_since(0).events == ()
         assert events_mod.get_latest_event_id() == 0
         assert events_mod.get_daemon_event_counts() == {}
         assert events_mod.get_last_ingestion_batch() is None
-        assert events_mod.get_recent_operations() == []
+        assert list(events_mod.get_recent_operations()) == []
         assert not events_path.parent.exists()
 
     def test_read_helpers_leave_schema_less_ops_file_unchanged(
@@ -268,7 +268,7 @@ class TestEventLedgerReadIsolation:
         monkeypatch.setattr(events_mod, "initialize_archive_database", unexpected)
         monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
-        assert events_mod.query_daemon_events() == []
+        assert list(events_mod.iter_daemon_events()) == []
         assert events_mod.query_events_since(0).events == ()
         assert events_mod.get_latest_event_id() == 0
         assert events_mod.get_daemon_event_counts() == {}
@@ -299,7 +299,7 @@ class TestEventLedgerReadIsolation:
             monkeypatch.setattr(events_mod, "initialize_archive_database", unexpected)
             monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
-            assert [event["kind"] for event in events_mod.query_daemon_events()] == ["committed"]
+            assert [event["kind"] for event in events_mod.iter_daemon_events()] == ["committed"]
             assert [event["kind"] for event in events_mod.query_events_since(0).events] == ["committed"]
             assert events_mod.get_latest_event_id() == 1
             assert events_mod.get_daemon_event_counts() == {"committed": 1}
@@ -542,7 +542,7 @@ class TestGranularEventKinds:
     """#1204 — granular SSE topics for selective subscription and live tail."""
 
     def test_emit_session_appended_payload_shape(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_session_appended, query_daemon_events
+        from polylogue.daemon.events import emit_session_appended, iter_daemon_events
 
         emit_session_appended(
             source_name="claude-code-session",
@@ -551,7 +551,7 @@ class TestGranularEventKinds:
             source_paths=["/tmp/a.jsonl", "/tmp/b.jsonl"],
             session_id="claude-code-session:conv-abc",
         )
-        events = query_daemon_events(limit=10)
+        events = list(iter_daemon_events(limit=10))
         assert events[0]["kind"] == "session.appended"
         payload = cast("dict[str, object]", events[0]["payload"])
         assert payload["source_name"] == "claude-code-session"
@@ -563,14 +563,14 @@ class TestGranularEventKinds:
         assert payload["session_id"] == "claude-code-session:conv-abc"
 
     def test_emit_session_updated_payload_shape(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_session_updated, query_daemon_events
+        from polylogue.daemon.events import emit_session_updated, iter_daemon_events
 
         emit_session_updated(
             session_id="codex:conv-xyz",
             source_name="codex",
             appended_count=2,
         )
-        events = query_daemon_events(limit=10)
+        events = list(iter_daemon_events(limit=10))
         assert events[0]["kind"] == "session.updated"
         payload = cast("dict[str, object]", events[0]["payload"])
         assert payload["session_id"] == "codex:conv-xyz"
@@ -578,7 +578,7 @@ class TestGranularEventKinds:
         assert payload["appended_count"] == 2
 
     def test_emit_message_appended_payload_shape(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_message_appended, query_daemon_events
+        from polylogue.daemon.events import emit_message_appended, iter_daemon_events
 
         emit_message_appended(
             session_id="conv-abc",
@@ -586,7 +586,7 @@ class TestGranularEventKinds:
             appended_count=4,
             source_path="/tmp/session.json",
         )
-        events = query_daemon_events(limit=10)
+        events = list(iter_daemon_events(limit=10))
         assert events[0]["kind"] == "message.appended"
         payload = cast("dict[str, object]", events[0]["payload"])
         assert payload["session_id"] == "conv-abc"
@@ -628,7 +628,7 @@ class TestLiveBatchEventFanOut:
 
     def test_batch_with_new_and_updated_sessions_emits_scoped_events(self, live_batch_archive: Path) -> None:
         from polylogue.daemon.cli import _emit_live_batch_event
-        from polylogue.daemon.events import query_daemon_events
+        from polylogue.daemon.events import iter_daemon_events
 
         _emit_live_batch_event(
             "ingestion_batch",
@@ -640,7 +640,7 @@ class TestLiveBatchEventFanOut:
             },
             archive_root_path=live_batch_archive,
         )
-        events = query_daemon_events(limit=10)
+        events = list(iter_daemon_events(limit=10))
         by_kind: dict[str, list[dict[str, object]]] = {}
         for event in events:
             by_kind.setdefault(cast("str", event["kind"]), []).append(cast("dict[str, object]", event["payload"]))
@@ -664,7 +664,7 @@ class TestLiveBatchEventFanOut:
     def test_batch_touching_only_session_b_never_names_session_a(self, live_batch_archive: Path) -> None:
         """The exact regression the bead describes: session A must be unaffected."""
         from polylogue.daemon.cli import _emit_live_batch_event
-        from polylogue.daemon.events import query_daemon_events
+        from polylogue.daemon.events import iter_daemon_events
 
         _emit_live_batch_event(
             "ingestion_batch",
@@ -676,7 +676,7 @@ class TestLiveBatchEventFanOut:
             },
             archive_root_path=live_batch_archive,
         )
-        events = query_daemon_events(limit=10)
+        events = list(iter_daemon_events(limit=10))
         seen_session_ids = {
             cast("dict[str, object]", event["payload"])["session_id"]
             for event in events
@@ -688,14 +688,14 @@ class TestLiveBatchEventFanOut:
     def test_batch_without_resolved_identity_falls_back_to_unscoped_aggregate(self, live_batch_archive: Path) -> None:
         """No source path yet threads identity through -- preserve the old signal."""
         from polylogue.daemon.cli import _emit_live_batch_event
-        from polylogue.daemon.events import query_daemon_events
+        from polylogue.daemon.events import iter_daemon_events
 
         _emit_live_batch_event(
             "ingestion_batch",
             {"succeeded_file_count": 1, "failed_file_count": 0},
             archive_root_path=live_batch_archive,
         )
-        events = query_daemon_events(limit=10)
+        events = list(iter_daemon_events(limit=10))
         kinds = {cast("str", event["kind"]) for event in events}
         assert kinds == {"ingestion_batch", "session.appended", "message.appended"}
         for event in events:
@@ -731,7 +731,7 @@ class TestLiveBatchEventFanOut:
             archive_root_path=live_batch_archive,
         )
         assert len(opened) == 1
-        kinds = [cast("str", event["kind"]) for event in reversed(events_module.query_daemon_events(limit=10))]
+        kinds = [cast("str", event["kind"]) for event in reversed(list(events_module.iter_daemon_events(limit=10)))]
         assert kinds == [
             "ingestion_batch",
             "session.appended",
@@ -742,14 +742,14 @@ class TestLiveBatchEventFanOut:
 
     def test_zero_succeeded_batch_emits_no_granular_events(self, live_batch_archive: Path) -> None:
         from polylogue.daemon.cli import _emit_live_batch_event
-        from polylogue.daemon.events import query_daemon_events
+        from polylogue.daemon.events import iter_daemon_events
 
         _emit_live_batch_event(
             "ingestion_batch",
             {"succeeded_file_count": 0, "failed_file_count": 3},
             archive_root_path=live_batch_archive,
         )
-        events = query_daemon_events(limit=10)
+        events = list(iter_daemon_events(limit=10))
         assert {cast("str", event["kind"]) for event in events} == {"ingestion_batch"}
 
 

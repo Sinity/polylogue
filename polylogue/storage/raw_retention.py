@@ -12,7 +12,6 @@ from typing import Literal
 from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
-from polylogue.core.sqlite_introspection import column_exists as _column_exists
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.logging import get_logger
@@ -2475,10 +2474,7 @@ def cleanup_superseded_raw_snapshots(
         )
 
     placeholders = ", ".join("?" for _ in raw_ids)
-    if _column_exists(conn, "blob_refs", "ref_id"):
-        conn.execute(f"DELETE FROM blob_refs WHERE ref_id IN ({placeholders})", raw_ids)
-    elif _column_exists(conn, "blob_refs", "raw_id"):
-        conn.execute(f"DELETE FROM blob_refs WHERE raw_id IN ({placeholders})", raw_ids)
+    conn.execute(f"DELETE FROM blob_refs WHERE ref_id IN ({placeholders})", raw_ids)
     conn.execute(f"DELETE FROM raw_sessions WHERE raw_id IN ({placeholders})", raw_ids)
     conn.commit()
 

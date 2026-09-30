@@ -37,16 +37,15 @@ from polylogue.core.user_state_targets import (
     validate_mark_type,
 )
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
+from tests.infra.daemon_operations import daemon_serving_archive
+from tests.infra.session_profiles import write_session_profile
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
 def _seed_session_profile(db_path: Path, session_id: str) -> None:
     """Materialize a minimal session_profiles row for the native session."""
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO session_profiles (session_id, search_text) VALUES (?, ?)",
-            (session_id, ""),
-        )
+        write_session_profile(conn, session_id)
         conn.commit()
 
 
@@ -129,19 +128,20 @@ async def test_marks_admit_native_insight_target_kinds_without_changing_content_
             (session_id,),
         ).fetchone()[0]
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "star", target_type="session")
-        assert await poly.add_mark(session_id, "archive", target_type="thread", target_id=thread_id)
-        assert await poly.add_mark(session_id, "pin", target_type="attachment", target_id="att-1")
-        assert await poly.add_mark(session_id, "archive", target_type="paste_span", target_id="paste-1")
+    with daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "star", target_type="session")
+            assert await poly.add_mark(session_id, "archive", target_type="thread", target_id=thread_id)
+            assert await poly.add_mark(session_id, "pin", target_type="attachment", target_id="att-1")
+            assert await poly.add_mark(session_id, "archive", target_type="paste_span", target_id="paste-1")
 
-        # Idempotency on the new kinds.
-        assert not await poly.add_mark(session_id, "archive", target_type="thread", target_id=thread_id)
+            # Idempotency on the new kinds.
+            assert not await poly.add_mark(session_id, "archive", target_type="thread", target_id=thread_id)
 
-        # Unfiltered listing surfaces every kind; the session_id filter is
-        # scoped to session/session targets only (thread/attachment/
-        # paste_span marks are standalone target rows in the user tier).
-        marks = await poly.list_marks()
+            # Unfiltered listing surfaces every kind; the session_id filter is
+            # scoped to session/session targets only (thread/attachment/
+            # paste_span marks are standalone target rows in the user tier).
+            marks = await poly.list_marks()
 
     with sqlite3.connect(db_path) as conn:
         after_hash = conn.execute(
@@ -166,9 +166,10 @@ async def test_marks_reject_unsupported_target_type(workspace_env: dict[str, Pat
     builder.save()
     session_id = builder.native_session_id()
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        with pytest.raises(ValueError, match="target_type must be one of"):
-            await poly.add_mark(session_id, "star", target_type="topology_edge")
+    with daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            with pytest.raises(ValueError, match="target_type must be one of"):
+                await poly.add_mark(session_id, "star", target_type="topology_edge")
 
 
 @pytest.mark.asyncio
@@ -184,10 +185,11 @@ async def test_session_mark_does_not_require_materialized_profile(workspace_env:
     # require a materialized profile — the profile requirement applies only to
     # insight-kind targets (which route through ``resolve_insight_target``).
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "star", target_type="session") is True
-        # Idempotent: re-marking the same session is a no-op.
-        assert await poly.add_mark(session_id, "star", target_type="session") is False
+    with daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "star", target_type="session") is True
+            # Idempotent: re-marking the same session is a no-op.
+            assert await poly.add_mark(session_id, "star", target_type="session") is False
 
 
 # ---------------------------------------------------------------------------
@@ -213,28 +215,29 @@ async def test_annotations_admit_native_insight_target_kinds_with_crud(
     _seed_session_profile(db_path, session_id)
     thread_id = _native_thread_id(db_path, session_id)
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.save_annotation("ann-session", session_id, "Session note", target_type="session")
-        assert await poly.save_annotation(
-            "ann-thread", session_id, "Thread note", target_type="thread", target_id=thread_id
-        )
-        assert await poly.save_annotation(
-            "ann-attach", session_id, "Attachment note", target_type="attachment", target_id="att-1"
-        )
+    with daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.save_annotation("ann-session", session_id, "Session note", target_type="session")
+            assert await poly.save_annotation(
+                "ann-thread", session_id, "Thread note", target_type="thread", target_id=thread_id
+            )
+            assert await poly.save_annotation(
+                "ann-attach", session_id, "Attachment note", target_type="attachment", target_id="att-1"
+            )
 
-        # Updating an existing annotation returns False (not newly created).
-        assert (
-            await poly.save_annotation("ann-session", session_id, "Session note (updated)", target_type="session")
-            is False
-        )
+            # Updating an existing annotation returns False (not newly created).
+            assert (
+                await poly.save_annotation("ann-session", session_id, "Session note (updated)", target_type="session")
+                is False
+            )
 
-        # The session kind is re-projected to the public 'session' token on read.
-        rows = await poly.list_annotations()
-        assert {row["target_type"] for row in rows} == {"session", "thread", "attachment"}
+            # The session kind is re-projected to the public 'session' token on read.
+            rows = await poly.list_annotations()
+            assert {row["target_type"] for row in rows} == {"session", "thread", "attachment"}
 
-        assert await poly.delete_annotation("ann-thread") is True
-        rows_after = await poly.list_annotations()
-        assert {row["target_type"] for row in rows_after} == {"session", "attachment"}
+            assert await poly.delete_annotation("ann-thread") is True
+            rows_after = await poly.list_annotations()
+            assert {row["target_type"] for row in rows_after} == {"session", "attachment"}
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +270,10 @@ async def test_recall_pack_resolves_insight_targets_and_degrades_explicitly(
         }
     )
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.create_recall_pack("pack-kinds", "Kinds pack", items_json)
-        saved = await poly.get_recall_pack("pack-kinds")
+    with daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.create_recall_pack("pack-kinds", "Kinds pack", items_json)
+            saved = await poly.get_recall_pack("pack-kinds")
 
     assert saved is not None
     payload = json.loads(saved["payload_json"])
@@ -314,16 +318,17 @@ async def test_workspace_open_targets_round_trip_insight_kinds(
         ]
     )
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.save_workspace(
-            "workspace-kinds",
-            "Kinds workspace",
-            "tabs",
-            open_targets_json,
-            "{}",
-            json.dumps({"target_type": "session", "session_id": session_id}),
-        )
-        saved = await poly.get_workspace("workspace-kinds")
+    with daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.save_workspace(
+                "workspace-kinds",
+                "Kinds workspace",
+                "tabs",
+                open_targets_json,
+                "{}",
+                json.dumps({"target_type": "session", "session_id": session_id}),
+            )
+            saved = await poly.get_workspace("workspace-kinds")
 
     assert saved is not None
     targets = json.loads(saved["open_targets_json"])

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import shutil
+import sys
+import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import get_args
 
@@ -171,31 +175,86 @@ def native_host_install(
 
 
 @browser_capture_command.command("capture-health")
-@click.option("--limit", default=50, show_default=True, type=int, help="Maximum recent events to show.")
+@click.option(
+    "--limit", default=50, show_default=True, type=int, help="Maximum reports to show; -1 streams all reports."
+)
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
-def capture_health_command(limit: int, output_format: str | None) -> None:
-    """List recent extension-reported capture-health events (polylogue-3v1).
+@click.option("--cursor", default=None, help="Continue a capture-health history snapshot.")
+def capture_health_command(limit: int, output_format: str | None, cursor: str | None) -> None:
+    """Stream extension-reported capture-health history from the ops tier."""
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.daemon.events import (
+        CAPTURE_HISTORY_PAGE_ROWS,
+        CaptureHistoryCursorError,
+        CaptureHistoryStorageError,
+        capture_health_page,
+    )
 
-    Reads the same ops.db daemon-event ledger the receiver's
-    ``GET /v1/capture-health`` route serves, directly (no HTTP round trip),
-    so capture gaps/errors/spool backlog reported by the extension are
-    queryable even when the daemon's HTTP surface is not running.
-    """
-    from polylogue.daemon.events import query_daemon_events
+    if limit < -1:
+        raise click.BadParameter("Use a nonnegative count or -1.", param_hint="--limit")
+    if limit == 0:
+        click.echo(
+            dumps({"events": [], "next_cursor": cursor})
+            if output_format == "json"
+            else "No capture-health events recorded."
+        )
+        return
+    remaining = limit
+    emitted = 0
+    first = True
+    # A JSON document becomes public only after every requested page succeeds.
+    # TemporaryFile is private, disk-backed and removed on every exit, including
+    # interruption; plain text keeps its declared streaming output.
+    try:
+        with (
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") if output_format == "json" else nullcontext(None)
+        ) as staged:
+            page = capture_health_page(
+                page_size=CAPTURE_HISTORY_PAGE_ROWS
+                if remaining == -1
+                else max(1, min(CAPTURE_HISTORY_PAGE_ROWS, remaining)),
+                cursor=cursor,
+            )
+            if staged is not None:
+                staged.write('{"events":[')
+            while remaining != 0:
+                for event in page["events"]:
+                    if staged is not None:
+                        staged.write(("" if first else ",") + dumps(event))
+                    else:
+                        raw_payload = event["payload"]
+                        payload = raw_payload if isinstance(raw_payload, dict) else {}
+                        click.echo(
+                            f"{event['ts']}  {payload.get('event', '?')}  provider={payload.get('provider') or '-'}  session={payload.get('provider_session_id') or '-'}"
+                        )
+                    first = False
+                    emitted += 1
+                    if remaining > 0:
+                        remaining -= 1
+                cursor = page["next_cursor"]
+                if cursor is None or remaining == 0:
+                    break
+                page = capture_health_page(
+                    page_size=CAPTURE_HISTORY_PAGE_ROWS
+                    if remaining == -1
+                    else min(CAPTURE_HISTORY_PAGE_ROWS, remaining),
+                    cursor=cursor,
+                )
+            if staged is not None:
+                staged.write('],"next_cursor":' + dumps(cursor) + "}\n")
+                staged.seek(0)
+                shutil.copyfileobj(staged, sys.stdout)
+            elif emitted == 0:
+                click.echo("No capture-health events recorded.")
 
-    events = query_daemon_events(kind="browser_capture_health", limit=limit)
-    if output_format == "json":
-        click.echo(dumps({"events": events}))
-        return
-    if not events:
-        click.echo("No capture-health events recorded.")
-        return
-    for event in events:
-        payload = event.get("payload", {})
-        kind = payload.get("event", "?") if isinstance(payload, dict) else "?"
-        provider = payload.get("provider") if isinstance(payload, dict) else None
-        session_id = payload.get("provider_session_id") if isinstance(payload, dict) else None
-        click.echo(f"{event.get('ts')}  {kind}  provider={provider or '-'}  session={session_id or '-'}")
+    except CaptureHistoryCursorError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except SchemaSkew as exc:
+        raise click.ClickException("schema_skew") from exc
+    except CaptureHistoryStorageError as exc:
+        raise click.ClickException(exc.code) from exc
+    except OSError as exc:
+        raise click.ClickException("capture_history_output_failed") from exc
 
 
 @browser_capture_command.command("action")

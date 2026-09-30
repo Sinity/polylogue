@@ -27,7 +27,9 @@ OperationRunStatus = Literal["running", "completed", "failed", "interrupted", "c
 RouteObservationStatus = Literal["ok", "error", "degraded", "timed_out", "unavailable"]
 RouteDaemonPath = Literal["daemon", "direct"]
 ContextInjectionDecision = Literal["included", "degraded", "dropped"]
-RouteObservationDropReasonToken = Literal["no_archive_root", "ops_db_missing", "emit_failed", "pruned", "not_sampled"]
+RouteObservationDropReasonToken = Literal[
+    "no_archive_root", "ops_db_missing", "emit_failed", "pruned", "not_sampled", "client_not_owner"
+]
 # How a daemon run ended, as its next-start reconciliation classifies it from
 # direct evidence (polylogue-peo). ``unknown`` is a real answer: no retained
 # source supports a cause, and adjacency in time never upgrades it.

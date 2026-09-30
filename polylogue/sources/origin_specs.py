@@ -3104,10 +3104,15 @@ def _aistudio_drive_spec() -> OriginSpec:
     )
 
 
+#: The OTLP dialect and GenAI semantic-convention schema the OTel parser
+#: accepts. Declared here, beside the origin that names them, so building the
+#: origin registry does not import the parser and its models (polylogue-8s70).
+SEMCONV_SCHEMA_URL = "https://opentelemetry.io/schemas/gen-ai-dev/1.42.0-dev"
+OTLP_JSON_DIALECT = "OTLP-JSON ExportTraceServiceRequest (protobuf JSON mapping)"
+
+
 def _otel_genai_spec() -> OriginSpec:
     """Declare OTLP JSON trace exports, imported through the archive inbox."""
-    from polylogue.sources.parsers.otel_genai import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
-
     return _executable_spec(
         Origin.OTEL_GENAI,
         provider=Provider.OTEL_GENAI,

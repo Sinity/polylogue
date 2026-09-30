@@ -16,7 +16,9 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
+from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.live_ingest import write_index_session
+from tests.infra.session_profiles import write_session_profile
 
 USER_STATE_SESSION_ID = "claude-code-session:conv-user-state"
 ARCHIVE_USER_STATE_SESSION_ID = "claude-code-session:conv-v1-user-state"
@@ -66,48 +68,49 @@ async def test_target_aware_marks_and_annotations_do_not_change_content_hash(
     archive_root = workspace_env["archive_root"]
     _session_id, message_id = _seed_user_state_session(archive_root)
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        before = await poly.get_session(USER_STATE_SESSION_ID)
-        assert before is not None
-        before_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            before = await poly.get_session(USER_STATE_SESSION_ID)
+            assert before is not None
+            before_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
 
-        assert await poly.add_mark(USER_STATE_SESSION_ID, "star") is True
-        assert await poly.add_mark(USER_STATE_SESSION_ID, "star") is False
-        assert (
-            await poly.add_mark(
-                USER_STATE_SESSION_ID,
-                "pin",
-                target_type="message",
-                message_id=message_id,
+            assert await poly.add_mark(USER_STATE_SESSION_ID, "star") is True
+            assert await poly.add_mark(USER_STATE_SESSION_ID, "star") is False
+            assert (
+                await poly.add_mark(
+                    USER_STATE_SESSION_ID,
+                    "pin",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is True
             )
-            is True
-        )
-        assert await poly.save_annotation("ann-conv", USER_STATE_SESSION_ID, "Session note") is True
-        assert (
-            await poly.save_annotation(
-                "ann-msg",
-                USER_STATE_SESSION_ID,
-                "Message note",
-                target_type="message",
-                message_id=message_id,
+            assert await poly.save_annotation("ann-conv", USER_STATE_SESSION_ID, "Session note") is True
+            assert (
+                await poly.save_annotation(
+                    "ann-msg",
+                    USER_STATE_SESSION_ID,
+                    "Message note",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is True
             )
-            is True
-        )
-        assert (
-            await poly.save_annotation(
-                "ann-msg",
-                USER_STATE_SESSION_ID,
-                "Updated message note",
-                target_type="message",
-                message_id=message_id,
+            assert (
+                await poly.save_annotation(
+                    "ann-msg",
+                    USER_STATE_SESSION_ID,
+                    "Updated message note",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is False
             )
-            is False
-        )
 
-        marks = await poly.list_marks()
-        annotations = await poly.list_annotations()
-        after = await poly.get_session(USER_STATE_SESSION_ID)
-        after_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
+            marks = await poly.list_marks()
+            annotations = await poly.list_annotations()
+            after = await poly.get_session(USER_STATE_SESSION_ID)
+            after_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
 
     assert after is not None
     assert after_hash == before_hash
@@ -128,30 +131,31 @@ async def test_user_state_mutations_write_archive_user_tier(
     archive_root = workspace_env["archive_root"]
     _seed_user_state_session(archive_root, native_id="conv-v1-user-state", message_native_id="msg-v1")
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        assert await poly.add_mark(ARCHIVE_USER_STATE_SESSION_ID, "star") is True
-        assert await poly.save_annotation("ann-v1", ARCHIVE_USER_STATE_SESSION_ID, "Stored in user.db") is True
-        assert await poly.save_view("view-v1", "Archive view", '{"query":"storage","limit":5}') is True
-        assert await poly.create_recall_pack(
-            "pack-v1",
-            "Archive pack",
-            f'{{"items":[{{"target_type":"session","session_id":"{ARCHIVE_USER_STATE_SESSION_ID}"}}]}}',
-        )
-        assert await poly.save_workspace(
-            "workspace-v1",
-            "Archive workspace",
-            "tabs",
-            f'[{{"target_type":"session","session_id":"{ARCHIVE_USER_STATE_SESSION_ID}"}}]',
-            '{"density":"compact"}',
-        )
-        correction = await poly.record_correction(
-            ARCHIVE_USER_STATE_SESSION_ID,
-            "tag_accept",
-            {"tag": "archive"},
-            author_ref="agent:codex-session:correction",
-            author_kind="agent",
-        )
-        assert correction.session_id == ARCHIVE_USER_STATE_SESSION_ID
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            assert await poly.add_mark(ARCHIVE_USER_STATE_SESSION_ID, "star") is True
+            assert await poly.save_annotation("ann-v1", ARCHIVE_USER_STATE_SESSION_ID, "Stored in user.db") is True
+            assert await poly.save_view("view-v1", "Archive view", '{"query":"storage","limit":5}') is True
+            assert await poly.create_recall_pack(
+                "pack-v1",
+                "Archive pack",
+                f'{{"items":[{{"target_type":"session","session_id":"{ARCHIVE_USER_STATE_SESSION_ID}"}}]}}',
+            )
+            assert await poly.save_workspace(
+                "workspace-v1",
+                "Archive workspace",
+                "tabs",
+                f'[{{"target_type":"session","session_id":"{ARCHIVE_USER_STATE_SESSION_ID}"}}]',
+                '{"density":"compact"}',
+            )
+            correction = await poly.record_correction(
+                ARCHIVE_USER_STATE_SESSION_ID,
+                "tag_accept",
+                {"tag": "archive"},
+                author_ref="agent:codex-session:correction",
+                author_kind="agent",
+            )
+            assert correction.session_id == ARCHIVE_USER_STATE_SESSION_ID
 
     user_db = archive_root / "user.db"
     assert user_db.exists()
@@ -223,19 +227,20 @@ async def test_blackboard_public_surface_writes_assertion_metadata(
         message_native_id="msg-blackboard-assertion",
     )
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        note = await poly.post_blackboard_note(
-            kind="finding",
-            title="Assertion-backed blackboard",
-            content="The public blackboard surface should persist assertion metadata.",
-            scope_session=session_id,
-            author_ref="agent:codex-session:unit",
-            author_kind="agent",
-            evidence_refs=(f"message:{message_id}",),
-            staleness={"expires_after_days": 7},
-            context_policy={"inject": False, "promotion_required": True},
-        )
-        notes = await poly.list_blackboard_notes(kind="finding", limit=5)
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            note = await poly.post_blackboard_note(
+                kind="finding",
+                title="Assertion-backed blackboard",
+                content="The public blackboard surface should persist assertion metadata.",
+                scope_session=session_id,
+                author_ref="agent:codex-session:unit",
+                author_kind="agent",
+                evidence_refs=(f"message:{message_id}",),
+                staleness={"expires_after_days": 7},
+                context_policy={"inject": False, "promotion_required": True},
+            )
+            notes = await poly.list_blackboard_notes(kind="finding", limit=5)
 
     # Agent-authored claims enter the judgment queue; they are not active
     # blackboard context until an operator accepts them.
@@ -266,9 +271,10 @@ async def test_tags_and_metadata_are_assertion_backed_user_metadata(
         message_native_id="msg-tag-metadata",
     )
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        tag_result = await poly.add_tag(session_id, "Planning")
-        metadata_result = await poly.set_metadata(session_id, "owner", {"name": "sinity"})
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            tag_result = await poly.add_tag(session_id, "Planning")
+            metadata_result = await poly.set_metadata(session_id, "owner", {"name": "sinity"})
 
     assert tag_result.outcome == "added"
     assert metadata_result.outcome == "set"
@@ -315,16 +321,14 @@ async def test_user_state_target_resolution_reads_archive_file_set_from_archive_
         )
         envelope = archive.read_session(session_id)
     with sqlite3.connect(archive_root / "index.db") as conn:
-        conn.execute(
-            "INSERT INTO session_profiles (session_id, search_text) VALUES (?, '')",
-            (session_id,),
-        )
+        write_session_profile(conn, session_id)
         conn.commit()
     message_id = envelope.messages[0].message_id
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        assert await poly.add_mark(session_id, "star", target_type="session")
-        assert await poly.add_mark(session_id, "pin", target_type="message", message_id=message_id)
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            assert await poly.add_mark(session_id, "star", target_type="session")
+            assert await poly.add_mark(session_id, "pin", target_type="message", message_id=message_id)
     with sqlite3.connect(archive_root / "user.db") as conn:
         rows = conn.execute(
             """
@@ -345,22 +349,23 @@ async def test_user_state_targets_reject_contradictory_identifiers(workspace_env
     archive_root = workspace_env["archive_root"]
     _session_id, message_id = _seed_user_state_session(archive_root)
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        with pytest.raises(ValueError, match="message target_id must match message_id"):
-            await poly.add_mark(
-                USER_STATE_SESSION_ID,
-                "pin",
-                target_type="message",
-                target_id="other-message",
-                message_id=message_id,
-            )
-        with pytest.raises(ValueError, match="canonical non-negative block_index"):
-            await poly.add_mark(
-                USER_STATE_SESSION_ID,
-                "pin",
-                target_type="block",
-                target_id=f"{message_id}:00",
-            )
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            with pytest.raises(ValueError, match="message target_id must match message_id"):
+                await poly.add_mark(
+                    USER_STATE_SESSION_ID,
+                    "pin",
+                    target_type="message",
+                    target_id="other-message",
+                    message_id=message_id,
+                )
+            with pytest.raises(ValueError, match="canonical non-negative block_index"):
+                await poly.add_mark(
+                    USER_STATE_SESSION_ID,
+                    "pin",
+                    target_type="block",
+                    target_id=f"{message_id}:00",
+                )
 
 
 @pytest.mark.asyncio
@@ -368,22 +373,23 @@ async def test_message_target_user_state_rejects_unknown_messages(workspace_env:
     archive_root = workspace_env["archive_root"]
     _seed_user_state_session(archive_root)
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        with pytest.raises(ValueError, match="not in session"):
-            await poly.add_mark(
-                USER_STATE_SESSION_ID,
-                "pin",
-                target_type="message",
-                message_id="missing-message",
-            )
-        with pytest.raises(ValueError, match="not in session"):
-            await poly.save_annotation(
-                "ann-missing",
-                USER_STATE_SESSION_ID,
-                "Missing",
-                target_type="message",
-                message_id="missing-message",
-            )
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            with pytest.raises(ValueError, match="not in session"):
+                await poly.add_mark(
+                    USER_STATE_SESSION_ID,
+                    "pin",
+                    target_type="message",
+                    message_id="missing-message",
+                )
+            with pytest.raises(ValueError, match="not in session"):
+                await poly.save_annotation(
+                    "ann-missing",
+                    USER_STATE_SESSION_ID,
+                    "Missing",
+                    target_type="message",
+                    message_id="missing-message",
+                )
 
 
 @pytest.mark.asyncio
@@ -391,28 +397,29 @@ async def test_recall_pack_items_resolve_and_degrade_explicitly(workspace_env: d
     archive_root = workspace_env["archive_root"]
     _session_id, message_id = _seed_user_state_session(archive_root)
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        assert await poly.add_mark(USER_STATE_SESSION_ID, "pin", target_type="message", message_id=message_id)
-        assert await poly.save_annotation(
-            "ann-msg", USER_STATE_SESSION_ID, "Message note", target_type="message", message_id=message_id
-        )
-        created = await poly.create_recall_pack(
-            "pack-user-state",
-            "User state pack",
-            (
-                '{"items":['
-                f'{{"target_type":"session","session_id":"{USER_STATE_SESSION_ID}"}},'
-                '{"target_type":"session","session_id":"missing-conv"},'
-                f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"{message_id}"}},'
-                f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"missing-msg"}},'
-                f'{{"target_type":"mark","mark_target_type":"message","mark_target_id":"{message_id}","mark_type":"pin","session_id":"{USER_STATE_SESSION_ID}"}},'
-                '{"target_type":"annotation","annotation_id":"ann-msg"},'
-                '{"target_type":"annotation","annotation_id":"missing-ann"},'
-                '{"target_type":"topology_edge","target_id":"edge-1"}'
-                '],"summary":"handoff"}'
-            ),
-        )
-        saved = await poly.get_recall_pack("pack-user-state")
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            assert await poly.add_mark(USER_STATE_SESSION_ID, "pin", target_type="message", message_id=message_id)
+            assert await poly.save_annotation(
+                "ann-msg", USER_STATE_SESSION_ID, "Message note", target_type="message", message_id=message_id
+            )
+            created = await poly.create_recall_pack(
+                "pack-user-state",
+                "User state pack",
+                (
+                    '{"items":['
+                    f'{{"target_type":"session","session_id":"{USER_STATE_SESSION_ID}"}},'
+                    '{"target_type":"session","session_id":"missing-conv"},'
+                    f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"{message_id}"}},'
+                    f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"missing-msg"}},'
+                    f'{{"target_type":"mark","mark_target_type":"message","mark_target_id":"{message_id}","mark_type":"pin","session_id":"{USER_STATE_SESSION_ID}"}},'
+                    '{"target_type":"annotation","annotation_id":"ann-msg"},'
+                    '{"target_type":"annotation","annotation_id":"missing-ann"},'
+                    '{"target_type":"topology_edge","target_id":"edge-1"}'
+                    '],"summary":"handoff"}'
+                ),
+            )
+            saved = await poly.get_recall_pack("pack-user-state")
 
     assert created is True
     assert saved is not None
@@ -440,26 +447,27 @@ async def test_reader_workspaces_preserve_resolved_and_degraded_targets(
     archive_root = workspace_env["archive_root"]
     _session_id, message_id = _seed_user_state_session(archive_root)
 
-    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
-        before_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
-        created = await poly.save_workspace(
-            "workspace-user-state",
-            "Investigation",
-            "compare",
-            (
-                "["
-                f'{{"target_type":"session","session_id":"{USER_STATE_SESSION_ID}"}},'
-                f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"{message_id}"}},'
-                f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"missing-msg"}},'
-                '{"target_type":"topology_edge","target_id":"edge-1"}'
-                "]"
-            ),
-            '{"panes":[{"width":0.5},{"width":0.5}]}',
-            f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"{message_id}"}}',
-        )
-        saved = await poly.get_workspace("workspace-user-state")
-        listed = await poly.list_workspaces()
-        after_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
+    with daemon_serving_archive(archive_root):
+        async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
+            before_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
+            created = await poly.save_workspace(
+                "workspace-user-state",
+                "Investigation",
+                "compare",
+                (
+                    "["
+                    f'{{"target_type":"session","session_id":"{USER_STATE_SESSION_ID}"}},'
+                    f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"{message_id}"}},'
+                    f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"missing-msg"}},'
+                    '{"target_type":"topology_edge","target_id":"edge-1"}'
+                    "]"
+                ),
+                '{"panes":[{"width":0.5},{"width":0.5}]}',
+                f'{{"target_type":"message","session_id":"{USER_STATE_SESSION_ID}","message_id":"{message_id}"}}',
+            )
+            saved = await poly.get_workspace("workspace-user-state")
+            listed = await poly.list_workspaces()
+            after_hash = _session_content_hash(archive_root / "index.db", USER_STATE_SESSION_ID)
 
     assert created is True
     assert saved is not None

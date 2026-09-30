@@ -40,10 +40,6 @@
     },
     {
       "file": "polylogue/api/archive.py",
-      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20"
-    },
-    {
-      "file": "polylogue/api/archive.py",
       "digest": "897c3c64873990d3ff2c841c89a0f42e459c1710"
     },
     {
@@ -128,7 +124,7 @@
     },
     {
       "file": "polylogue/cli/commands/status.py",
-      "digest": "226b61a3c423244dbc4ec54fb71958685ccafd56"
+      "digest": "f57a4f4352f0bd0a035d14337f5de2c3feb156cc"
     },
     {
       "file": "polylogue/cli/commands/status_diagnostics.py",

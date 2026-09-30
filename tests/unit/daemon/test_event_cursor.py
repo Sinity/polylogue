@@ -159,7 +159,7 @@ def test_the_production_emit_prunes_in_the_owning_process(ledger: Path) -> None:
             events_mod.emit_message_appended(session_id=f"s-{index}", source_name="codex", appended_count=1)
         events_mod.emit_daemon_event("ingestion_batch", payload={"n": 1})
         events_mod.emit_daemon_event("ingestion_batch", payload={"n": 2})
-    kinds = [event["kind"] for event in events_mod.query_daemon_events(limit=100)]
+    kinds = [event["kind"] for event in events_mod.iter_daemon_events(limit=100)]
     assert kinds == ["ingestion_batch"]
 
 
@@ -190,3 +190,268 @@ def test_prune_between_range_and_page_unseen(ledger: Path, monkeypatch: pytest.M
     assert [event["kind"] for event in page.events] == ["a", "b", "c"]
     # The prune really did commit; the reader simply did not observe it.
     assert _ids(ledger) == [3]
+
+
+def test_capture_health_history_survives_supersession(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``capture-health`` lists history, so a newer report does not supersede an older one.
+
+    polylogue-ntvf6: record-kind supersession kept only the newest
+    ``browser_capture_health`` row, and ``polylogued browser capture-health``
+    showed one event after several captures. Anti-vacuity: drop the kind from
+    the independent history insert and the command loses reports.
+    """
+    import json
+
+    from click.testing import CliRunner
+
+    from polylogue.daemon.browser_capture import capture_health_command
+
+    registry = EventSubscriberRegistry()
+    monkeypatch.setattr(events_mod, "EVENT_SUBSCRIBERS", registry)
+    with registry.owning():
+        for index in range(3):
+            events_mod.emit_daemon_event(
+                events_mod.CAPTURE_HEALTH_EVENT_KIND,
+                operation_id="extension-1",
+                payload={"event": "gap", "provider": "chatgpt", "provider_session_id": f"session-{index}"},
+            )
+        events_mod.emit_daemon_event("ingestion_batch", payload={})
+        events_mod.emit_daemon_event("ingestion_batch", payload={})
+
+    result = CliRunner().invoke(capture_health_command, ["--format", "json"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    listed = json.loads(result.output)["events"]
+    assert len(listed) == 3
+    assert {event["payload"]["provider_session_id"] for event in listed} == {"session-0", "session-1", "session-2"}
+    # An ordinary record kind is still superseded down to its newest row.
+    with sqlite3.connect(f"file:{ledger}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM daemon_events WHERE kind = 'ingestion_batch'").fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT COUNT(*) FROM daemon_events WHERE kind = 'browser_capture_health'").fetchone()[0] == 0
+        )
+        assert conn.execute("SELECT COUNT(*) FROM capture_health_history").fetchone()[0] == 3
+
+
+def test_capture_history_snapshot_pages_exclude_new_reports(ledger: Path) -> None:
+    """An append between real page reads cannot enter or duplicate the old snapshot."""
+    ids = [
+        events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND, payload={"event": "capture_gap"})
+        for _ in range(5)
+    ]
+    page = events_mod.capture_health_page(page_size=2)
+    seen = [event["id"] for event in page["events"]]
+    appended = events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND, payload={"event": "capture_gap"})
+    while page["next_cursor"] is not None:
+        page = events_mod.capture_health_page(page_size=2, cursor=page["next_cursor"])
+        seen.extend(event["id"] for event in page["events"])
+    assert seen == list(reversed(ids))
+    assert appended not in seen
+
+
+def test_capture_history_refuses_cursor_after_recreated_ops(ledger: Path) -> None:
+    """A fresh ops tier reusing ids must not silently continue a lost snapshot."""
+    for _ in range(3):
+        events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    cursor = events_mod.capture_health_page(page_size=1)["next_cursor"]
+    assert cursor is not None
+    # Close all production readers before simulating the disposable tier's replacement.
+    ledger.unlink()
+    for suffix in ("-wal", "-shm"):
+        ledger.with_name(ledger.name + suffix).unlink(missing_ok=True)
+    for _ in range(3):
+        events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    with pytest.raises(events_mod.CaptureHistoryCursorError, match="history_cursor_reset"):
+        events_mod.capture_health_page(page_size=1, cursor=cursor)
+
+
+def test_capture_report_id_survives_pruning_and_idempotent_replay(
+    ledger: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The emitter returns its report id, never a subsequent ledger MAX."""
+    registry = EventSubscriberRegistry()
+    monkeypatch.setattr(events_mod, "EVENT_SUBSCRIBERS", registry)
+    with registry.owning():
+        event_id = events_mod.emit_daemon_event(
+            events_mod.CAPTURE_HEALTH_EVENT_KIND, idempotency_key="report-1", payload={"event": "capture_gap"}
+        )
+        other_id = events_mod.emit_daemon_event("other")
+        replay_id = events_mod.emit_daemon_event(
+            events_mod.CAPTURE_HEALTH_EVENT_KIND, idempotency_key="report-1", payload={"event": "capture_gap"}
+        )
+    assert event_id == replay_id < other_id
+    page = events_mod.capture_health_page()
+    assert [row["id"] for row in page["events"]] == [event_id]
+    with sqlite3.connect(ledger) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM daemon_events WHERE kind = ?", (events_mod.CAPTURE_HEALTH_EVENT_KIND,)
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.parametrize("cursor", ["not-base64", "e30=", "WzEsICJrIiwgMF0=", "WzEsICJrIiwgMl0="])
+def test_capture_history_rejects_invalid_continuation(ledger: Path, cursor: str) -> None:
+    with pytest.raises(events_mod.CaptureHistoryCursorError, match="invalid_history_cursor"):
+        events_mod.capture_health_page(cursor=cursor)
+
+
+def test_capture_history_cli_streams_all_pages(ledger: Path) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from polylogue.daemon.browser_capture import capture_health_command
+
+    for _ in range(205):
+        events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND, payload={"event": "capture_gap"})
+    result = CliRunner().invoke(capture_health_command, ["--limit", "-1", "--format", "json"], catch_exceptions=False)
+    assert result.exit_code == 0
+    document = json.loads(result.output)
+    assert len(document["events"]) == 205
+    assert document["next_cursor"] is None
+    first = json.loads(
+        CliRunner().invoke(capture_health_command, ["--limit", "2", "--format", "json"], catch_exceptions=False).output
+    )
+    second = json.loads(
+        CliRunner()
+        .invoke(
+            capture_health_command,
+            ["--limit", "2", "--cursor", first["next_cursor"], "--format", "json"],
+            catch_exceptions=False,
+        )
+        .output
+    )
+    assert [row["id"] for row in first["events"] + second["events"]] == [205, 204, 203, 202]
+
+
+def test_health_history_insert_failure_rolls_back_resume_frame(ledger: Path) -> None:
+    """History and resume announcement cannot commit independently."""
+    events_mod.emit_daemon_event("bootstrap")
+    with sqlite3.connect(ledger) as conn:
+        conn.execute(
+            "CREATE TRIGGER refuse_health_history BEFORE INSERT ON capture_health_history BEGIN SELECT RAISE(ABORT, 'synthetic_history_failure'); END"
+        )
+    with pytest.raises(events_mod.CaptureHistoryStorageError) as failed:
+        events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    assert failed.value.is_transient is False
+    assert isinstance(failed.value.__cause__, sqlite3.IntegrityError)
+    with sqlite3.connect(ledger) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM daemon_events WHERE kind = ?", (events_mod.CAPTURE_HEALTH_EVENT_KIND,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert conn.execute("SELECT COUNT(*) FROM capture_health_history").fetchone()[0] == 0
+
+
+def test_negative_event_limit_is_a_stream(ledger: Path) -> None:
+    """Full ledger traversal stays an iterator rather than a lifetime-sized list."""
+    from collections.abc import Iterator
+    from contextlib import closing
+
+    _seed(ledger, ["record"] * 205)
+    with closing(events_mod.iter_daemon_events(limit=-1)) as events:
+        assert isinstance(events, Iterator)
+        assert next(events)["id"] == 205
+        assert sum(1 for _ in events) == 204
+
+
+def test_capture_history_cli_refuses_foreign_identity_without_writes(ledger: Path) -> None:
+    from click.testing import CliRunner
+
+    from polylogue.daemon.browser_capture import capture_health_command
+
+    events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    with sqlite3.connect(ledger) as conn:
+        conn.execute("UPDATE schema_identity SET identity = 'foreign' WHERE tier = 'ops'")
+    before = ledger.read_bytes()
+    result = CliRunner().invoke(capture_health_command, ["--format", "json"], catch_exceptions=False)
+    assert result.exit_code == 1
+    assert "schema_skew" in result.output
+    assert ledger.read_bytes() == before
+
+
+def test_health_page_handles_sqlite_integer_domain_edges(ledger: Path) -> None:
+    event_id = events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    maximum_id = 2**63 - 1
+    with sqlite3.connect(ledger) as conn:
+        conn.execute("UPDATE capture_health_history SET id = ? WHERE id = ?", (maximum_id, event_id))
+    page = events_mod.capture_health_page(page_size=2**100)
+    assert [row["id"] for row in page["events"]] == [maximum_id]
+    assert page["next_cursor"] is None
+    import base64
+    import json
+
+    cursor = base64.urlsafe_b64encode(json.dumps([2**100, "synthetic", 1]).encode()).decode()
+    with pytest.raises(events_mod.CaptureHistoryCursorError) as refused:
+        events_mod.capture_health_page(cursor=cursor)
+    assert str(refused.value) == "invalid_history_cursor"
+
+
+def test_oversized_health_page_request_preserves_full_traversal(ledger: Path) -> None:
+    ids = [events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND) for _ in range(205)]
+    page = events_mod.capture_health_page(page_size=2**100)
+    assert len(page["events"]) == 100
+    seen = [row["id"] for row in page["events"]]
+    while page["next_cursor"] is not None:
+        page = events_mod.capture_health_page(page_size=2**100, cursor=page["next_cursor"])
+        assert len(page["events"]) <= 100
+        seen.extend(row["id"] for row in page["events"])
+    assert seen == list(reversed(ids))
+
+
+@pytest.mark.parametrize("failure", ["storage", "reset", "cancel"])
+def test_capture_history_json_later_failure_publishes_nothing_and_cleans_scratch(
+    ledger: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    import os
+    import stat
+    import tempfile
+    from typing import IO
+
+    from click.testing import CliRunner
+
+    from polylogue.daemon import browser_capture as command_mod
+
+    for _ in range(205):
+        events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    opened: list[IO[str]] = []
+    original_temporary_file = tempfile.TemporaryFile
+
+    def private_file(*args: object, **kwargs: object) -> IO[str]:
+        handle = original_temporary_file(mode="w+", encoding="utf-8", dir=tmp_path)
+        assert stat.S_IMODE(os.fstat(handle.fileno()).st_mode) == 0o600
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", private_file)
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    original_open = open_readonly_connection
+    reads = 0
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    def failing_later_read(path: str | Path, *, tier: ArchiveTier | None = None) -> sqlite3.Connection:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            if failure == "storage":
+                raise sqlite3.OperationalError("synthetic later read lock")
+            if failure == "cancel":
+                raise KeyboardInterrupt
+            ledger.unlink()
+            for suffix in ("-wal", "-shm"):
+                ledger.with_name(ledger.name + suffix).unlink(missing_ok=True)
+            events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+        return original_open(path, tier=tier)
+
+    monkeypatch.setattr(events_mod, "open_readonly_connection", failing_later_read)
+    result = CliRunner().invoke(command_mod.capture_health_command, ["--limit", "-1", "--format", "json"])
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert reads == 2
+    assert len(opened) == 1 and opened[0].closed
+    if failure != "cancel":
+        assert ("capture_history_unavailable" if failure == "storage" else "history_cursor_reset") in result.stderr
