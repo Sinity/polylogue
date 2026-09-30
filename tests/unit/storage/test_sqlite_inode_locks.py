@@ -486,3 +486,26 @@ def test_sqlite_open_refuses_native_directory_substitution(tmp_path: Path, monke
         _assert_protected(tmp_path / "pinned-directory" / "source.db")
         with pytest.raises(sqlite3.ProgrammingError):
             connections[0].execute("SELECT 1")
+
+
+def test_checkpoint_refuses_disappeared_native_tier_without_creating_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring connect's create mode silently leaves a fresh tier after refusal."""
+    directory = tmp_path / "archive"
+    directory.mkdir()
+    path = directory / "index.db"
+    _database(path)
+    original = sqlite3.connect
+
+    def remove_directory_before_open(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        directory.rename(tmp_path / "pinned-archive")
+        directory.mkdir()
+        return original(*args, **kwargs)
+
+    with _live_reader(path):
+        monkeypatch.setattr(sqlite3, "connect", remove_directory_before_open)
+        with pytest.raises(sqlite3.OperationalError):
+            _checkpoint_truncate(path, label="neutral", archive_root=directory)
+        assert not path.exists()
+        _assert_protected(tmp_path / "pinned-archive" / "index.db")

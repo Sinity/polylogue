@@ -1683,22 +1683,13 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
 
 
 def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
-    """Checkpoint one inode without a path check-then-reopen race.
+    """Checkpoint an admitted inode, refusing file or directory substitution.
 
-    An exclusive ``TRUNCATE`` checkpoint is a durable mutation of an archive
-    tier: it rewrites the database file from the WAL and empties the WAL. It
-    is also the one writable open in this module that the connection-level
-    guard structurally cannot see. The open goes through
-    a pinned, identity-verified path. Linux aliases can have descriptor numbers,
-    and
-    ``guarded_archive_tier_path`` decides tier membership from the *file
-    name*, which for that alias is a descriptor number and never ``index.db``.
-
-    So this site asserts ownership itself, before any descriptor is opened,
-    naming the real path rather than the alias. ``archive_root`` is required
-    rather than defaulted: the assertion is archive-bound or it is not an
-    assertion, and every caller already knows which archive it is promoting
-    into (polylogue-8qm4k AC1).
+    An exclusive TRUNCATE checkpoint rewrites main pages and empties WAL.
+    Assert the archive's write lease before identity admission, then open the
+    verified native child with mode=rw so disappearance cannot create a fresh
+    tier. Revalidate the selected file and directory before checkpointing.
+    The explicit archive_root keeps ownership tied to the promotion's archive.
     """
     from polylogue.storage.sqlite.file_identity import open_sqlite_identity
     from polylogue.storage.sqlite.write_lease import require_write_lease
@@ -1717,7 +1708,7 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
         reopened_fd.close()
         reopened_fd = None
         selected_path = fd.sqlite_path()
-        with closing(sqlite3.connect(str(selected_path))) as conn:
+        with closing(sqlite3.connect(f"{selected_path.as_uri()}?mode=rw", uri=True)) as conn:
             fd.assert_unchanged(sqlite_path=selected_path)
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     except OSError as exc:
