@@ -329,6 +329,10 @@ def capture_schema_census(
     Missing, unreadable, or failed-count tiers are represented as errors and
     make the returned census incomplete.  Callers must not reinterpret those
     errors as an empty PASS.
+
+    Physical hashes are file observations, not a transaction-bound snapshot.
+    A caller using them as a stable mutation fingerprint must own the SQLite
+    transaction or archive exclusion that stabilizes the selected files.
     """
     location = ArchiveLocation.resolve(archive_root)
     tiers: list[TierSchemaCensus] = []

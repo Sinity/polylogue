@@ -8,6 +8,7 @@ import hashlib
 import os
 import sqlite3
 import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -191,6 +192,29 @@ def test_writer_lock_replacement_is_refused(tmp_path: Path) -> None:
         lock.touch(mode=0o600)
         with pytest.raises(AuditLeafError, match="writer lock changed"):
             leaf.assert_unchanged()
+
+
+@pytest.mark.parametrize("directory_alias", [False, True])
+def test_writer_lock_excludes_an_independent_writer_process(tmp_path: Path, directory_alias: bool) -> None:
+    path = tmp_path / "audit.db"
+    _database(path)
+    alias_child = tmp_path / "directory"
+    alias_child.mkdir()
+    selected_directory = alias_child / ".." if directory_alias else tmp_path
+    probe = """
+import sys
+from pathlib import Path
+from polylogue.storage.sqlite.audit_leaf import AuditLeafError, VerifiedAuditLeaf
+try:
+    with VerifiedAuditLeaf(Path(sys.argv[1]), lock_writer=True):
+        print("admitted")
+except AuditLeafError:
+    print("refused")
+"""
+    command = [sys.executable, "-c", probe, str(selected_directory)]
+    with VerifiedAuditLeaf(tmp_path, lock_writer=True):
+        assert subprocess.check_output(command, text=True).strip() == "refused"
+    assert subprocess.check_output(command, text=True).strip() == "admitted"
 
 
 @pytest.mark.parametrize("shape", ["symlink", "hardlink", "group_writable"])

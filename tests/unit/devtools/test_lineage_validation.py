@@ -114,6 +114,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 direction TEXT DEFAULT 'user_input',
                 producer_ref TEXT,
                 source_url TEXT,
+                supplying_raw_id TEXT,
                 caption TEXT
             );
             CREATE TABLE attachment_native_ids (

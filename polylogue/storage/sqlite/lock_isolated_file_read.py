@@ -36,7 +36,9 @@ def read_sqlite_file_in_lock_isolated_process(
 ) -> SQLiteFileRead:
     """Hash, and optionally copy, one pinned file without closing a data fd here.
 
-    The caller owns the SQLite transaction that stabilizes these physical bytes.
+    The caller owns any transaction or exclusion needed to stabilize these
+    physical bytes. This helper establishes neither; observational callers
+    must detect changes around the read before treating it as stable proof.
     Its O_PATH descriptor binds the child to that inode even if the pathname
     changes. Ordinary byte-reader descriptors belong solely to the child, whose
     close cannot release the parent's SQLite POSIX locks. Progress messages
