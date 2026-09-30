@@ -46,3 +46,39 @@ def test_marker_refuses_a_foreign_lineage_tier(tmp_path: Path) -> None:
         initialize_active_archive_root(tmp_path)
 
     assert user_path.read_bytes() == user_before
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "hardlink", "directory"])
+def test_lineage_refuses_unsafe_tier_before_sqlite_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe_kind: str
+) -> None:
+    """Moving safe-file validation after open reaches an unrelated SQLite file."""
+    import os
+
+    from polylogue.storage.sqlite.archive_tiers import archive_plan
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    tier = root / "user.db"
+    unrelated = tmp_path / "unrelated.db"
+    with sqlite3.connect(unrelated) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("CREATE TABLE unrelated (value TEXT)")
+    before = unrelated.read_bytes()
+    tier.unlink()
+    if unsafe_kind == "symlink":
+        tier.symlink_to(unrelated)
+    elif unsafe_kind == "hardlink":
+        os.link(unrelated, tier)
+    else:
+        tier.mkdir()
+
+    def forbidden_open(*args: object, **kwargs: object) -> None:
+        pytest.fail("unsafe tier reached SQLite open")
+
+    monkeypatch.setattr(archive_plan, "open_readonly_connection", forbidden_open)
+    with pytest.raises(RuntimeError, match="unsafe durable tier file"):
+        archive_plan.assert_archive_format_lineage(root, tiers=frozenset({ArchiveTier.USER}))
+    assert unrelated.read_bytes() == before
+    assert not Path(str(unrelated) + "-wal").exists()
+    assert not Path(str(unrelated) + "-shm").exists()

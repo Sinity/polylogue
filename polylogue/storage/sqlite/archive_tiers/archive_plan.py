@@ -108,6 +108,7 @@ def assert_archive_format_lineage(
     birth = _read_archive_format_birth(archive_root)
     for tier in tiers:
         path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
+        _assert_safe_format_tier_file(path)
         try:
             with closing(open_readonly_connection(path, validate_schema=False)) as connection:
                 _assert_archive_format_tier_lineage(archive_root, tier, connection, birth)
@@ -171,14 +172,8 @@ def _read_archive_format_birth(archive_root: Path) -> _ArchiveFormatBirth:
     return _ArchiveFormatBirth(tuple(sorted(versions.items())), tuple(sorted(fingerprints.items())))
 
 
-def _assert_archive_format_tier_lineage(
-    archive_root: Path,
-    tier: ArchiveTier,
-    connection: sqlite3.Connection,
-    birth: _ArchiveFormatBirth,
-) -> None:
-    """Check one actual owned tier handle against the same birth authority."""
-    path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
+def _assert_safe_format_tier_file(path: Path) -> None:
+    """Refuse unsafe leaves before opening and recheck supplied handles."""
     try:
         metadata = path.lstat()
     except FileNotFoundError as exc:
@@ -187,6 +182,17 @@ def _assert_archive_format_tier_lineage(
         raise RuntimeError(f"cannot inspect archive format tier: {path}") from exc
     if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
         raise RuntimeError(f"archive format marker names an unsafe durable tier file: {path}")
+
+
+def _assert_archive_format_tier_lineage(
+    archive_root: Path,
+    tier: ArchiveTier,
+    connection: sqlite3.Connection,
+    birth: _ArchiveFormatBirth,
+) -> None:
+    """Check one actual owned tier handle against the same birth authority."""
+    path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
+    _assert_safe_format_tier_file(path)
     with closing(connection.execute("PRAGMA database_list")) as cursor:
         main_path = next(
             (
