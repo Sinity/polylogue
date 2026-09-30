@@ -2023,6 +2023,25 @@ def _forward_version_receipt_for_current_tier(
     return None
 
 
+def assert_released_durable_tier_lineage(archive_root: Path, tier: ArchiveTier, connection: sqlite3.Connection) -> None:
+    """Prove a surviving advanced tier without mutating startup history.
+
+    A birth marker proves its baseline shape. Above that version the actual
+    physical file, installed migration chain and released schema witness
+    must prove membership even when another durable tier is missing.
+    """
+    current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if current > _runtime_durable_version(tier):
+        raise DurableTierNewerThanRuntimeError(
+            tier, live_version=current, runtime_version=_runtime_durable_version(tier)
+        )
+    if current <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
+        return
+    manifests = _released_train_manifests_by_target(archive_root / ".maintenance-state" / "durable-change-trains", tier)
+    _require_released_train_chain(tier, manifests, current_version=current)
+    _verify_released_train_live_tier(connection, manifests[current])
+
+
 def _released_train_manifests_by_target(
     manifest_root: Path,
     tier: ArchiveTier,

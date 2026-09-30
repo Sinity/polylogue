@@ -2546,7 +2546,7 @@ def test_verified_backup_restore_owns_destination_train_and_preserves_original_e
         (original_root / "embeddings.db").unlink()
     payload = b'{"synthetic_record":"restore-custody"}\n'
     BlobStore(original_root / "blob").write_from_bytes(payload)
-    with closing(sqlite3.connect(original_root / "source.db")) as conn:
+    with closing(sqlite3.connect(original_root / "source.db")) as conn, conn:
         raw_id = write_source_raw_session(
             conn,
             origin=Origin.CODEX_SESSION,
@@ -2576,15 +2576,14 @@ def test_verified_backup_restore_owns_destination_train_and_preserves_original_e
     assert (provenance / "original-backup/verification-receipt.json").read_bytes() == receipt_bytes
     for tier in ("source", "user", "audit"):
         with (
-            closing(sqlite3.connect(package / f"{tier}.db")) as source,
+            closing(sqlite3.connect((package / f"{tier}.db").as_uri() + "?mode=ro&immutable=1", uri=True)) as source,
             closing(sqlite3.connect(destination / f"{tier}.db")) as restored,
         ):
             assert migration_runner._durable_literal_rows_digest(
                 source
             ) == migration_runner._durable_literal_rows_digest(restored)
     with ArchiveStore(destination) as store:
-        assert store._source_conn is not None
-        assert [tuple(row) for row in store._source_conn.execute("SELECT raw_id,native_id FROM raw_sessions")] == [
+        assert [tuple(row) for row in store.source_connection.execute("SELECT raw_id,native_id FROM raw_sessions")] == [
             (raw_id, None)
         ]
     assert (
@@ -2665,7 +2664,10 @@ def test_restore_pending_population_excludes_actual_readers_and_second_creator(
     from polylogue.storage.sqlite.population_admission import ArchivePopulationPendingError
 
     package_result = backup_archive(
-        output_dir=tmp_path / "packages", verify=True, archive_root_path=workspace_env["archive_root"]
+        output_dir=tmp_path / "packages",
+        profile="full_evidence",
+        verify=True,
+        archive_root_path=workspace_env["archive_root"],
     )
     assert package_result.ok and package_result.output_path
     package = Path(package_result.output_path)

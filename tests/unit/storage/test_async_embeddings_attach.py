@@ -383,7 +383,8 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
     monkeypatch.setattr(async_sqlite.aiosqlite, "connect", capture_connection)
 
     async def exercise() -> None:
-        backend = async_sqlite.SQLiteBackend(tmp_path / "absent.db")
+        backend = async_sqlite.SQLiteBackend(tmp_path / "index.db")
+        backend.db_path.unlink()
         with pytest.raises(sqlite3.OperationalError):
             await async_sqlite._open_configured_backend_connection(backend, read_only=True)
         assert len(connections) == 1

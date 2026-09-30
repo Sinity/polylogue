@@ -113,6 +113,9 @@ ordinary startup as authority for copied files.
 A restore requires the complete Source, User, and Audit core. Overlay and
 diagnostics profiles remain verified recovery evidence but receive a typed
 `restore_partial_durable_core` refusal for operational restoration.
+Backup acquisition retains stale Index and Ops as authenticated SQLite evidence
+without serving their read models. Their physical integrity and supported version
+remain required; ordinary query readers still refuse stale derived identity.
 Index and Ops that are omitted or carry an earlier derived identity are
 new empty tiers requiring convergence. Stale copied derived files remain
 detached evidence under `original-derived`; their stamps are never admitted
@@ -395,6 +398,8 @@ possible filesystem effect has been admitted, expiry returns `indeterminate`
 and the accepted restore continues; it does not cancel progressing work.
 `operation.await` or `operation.status` with the same request ID and principal
 reads the retained exchange's terminal result while that daemon remains live.
+An await may return a running observation or progress frame first; consumers
+follow its state and progress cursors until the terminal outcome.
 This unbound filesystem operation does not mint an Audit machine-request
 receipt. After a daemon crash, an unfinished destination therefore remains
 fenced evidence, not a claim of durable terminal success.

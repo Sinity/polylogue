@@ -736,7 +736,7 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
         slot=_NEXT_SOURCE_SLOT,
         owner_ref="owner:future-source",
         migration=claim,
-        riders=(_rider(),),
+        riders=(_production_rider(),),
         declared_at_ms=1,
     )
     (source_package / _NEXT_SOURCE_SIDECAR_NAME).write_text(

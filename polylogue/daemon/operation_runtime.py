@@ -401,9 +401,10 @@ class DaemonOperationRuntime:
     def emit_progress(self, request: DaemonOperationRequest, event: Mapping[str, object]) -> None:
         """Publish one bounded, request-scoped observation for ``operation.await``.
 
-        Progress is deliberately in-memory.  Audit remains the authority for
-        terminal state; a slow waiter may observe a visible gap and must then
-        use the terminal receipt rather than infer missing work from frames.
+        Progress is deliberately in-memory. Durably bound operations use
+        Audit for terminal state; unbound accepted operations use their exact
+        retained exchange result. A slow waiter may observe a visible gap and
+        must then read terminal state rather than infer work from frames.
         """
         request_id = str(request.request_id)
         with self._condition:
@@ -1070,6 +1071,23 @@ class DaemonOperationRuntime:
                         }
                     else:
                         state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
+                if (
+                    exchange is not None
+                    and exchange.binding is None
+                    and exchange.acceptance_started
+                    and exchange.future is not None
+                    and exchange.future.done()
+                ):
+                    # An unbound accepted operation owns this exact retained
+                    # result. A temporary Audit read gap cannot shadow its
+                    # actual completion with a fabricated running state.
+                    terminal = exchange.future.result().to_dict()
+                    result = terminal.get("result")
+                    state = dict(result) if isinstance(result, dict) else {"sequence": 0}
+                    state["outcome"] = terminal["outcome"]
+                    if "error" in terminal:
+                        state["error"] = terminal["error"]
+                    pending = False
                 if state is None:
                     unwinding = (
                         exchange is not None
@@ -1092,20 +1110,7 @@ class DaemonOperationRuntime:
                                 snapshot,
                             )
                         raise ValueError("operation_reference_unknown")
-                    if (
-                        exchange.binding is None
-                        and exchange.acceptance_started
-                        and exchange.future is not None
-                        and exchange.future.done()
-                    ):
-                        terminal = exchange.future.result().to_dict()
-                        result = terminal.get("result")
-                        state = dict(result) if isinstance(result, dict) else {"sequence": 0}
-                        state["outcome"] = terminal["outcome"]
-                        if "error" in terminal:
-                            state["error"] = terminal["error"]
-                    else:
-                        state = {"outcome": "running", "sequence": 0}
+                    state = {"outcome": "running", "sequence": 0}
                 if exchange is not None and "reference" not in state and exchange.accepted_reference is not None:
                     # A concurrent audit continuity publication may make the
                     # settled read briefly unavailable while progress remains

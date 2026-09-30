@@ -304,12 +304,25 @@ def _open_backup_readonly_connection(
     unapplicable. A version above the expected one is still refused: this
     runtime cannot interpret it. An unstamped tier (version 0) is refused too.
     """
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    # This is acquisition of SQLite evidence, not a read-model admission.
+    # Stale derived identity remains evidence to retain; ordinary product
+    # readers still enforce their current identity before serving rows.
+    connection = open_readonly_connection(path, immutable=immutable, timeout_class=timeout_class, validate_schema=False)
     try:
-        return open_readonly_connection(path, immutable=immutable, timeout_class=timeout_class)
-    except SchemaSkew as exc:
-        if not isinstance(exc.found, int) or not isinstance(exc.expected, int) or not (0 < exc.found < exc.expected):
-            raise
-        return open_readonly_connection(path, immutable=immutable, timeout_class=timeout_class, validate_schema=False)
+        try:
+            tier = ArchiveTier(path.stem)
+        except ValueError:
+            return connection
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if not ARCHIVE_BASELINE_VERSION_BY_TIER[tier] <= version <= ARCHIVE_VERSION_BY_TIER[tier]:
+            raise SchemaSkew(tier.value, ARCHIVE_VERSION_BY_TIER[tier], version)
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 
 def _sqlite_user_version(path: Path) -> int:

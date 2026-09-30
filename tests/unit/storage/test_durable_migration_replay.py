@@ -149,6 +149,22 @@ def test_recovery_rejects_changed_installed_sql_for_a_persisted_step(
         "-- migration-safety: additive-no-backup\nCREATE TABLE changed_items (id INTEGER PRIMARY KEY) STRICT;\n",
         encoding="utf-8",
     )
+    # Changing SQL alone is refused at the package binding boundary. A new
+    # coherent installed claim still cannot authenticate the old replay proof.
+    with pytest.raises(DurableChangeTrainError, match="sidecar SQL SHA-256 mismatch"):
+        migration_runner._load_migrations(ArchiveTier.SOURCE)
+    sidecar = source / "002.train.json"
+    declared = train_module.load_durable_change_train_manifest(sidecar)
+    changed = replace(
+        declared,
+        migration=migration_runner.durable_migration_claim_for_sql(
+            ArchiveTier.SOURCE,
+            "002_items.sql",
+            (source / "002_items.sql").read_text(encoding="utf-8"),
+            owner_ref=declared.migration.owner_ref,
+        ),
+    )
+    sidecar.write_text(json.dumps(migration_runner.durable_change_train_to_payload(changed)), encoding="utf-8")
     installed = migration_runner._load_migrations(ArchiveTier.SOURCE)
     assert next(step for step in installed if step.version == 2).sql == (source / "002_items.sql").read_text(
         encoding="utf-8"
@@ -221,6 +237,22 @@ def test_a_released_historical_prefix_remains_valid_under_a_later_runtime(
         "-- migration-safety: additive-no-backup\nCREATE TABLE changed_items (id INTEGER PRIMARY KEY) STRICT;\n",
         encoding="utf-8",
     )
+    # Changing SQL alone is refused at the package binding boundary. A new
+    # coherent installed claim still cannot authenticate the old replay proof.
+    with pytest.raises(DurableChangeTrainError, match="sidecar SQL SHA-256 mismatch"):
+        migration_runner._load_migrations(ArchiveTier.SOURCE)
+    sidecar = source / "002.train.json"
+    declared = train_module.load_durable_change_train_manifest(sidecar)
+    changed = replace(
+        declared,
+        migration=migration_runner.durable_migration_claim_for_sql(
+            ArchiveTier.SOURCE,
+            "002_items.sql",
+            (source / "002_items.sql").read_text(encoding="utf-8"),
+            owner_ref=declared.migration.owner_ref,
+        ),
+    )
+    sidecar.write_text(json.dumps(migration_runner.durable_change_train_to_payload(changed)), encoding="utf-8")
     installed = migration_runner._load_migrations(ArchiveTier.SOURCE)
     assert next(step for step in installed if step.version == 2).sql == (source / "002_items.sql").read_text(
         encoding="utf-8"

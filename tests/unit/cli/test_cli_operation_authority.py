@@ -202,6 +202,7 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "restore-verified-backup",
         (
             "ops",
+            "maintenance",
             "restore-verified-backup",
             "--backup-dir",
             str(_IMPORTABLE_EXPORT.parent),

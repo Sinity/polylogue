@@ -819,6 +819,13 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
         if any_durable_tier_exists and not (has_pending_bootstrap and not has_bootstrap_marker):
             if established_pair_without_audit:
                 assert_archive_format_lineage(root, tiers=frozenset({ArchiveTier.SOURCE, ArchiveTier.USER}))
+                from polylogue.storage.sqlite.durable_change_train import assert_released_durable_tier_lineage
+
+                for surviving in (ArchiveTier.SOURCE, ArchiveTier.USER):
+                    with contextlib.closing(
+                        open_readonly_connection(root / archive_tier_spec(surviving).filename, validate_schema=False)
+                    ) as connection:
+                        assert_released_durable_tier_lineage(root, surviving, connection)
                 raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
             assert_archive_format_lineage(root)
         elif format_marker.exists() and not any_durable_tier_exists:

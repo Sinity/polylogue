@@ -2074,8 +2074,9 @@ def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evid
         ArchiveStore.open_existing(destination)
 
 
+@pytest.mark.parametrize("audit_read_gap", [False, True])
 def test_accepted_restore_outlives_implicit_deadline_and_control_returns_terminal_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_read_gap: bool
 ) -> None:
     from time import monotonic
 
@@ -2129,8 +2130,23 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
             assert not isinstance(response, BaseException)
             assert response["outcome"] == "indeterminate"
             assert not release.is_set()
+            if audit_read_gap:
+                from polylogue.storage.sqlite.audit_continuity import AuditContinuityError
+
+                def unavailable_control_read(*args: Any, **kwargs: Any) -> Any:
+                    raise AuditContinuityError("synthetic temporary control read gap")
+
+                monkeypatch.setattr(operation_runtime, "open_operation_control", unavailable_control_read)
             release.set()
             terminal = stack.client.await_operation(request_id, archive_root=str(stack.archive_root))
+            while terminal is not None and terminal["result"]["outcome"] in {"accepted", "running", "indeterminate"}:
+                state = terminal["result"]
+                terminal = stack.client.await_operation(
+                    request_id,
+                    archive_root=str(stack.archive_root),
+                    after_sequence=state["sequence"],
+                    after_progress_sequence=state.get("progress_sequence", 0),
+                )
             assert terminal is not None and terminal["result"]["outcome"] == "completed", terminal
             assert terminal["result"]["result"]["operational_admission"] == "ready"
             status = stack.client.operation(
