@@ -25,6 +25,7 @@ current-producer failure and never deleted here.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import stat
 import zipfile
@@ -40,7 +41,7 @@ from polylogue.archive.revision_authority import (
     raw_receipt_order_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.raw_coordinates import split_zip_member_text
+from polylogue.core.raw_coordinates import zip_member_coordinate_candidates
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
@@ -376,16 +377,58 @@ def fragment_identity_shape(native_id: str) -> str | None:
     return None
 
 
+def _inventory_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size
+
+
+def _member_inventory(
+    container: Path,
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+) -> frozenset[str] | bool | None:
+    """Measure a container through one descriptor; cache only unchanged evidence."""
+    try:
+        descriptor = os.open(container, os.O_RDONLY | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return False
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as stream:
+        try:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return False
+            before = _inventory_identity(info)
+            cached = inventories.get(container)
+            if cached is not None and cached[0] == before:
+                names = cached[1]
+            else:
+                try:
+                    with zipfile.ZipFile(stream) as archive:
+                        names = frozenset(info.filename for info in archive.infolist() if not info.is_dir())
+                except zipfile.BadZipFile:
+                    names = False
+            if before != _inventory_identity(os.fstat(stream.fileno())):
+                return None
+            if before != _inventory_identity(container.stat()):
+                return None
+            inventories[container] = before, names
+            return names
+        except OSError:
+            # An admitted container that disappears during the measurement
+            # leaves a retryable observation, not a proof of permanent loss.
+            return None
+
+
 def _source_presence(
     archive_root: Path,
     source_path: str,
-    inventories: dict[Path, frozenset[str] | bool | None],
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
 ) -> bool | None:
     """Present, proven absent, or unavailable source evidence for this audit.
 
     A non-ZIP container proves no members remain. A permission or I/O fault
-    cannot prove loss. Inventories are scoped to one audit, never cached across
-    retries of an unreadable source.
+    cannot prove loss. Inventories are scoped to one audit and bound to the
+    opened container's identity, never reused after a replacement or rewrite.
     """
     direct = Path(source_path)
     if not direct.is_absolute():
@@ -399,29 +442,20 @@ def _source_presence(
     else:
         return stat.S_ISREG(info.st_mode)
     container_text, separator, member = str(direct).partition("!")
-    if not separator or not member:
-        # The shared lexical splitter also identifies removed or non-ZIP
-        # containers. Its live parser alone would erase unreadable evidence.
-        try:
-            coordinate = split_zip_member_text(str(direct))
-        except OSError:
+    if separator and member:
+        names = _member_inventory(Path(container_text), inventories)
+        if names is None:
             return None
-        if coordinate is None:
-            return False
-        container_text, member = coordinate
-    container = Path(container_text)
-    if container not in inventories:
-        try:
-            with container.open("rb") as stream, zipfile.ZipFile(stream) as archive:
-                inventories[container] = frozenset(info.filename for info in archive.infolist() if not info.is_dir())
-        except (FileNotFoundError, NotADirectoryError, IsADirectoryError, zipfile.BadZipFile):
-            inventories[container] = False
-        except OSError:
-            inventories[container] = None
-    names = inventories[container]
-    if names is None:
-        return None
-    return member in names if isinstance(names, frozenset) else False
+        return member in names if isinstance(names, frozenset) else False
+    # Acquisition permits arbitrary ZIP filenames. Probe the shared owner's
+    # candidates in order, without selecting a boundary from spelling alone.
+    for container, member in zip_member_coordinate_candidates(str(direct)):
+        names = _member_inventory(container, inventories)
+        if names is None:
+            return None
+        if isinstance(names, frozenset):
+            return member in names
+    return False
 
 
 def typed_raw_cte(conn: sqlite3.Connection, *, name: str) -> str:
@@ -617,15 +651,12 @@ def audit_source_conservation(
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
-    source_presence: dict[str, bool | None] = {}
-    inventories: dict[Path, frozenset[str] | bool | None] = {}
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]] = {}
     for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, blob_hash, term in typed_rows:
         # A work event is authored by the archive itself; its retained raw is
         # the source, so there is no acquired file to probe.
         if probe_filesystem and not is_work_event_raw_id(str(raw_id)):
-            if source_path not in source_presence:
-                source_presence[source_path] = _source_presence(archive_root, str(source_path), inventories)
-            present = source_presence[source_path]
+            present = _source_presence(archive_root, str(source_path), inventories)
             if present is None:
                 term = _TERM_SOURCE_UNAVAILABLE
             elif not present:

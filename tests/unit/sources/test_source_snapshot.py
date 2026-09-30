@@ -704,7 +704,7 @@ def test_frontier_refuses_member_substitution_between_enumeration_and_open(
     target.write_bytes(b"unrelated\n")
     original = source_snapshot._snapshot_regular_file
 
-    def substitute(path: Path, expected: os.stat_result) -> tuple[str, int, str]:
+    def substitute(path: Path, expected: os.stat_result, *, anchor: int, coordinate: str) -> tuple[str, int, str]:
         if replacement == "parent-symlink":
             member.unlink()
             directory.rmdir()
@@ -715,7 +715,7 @@ def test_frontier_refuses_member_substitution_between_enumeration_and_open(
                 member.symlink_to(target)
             else:
                 member.write_bytes(b"replacement\n")
-        return original(path, expected)
+        return original(path, expected, anchor=anchor, coordinate=coordinate)
 
     monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", substitute)
     frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
@@ -723,3 +723,117 @@ def test_frontier_refuses_member_substitution_between_enumeration_and_open(
     assert frontier.members == ()
     assert not frontier.complete
     frontier.verify_integrity()
+
+
+@pytest.mark.parametrize("replacement", ["symlink", "regular"])
+def test_cut_refuses_equal_byte_substitution_before_copy_even_if_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    """Mutation: reopening the source path copies external equal bytes with the original inode's identity."""
+    root = tmp_path / "declared"
+    root.mkdir()
+    member = root / "session.jsonl"
+    member.write_bytes(b"equal bytes\n")
+    external = tmp_path / "unrelated.jsonl"
+    external.write_bytes(member.read_bytes())
+    held = tmp_path / "original.jsonl"
+    original = source_snapshot._copy_file
+
+    def substituted_copy(source, destination, policy, *, expected, captured_size, anchor, coordinate):
+        member.rename(held)
+        if replacement == "symlink":
+            member.symlink_to(external)
+        else:
+            member.write_bytes(external.read_bytes())
+        try:
+            return original(
+                source,
+                destination,
+                policy,
+                expected=expected,
+                captured_size=captured_size,
+                anchor=anchor,
+                coordinate=coordinate,
+            )
+        finally:
+            member.unlink()
+            held.rename(member)
+
+    monkeypatch.setattr(source_snapshot, "_copy_file", substituted_copy)
+    destination = tmp_path / "cut"
+    with pytest.raises(SourceSnapshotError):
+        execute_source_cut(
+            preflight_source_cut([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)]), destination
+        )
+    assert not destination.exists()
+    assert member.read_bytes() == b"equal bytes\n"
+
+
+def test_sqlite_frontier_refuses_persistent_symlink_substitution_during_logical_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: path-resolved SQLite revision publishes an external database under the declared coordinate."""
+    database = tmp_path / "declared.sqlite"
+    external = tmp_path / "external.sqlite"
+    for path, value in ((database, "declared"), (external, "unrelated")):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+            conn.execute("INSERT INTO state VALUES (?)", (value,))
+    original = source_snapshot.sqlite_member_revision
+
+    def substitute(path: Path) -> str:
+        database.rename(tmp_path / "original.sqlite")
+        database.symlink_to(external)
+        return original(path)
+
+    monkeypatch.setattr(source_snapshot, "sqlite_member_revision", substitute)
+    frontier = build_source_frontier([SourceDeclaration("database", SourceRole.MUTABLE_SQLITE, database, True)])
+    assert frontier.root_states["database"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+
+
+@pytest.mark.parametrize("file_root", [False, True])
+def test_stable_declared_parent_alias_preserves_observation_and_cut(tmp_path: Path, file_root: bool) -> None:
+    """Mutation: no-following every absolute ancestor rejects a stable Documents alias."""
+    actual = tmp_path / "actual-documents"
+    actual.mkdir()
+    (actual / "sessions").mkdir()
+    (actual / "sessions" / "session.jsonl").write_bytes(b"declared\n")
+    alias = tmp_path / "Documents"
+    alias.symlink_to(actual, target_is_directory=True)
+    root = alias / "sessions" / "session.jsonl" if file_root else alias / "sessions"
+    declaration = SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)
+    frontier = build_source_frontier([declaration])
+    assert frontier.complete
+    assert frontier.root_states["declared"] is FrontierState.PRESENT
+    assert len(frontier.members) == 1
+    assert frontier.members[0].content_sha256 == hashlib.sha256(b"declared\n").hexdigest()
+    cut = execute_source_cut(preflight_source_cut([declaration]), tmp_path / "cut")
+    assert cut.counts.conserved
+    assert reacquire_candidate(cut)[0].path.read_bytes() == b"declared\n"
+
+
+def test_substituted_declared_parent_alias_cannot_publish_external_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: a root anchored for reads without rechecking its declaration publishes an old root under a new alias."""
+    actual = tmp_path / "actual-documents"
+    external = tmp_path / "external-documents"
+    for directory in (actual, external):
+        (directory / "sessions").mkdir(parents=True)
+        (directory / "sessions" / "session.jsonl").write_bytes(b"equal bytes\n")
+    alias = tmp_path / "Documents"
+    alias.symlink_to(actual, target_is_directory=True)
+    root = alias / "sessions"
+    original = source_snapshot._snapshot_regular_file
+
+    def substitute(path, expected, *, anchor, coordinate):
+        alias.unlink()
+        alias.symlink_to(external, target_is_directory=True)
+        return original(path, expected, anchor=anchor, coordinate=coordinate)
+
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", substitute)
+    frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()

@@ -684,12 +684,14 @@ def _check_source_conservation_at_index_path(
     and history sidecar is materialized or carries a typed exclusion whose
     rule the report cites; an on-disk probe turns a raw row whose source file
     vanished into ``source_missing``. A raw acquired from inside an export
-    bundle records an ``archive!member`` coordinate, which the probe resolves
-    to its container and requires the member to be present in. Reverse: every
+    bundle records an ``archive!member`` or ``archive:member`` coordinate, which
+    the probe resolves to its container and requires the member to be present
+    in. Unreadable inventories are retryable ``source_unavailable`` evidence;
+    a non-ZIP container proves no retained member inventory. Reverse: every
     session traces to a raw row that is not a declared non-session artifact,
     and every message, block, and attachment ref traces to its owner. Blocking
     terms are the unexplained ones (``unexplained``, ``unclassified_shape``,
-    ``quarantined_cohort_unmaterialized``, ``source_lost``, orphans,
+    ``quarantined_cohort_unmaterialized``, ``source_lost``, ``source_unavailable``, orphans,
     phantoms); a source file that is gone while its raw payload bytes are
     retained (``source_missing``) is typed accounting, and ``pending``,
     ``authority_blocked_head``, plus hook events whose session file was never

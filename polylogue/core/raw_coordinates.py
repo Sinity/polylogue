@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import zipfile
+from collections.abc import Iterator
 from hashlib import sha256
 from math import isqrt
 from pathlib import Path
@@ -84,6 +85,21 @@ def zip_member_identity_coordinate(
     return (entry_ordinal, split_index) if raw_id == expected_raw_id else None
 
 
+def zip_member_coordinate_candidates(source_path: str) -> Iterator[tuple[Path, str]]:
+    """Yield lexical colon boundaries without claiming a container is readable.
+
+    Shortest container first preserves acquisition's real-ZIP selection law.
+    The observer must distinguish unreadable candidates from proven non-ZIPs;
+    lexical spelling alone cannot select an arbitrary removed container.
+    """
+    start = 0
+    while (separator_at := source_path.find(":", start)) != -1:
+        start = separator_at + 1
+        if separator_at == 0 or separator_at == len(source_path) - 1:
+            continue
+        yield Path(source_path[:separator_at]), source_path[start:]
+
+
 def zip_member_coordinate(source_path: str) -> tuple[Path, str] | None:
     """Split a recorded ``<container>:<member>`` coordinate at its real ZIP.
 
@@ -96,14 +112,9 @@ def zip_member_coordinate(source_path: str) -> tuple[Path, str] | None:
     """
     if Path(source_path).exists():
         return None
-    start = 0
-    while (separator_at := source_path.find(":", start)) != -1:
-        start = separator_at + 1
-        if separator_at == 0 or separator_at == len(source_path) - 1:
-            continue
-        container_path = Path(source_path[:separator_at])
+    for container_path, member in zip_member_coordinate_candidates(source_path):
         if container_path.is_file() and zipfile.is_zipfile(container_path):
-            return container_path, source_path[start:]
+            return container_path, member
     return None
 
 
@@ -140,6 +151,7 @@ def zip_member_container(source_path: str) -> Path | None:
 __all__ = [
     "zip_member_container",
     "zip_member_coordinate",
+    "zip_member_coordinate_candidates",
     "split_zip_member_text",
     "MemberAddressingMode",
     "zip_member_identity_coordinate",

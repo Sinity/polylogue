@@ -763,3 +763,14 @@ def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_p
     _write_member(real_zip, [_session("one")])
     assert archive_debt._source_artifact_exists(f"{real_zip}:conversations.json") is True
     assert blob_integrity._source_path_availability(f"{real_zip}:conversations.json")[0] is True
+
+
+def test_zip_coordinate_candidates_preserve_every_colon_boundary() -> None:
+    """Lexical candidates must not guess a unique boundary for arbitrary removed containers."""
+    from polylogue.core.raw_coordinates import zip_member_coordinate_candidates
+
+    assert list(zip_member_coordinate_candidates("/imports/odd:name.data:a:b.json")) == [
+        (Path("/imports/odd"), "name.data:a:b.json"),
+        (Path("/imports/odd:name.data"), "a:b.json"),
+        (Path("/imports/odd:name.data:a"), "b.json"),
+    ]
