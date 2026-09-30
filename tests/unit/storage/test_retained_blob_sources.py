@@ -17,6 +17,7 @@ import hashlib
 import os
 import sqlite3
 import zipfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from polylogue.operations import archive_backup
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.source_blob_restoration import RetainedBlobSources
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -704,11 +706,28 @@ def test_cancel_after_staging_first_blob_discards_owned_stage(tmp_path: Path, mo
     original = adapter._stage_blob_from_recorded_source
     calls = 0
 
-    def stage_then_cancel(*args: object, **kwargs: object) -> tuple[PreparedBlob | None, str | None]:
+    def stage_then_cancel(
+        archive: ArchiveStore,
+        blob_store: BlobStore,
+        raw_id: str,
+        *,
+        blob_hash: str,
+        row: Mapping[str, object] | None = None,
+        sources: RetainedBlobSources | None = None,
+        on_staged: Callable[[PreparedBlob], None] | None = None,
+    ) -> tuple[PreparedBlob | None, str | None]:
         nonlocal calls
         calls += 1
         if calls == 1:
-            return original(*args, **kwargs)
+            return original(
+                archive,
+                blob_store,
+                raw_id,
+                blob_hash=blob_hash,
+                row=row,
+                sources=sources,
+                on_staged=on_staged,
+            )
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(adapter, "_stage_blob_from_recorded_source", stage_then_cancel)
