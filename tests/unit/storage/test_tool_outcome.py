@@ -460,3 +460,211 @@ def test_sidecar_execution_evidence_is_per_record_not_per_tool_id(tmp_path: Path
         ]
     finally:
         conn.close()
+
+
+def test_distinct_result_owners_keep_distinct_sidecar_and_inline_verdicts(tmp_path: Path) -> None:
+    """Owner-qualified Claude evidence permits different outcomes for one tool id.
+
+    Anti-vacuity: restoring a tool-id-wide contradiction check refuses the
+    sidecar parse before the two result owners can be written independently.
+    The inline parse proves the same [ok/0, error/2] projection is already
+    admissible when those fields live on the result blocks.
+    """
+
+    def payload(*, sidecar: bool) -> list[dict[str, object]]:
+        records: list[dict[str, object]] = [
+            {
+                "type": "assistant",
+                "uuid": "use",
+                "sessionId": "record-scoped-outcomes",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "call-1", "name": "run", "input": {}}],
+                },
+            }
+        ]
+        for record_id, exit_code in (("result-ok", 0), ("result-error", 2)):
+            segment: dict[str, object] = {
+                "type": "tool_result",
+                "tool_use_id": "call-1",
+                "content": record_id,
+            }
+            record: dict[str, object] = {
+                "type": "user",
+                "uuid": record_id,
+                "sessionId": "record-scoped-outcomes",
+                "message": {"role": "user", "content": [segment]},
+            }
+            if sidecar:
+                record["toolUseResult"] = {"exitCode": exit_code}
+            else:
+                segment["is_error"] = exit_code != 0
+                segment["exit_code"] = exit_code
+            records.append(record)
+        return records
+
+    observed: dict[str, list[tuple[str, int | None]]] = {}
+    for evidence, sidecar in (("sidecar", True), ("inline", False)):
+        conn = _connect(tmp_path / f"{evidence}.db")
+        try:
+            session = parse_code(payload(sidecar=sidecar), "record-scoped-outcomes")
+            if sidecar:
+                evidence_events = [
+                    event for event in session.session_events if event.event_type == "claude_tool_execution_result"
+                ]
+                assert [event.source_message_provider_id for event in evidence_events] == ["result-ok", "result-error"]
+            session_id = write_parsed_session_to_archive(conn, session)
+            rows = conn.execute(
+                """
+                SELECT m.native_id, b.tool_outcome, b.tool_result_exit_code
+                FROM blocks b JOIN messages m ON m.message_id = b.message_id
+                WHERE b.session_id = ? AND b.block_type = 'tool_result'
+                ORDER BY m.position, b.position
+                """,
+                (session_id,),
+            ).fetchall()
+            observed[evidence] = [(row["tool_outcome"], row["tool_result_exit_code"]) for row in rows]
+            assert [(row["native_id"], row["tool_outcome"], row["tool_result_exit_code"]) for row in rows] == [
+                ("result-ok", ToolOutcome.OK.value, 0),
+                ("result-error", ToolOutcome.ERROR.value, 2),
+            ]
+        finally:
+            conn.close()
+    assert observed["sidecar"] == observed["inline"]
+
+
+@pytest.mark.parametrize(
+    ("exit_codes", "expected"),
+    [((2, 2), ToolOutcome.ERROR.value), ((0, 2), None)],
+    ids=["same-outcome-is-unambiguous", "different-owner-outcomes-refuse"],
+)
+def test_unmatched_tool_use_sidecar_fallback_requires_one_outcome(
+    exit_codes: tuple[int, int], expected: str | None, tmp_path: Path
+) -> None:
+    """An unmatched use may use sidecars only when no sibling verdict competes."""
+    conn = _connect(tmp_path / f"unmatched-{exit_codes[0]}-{exit_codes[1]}.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="unmatched-sidecar-fallback",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="use",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="call-1", tool_name="run")],
+                )
+            ],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="claude_tool_execution_result",
+                    source_message_provider_id=owner,
+                    payload={"tool_use_id": "call-1", "exit_code": exit_code},
+                )
+                for owner, exit_code in zip(("result-a", "result-b"), exit_codes, strict=True)
+            ],
+        )
+        if expected is None:
+            with pytest.raises(ValueError):
+                write_parsed_session_to_archive(conn, session)
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        else:
+            session_id = write_parsed_session_to_archive(conn, session)
+            assert (
+                conn.execute(
+                    "SELECT tool_outcome FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
+                    (session_id,),
+                ).fetchone()[0]
+                == expected
+            )
+    finally:
+        conn.close()
+
+
+def test_conflicting_sidecars_for_same_result_owner_still_refuse(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "same-owner-conflict.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="same-owner-conflict",
+            messages=[ParsedMessage(provider_message_id="use", role=Role.ASSISTANT, blocks=[])],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="claude_tool_execution_result",
+                    source_message_provider_id="result-a",
+                    payload={"tool_use_id": "call-1", "exit_code": exit_code},
+                )
+                for exit_code in (0, 2)
+            ],
+        )
+        with pytest.raises(ValueError):
+            write_parsed_session_to_archive(conn, session)
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated unmatched uses probe outcome bounds instead of rescanning owners.
+
+    Anti-vacuity: removing the `(tool_id, outcome)` index and scanning/grouping
+    every same-ID sidecar per use makes the large-cohort delta grow with the
+    number of record owners.
+    """
+    from polylogue.sources import tool_outcomes
+
+    def measured_work(sidecars: int, uses: int, name: str) -> int:
+        nonlocal_steps = [0]
+        real_connect: Callable[..., sqlite3.Connection] = sqlite3.connect
+
+        def progress() -> int:
+            nonlocal_steps[0] += 1
+            return 0
+
+        def traced_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+            evidence = real_connect(*args, **kwargs)
+            if args and args[0] == ":memory:":
+                evidence.set_progress_handler(progress, 1)
+            return evidence
+
+        conn = _connect(tmp_path / f"fallback-work-{name}.db")
+        try:
+            session = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id=f"fallback-work-{name}",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id=f"use-{ordinal}",
+                        role=Role.ASSISTANT,
+                        blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="call-1", tool_name="run")],
+                    )
+                    for ordinal in range(uses)
+                ],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="claude_tool_execution_result",
+                        source_message_provider_id=f"result-{ordinal}",
+                        payload={"tool_use_id": "call-1", "exit_code": 2},
+                    )
+                    for ordinal in range(sidecars)
+                ],
+            )
+            with monkeypatch.context() as patch:
+                patch.setattr(tool_outcomes.sqlite3, "connect", traced_connect)
+                session_id = write_parsed_session_to_archive(conn, session)
+            rows = conn.execute(
+                "SELECT COUNT(*), SUM(tool_outcome = ?) FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
+                (ToolOutcome.ERROR.value, session_id),
+            ).fetchone()
+            assert rows is not None
+            assert tuple(rows) == (uses, uses)
+            return nonlocal_steps[0]
+        finally:
+            conn.close()
+
+    small_one = measured_work(4, 1, "small-one")
+    small_many = measured_work(4, 32, "small-many")
+    large_one = measured_work(256, 1, "large-one")
+    large_many = measured_work(256, 32, "large-many")
+    assert large_many - large_one <= (small_many - small_one) * 3

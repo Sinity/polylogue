@@ -30,7 +30,7 @@ class _OutcomeIndex:
                 exit_code INTEGER,
                 PRIMARY KEY (tool_id, owner_present, owner)
             ) WITHOUT ROWID;
-            CREATE TABLE sidecar_any (tool_id TEXT PRIMARY KEY, outcome TEXT NOT NULL) WITHOUT ROWID;
+            CREATE INDEX sidecar_tool_outcome ON sidecar (tool_id, outcome);
             CREATE TABLE result_state (
                 tool_id TEXT PRIMARY KEY,
                 result_count INTEGER NOT NULL,
@@ -52,12 +52,6 @@ class _OutcomeIndex:
     def add_sidecar(
         self, tool_id: str, owner: str | None, outcome: ToolOutcome, exit_code: int | None, *, origin: Origin
     ) -> None:
-        prior = self.conn.execute("SELECT outcome FROM sidecar_any WHERE tool_id = ?", (tool_id,)).fetchone()
-        if prior is not None and prior[0] != outcome.value:
-            raise ValueError(
-                f"tool outcome derivation refused for origin {origin.value!r}: "
-                f"conflicting execution evidence for tool_id={tool_id!r}"
-            )
         owner_present, owner_value = self._owner_key(owner)
         prior = self.conn.execute(
             "SELECT outcome FROM sidecar WHERE tool_id = ? AND owner_present = ? AND owner = ?",
@@ -68,7 +62,6 @@ class _OutcomeIndex:
                 f"tool outcome derivation refused for origin {origin.value!r}: "
                 f"conflicting execution evidence for tool_id={tool_id!r}"
             )
-        self.conn.execute("INSERT OR REPLACE INTO sidecar_any VALUES (?, ?)", (tool_id, outcome.value))
         self.conn.execute(
             """INSERT INTO sidecar VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (tool_id, owner_present, owner) DO UPDATE SET
@@ -101,9 +94,30 @@ class _OutcomeIndex:
         value = self._sidecar_value(tool_id, owner, "exit_code")
         return int(value) if value is not None else None
 
-    def any_sidecar_outcome(self, tool_id: str) -> ToolOutcome | None:
-        row = self.conn.execute("SELECT outcome FROM sidecar_any WHERE tool_id = ?", (tool_id,)).fetchone()
-        return ToolOutcome(row[0]) if row is not None else None
+    def unmatched_sidecar_outcome(self, tool_id: str, *, origin: Origin) -> ToolOutcome | None:
+        """Resolve an otherwise unmatched tool use only from one shared verdict.
+
+        Owner-qualified sidecars normally resolve their own result blocks. If
+        no result was paired, their tool-ID-wide projection is usable only
+        when every record reports the same outcome; choosing one owner's
+        verdict would silently attribute evidence across records.
+        """
+        with closing(
+            self.conn.execute("SELECT outcome FROM sidecar WHERE tool_id = ? ORDER BY outcome ASC LIMIT 1", (tool_id,))
+        ) as rows:
+            first = rows.fetchone()
+        if first is None:
+            return None
+        with closing(
+            self.conn.execute("SELECT outcome FROM sidecar WHERE tool_id = ? ORDER BY outcome DESC LIMIT 1", (tool_id,))
+        ) as rows:
+            last = rows.fetchone()
+        if last is not None and last[0] != first[0]:
+            raise ValueError(
+                f"tool outcome derivation refused for origin {origin.value!r}: "
+                f"ambiguous execution evidence for unmatched tool use tool_id={tool_id!r}"
+            )
+        return ToolOutcome(first[0])
 
     def add_result(self, tool_id: str, outcome: ToolOutcome) -> None:
         row = self.conn.execute("SELECT result_count FROM result_state WHERE tool_id = ?", (tool_id,)).fetchone()
@@ -278,7 +292,7 @@ def _normalize_message(index: _OutcomeIndex, message: ParsedMessage, *, origin: 
         elif block.type is BlockType.TOOL_USE:
             outcome = index.next_result(block.tool_id) if block.tool_id else None
             if outcome is None and block.tool_id:
-                outcome = index.any_sidecar_outcome(block.tool_id)
+                outcome = index.unmatched_sidecar_outcome(block.tool_id, origin=origin)
             blocks.append(block.model_copy(update={"tool_outcome": outcome or ToolOutcome.NO_RESULT}))
         else:
             blocks.append(block)
