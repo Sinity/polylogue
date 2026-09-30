@@ -54,7 +54,9 @@ The format marker retains immutable baseline birth versions and fingerprints
 after migration. Isolated runtime consumer probes and canonical schema census
 build their empty connection through the baseline plus the actual numbered
 migration runner. File-backed probes declare their owned temporary path;
-populated or attached connections refuse. Probes never release the train
+in-memory probes consume a verified SQLite backup from an owned temporary
+file and compare exact schema, rows and version before accepting it. Populated
+or attached connections refuse. Probes never release the train
 whose consumers they are proving.
 Released train admission checks the physical archive identity, installed and
 historical schema bindings, version, `quick_check` and `integrity_check`; it

@@ -208,6 +208,10 @@ def test_backup_uses_a_valid_external_active_index_target(workspace_env: dict[st
         connection.execute("INSERT INTO marker VALUES ('stale')")
     external = tmp_path / "external" / "index.db"
     external.parent.mkdir()
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(external, ArchiveTier.INDEX)
     with sqlite3.connect(external) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker VALUES ('active')")
@@ -247,6 +251,10 @@ def test_backup_maps_a_retired_nested_active_index_without_recursive_search(
     nested = root / "nested"
     generation = nested / ".index-generations" / "gen-retained" / "index.db"
     generation.parent.mkdir(parents=True)
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(generation, ArchiveTier.INDEX)
     with sqlite3.connect(generation) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
     retired_root = root.parent / "retired-archive"
@@ -528,10 +536,8 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert receipt["verdict"] == "success"
     assert receipt["manifest_sha256"] == hashlib.sha256((backup_root / "manifest.json").read_bytes()).hexdigest()
     artifact_inventory = {item["path"]: item for item in receipt["artifact_inventory"]}
-    # The backup carries this archive's own format marker and bootstrap
-    # receipt: they are lineage authority a restore needs, not rebuildable
-    # cache (#5275). Their absence from the expected set is what made this
-    # assertion describe a pre-marker archive.
+    # Format birth authority and released Source002 history are retained
+    # together; neither is rebuildable cache.
     assert set(artifact_inventory) == {
         "blob",
         f"blob/{blob_hash[:2]}",
@@ -546,7 +552,8 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         ".polylogue-format.json",
         ".maintenance-state",
         ".maintenance-state/durable-change-trains",
-        ".maintenance-state/durable-change-trains/.bootstrap",
+        ".maintenance-state/durable-change-trains/source-002.json",
+        ".maintenance-state/durable-change-trains/.source-002.json.lock",
     }
     assert artifact_inventory["user.db"]["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
     assert "verification-receipt.json" not in artifact_inventory

@@ -4846,30 +4846,24 @@ async def test_browser_host_child_is_terminated_when_its_service_is_cancelled(
 
 
 @pytest.mark.asyncio
-async def test_full_profile_names_missing_source_tier_without_starting_raw_service(tmp_path: Path) -> None:
-    """An existing archive missing source.db reports the failed prerequisite.
-
-    Removing the composition root's prerequisite resolution starts raw work
-    or leaves its state pending. A newly empty archive follows the separate
-    first-acquisition path and is covered by the live intake tests.
-    """
+async def test_established_missing_source_refuses_before_starting_services(tmp_path: Path) -> None:
+    """Lost Source custody never becomes a newly created empty acquisition tier."""
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import _check_schema_version_fast
-    from polylogue.daemon.services import ServiceProfile, ServiceState
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
 
     archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    # This is a partial archive whose index was initialized before any raw
-    # tier existed. Deleting source.db from a completed six-tier bootstrap
-    # instead invalidates its authenticated durable bootstrap receipt.
-    initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(archive_root)
+    (archive_root / "source.db").unlink()
+    retained = {name: (archive_root / name).read_bytes() for name in ("user.db", "audit.db")}
     with contextlib.ExitStack() as stack:
         _daemon_startup_stubs(stack, daemon_cli, archive_root)
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", _check_schema_version_fast))
         supervisors = _capture_supervisor(stack, daemon_cli)
-        task = asyncio.create_task(
-            daemon_cli.run_daemon_services(
+        with pytest.raises(DurableChangeTrainError):
+            await daemon_cli.run_daemon_services(
                 sources=(),
                 enable_watch=True,
                 enable_browser_capture=False,
@@ -4878,26 +4872,9 @@ async def test_full_profile_names_missing_source_tier_without_starting_raw_servi
                 enable_api=False,
                 service_profile=ServiceProfile.PRODUCTION,
             )
-        )
-        try:
-            async with asyncio.timeout(5):
-                while not supervisors:
-                    if task.done():
-                        await task
-                    await asyncio.sleep(0.01)
-            supervisor = supervisors[0]
-            assert supervisor.state("raw_observation_convergence") is ServiceState.UNAVAILABLE
-            assert supervisor.state("fair_intake") is ServiceState.UNAVAILABLE
-            assert not supervisor.is_schedulable("raw_observation_convergence")
-            assert not supervisor.is_schedulable("fair_intake")
-            observation = supervisor.board.get_or_unavailable("raw_materialization")
-            assert observation.state.value == "unavailable"
-            assert observation.reason == "source.db is absent"
-        finally:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=10)
-    assert not [task for task in supervisors[0].tasks if not task.done()]
+    assert not supervisors
+    assert not (archive_root / "source.db").exists()
+    assert {name: (archive_root / name).read_bytes() for name in retained} == retained
 
 
 @pytest.mark.asyncio

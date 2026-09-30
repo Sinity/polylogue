@@ -37,20 +37,15 @@ def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
     assert list(clone.iterdir()) == []
 
 
-def test_clone_reproduces_the_durable_bootstrap_marker_and_both_roots_open(
+def test_clone_preserves_original_proof_and_both_owned_roots_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A clone retains baseline birth proof and executes its own migration train.
-
-    The baseline marker remains byte-identical. Source002 history instead
-    binds the newly constructed destination inode; copying the source train
-    would make the destination fail ordinary released-state admission.
-    """
+    """A clone retains original proof and executes a destination-owned train."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     template = tmp_path / "template"
     clone = tmp_path / "clone"
-    marker = Path(".maintenance-state/durable-change-trains/.bootstrap")
+    marker = Path(".maintenance-state/durable-change-trains/source-002.json")
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "configured")
     with ArchiveStore(template):
         pass
@@ -58,7 +53,7 @@ def test_clone_reproduces_the_durable_bootstrap_marker_and_both_roots_open(
 
     clone_archive_template(template, clone)
 
-    assert clone.joinpath(marker).read_bytes() == source_identity
+    assert clone.joinpath(marker).read_bytes() != source_identity
     with ArchiveStore(template):
         pass
     with ArchiveStore(clone):

@@ -23,7 +23,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -688,7 +688,7 @@ def build_immutable_tree(
                     "resources": _measure_resources(staging, files, probe=probe).to_payload(),
                 }
                 (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-                _publish_sealed_staging(staging, final_root)
+                _publish_sealed_staging(staging, final_root, probe=probe)
             except Exception:
                 _remove_tree(staging)
                 raise
@@ -2803,7 +2803,7 @@ def _rename_sealed(source: Path, destination: Path) -> None:
                 pass
 
 
-def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
+def _publish_sealed_staging(staging: Path, final_root: Path, *, probe: _ConstructionProbe) -> None:
     """Seal, atomically hand off, then leave no writable final on failure.
 
     The source tree is sealed before the first rename attempt. Some filesystems
@@ -2825,6 +2825,59 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
             # operation remains atomic without reopening either tree).
             handoff = final_root.parent / f".{final_root.name}.{uuid.uuid4().hex}.handoff"
             _copy_tree(staging, handoff)
+            # Copying changes durable inode identity. Authenticate the sealed
+            # original before consuming its synthetic recipe, then regenerate
+            # destination-owned train receipts instead of publishing copied
+            # active authority for different files.
+            if (staging / "manifest.json").is_file():
+                with os.fdopen(
+                    _open_no_follow(staging / "manifest.json", os.O_RDONLY), "r", encoding="utf-8"
+                ) as handle:
+                    payload = json.load(handle)
+                entries = _manifest_file_entries(tuple(payload["files"]))
+                _assert_authenticated_source_files(staging, entries)
+                _assert_authenticated_source_files(handoff, entries)
+                for relative, _, _ in (*entries, ("manifest.json", 0, "")):
+                    source_stat = _safe_stat(staging / relative)
+                    target_stat = _safe_stat(handoff / relative)
+                    if (source_stat.st_dev, source_stat.st_ino) == (target_stat.st_dev, target_stat.st_ino):
+                        raise ValueError(f"publication copy file inode was not detached: {relative}") from None
+                for path in _pinned_paths(handoff):
+                    _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
+                _safe_chmod(handoff, _safe_stat(handoff).st_mode | stat.S_IWUSR)
+                from tests.infra.archive_clone import populate_authenticated_archive_clone
+
+                proof = populate_authenticated_archive_clone(
+                    staging,
+                    handoff,
+                    source_manifest_id=str(payload.get("manifest_id", payload["key"])),
+                    source_files=entries,
+                    retained_artifact_reference=False,
+                    validate_source_files=lambda: _assert_authenticated_source_files(staging, entries),
+                )
+                if proof is not None:
+                    unchanged = tuple(entry for entry in entries if entry[0] not in proof.replaced_paths)
+                    expected = {path: (size, digest) for path, size, digest in unchanged}
+                    actual = {
+                        path: (size, digest)
+                        for path, size, digest in _manifest_file_entries(_archive_files(handoff))
+                        if path not in proof.replaced_paths
+                    }
+                    if actual != expected:
+                        raise ValueError(
+                            "publication population changed files outside its authenticated proof"
+                        ) from None
+                    files = _archive_files(handoff)
+                    resources = _measure_resources(handoff, files, probe=probe, measure_rows="facts" in payload)
+                    if "facts" in payload:
+                        manifest = replace(_read_manifest(staging / "manifest.json"), files=files, resources=resources)
+                        payload = manifest.to_payload()
+                    else:
+                        payload["files"] = files
+                        payload["resources"] = resources.to_payload()
+                    _write_private_text(
+                        handoff / "manifest.json", json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n"
+                    )
             # Seal the handoff before it can be renamed.  A killed copy can
             # leave only a private handoff; final visibility is one rename of
             # an already sealed tree, never a writable directory.
@@ -3156,7 +3209,7 @@ def _build_seeded_archive_inner(
                     staging / "manifest.json",
                     json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
                 )
-                _publish_sealed_staging(staging, final_root)
+                _publish_sealed_staging(staging, final_root, probe=probe)
                 break
             except sqlite3.OperationalError as exc:
                 # Same-process zombie-connection lock (polylogue-lbgc): a

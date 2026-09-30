@@ -1316,7 +1316,9 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
-    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    receipt = tmp_path / ".maintenance-state/durable-change-trains/source-002.json"
+    assert receipt.is_file()
+    assert reconcile_durable_change_train_startup(tmp_path) == (receipt,)
     initialize_active_archive_root(tmp_path)
 
 
@@ -1419,9 +1421,11 @@ def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
     monkeypatch.setattr(bootstrap, "initialize_archive_database", real_initialize_archive_database)
     bootstrap.initialize_active_archive_root(tmp_path)
 
-    assert (marker_root / ".bootstrap").is_file()
+    receipt = marker_root / "source-002.json"
+    assert receipt.is_file()
+    assert not (marker_root / ".bootstrap").exists()
     assert not (marker_root / ".bootstrap.pending").exists()
-    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    assert reconcile_durable_change_train_startup(tmp_path) == (receipt,)
 
 
 def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(
@@ -1508,7 +1512,6 @@ def test_missing_durable_tier_is_never_recreated(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
-    (tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap").unlink()
     (tmp_path / "user.db").unlink()
 
     with pytest.raises(RuntimeError, match="marker names a missing durable tier"):
@@ -1525,7 +1528,7 @@ def test_bootstrap_marker_survives_index_generation_replacement(tmp_path: Path) 
     initialize_active_archive_root(tmp_path)
 
 
-def test_fresh_bootstrap_archive_opens_after_its_root_is_moved(tmp_path: Path) -> None:
+def test_fresh_bootstrap_archive_opens_after_its_root_is_moved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The fresh-start ruling's rollback route -- move the files back -- must open.
 
     ``os.rename`` within one filesystem changes the archive root path and
@@ -1542,6 +1545,7 @@ def test_fresh_bootstrap_archive_opens_after_its_root_is_moved(tmp_path: Path) -
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     origin = tmp_path / "origin"
+    _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
     initialize_active_archive_root(origin)
     marker_payload = json.loads(
         (origin / ".maintenance-state" / "durable-change-trains" / ".bootstrap").read_text(encoding="utf-8")
@@ -1722,18 +1726,8 @@ def test_durable_tier_ahead_of_runtime_is_refused_before_recovery(tmp_path: Path
     assert (refused.value.live_version, refused.value.runtime_version) == (runtime_version + 1, runtime_version)
 
 
-def test_newer_release_archive_is_refused_by_version_not_as_a_foreign_marker(tmp_path: Path) -> None:
-    """A newer release's fresh archive names the version skew (#5655 review).
-
-    Its bootstrap marker records the newer version and the live tier carries
-    the newer schema. The marker's ownership proof can only rebuild this
-    runtime's DDL, so checked first it refused the archive as "not this
-    archive's own bootstrap evidence" and the typed refusal was unreachable.
-
-    Anti-vacuity: move ``_refuse_durable_tiers_newer_than_runtime`` after
-    ``_fresh_durable_bootstrap_versions`` and this raises the generic
-    ownership error instead.
-    """
+def test_newer_release_archive_is_refused_by_version_before_released_schema_proof(tmp_path: Path) -> None:
+    """Newer live schema is typed version skew before current schema admission."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.migration_runner import DurableTierNewerThanRuntimeError
 
@@ -1743,13 +1737,6 @@ def test_newer_release_archive_is_refused_by_version_not_as_a_foreign_marker(tmp
         connection.execute("CREATE TABLE newer_release_additive_table (id INTEGER PRIMARY KEY)")
         connection.execute(f"PRAGMA user_version = {newer}")
         connection.commit()
-    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    payload = json.loads(marker.read_text(encoding="utf-8"))
-    payload["versions"]["source"] = newer
-    payload.pop("marker_digest", None)
-    payload["marker_digest"] = durable_change_train_module._bootstrap_marker_digest(payload)
-    marker.write_text(json.dumps(payload), encoding="utf-8")
-
     with pytest.raises(DurableTierNewerThanRuntimeError, match="newer than this runtime supports"):
         reconcile_durable_change_train_startup(tmp_path)
 
@@ -1792,9 +1779,12 @@ def test_fresh_bootstrap_marker_is_retired_once_it_grants_nothing(tmp_path: Path
     assert not marker.exists()
 
 
-def test_fresh_bootstrap_receipt_rejects_recorded_version_tampering(tmp_path: Path) -> None:
+def test_fresh_bootstrap_receipt_rejects_recorded_version_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+    _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
     initialize_active_archive_root(tmp_path)
     marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
     payload = json.loads(marker.read_text(encoding="utf-8"))

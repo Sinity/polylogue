@@ -39,17 +39,15 @@ def _file_digest(path: Path) -> str:
 @pytest.fixture
 def stale_index_root(workspace_env: dict[str, Path]) -> Path:
     root = workspace_env["archive_root"]
-    # A one-version-old index can hit a declared in-place fast-forward delta;
-    # this mode exists for the SEMANTIC_REPARSE distance (rebuild required),
-    # so age the index far enough that no fast-forward chain covers it —
-    # v46 is the live pre-818fy generation, a known rebuild-only distance.
-    _set_user_version(root / "index.db", 46)
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute("UPDATE schema_identity SET identity = ? WHERE tier = 'index'", ("synthetic-stale-index",))
     return root
 
 
 def test_ordinary_writer_open_refuses_stale_index(stale_index_root: Path) -> None:
-    with pytest.raises(RuntimeError, match="schema version"):
+    with pytest.raises(SchemaSkew) as refused:
         ArchiveStore.open_existing(stale_index_root, read_only=False)
+    assert refused.value.tier == "index"
 
 
 def test_source_tier_acquisition_opens_and_admits_raw(stale_index_root: Path) -> None:

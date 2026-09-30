@@ -598,3 +598,31 @@ def test_proven_source_train_recovery_rejects_changed_nul_suffix(
     with pytest.raises(DurableChangeTrainError):
         initialize_active_archive_root(tmp_path)
     assert durable_change_train.load_durable_change_train_manifest(manifest).state is DurableChangeTrainState.PROVEN
+
+
+def test_memory_probe_cancel_reclaims_file_and_leaves_destination_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    directories: list[Path] = []
+    real_temporary_directory = tempfile.TemporaryDirectory
+
+    def owned_directory(*args: object, **kwargs: object):
+        directory = real_temporary_directory(*args, dir=tmp_path, **kwargs)
+        directories.append(Path(directory.name))
+        return directory
+
+    def cancelled(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bootstrap.tempfile, "TemporaryDirectory", owned_directory)
+    monkeypatch.setattr(migration_runner, "migrate_archive_tier", cancelled)
+    with closing(sqlite3.connect(":memory:")) as conn:
+        with pytest.raises(KeyboardInterrupt):
+            bootstrap.initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert conn.execute("SELECT name FROM sqlite_schema").fetchall() == []
+    assert directories and all(not path.exists() for path in directories)

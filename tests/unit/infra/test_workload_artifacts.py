@@ -647,7 +647,7 @@ def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.Mo
 def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: Path) -> None:
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
     base_manifest = artifact.root.joinpath("manifest.json").read_bytes()
-    marker_relative = Path(".maintenance-state/durable-change-trains/.bootstrap")
+    marker_relative = Path(".maintenance-state/durable-change-trains/source-002.json")
     base_marker = artifact.root.joinpath(marker_relative).read_bytes()
 
     clone = clone_seeded_archive(artifact, tmp_path / "clone")
@@ -661,13 +661,6 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     assert clone.root.joinpath("index.db").exists()
     assert artifact.root.joinpath("manifest.json").read_bytes() == base_manifest
     assert artifact.root.joinpath(marker_relative).read_bytes() == base_marker
-    # The committed marker records what the bootstrap created, not where
-    # (polylogue-ifb4l), so a faithful clone carries the base bytes and opens
-    # on its own content. Transplanting a marker into an archive it does not
-    # describe is still refused -- see
-    # tests/unit/storage/test_durable_change_train.py::
-    # test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe.
-    assert clone.root.joinpath(marker_relative).read_bytes() == base_marker
     provenance = next((clone.root / ".fixture-archive-provenance").glob("*/source.json"))
     original = json.loads(provenance.read_text())
     assert original["source_manifest_id"] == artifact.manifest.manifest_id
@@ -678,7 +671,6 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     assert source_train.read_bytes() != clone_train.read_bytes()
     assert not artifact.root.joinpath("private-mutation.txt").exists()
 
-    clone.root.joinpath(marker_relative).write_bytes(base_marker)
     with ArchiveStore.open_existing(clone.root, read_only=False) as reopened:
         assert reopened.count_sessions() == 64
 
@@ -751,13 +743,13 @@ def test_seeded_archive_reflink_and_copy_clones_are_equivalent(
 
     monkeypatch.setattr(subprocess, "run", reject_reflink)
     fallback = clone_seeded_archive(artifact, tmp_path / "fallback")
-    ignored = ".maintenance-state/durable-change-trains/.bootstrap"
+    regenerated = Path(".maintenance-state/durable-change-trains")
 
     def files(root: Path) -> dict[str, bytes]:
         return {
             str(path.relative_to(root)): path.read_bytes()
             for path in root.rglob("*")
-            if path.is_file() and str(path.relative_to(root)) != ignored
+            if path.is_file() and not path.relative_to(root).is_relative_to(regenerated)
         }
 
     try:
@@ -1060,7 +1052,7 @@ def test_publish_attempts_rename_with_a_sealed_staging_root(
 
     monkeypatch.setattr(os, "replace", reject_rename)
     with pytest.raises(PermissionError, match="injected sealed rename failure"):
-        artifacts._publish_sealed_staging(staging, final_root)
+        artifacts._publish_sealed_staging(staging, final_root, probe=artifacts._ConstructionProbe.start())
 
     assert observed_modes
     assert not (observed_modes[0] & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
@@ -1101,7 +1093,7 @@ def test_sealed_fallback_publishes_only_sealed_final_tree(
         )
 
     monkeypatch.setattr(os, "replace", fail_once_then_replace)
-    artifacts._publish_sealed_staging(staging, final_root)
+    artifacts._publish_sealed_staging(staging, final_root, probe=artifacts._ConstructionProbe.start())
 
     assert calls == 2
     assert observed[0] == (staging, False)
@@ -1133,7 +1125,7 @@ def test_sealed_fallback_kill_injection_leaves_no_visible_final(
 
     monkeypatch.setattr(os, "replace", fail_then_interrupt)
     with pytest.raises(KeyboardInterrupt):
-        artifacts._publish_sealed_staging(staging, final_root)
+        artifacts._publish_sealed_staging(staging, final_root, probe=artifacts._ConstructionProbe.start())
 
     assert not final_root.exists()
     handoffs = tuple(final_root.parent.glob(f".{final_root.name}.*.handoff"))
@@ -2889,3 +2881,34 @@ def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path, offset: int) 
 
     with pytest.raises(RuntimeError, match="invalid seeded archive tier"):
         seal_fixture_tree(root)
+
+
+def test_sealed_archive_copy_publication_owns_its_released_train(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    real_rename = artifacts._rename_sealed
+    copies = 0
+
+    def force_cross_parent_copy(source: Path, destination: Path) -> None:
+        nonlocal copies
+        if source.parent != destination.parent:
+            copies += 1
+            raise PermissionError("synthetic cross-parent sealed rename refusal")
+        real_rename(source, destination)
+
+    monkeypatch.setattr(artifacts, "_rename_sealed", force_cross_parent_copy)
+    artifact = build_seeded_archive(_SMALL_SPECS, cache_root=tmp_path / "cache")
+    assert copies == 1
+    provenance = next((artifact.root / ".fixture-archive-provenance").glob("*/original-history/source-002.json"))
+    released = artifact.root / ".maintenance-state/durable-change-trains/source-002.json"
+    assert provenance.read_bytes() != released.read_bytes()
+    assert {item["path"] for item in artifact.manifest.files} == {
+        str(path.relative_to(artifact.root))
+        for path in artifact.root.rglob("*")
+        if path.is_file() and path.name != "manifest.json"
+    }
+    with clone_seeded_archive(artifact, tmp_path / "clone") as clone:
+        with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
+            assert archive.count_sessions() > 0

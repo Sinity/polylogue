@@ -70,7 +70,12 @@ def test_replaced_durable_tier_revalidates(tmp_path: Path) -> None:
     assert replacement.stat().st_ino != source.stat().st_ino
     os.replace(replacement, source)
 
-    assert _validations(lambda: initialize_active_archive_root(root)) == 1
+    from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
+
+    before = active_archive_bootstrap_validation_count()
+    with pytest.raises(DurableChangeTrainError):
+        initialize_active_archive_root(root)
+    assert active_archive_bootstrap_validation_count() == before + 1
 
 
 def test_durable_train_manifest_change_revalidates(tmp_path: Path) -> None:

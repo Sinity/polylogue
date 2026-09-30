@@ -399,6 +399,30 @@ def initialize_runtime_tier_probe(
         raise RuntimeError("runtime tier probe requires an empty connection")
     if conn.execute("SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone() is not None:
         raise RuntimeError("runtime tier probe requires an empty connection")
+    if not main_path and tier in DURABLE_MIGRATION_TIERS:
+        # The numbered runner proves actual file custody. Build that proof on
+        # an owned isolated file, then copy its proved schema into the probe;
+        # an in-memory connection never supplies a fabricated archive identity.
+        with tempfile.TemporaryDirectory(prefix="polylogue-tier-probe-") as directory:
+            from polylogue.storage.sqlite.migration_runner import (
+                _durable_literal_rows_digest,
+                capture_durable_schema_inventory,
+            )
+
+            path = Path(directory) / f"{tier.value}.db"
+            temporary = sqlite3.connect(path)
+            try:
+                initialize_runtime_tier_probe(temporary, tier, probe_path=path)
+                evidence = (capture_durable_schema_inventory(temporary).sha256, _durable_literal_rows_digest(temporary))
+                temporary.backup(conn)
+                if (capture_durable_schema_inventory(conn).sha256, _durable_literal_rows_digest(conn)) != evidence:
+                    raise RuntimeError("runtime tier probe backup changed admitted schema or rows")
+            finally:
+                temporary.close()
+        conn.execute("PRAGMA foreign_keys = ON")
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) != archive_tier_spec(tier).version:
+            raise RuntimeError("runtime tier probe backup did not retain its admitted version")
+        return
     initialize_archive_tier(conn, tier)
     if tier in DURABLE_MIGRATION_TIERS:
         from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
