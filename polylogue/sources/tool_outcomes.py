@@ -53,11 +53,35 @@ class _OutcomeIndex:
         self, tool_id: str, owner: str | None, outcome: ToolOutcome, exit_code: int | None, *, origin: Origin
     ) -> None:
         owner_present, owner_value = self._owner_key(owner)
+        conflicts_with_ownerless = False
+        if owner is None:
+            # An ownerless record applies to every matching result. Check the
+            # endpoints of the owned outcomes so distinct owned records remain
+            # independent while an ownerless contradiction still refuses.
+            for direction in ("ASC", "DESC"):
+                with closing(
+                    self.conn.execute(
+                        f"""SELECT outcome FROM sidecar
+                        WHERE tool_id = ? AND owner_present = 1
+                        ORDER BY outcome {direction} LIMIT 1""",
+                        (tool_id,),
+                    )
+                ) as rows:
+                    prior_owned = rows.fetchone()
+                if prior_owned is not None and prior_owned[0] != outcome.value:
+                    conflicts_with_ownerless = True
+                    break
+        else:
+            prior_ownerless = self.conn.execute(
+                "SELECT outcome FROM sidecar WHERE tool_id = ? AND owner_present = 0 AND owner = ''",
+                (tool_id,),
+            ).fetchone()
+            conflicts_with_ownerless = prior_ownerless is not None and prior_ownerless[0] != outcome.value
         prior = self.conn.execute(
             "SELECT outcome FROM sidecar WHERE tool_id = ? AND owner_present = ? AND owner = ?",
             (tool_id, owner_present, owner_value),
         ).fetchone()
-        if prior is not None and prior[0] != outcome.value:
+        if conflicts_with_ownerless or (prior is not None and prior[0] != outcome.value):
             raise ValueError(
                 f"tool outcome derivation refused for origin {origin.value!r}: "
                 f"conflicting execution evidence for tool_id={tool_id!r}"

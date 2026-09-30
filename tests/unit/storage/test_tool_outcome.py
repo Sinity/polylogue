@@ -603,6 +603,88 @@ def test_conflicting_sidecars_for_same_result_owner_still_refuse(tmp_path: Path)
         conn.close()
 
 
+@pytest.mark.parametrize("ownerless_first", [True, False], ids=["ownerless-first", "owned-first"])
+def test_ownerless_sidecar_conflicts_with_different_owned_outcome(ownerless_first: bool, tmp_path: Path) -> None:
+    conn = _connect(tmp_path / f"ownerless-conflict-{ownerless_first}.db")
+    try:
+        ownerless = ParsedSessionEvent(
+            event_type="claude_tool_execution_result",
+            payload={"tool_use_id": "call-1", "exit_code": 2},
+        )
+        owned = ParsedSessionEvent(
+            event_type="claude_tool_execution_result",
+            source_message_provider_id="result-owned",
+            payload={"tool_use_id": "call-1", "exit_code": 0},
+        )
+        session = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="ownerless-owned-conflict",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="use",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="call-1", tool_name="run")],
+                ),
+                ParsedMessage(
+                    provider_message_id="result-owned",
+                    role=Role.TOOL,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="done")],
+                ),
+            ],
+            session_events=[ownerless, owned] if ownerless_first else [owned, ownerless],
+        )
+        with pytest.raises(ValueError, match="conflicting execution evidence"):
+            write_parsed_session_to_archive(conn, session)
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("ownerless_first", [True, False], ids=["ownerless-first", "owned-first"])
+def test_ownerless_sidecar_accepts_matching_owned_outcome(ownerless_first: bool, tmp_path: Path) -> None:
+    conn = _connect(tmp_path / f"ownerless-match-{ownerless_first}.db")
+    try:
+        ownerless = ParsedSessionEvent(
+            event_type="claude_tool_execution_result",
+            payload={"tool_use_id": "call-1", "exit_code": 2},
+        )
+        owned = ParsedSessionEvent(
+            event_type="claude_tool_execution_result",
+            source_message_provider_id="result-owned",
+            payload={"tool_use_id": "call-1", "exit_code": 2},
+        )
+        session = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="ownerless-owned-match",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="use",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="call-1", tool_name="run")],
+                ),
+                ParsedMessage(
+                    provider_message_id="result-owned",
+                    role=Role.TOOL,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="done")],
+                ),
+            ],
+            session_events=[ownerless, owned] if ownerless_first else [owned, ownerless],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        rows = conn.execute(
+            """SELECT b.block_type, b.tool_outcome, b.tool_result_exit_code
+            FROM blocks b JOIN messages m ON m.message_id = b.message_id
+            WHERE b.session_id = ? ORDER BY m.position, b.position""",
+            (session_id,),
+        ).fetchall()
+        assert [(row["block_type"], row["tool_outcome"], row["tool_result_exit_code"]) for row in rows] == [
+            ("tool_use", ToolOutcome.ERROR.value, None),
+            ("tool_result", ToolOutcome.ERROR.value, 2),
+        ]
+    finally:
+        conn.close()
+
+
 def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
