@@ -29,8 +29,8 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainRecoveryError,
     DurableChangeTrainState,
     DurableDatabaseEvidence,
-    DurableFreshDDLParityProof,
     DurableMigrationClaim,
+    DurableMigrationReplayProof,
     DurableRuntimeConsumerResult,
     DurableTierNewerThanRuntimeError,
     MigrationResult,
@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.migration_runner import (
     apply_durable_change_train,
     authorize_durable_change_train_backup,
     capture_durable_database_evidence,
+    capture_durable_schema_inventory,
     declare_durable_change_train,
     durable_change_train_from_payload,
     durable_change_train_to_payload,
@@ -51,13 +52,14 @@ from polylogue.storage.sqlite.migration_runner import (
     find_durable_migration_collisions,
     load_durable_change_train_manifest,
     prove_durable_change_train,
-    prove_durable_fresh_ddl_parity,
     reconcile_interrupted_durable_change_train,
     record_durable_writer_release,
     recover_durable_change_train,
+    rehearse_durable_migration_chain,
     release_durable_change_train,
     reserve_durable_change_train,
     validate_durable_change_train_manifest,
+    validate_durable_migration_replay_proof,
     write_durable_change_train_manifest,
 )
 
@@ -635,36 +637,6 @@ def durable_migration_sidecar_for_slot(tier: ArchiveTier, slot: int) -> DurableM
 def _persist_train_transition(path: Path, train: DurableChangeTrain, *, expected_revision: int) -> DurableChangeTrain:
     write_durable_change_train_manifest(path, train, expected_revision=expected_revision)
     return load_durable_change_train_manifest(path)
-
-
-def _fresh_ddl_parity_for_train(
-    train: DurableChangeTrain,
-    *,
-    migrated_connection: sqlite3.Connection | None = None,
-) -> DurableFreshDDLParityProof:
-    """Compare a live result, or two canonical creates, against bootstrap DDL."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-
-    if migrated_connection is None:
-        with sqlite_connection(":memory:") as migrated, sqlite_connection(":memory:") as fresh:
-            initialize_archive_tier(migrated, train.tier)
-            initialize_archive_tier(fresh, train.tier)
-            return prove_durable_fresh_ddl_parity(
-                train.tier,
-                train.target_version,
-                migrated_connection=migrated,
-                fresh_connection=fresh,
-                evidence_ref=f"proof:canonical-bootstrap:{train.tier.value}:v{train.target_version}",
-            )
-    with sqlite_connection(":memory:") as fresh:
-        initialize_archive_tier(fresh, train.tier)
-        return prove_durable_fresh_ddl_parity(
-            train.tier,
-            train.target_version,
-            migrated_connection=migrated_connection,
-            fresh_connection=fresh,
-            evidence_ref=f"proof:recovered-bootstrap:{train.tier.value}:v{train.target_version}",
-        )
 
 
 def _runtime_consumer_results(
@@ -1778,22 +1750,27 @@ def _verify_persisted_live_tier_continuity(
         ) from exc
 
 
-def _historical_schema_evidence(train: DurableChangeTrain) -> DurableFreshDDLParityProof:
+def _historical_schema_evidence(train: DurableChangeTrain) -> DurableMigrationReplayProof:
     """Return the immutable historical schema proof a forward admission needs."""
-    if train.apply_evidence is None or train.proof is None or train.fresh_ddl_parity is None:
+    if train.apply_evidence is None or train.proof is None or train.schema_replay_proof is None:
         raise DurableChangeTrainError("released train lacks historical schema evidence for forward-version admission")
-    historical = train.proof.fresh_ddl_parity
+    historical = train.proof.schema_replay_proof
+    validate_durable_migration_replay_proof(historical, recompute_installed_bindings=True)
+    if not historical.from_version < train.target_version <= historical.target_version:
+        raise DurableChangeTrainError(
+            "released train lacks exact historical schema evidence for forward-version admission"
+        )
+    step = historical.steps[train.target_version - historical.from_version - 1]
     if (
         historical.tier is not train.tier
-        or historical.target_version != train.target_version
-        or historical.migrated_version != train.target_version
-        or historical.fresh_version != train.target_version
+        or historical.from_version > train.current_version
+        or historical.target_version != train.schema_replay_proof.target_version
         or not historical.matches
-        or historical.missing_objects
-        or historical.unexpected_objects
-        or historical.changed_objects
-        or historical.migrated_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256
-        or historical.fresh_inventory_sha256 != train.fresh_ddl_parity.fresh_inventory_sha256
+        or step.version != train.target_version
+        or train.pre_apply_evidence is None
+        or step.before_schema_inventory_sha256 != train.pre_apply_evidence.schema_inventory_sha256
+        or step.after_schema_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256
+        or historical.chain_sha256 != train.schema_replay_proof.chain_sha256
     ):
         raise DurableChangeTrainError(
             "released train lacks exact historical schema evidence for forward-version admission"
@@ -1915,7 +1892,9 @@ def _verify_released_train_live_tier(
         historical_target_version=train.target_version,
         current_target_version=runtime_target,
         observed_live_version=actual.user_version,
-        historical_schema_inventory_sha256=historical.migrated_inventory_sha256,
+        historical_schema_inventory_sha256=historical.steps[
+            train.target_version - historical.from_version - 1
+        ].after_schema_inventory_sha256,
         archive_identity_digest=actual.archive_identity_digest,
     )
 
@@ -2097,7 +2076,13 @@ def _prove_and_release_persisted_train(
                     evidence_ref=f"proof:startup-writer-release:{train.train_id}",
                 )
                 train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
-            actual_parity = _fresh_ddl_parity_for_train(train, migrated_connection=live)
+            actual_parity = train.schema_replay_proof
+            if actual_parity is None:
+                raise DurableChangeTrainError("applied train lost its persisted schema replay proof")
+            validate_durable_migration_replay_proof(actual_parity, recompute_installed_bindings=True)
+            replay_step = actual_parity.steps[train.target_version - actual_parity.from_version - 1]
+            if replay_step.after_schema_inventory_sha256 != capture_durable_schema_inventory(live).sha256:
+                raise DurableChangeTrainError("recovered live schema differs from the persisted replay step output")
             runtime_results = (
                 tuple(runtime_consumer_results)
                 if runtime_consumer_results is not None
@@ -2112,7 +2097,7 @@ def _prove_and_release_persisted_train(
             previous_revision = train.revision
             train = prove_durable_change_train(
                 train,
-                fresh_ddl_parity=actual_parity,
+                schema_replay_proof=actual_parity,
                 runtime_consumers=runtime_results,
                 restart_convergence=restart,
                 proof_refs=(f"proof:startup-recovery:{train.train_id}",),
@@ -2139,6 +2124,7 @@ def execute_durable_change_train(
     daemon_stopped_evidence_ref: str,
     single_writer_evidence_ref: str,
     runtime_consumer_results: Sequence[DurableRuntimeConsumerResult] | None = None,
+    schema_replay_proof: DurableMigrationReplayProof | None = None,
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
     """Execute every persisted train state while the caller holds archive ownership.
@@ -2157,6 +2143,14 @@ def execute_durable_change_train(
     tier_path = archive_root / f"{tier.value}.db"
     with _open_existing_tier(tier_path) as probe:
         current_version = int(probe.execute("PRAGMA user_version").fetchone()[0] or 0)
+        rehearsed_proof = schema_replay_proof
+        if rehearsed_proof is None and current_version < _migration_runner.ARCHIVE_VERSION_BY_TIER[tier]:
+            rehearsed_proof = rehearse_durable_migration_chain(
+                probe,
+                tier,
+                target_version=_migration_runner.ARCHIVE_VERSION_BY_TIER[tier],
+                evidence_ref=f"proof:schema-replay:{tier.value}:v{current_version}-to-current",
+            )
     runtime_target_version = cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[tier]
     if current_version > runtime_target_version:
         raise DurableChangeTrainError(
@@ -2267,7 +2261,7 @@ def execute_durable_change_train(
         train = admit_durable_change_train(
             train,
             observed_current_version=current_version,
-            fresh_ddl_parity=_fresh_ddl_parity_for_train(train),
+            schema_replay_proof=rehearsed_proof,
             admission_evidence_ref=f"proof:maintenance-admission:{train.train_id}",
             migration_claims=(sidecar.train.migration,),
             # A durable archive may be several numbered slots behind the
@@ -2423,6 +2417,11 @@ def _reconcile_durable_change_train_startup_locked(
     # incomplete chain before startup had a chance to finish that recovery.
     for manifest_path in manifest_paths:
         train = load_durable_change_train_manifest(manifest_path)
+        if train.schema_replay_proof is not None:
+            validate_durable_migration_replay_proof(
+                train.schema_replay_proof,
+                recompute_installed_bindings=True,
+            )
         if train.state is DurableChangeTrainState.FAILED:
             tier_path = archive_root / f"{train.tier.value}.db"
             with _open_existing_tier(tier_path) as conn:
@@ -2498,6 +2497,11 @@ def _reconcile_durable_change_train_startup_locked(
 
     for manifest_path in manifest_paths:
         train = load_durable_change_train_manifest(manifest_path)
+        if train.schema_replay_proof is not None:
+            validate_durable_migration_replay_proof(
+                train.schema_replay_proof,
+                recompute_installed_bindings=True,
+            )
         if train.state is not DurableChangeTrainState.RELEASED:
             continue
         with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:

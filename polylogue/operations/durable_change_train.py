@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.durable_change_train import (
 )
 from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainError,
+    DurableMigrationReplayProof,
     DurableRuntimeConsumerResult,
 )
 
@@ -96,6 +97,7 @@ def execute_durable_change_train(
     daemon_stopped_evidence_ref: str,
     single_writer_evidence_ref: str,
     runtime_consumer_results: tuple[DurableRuntimeConsumerResult, ...] | None = None,
+    schema_replay_proof: DurableMigrationReplayProof | None = None,
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
     """Run one durable migration through the storage authority contract."""
@@ -106,6 +108,7 @@ def execute_durable_change_train(
         daemon_stopped_evidence_ref=daemon_stopped_evidence_ref,
         single_writer_evidence_ref=single_writer_evidence_ref,
         runtime_consumer_results=runtime_consumer_results,
+        schema_replay_proof=schema_replay_proof,
         release_archive_ownership=release_archive_ownership,
     )
 

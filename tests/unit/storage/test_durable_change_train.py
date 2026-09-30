@@ -38,8 +38,9 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainRecoveryError,
     DurableChangeTrainState,
     DurableFailureClassification,
-    DurableFreshDDLParityProof,
     DurableMigrationClaim,
+    DurableMigrationReplayProof,
+    DurableMigrationReplayStep,
     DurableRuntimeConsumer,
     DurableRuntimeConsumerResult,
     MigrationError,
@@ -53,10 +54,10 @@ from polylogue.storage.sqlite.migration_runner import (
     durable_migration_collision_report,
     load_durable_change_train_manifest,
     prove_durable_change_train,
-    prove_durable_fresh_ddl_parity,
     reconcile_interrupted_durable_change_train,
     record_durable_writer_release,
     recover_durable_change_train,
+    rehearse_durable_migration_chain,
     release_durable_change_train,
     reserve_durable_change_train,
     write_durable_change_train_manifest,
@@ -200,41 +201,78 @@ def _source_hook_event_production_rider() -> DurableChangeRider:
     )
 
 
-def _parity(tier: ArchiveTier, *, include_durable_items: bool = True) -> DurableFreshDDLParityProof:
-    with _memory_target(include_durable_items=include_durable_items) as migrated:
-        with _memory_target() as fresh:
-            return prove_durable_fresh_ddl_parity(
-                tier,
-                _TARGET_VERSION,
-                migrated_connection=migrated,
-                fresh_connection=fresh,
-                evidence_ref=f"proof:fresh-ddl:{tier.value}",
+def _parity(
+    tier: ArchiveTier,
+    *,
+    include_durable_items: bool = True,
+    matches: bool | None = None,
+    claim: DurableMigrationClaim | None = None,
+) -> DurableMigrationReplayProof:
+    if include_durable_items:
+        with sqlite3.connect(":memory:") as source:
+            source.executescript(_BASE_ITEMS_DDL)
+            source.execute(f"PRAGMA user_version = {_CURRENT_VERSION}")
+            source.commit()
+            try:
+                replay = rehearse_durable_migration_chain(
+                    source,
+                    tier,
+                    target_version=migration_runner.ARCHIVE_VERSION_BY_TIER[tier],
+                    evidence_ref=f"proof:schema-replay:{tier.value}",
+                )
+                if replay.matches:
+                    return replay
+            except (MigrationError, DurableChangeTrainError, sqlite3.Error):
+                pass
+    claim = claim or _claim(tier)
+    canonical_target = migration_runner.ARCHIVE_VERSION_BY_TIER[tier]
+    before = hashlib.sha256(f"fixture:{tier.value}:v{_CURRENT_VERSION}".encode()).hexdigest()
+    steps: list[DurableMigrationReplayStep] = []
+    for version in range(_CURRENT_VERSION + 1, canonical_target + 1):
+        after = hashlib.sha256(f"fixture:{tier.value}:v{version}".encode()).hexdigest()
+        steps.append(
+            DurableMigrationReplayStep(
+                version=version,
+                name=Path(claim.path).name if version == _TARGET_VERSION else f"{version:03d}_fixture.sql",
+                sql_sha256=(
+                    claim.sql_sha256
+                    if version == _TARGET_VERSION
+                    else hashlib.sha256(f"fixture-sql:{tier.value}:{version}".encode()).hexdigest()
+                ),
+                before_schema_inventory_sha256=before,
+                after_schema_inventory_sha256=after,
             )
-
-
-@contextmanager
-def _ddl_target(ddl: str) -> Iterator[sqlite3.Connection]:
-    """Build one in-memory tier at ``_TARGET_VERSION`` from an explicit DDL script."""
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(ddl)
-        conn.execute(f"PRAGMA user_version = {_TARGET_VERSION}")
-        conn.commit()
-        yield conn
-    finally:
-        conn.close()
-
-
-def _parity_for_ddl(tier: ArchiveTier, ddl: str) -> DurableFreshDDLParityProof:
-    """Parity proof for a fixture whose canonical shape is not the toy tier."""
-    with _ddl_target(ddl) as migrated, _ddl_target(ddl) as fresh:
-        return prove_durable_fresh_ddl_parity(
-            tier,
-            _TARGET_VERSION,
-            migrated_connection=migrated,
-            fresh_connection=fresh,
-            evidence_ref=f"proof:fresh-ddl:{tier.value}",
         )
+        before = after
+    proof_matches = include_durable_items if matches is None else matches
+    terminal = steps[-1].after_schema_inventory_sha256
+    canonical = terminal if proof_matches else hashlib.sha256(b"different-canonical-fixture").hexdigest()
+    proof = DurableMigrationReplayProof(
+        tier=tier,
+        from_version=_CURRENT_VERSION,
+        target_version=canonical_target,
+        original_schema_inventory_sha256=steps[0].before_schema_inventory_sha256,
+        steps=tuple(steps),
+        terminal_schema_inventory_sha256=terminal,
+        canonical_version=canonical_target,
+        canonical_schema_inventory_sha256=canonical,
+        chain_sha256="",
+        evidence_ref=f"proof:schema-replay:{tier.value}",
+        matches=proof_matches,
+    )
+    return replace(
+        proof,
+        chain_sha256=migration_runner._migration_replay_chain_digest(
+            tier=proof.tier,
+            from_version=proof.from_version,
+            target_version=proof.target_version,
+            original_schema_inventory_sha256=proof.original_schema_inventory_sha256,
+            steps=proof.steps,
+            terminal_schema_inventory_sha256=proof.terminal_schema_inventory_sha256,
+            canonical_version=proof.canonical_version,
+            canonical_schema_inventory_sha256=proof.canonical_schema_inventory_sha256,
+        ),
+    )
 
 
 def _declared(
@@ -268,7 +306,7 @@ def _admitted(
     owner_ref: str = "owner:train",
     backup_plan_ref: str | None = None,
     active_trains: tuple[DurableChangeTrain, ...] = (),
-    parity: DurableFreshDDLParityProof | None = None,
+    parity: DurableMigrationReplayProof | None = None,
 ) -> DurableChangeTrain:
     migration = claim or _claim(tier)
     return admit_durable_change_train(
@@ -280,7 +318,7 @@ def _admitted(
             backup_plan_ref=backup_plan_ref,
         ),
         observed_current_version=_CURRENT_VERSION,
-        fresh_ddl_parity=parity if parity is not None else _parity(tier),
+        schema_replay_proof=parity if parity is not None else _parity(tier, claim=migration),
         admission_evidence_ref=f"proof:admit:{tier.value}",
         active_trains=active_trains,
         migration_claims=(migration,),
@@ -462,24 +500,27 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
     initialize_active_archive_root(tmp_path)
     db_path = tmp_path / "source.db"
-    canonical_ddl = _install_synthetic_migration(
+    _install_synthetic_migration(
         tmp_path,
         monkeypatch,
         ArchiveTier.SOURCE,
         canonical_base=ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE],
     )
-    train = _admitted(
-        ArchiveTier.SOURCE,
-        rider=_source_hook_event_production_rider(),
-        parity=_parity_for_ddl(ArchiveTier.SOURCE, canonical_ddl),
-    )
+    with sqlite3.connect(db_path) as live:
+        replay = rehearse_durable_migration_chain(
+            live,
+            ArchiveTier.SOURCE,
+            target_version=_TARGET_VERSION,
+            evidence_ref="proof:source-hook-event-replay",
+        )
+    train = _admitted(ArchiveTier.SOURCE, rider=_source_hook_event_production_rider(), parity=replay)
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
         train = apply_durable_change_train(conn, train)
 
     train = record_durable_writer_release(train, evidence_ref="proof:source-hook-event-writer-release")
     with sqlite3.connect(db_path) as restarted:
-        actual_parity = _parity_for_ddl(ArchiveTier.SOURCE, canonical_ddl)
+        actual_parity = train.schema_replay_proof
         runtime_results = _runtime_consumer_results(train, tmp_path)
         restart = capture_durable_restart_convergence(
             restarted,
@@ -489,7 +530,7 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
         )
     train = prove_durable_change_train(
         train,
-        fresh_ddl_parity=actual_parity,
+        schema_replay_proof=actual_parity,
         runtime_consumers=runtime_results,
         restart_convergence=restart,
     )
@@ -531,7 +572,7 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
     train = admit_durable_change_train(
         train,
         observed_current_version=_CURRENT_VERSION,
-        fresh_ddl_parity=_parity(tier),
+        schema_replay_proof=_parity(tier),
         admission_evidence_ref=f"proof:admit:{tier.value}",
         migration_claims=(claim,),
         canonical_target_version=_TARGET_VERSION,
@@ -573,14 +614,7 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
     train = record_durable_writer_release(train, evidence_ref="proof:lease-released")
     train = persist_and_reload(train, previous_revision)
     with sqlite3.connect(db_path) as restarted:
-        with _memory_target() as fresh:
-            actual_parity = prove_durable_fresh_ddl_parity(
-                tier,
-                _TARGET_VERSION,
-                migrated_connection=restarted,
-                fresh_connection=fresh,
-                evidence_ref=f"proof:post-apply-fresh:{tier.value}",
-            )
+        actual_parity = train.schema_replay_proof
         runtime_results = _runtime_results()
         restart = capture_durable_restart_convergence(
             restarted,
@@ -591,7 +625,7 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
     previous_revision = train.revision
     train = prove_durable_change_train(
         train,
-        fresh_ddl_parity=actual_parity,
+        schema_replay_proof=actual_parity,
         runtime_consumers=runtime_results,
         restart_convergence=restart,
     )
@@ -800,21 +834,10 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
         )
 
 
-def test_maintenance_route_refuses_an_intermediate_sidecar_below_the_shipped_target(
+def test_maintenance_route_rehearses_an_intermediate_sidecar_to_the_shipped_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A catch-up across two numbered slots is refused before any SQL runs.
-
-    Bootstrap DDL describes only the shipped target, so slot 2 of a v3
-    package has no fresh-DDL image to prove parity against. The archive is
-    bootstrapped at the adoption floor through the production route, so it
-    carries its own format marker, and the runtime target is then raised to
-    slot 3.
-
-    Anti-vacuity: drop the fresh-version check from
-    ``admit_durable_change_train`` and the refusal falls through to the
-    generic parity message, so the ``match`` below goes red.
-    """
+    """A v1 archive rehearses through final v3 DDL, then commits one slot at a time."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
@@ -849,6 +872,7 @@ def test_maintenance_route_refuses_an_intermediate_sidecar_below_the_shipped_tar
     migrations = (
         (2, "durable_items", "CREATE TABLE durable_items (id INTEGER PRIMARY KEY) STRICT;"),
         (3, "later_items", "CREATE TABLE later_items (id INTEGER PRIMARY KEY) STRICT;"),
+        (4, "final_items", "CREATE TABLE final_items (id INTEGER PRIMARY KEY) STRICT;"),
     )
     for slot, table_name, statement in migrations:
         sql = f"-- migration-safety: additive-no-backup\n{statement}\n"
@@ -886,29 +910,83 @@ def test_maintenance_route_refuses_an_intermediate_sidecar_below_the_shipped_tar
         "polylogue.storage.sqlite.durable_change_train._migration_package",
         lambda _tier: "fixture_migrations_sequential.source",
     )
-    _pin_source_runtime_version(monkeypatch, 3)
+    # Ship both steps in the fixture, but first run the v2 runtime against its
+    # own canonical DDL.  The following phase upgrades the runtime to v3 while
+    # the persisted v2 train remains released, exercising startup's historical
+    # proof path rather than a helper-only validator.
+    _pin_source_runtime_version(monkeypatch, 2)
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
     ddl = dict(ARCHIVE_DDL_BY_TIER)
-    ddl[ArchiveTier.SOURCE] = "\n".join(
-        (ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE], *(statement for _slot, _table, statement in migrations))
-    )
+    ddl[ArchiveTier.SOURCE] = "\n".join((ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE], migrations[0][2]))
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
 
-    with pytest.raises(DurableChangeTrainError, match=r"durable train v2 has no canonical fresh-DDL image"):
-        execute_durable_change_train(
-            tmp_path,
-            ArchiveTier.SOURCE,
-            backup_manifest=None,
-            daemon_stopped_evidence_ref="proof:daemon-stopped",
-            single_writer_evidence_ref="proof:archive-ownership-lock",
-            release_archive_ownership=lambda: pytest.fail("an unprovable intermediate train was admitted"),
-        )
+    first = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: None,
+    )
+    released_v2_path = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
+    released_v2 = load_durable_change_train_manifest(released_v2_path)
+    assert released_v2.state is DurableChangeTrainState.RELEASED
+
+    _pin_source_runtime_version(monkeypatch, 4)
+    final_ddl = dict(ddl)
+    final_ddl[ArchiveTier.SOURCE] = "\n".join(
+        (ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE], migrations[1][2], migrations[2][2])
+    )
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", final_ddl)
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", final_ddl)
+
+    # This is the production startup consumer.  Reinstating the old rule that
+    # equated a historical witness's terminal identity with today's canonical
+    # DDL rejects this persisted v2 train before the v3 step can be admitted.
+    assert reconcile_durable_change_train_startup(tmp_path) == (released_v2_path,)
+    assert load_durable_change_train_manifest(released_v2_path).state is DurableChangeTrainState.RELEASED
+
+    step_2_path = source_package / "002_durable_items.sql"
+    original_step_2 = step_2_path.read_text(encoding="utf-8")
+    step_2_path.write_text(
+        "-- migration-safety: additive-no-backup\nCREATE TABLE altered_items (id INTEGER PRIMARY KEY) STRICT;\n",
+        encoding="utf-8",
+    )
+    try:
+        with pytest.raises(DurableChangeTrainError, match="installed migration SQL and versions"):
+            reconcile_durable_change_train_startup(tmp_path)
+    finally:
+        step_2_path.write_text(original_step_2, encoding="utf-8")
+
+    second = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: None,
+    )
+    third = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: None,
+    )
+    assert first.train is not None and first.train.target_version == 2
+    assert second.train is not None and second.train.target_version == 3
+    assert third.train is not None and third.train.target_version == 4
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
-        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='durable_items'").fetchone() is None
+        assert conn.execute("PRAGMA user_version").fetchone() == (4,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='durable_items'").fetchone() == (
+            "durable_items",
+        )
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='final_items'").fetchone() == ("final_items",)
 
 
 def test_released_train_chain_is_anchored_at_adoption_floor() -> None:
@@ -1004,11 +1082,21 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     later_path.touch()
     released = cast(
         DurableChangeTrain,
-        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=first_slot),
+        SimpleNamespace(
+            state=DurableChangeTrainState.RELEASED,
+            tier=ArchiveTier.SOURCE,
+            target_version=first_slot,
+            schema_replay_proof=None,
+        ),
     )
     later_released = cast(
         DurableChangeTrain,
-        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=later_slot),
+        SimpleNamespace(
+            state=DurableChangeTrainState.RELEASED,
+            tier=ArchiveTier.SOURCE,
+            target_version=later_slot,
+            schema_replay_proof=None,
+        ),
     )
     backup_authorized = cast(
         DurableChangeTrain,
@@ -1080,7 +1168,10 @@ def test_startup_checks_chain_when_only_current_train_remains(
     current = cast(
         DurableChangeTrain,
         SimpleNamespace(
-            state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=_NEXT_SOURCE_SLOT + 1
+            state=DurableChangeTrainState.RELEASED,
+            tier=ArchiveTier.SOURCE,
+            target_version=_NEXT_SOURCE_SLOT + 1,
+            schema_replay_proof=None,
         ),
     )
 
@@ -1852,7 +1943,7 @@ def test_admission_rejects_stale_current_and_target_versions() -> None:
         admit_durable_change_train(
             train,
             observed_current_version=0,
-            fresh_ddl_parity=_parity(ArchiveTier.SOURCE),
+            schema_replay_proof=_parity(ArchiveTier.SOURCE),
             admission_evidence_ref="proof:admit",
             migration_claims=(train.migration,),
             canonical_target_version=_TARGET_VERSION,
@@ -1861,7 +1952,7 @@ def test_admission_rejects_stale_current_and_target_versions() -> None:
         admit_durable_change_train(
             train,
             observed_current_version=_CURRENT_VERSION,
-            fresh_ddl_parity=_parity(ArchiveTier.SOURCE),
+            schema_replay_proof=_parity(ArchiveTier.SOURCE),
             admission_evidence_ref="proof:admit",
             migration_claims=(train.migration,),
             canonical_target_version=_TARGET_VERSION + 1,
@@ -1918,24 +2009,12 @@ def test_slot_collision_names_both_owners_and_blocks(tmp_path: Path) -> None:
         migration=first,
         riders=(_rider(),),
     )
-    parity = DurableFreshDDLParityProof(
-        tier=ArchiveTier.SOURCE,
-        target_version=slot,
-        migrated_version=slot,
-        fresh_version=slot,
-        migrated_inventory_sha256="a" * 64,
-        fresh_inventory_sha256="a" * 64,
-        missing_objects=(),
-        unexpected_objects=(),
-        changed_objects=(),
-        evidence_ref=f"proof:v{slot}-fresh",
-        matches=True,
-    )
+    parity = _parity(ArchiveTier.SOURCE, claim=first)
     with pytest.raises(DurableChangeTrainError, match="collision.*rebase/renumber") as exc_info:
         admit_durable_change_train(
             train,
             observed_current_version=slot - 1,
-            fresh_ddl_parity=parity,
+            schema_replay_proof=parity,
             admission_evidence_ref=f"proof:v{slot}-admit",
             migration_claims=(first, late_rider),
             canonical_target_version=slot,
@@ -1951,7 +2030,7 @@ def test_duplicate_train_ownership_and_late_rider_are_rejected() -> None:
         admit_durable_change_train(
             duplicate,
             observed_current_version=_CURRENT_VERSION,
-            fresh_ddl_parity=_parity(ArchiveTier.SOURCE),
+            schema_replay_proof=_parity(ArchiveTier.SOURCE),
             admission_evidence_ref="proof:duplicate",
             active_trains=(admitted,),
             migration_claims=(duplicate.migration,),
@@ -1984,15 +2063,15 @@ def test_schema_only_unproven_and_nonproduction_riders_fail_admission() -> None:
         _admitted(ArchiveTier.SOURCE, rider=test_only)
 
 
-def test_fresh_ddl_parity_mismatch_blocks_admission() -> None:
-    mismatch = _parity(ArchiveTier.SOURCE, include_durable_items=False)
+def test_schema_replay_proof_mismatch_blocks_admission() -> None:
+    mismatch = _parity(ArchiveTier.SOURCE, include_durable_items=False, matches=False)
     assert mismatch.matches is False
     train = _declared(ArchiveTier.SOURCE)
-    with pytest.raises(DurableChangeTrainError, match="fresh-DDL parity"):
+    with pytest.raises(DurableChangeTrainError, match="schema replay"):
         admit_durable_change_train(
             train,
             observed_current_version=_CURRENT_VERSION,
-            fresh_ddl_parity=mismatch,
+            schema_replay_proof=mismatch,
             admission_evidence_ref="proof:mismatch",
             migration_claims=(train.migration,),
             canonical_target_version=_TARGET_VERSION,
@@ -2217,6 +2296,7 @@ def test_startup_reconciles_interrupted_train_evidence(tmp_path: Path, monkeypat
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
     train = _admitted(ArchiveTier.SOURCE, rider=_production_rider())
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
@@ -2257,6 +2337,7 @@ def test_bootstrap_finishes_persisted_applied_train_without_reapplying(
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
     train = _admitted(ArchiveTier.SOURCE, rider=_production_rider())
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
@@ -2507,14 +2588,7 @@ def test_restart_and_every_runtime_consumer_are_required_before_release(
         train = apply_durable_change_train(conn, train)
     train = record_durable_writer_release(train, evidence_ref="proof:lease-release")
     with sqlite3.connect(db_path) as restarted:
-        with _memory_target() as fresh:
-            actual_parity = prove_durable_fresh_ddl_parity(
-                ArchiveTier.USER,
-                _TARGET_VERSION,
-                migrated_connection=restarted,
-                fresh_connection=fresh,
-                evidence_ref="proof:actual-fresh",
-            )
+        actual_parity = train.schema_replay_proof
         incomplete = (DurableRuntimeConsumerResult("consumer-0", "proof:behavior:0", True),)
         restart = capture_durable_restart_convergence(
             restarted,
@@ -2526,7 +2600,7 @@ def test_restart_and_every_runtime_consumer_are_required_before_release(
     with pytest.raises(DurableChangeTrainError, match="runtime proof does not cover"):
         prove_durable_change_train(
             train,
-            fresh_ddl_parity=actual_parity,
+            schema_replay_proof=actual_parity,
             runtime_consumers=incomplete,
             restart_convergence=restart,
         )
@@ -2576,14 +2650,7 @@ def test_manifest_semantics_reject_out_of_order_lifecycle_evidence(
         migration_runner.validate_durable_change_train_manifest(invalid_release)
 
     with sqlite3.connect(db_path) as restarted:
-        with _memory_target() as fresh:
-            parity = prove_durable_fresh_ddl_parity(
-                ArchiveTier.SOURCE,
-                _TARGET_VERSION,
-                migrated_connection=restarted,
-                fresh_connection=fresh,
-                evidence_ref="proof:actual-fresh",
-            )
+        parity = released.schema_replay_proof
         runtime_results = _runtime_results()
         restart = capture_durable_restart_convergence(
             restarted,
@@ -2598,7 +2665,7 @@ def test_manifest_semantics_reject_out_of_order_lifecycle_evidence(
     with pytest.raises(DurableChangeTrainError, match="restart convergence timestamp predates writer release"):
         prove_durable_change_train(
             released,
-            fresh_ddl_parity=parity,
+            schema_replay_proof=parity,
             runtime_consumers=runtime_results,
             restart_convergence=restart_before_release,
             proven_at_ms=release_time + 1,
@@ -2649,7 +2716,7 @@ def test_manifest_checksum_revision_and_unsafe_path_are_enforced(tmp_path: Path)
 def test_rechecks_manifest_semantics_after_a_valid_checksum(tmp_path: Path) -> None:
     train = _admitted(ArchiveTier.USER)
     payload = migration_runner.durable_change_train_to_payload(train)
-    parity = payload["fresh_ddl_parity"]
+    parity = payload["schema_replay_proof"]
     assert isinstance(parity, dict)
     parity["matches"] = False
     unsigned = dict(payload)
@@ -2658,5 +2725,5 @@ def test_rechecks_manifest_semantics_after_a_valid_checksum(tmp_path: Path) -> N
     path = tmp_path / "forged-train.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(DurableChangeTrainError, match="fresh-DDL parity is not an exact match"):
+    with pytest.raises(DurableChangeTrainError, match="schema replay terminal schema"):
         load_durable_change_train_manifest(path)

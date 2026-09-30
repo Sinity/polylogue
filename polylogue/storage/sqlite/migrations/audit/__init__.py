@@ -9,8 +9,9 @@ Every future route must have a matching train sidecar with
 ``requires_backup=true`` and a non-empty, verified ``backup_plan_ref``
 (``audit.db`` is durable and irreplaceable). Recovery uses the normal
 durable-train path. Do not add an SQL file without the version-authority
-change and sidecar; contiguous-chain and fresh-DDL parity checks guard against
-a half-established route.
+change and sidecar; a complete numbered-chain rehearsal, intermediate schema
+inventory checks, and final canonical DDL identity guard against a
+half-established route.
 """
 
 AUDIT_FIRST_MIGRATION_SLOT = 2

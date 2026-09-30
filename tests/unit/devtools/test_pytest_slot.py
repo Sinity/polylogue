@@ -1420,6 +1420,279 @@ def test_a_completed_held_run_writes_no_interrupted_receipt(tmp_path: Path) -> N
     assert not pytest_slot._slot_result_path(result).exists()
 
 
+def test_a_held_run_defers_when_admission_has_no_worker_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv, **_kwargs: (
+            list(argv),
+            {"admission": "resource_not_ready", "workers": 0, "requested_workers": 1},
+        ),
+    )
+    monkeypatch.setattr(
+        pytest_slot.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("resource_not_ready must not launch pytest"),
+    )
+    result = tmp_path / "held-result.log"
+
+    returncode, receipt = pytest_slot._run_held(
+        ["pytest", "tests"],
+        cwd=str(tmp_path),
+        env={},
+        stdout=None,
+        on_exit=lambda: None,
+        result_path=result,
+    )
+
+    assert returncode == 75
+    assert receipt["status"] == "deferred"
+    assert receipt["diagnosis"] == "resource_not_ready"
+    assert receipt["sizing"]["workers"] == 0
+    assert json.loads(pytest_slot._slot_result_path(result).read_text(encoding="utf-8")) == receipt
+
+
+def test_a_queued_slot_defers_before_starting_pytest_when_admission_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv, **_kwargs: (
+            list(argv),
+            {"admission": "resource_not_ready", "workers": 0, "requested_workers": 1},
+        ),
+    )
+    monkeypatch.setattr(
+        pytest_slot.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("resource_not_ready must not launch pytest"),
+    )
+    launch = tmp_path / "launch.json"
+    log = tmp_path / "pytest.log"
+    launch.write_text(
+        json.dumps(
+            {
+                "argv": ["pytest", "tests"],
+                "working_directory": str(tmp_path),
+                "environment": {},
+                "log_path": str(log),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    returncode = pytest_slot._run_launch(launch)
+
+    receipt = json.loads(pytest_slot._slot_result_path(log).read_text(encoding="utf-8"))
+    assert returncode == 75
+    assert receipt["status"] == "deferred"
+    assert receipt["diagnosis"] == "resource_not_ready"
+    assert receipt["sizing"]["workers"] == 0
+
+
+def test_live_reservations_are_released_when_pytest_cannot_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools.pytest_memory_admission import AdmissionLedger
+
+    ledger = AdmissionLedger(tmp_path / "admission")
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: ledger)
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv, **_kwargs: (
+            list(argv),
+            {
+                "admission": "admitted",
+                "cgroup_directory": "/",
+                "limiting_cgroups": ["/"],
+                "predicted_charge_mib": 3.0,
+                "workers": 1,
+                "requested_workers": 1,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        pytest_slot.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("pytest missing")),
+    )
+
+    with pytest.raises(FileNotFoundError, match="pytest missing"):
+        pytest_slot._run_held(
+            ["pytest", "tests"],
+            cwd=str(tmp_path),
+            env={},
+            stdout=None,
+            on_exit=lambda: None,
+        )
+
+    assert not ledger._path(os.getpid()).exists()
+
+
+def test_launch_reservation_is_released_when_telemetry_setup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools.pytest_memory_admission import AdmissionLedger
+
+    ledger = AdmissionLedger(tmp_path / "admission")
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: ledger)
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv, **_kwargs: (
+            list(argv),
+            {
+                "admission": "admitted",
+                "cgroup_directory": "/",
+                "limiting_cgroups": ["/"],
+                "predicted_charge_mib": 3.0,
+                "workers": 1,
+                "requested_workers": 1,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        pytest_slot,
+        "_persist_telemetry_seed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("telemetry path unavailable")),
+    )
+    launch = tmp_path / "launch.json"
+    launch.write_text(
+        json.dumps(
+            {
+                "argv": ["pytest", "tests"],
+                "working_directory": str(tmp_path),
+                "environment": {},
+                "log_path": str(tmp_path / "pytest.log"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OSError, match="telemetry path unavailable"):
+        pytest_slot._run_launch(launch)
+
+    assert not ledger._path(os.getpid()).exists()
+
+
+def test_held_launch_reaps_child_if_sampler_construction_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[subprocess.Popen[Any]] = []
+    real_popen = subprocess.Popen
+
+    def capture(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        process = real_popen(*args, **kwargs)
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv, **_kwargs: (list(argv), {"admission": "admitted", "workers": 1}),
+    )
+    monkeypatch.setattr(pytest_slot.subprocess, "Popen", capture)
+    monkeypatch.setattr(
+        pytest_slot,
+        "ProcessGroupMemorySampler",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sampler construction failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="sampler construction failed"):
+        pytest_slot._run_held(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=str(tmp_path),
+            env={"PATH": os.environ["PATH"]},
+            stdout=None,
+            on_exit=lambda: None,
+        )
+
+    assert len(started) == 1
+    assert started[0].poll() is not None
+
+
+def test_held_launch_stops_partial_sampler_if_sampler_start_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[subprocess.Popen[Any]] = []
+    stopped: list[bool] = []
+    real_popen = subprocess.Popen
+
+    def capture(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        process = real_popen(*args, **kwargs)
+        started.append(process)
+        return process
+
+    class BrokenSampler:
+        def start(self) -> None:
+            raise RuntimeError("sampler start failed")
+
+        def stop(self) -> dict[str, Any]:
+            stopped.append(True)
+            return {}
+
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv, **_kwargs: (list(argv), {"admission": "admitted", "workers": 1}),
+    )
+    monkeypatch.setattr(pytest_slot.subprocess, "Popen", capture)
+    monkeypatch.setattr(pytest_slot, "ProcessGroupMemorySampler", lambda *_args, **_kwargs: BrokenSampler())
+
+    with pytest.raises(RuntimeError, match="sampler start failed"):
+        pytest_slot._run_held(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=str(tmp_path),
+            env={"PATH": os.environ["PATH"]},
+            stdout=None,
+            on_exit=lambda: None,
+        )
+
+    assert len(started) == 1
+    assert started[0].poll() is not None
+    assert stopped == [True]
+
+
+def test_queued_launch_restores_signal_handlers_if_ledger_setup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch = tmp_path / "launch.json"
+    launch.write_text(
+        json.dumps(
+            {
+                "argv": ["pytest", "tests"],
+                "working_directory": str(tmp_path),
+                "environment": {},
+                "log_path": str(tmp_path / "pytest.log"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    prior = {number: signal.getsignal(number) for number in pytest_slot.REAPED_SIGNALS}
+    monkeypatch.setattr(
+        pytest_slot,
+        "admission_ledger",
+        lambda _env: (_ for _ in ()).throw(RuntimeError("ledger setup failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="ledger setup failed"):
+        pytest_slot._run_launch(launch)
+
+    assert {number: signal.getsignal(number) for number in pytest_slot.REAPED_SIGNALS} == prior
+
+
 def test_a_group_left_with_only_zombies_counts_as_reaped() -> None:
     """A process group whose only members are unreaped zombies is gone.
 
