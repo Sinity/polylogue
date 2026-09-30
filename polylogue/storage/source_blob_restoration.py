@@ -20,13 +20,12 @@ import os
 import sqlite3
 import stat
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
-from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import relocated_source_path, split_zip_member_text
 from polylogue.core.sources import provider_from_origin
@@ -244,59 +243,111 @@ def legacy_append_start(
     offset). Every window-less append received between the anchor and the
     row extends the chain by its size, since appends are contiguous, and the
     row starts where the chain ends. "Received before" is the durable
-    ``raw_payload`` receipt order (``raw_receipt_order_sql``), never
+    ``raw_payload`` receipt order, never
     ``acquired_at_ms``: a wall-clock step back between observations must not
     hide the anchor or pick a later one. A row with no receipt has no order
     and no start. The start is an inference; the caller proves it by hashing
     the window.
     """
     raw_id = row.get("raw_id") or row.get("ref_id")
-    source_path = row.get("source_path")
-    if not isinstance(raw_id, str) or not isinstance(source_path, str):
+    if not isinstance(raw_id, str):
         return None
-    own_order = conn.execute(
-        "SELECT MAX(rowid) FROM blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'", (raw_id,)
-    ).fetchone()[0]
-    if own_order is None:
-        return None
-    anchor_order = raw_receipt_order_sql("anchor")
-    anchor = conn.execute(
+    return _legacy_append_starts(conn, (row,), resolved_path=resolved_path).get(raw_id)
+
+
+def _legacy_append_starts(
+    conn: sqlite3.Connection,
+    rows: tuple[Mapping[str, object], ...],
+    *,
+    resolved_path: str,
+) -> dict[str, int]:
+    """Resolve requested window-less appends with one receipt-ordered scan.
+
+    The scan retains only starts for requested raw ids, not the full source
+    history. Callers restoring a batch use this once for all rows on a path;
+    this keeps N legacy appends linear instead of running N predecessor and
+    range-sum queries over the same history.
+    """
+    requested: dict[str, Mapping[str, object]] = {}
+    path_values = {resolved_path}
+    for row in rows:
+        raw_id = row.get("raw_id") or row.get("ref_id")
+        source_path = row.get("source_path")
+        if isinstance(raw_id, str) and isinstance(source_path, str):
+            requested[raw_id] = row
+            path_values.add(source_path)
+    if not requested:
+        return {}
+    placeholders = ", ".join("?" for _ in path_values)
+    cursor = conn.execute(
         f"""
-        SELECT COALESCE(anchor.append_end_offset, anchor.blob_size), {anchor_order}
-        FROM raw_sessions AS anchor
-        WHERE anchor.source_path IN (?, ?)
-          AND (
-              anchor.append_end_offset IS NOT NULL
-              OR (
-                  anchor.source_index = 0
-                  AND anchor.revision_kind IN ('full', 'unknown')
-                  AND anchor.append_start_offset IS NULL
-              )
-          )
-          AND {anchor_order} < ?
-        ORDER BY {anchor_order} DESC, anchor.raw_id DESC
-        LIMIT 1
+        WITH raw_cohort AS MATERIALIZED (
+            SELECT raw_id, blob_size, source_index, revision_kind,
+                   append_start_offset, append_end_offset, capture_mode,
+                   origin, source_path
+            FROM raw_sessions
+            WHERE source_path IN ({placeholders})
+        ), receipt_order AS (
+            SELECT ref_id, MAX(rowid) AS receipt
+            FROM blob_refs
+            WHERE ref_type = 'raw_payload'
+              AND ref_id IN (SELECT raw_id FROM raw_cohort)
+            GROUP BY ref_id
+        )
+        SELECT raw_cohort.raw_id, raw_cohort.blob_size, raw_cohort.source_index,
+               raw_cohort.revision_kind, raw_cohort.append_start_offset,
+               raw_cohort.append_end_offset, raw_cohort.capture_mode,
+               raw_cohort.origin, receipt_order.receipt
+        FROM raw_cohort
+        LEFT JOIN receipt_order ON receipt_order.ref_id = raw_cohort.raw_id
+        ORDER BY receipt_order.receipt, raw_cohort.raw_id
         """,
-        (source_path, resolved_path, own_order),
-    ).fetchone()
-    if anchor is None or _optional_int(anchor[0]) is None:
-        return None
-    chained_order = raw_receipt_order_sql("chained")
-    (chained_size,) = conn.execute(
-        f"""
-        SELECT COALESCE(SUM(chained.blob_size), 0)
-        FROM raw_sessions AS chained
-        WHERE chained.source_path IN (?, ?)
-          AND chained.source_index = -1
-          AND chained.revision_kind = 'unknown'
-          AND chained.append_start_offset IS NULL
-          AND chained.append_end_offset IS NULL
-          AND {chained_order} > ?
-          AND {chained_order} < ?
-        """,
-        (source_path, resolved_path, anchor[1], own_order),
-    ).fetchone()
-    return int(anchor[0]) + int(chained_size)
+        tuple(sorted(path_values)),
+    )
+    starts: dict[str, int] = {}
+    anchor_offset: int | None = None
+    legacy_bytes = 0
+    for (
+        raw_id,
+        blob_size,
+        source_index,
+        revision_kind,
+        append_start,
+        append_end,
+        capture_mode,
+        origin,
+        receipt,
+    ) in cursor:
+        if receipt is None:
+            continue
+        row = {
+            "raw_id": raw_id,
+            "blob_size": blob_size,
+            "source_index": source_index,
+            "revision_kind": revision_kind,
+            "append_start_offset": append_start,
+            "append_end_offset": append_end,
+            "capture_mode": capture_mode,
+            "origin": origin,
+        }
+        if is_legacy_append_without_window(row):
+            size = _optional_int(blob_size)
+            if size is None or size < 0:
+                continue
+            if raw_id in requested and anchor_offset is not None:
+                starts[str(raw_id)] = anchor_offset + legacy_bytes
+            if anchor_offset is not None:
+                legacy_bytes += size
+            continue
+        is_anchor = append_end is not None or (
+            _optional_int(source_index) == 0
+            and str(revision_kind or "") in {"full", "unknown"}
+            and append_start is None
+        )
+        if is_anchor:
+            anchor_offset = _optional_int(append_end if append_end is not None else blob_size)
+            legacy_bytes = 0
+    return starts
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,21 +374,50 @@ def retained_blob_sources(conn: sqlite3.Connection, row: Mapping[str, object], *
     read from them hash to the raw's recorded identity; the caller checks
     that.
     """
-    recorded = row.get("source_path")
-    if not isinstance(recorded, str) or not recorded:
+    raw_id = row.get("raw_id") or row.get("ref_id")
+    if not isinstance(raw_id, str):
         return RetainedBlobSources("", False, ())
-    container_member = is_container_member_row(row, root)
-    resolved = resolved_source_path(recorded, root, container_member=container_member)
-    legacy_start = (
-        legacy_append_start(conn, row, resolved_path=resolved)
-        if not container_member and is_legacy_append_without_window(row)
-        else None
-    )
-    return RetainedBlobSources(
-        resolved,
-        container_member,
-        _source_candidates(row, container_member=container_member, legacy_append_start=legacy_start),
-    )
+    return retained_blob_sources_many(conn, (row,), root=root).get(raw_id, RetainedBlobSources("", False, ()))
+
+
+def retained_blob_sources_many(
+    conn: sqlite3.Connection, rows: Sequence[Mapping[str, object]], *, root: Path
+) -> dict[str, RetainedBlobSources]:
+    """Resolve candidates for a batch with one receipt-order scan per path.
+
+    Only starts for requested rows are retained. This gives backup and raw
+    derivation a linear pass over each relevant source history without a
+    cache whose size grows with every raw in the archive.
+    """
+    prepared: dict[str, tuple[Mapping[str, object], bool, str]] = {}
+    groups: dict[tuple[str, str], list[Mapping[str, object]]] = {}
+    for row in rows:
+        raw_id = row.get("raw_id") or row.get("ref_id")
+        recorded = row.get("source_path")
+        if not isinstance(raw_id, str) or not isinstance(recorded, str) or not recorded:
+            continue
+        container_member = is_container_member_row(row, root)
+        resolved = resolved_source_path(recorded, root, container_member=container_member)
+        prepared[raw_id] = (row, container_member, resolved)
+        if not container_member and is_legacy_append_without_window(row):
+            groups.setdefault((recorded, resolved), []).append(row)
+
+    starts: dict[str, int] = {}
+    for (_recorded, resolved), group_rows in groups.items():
+        starts.update(_legacy_append_starts(conn, tuple(group_rows), resolved_path=resolved))
+
+    return {
+        raw_id: RetainedBlobSources(
+            resolved,
+            container_member,
+            _source_candidates(
+                row,
+                container_member=container_member,
+                legacy_append_start=starts.get(raw_id),
+            ),
+        )
+        for raw_id, (row, container_member, resolved) in prepared.items()
+    }
 
 
 def _source_candidates(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import stat
 import zipfile
 from hashlib import sha256
 from math import isqrt
@@ -94,7 +95,7 @@ def zip_member_coordinate(source_path: str) -> tuple[Path, str] | None:
     drive, a legal POSIX filename), so every colon is tried as the separator,
     shortest container first.
     """
-    if Path(source_path).exists():
+    if _path_exists(Path(source_path)):
         return None
     start = 0
     while (separator_at := source_path.find(":", start)) != -1:
@@ -102,7 +103,7 @@ def zip_member_coordinate(source_path: str) -> tuple[Path, str] | None:
         if separator_at == 0 or separator_at == len(source_path) - 1:
             continue
         container_path = Path(source_path[:separator_at])
-        if container_path.is_file() and zipfile.is_zipfile(container_path):
+        if _is_regular_zip_file(container_path):
             return container_path, source_path[start:]
     return None
 
@@ -123,7 +124,7 @@ def split_zip_member_text(source_path: str) -> tuple[str, str] | None:
     if located is not None:
         container, member = located
         return source_path[: len(source_path) - len(member) - 1], member
-    if Path(source_path).exists():
+    if _path_exists(Path(source_path)):
         return None
     match = _ZIP_MEMBER_SEPARATOR.search(source_path)
     if match is None or match.end() == len(source_path):
@@ -140,19 +141,44 @@ def zip_member_container(source_path: str) -> Path | None:
 _ARCHIVE_ROOT_SOURCE_DIRECTORIES = ("inbox", "browser-capture", "hooks")
 
 
+def _path_exists(path: Path) -> bool:
+    """Match ``Path.exists`` semantics while preserving non-absence read faults."""
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _is_regular_zip_file(path: Path) -> bool:
+    """Whether a readable regular file is a ZIP, propagating access failures."""
+    try:
+        metadata = path.stat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(metadata.st_mode):
+        return False
+    with path.open("rb") as handle:
+        return zipfile.is_zipfile(handle)
+
+
 def relocated_source_path(path: Path, root: Path) -> Path:
-    """The same acquisition path under the archive root in force, when it exists there.
+    """Prefer the recorded source; otherwise offer its owned-folder relocation candidate.
 
     Acquisition records absolute paths. A path under the archive's own
-    ``inbox``, ``browser-capture`` or ``hooks`` directory moves with the
-    archive root, so it is re-anchored at the root in force when the
-    re-anchored file exists; any other path is kept as recorded.
+    ``inbox``, ``browser-capture`` or ``hooks`` directory may move with the
+    archive root. The returned root-relative path is only a candidate: source
+    restoration still has to prove the exact recorded hash and size. Existing
+    literal paths always win, because their presence is stronger evidence than
+    a same-tail file under the current root.
     """
+    if _path_exists(path):
+        return path
     parts = path.parts
     for directory in _ARCHIVE_ROOT_SOURCE_DIRECTORIES:
         if directory in parts:
             candidate = root.joinpath(*parts[parts.index(directory) :])
-            if candidate.exists():
+            if _path_exists(candidate):
                 return candidate
     return path
 

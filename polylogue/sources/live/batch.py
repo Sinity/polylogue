@@ -1976,6 +1976,7 @@ class LiveBatchProcessor:
         ingested_bytes, failed_bytes, refused_bytes_by_reason = split_offered_bytes(
             path_sizes,
             succeeded=admitted_paths,
+            partial_admissions=partial_admissions,
             failed=(Path(path) for path in failed_paths),
             excluded=reported_excluded,
             deferred=deferred_paths,
@@ -4060,6 +4061,20 @@ class LiveBatchProcessor:
                 )
             if jsonl_boundary is not None:
                 raw_frontier_sizes[path] = jsonl_boundary.prefix_size
+            complete_prefix_record_count: int | None = None
+            if (
+                jsonl_boundary is not None
+                and jsonl_boundary.incomplete_tail
+                and not jsonl_boundary.malformed_record
+                and 0 < jsonl_boundary.prefix_size < blob_size
+            ):
+                if isinstance(jsonl_boundary, JsonlBoundary):
+                    complete_prefix_record_count = jsonl_boundary.record_count
+                else:
+                    with blob_store.open(raw_id) as prefix_handle:
+                        complete_prefix_record_count = jsonl_prefix_record_count(
+                            prefix_handle, jsonl_boundary.prefix_size
+                        )
             raw_source_names[path] = source_name
             if not acquired_via_sqlite_snapshot:
                 captured_content_hashes[path] = raw_id
@@ -4085,6 +4100,7 @@ class LiveBatchProcessor:
                         if jsonl_boundary is not None and not jsonl_boundary.malformed_record
                         else None
                     ),
+                    complete_prefix_record_count=complete_prefix_record_count,
                     captured_file_observation=captured_file_observations.get(path),
                 )
             )
@@ -4719,11 +4735,9 @@ class LiveBatchProcessor:
                         # records are admitted, the truncated tail is not.
                         # ``incomplete_tail`` holds only for a recorded prefix.
                         admitted_prefix = cast(int, record.complete_prefix_size)
-                        if payload is not None:
-                            complete_records = jsonl_prefix_record_count(BytesIO(payload), admitted_prefix)
-                        else:
-                            with blob_store.open(blob_hash) as prefix_handle:
-                                complete_records = jsonl_prefix_record_count(prefix_handle, admitted_prefix)
+                        complete_records = record.complete_prefix_record_count
+                        if complete_records is None:
+                            raise AssertionError("a stable partial JSONL admission has no off-writer record count")
                         result.partial_admissions[_full_record_key(record)] = PartialAdmission(
                             reason=PARTIAL_TRUNCATED_TAIL,
                             complete_record_count=complete_records,

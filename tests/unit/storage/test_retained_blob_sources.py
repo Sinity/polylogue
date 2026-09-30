@@ -14,6 +14,7 @@ window-less append's predecessor by receipt, not wall clock
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import zipfile
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
+from polylogue.core.raw_coordinates import relocated_source_path
 from polylogue.operations import archive_backup
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.storage.blob_store import BlobStore
@@ -278,6 +280,58 @@ def test_both_routes_restore_from_a_source_that_moved_with_the_archive_root(tmp_
     assert (restored, reason) == (True, None)
 
 
+def test_existing_external_source_wins_over_same_tail_under_archive_root(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    bootstrap_archive_root(root)
+    external = tmp_path / "external" / "inbox" / "rollout.jsonl"
+    external.parent.mkdir(parents=True)
+    external.write_bytes(_RECORD)
+    (root / "inbox").mkdir()
+    (root / "inbox" / "rollout.jsonl").write_bytes(_RECORD.replace(b"window", b"unrelated"))
+    blob_hash = hashlib.sha256(_RECORD).hexdigest()
+    with seed_durable_tier(root / "source.db") as conn:
+        _insert_raw(
+            conn,
+            "external-raw",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(external),
+            source_index=1,
+            blob=_RECORD,
+            acquired_at_ms=1,
+            revision_kind="unknown",
+        )
+
+    proofs, unproven = _backup_proof(root, blob_hash)
+    restored, reason = _raw_restoration(root, "external-raw", blob_hash)
+
+    assert [proof["source_path"] for proof in proofs] == [str(external)], unproven
+    assert (restored, reason) == (True, None)
+
+
+def test_inaccessible_literal_source_is_not_replaced_by_same_tail_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    literal = tmp_path / "external" / "inbox" / "rollout.jsonl"
+    candidate = root / "inbox" / "rollout.jsonl"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(_RECORD)
+    literal.parent.mkdir(parents=True)
+    literal.write_bytes(_RECORD)
+    original_stat = Path.stat
+
+    def denied_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == literal:
+            raise PermissionError("synthetic inaccessible literal")
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+
+    with pytest.raises(PermissionError, match="synthetic inaccessible literal"):
+        relocated_source_path(literal, root)
+
+
 def test_a_window_less_append_finds_its_predecessor_in_receipt_order(tmp_path: Path) -> None:
     """The predecessor is the full observation received before the append, whatever the clock said.
 
@@ -352,6 +406,131 @@ def test_a_second_window_less_append_starts_where_the_first_ends(tmp_path: Path)
         (str(len(_EARLIER + _RECORD)), str(len(_EARLIER + _RECORD + _LATER)))
     ], unproven
     assert (restored, reason) == (True, None)
+
+
+def test_many_window_less_appends_share_one_receipt_order_scan(tmp_path: Path) -> None:
+    from polylogue.storage.source_blob_restoration import read_raw_source_evidence, retained_blob_sources_many
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "inbox" / "many-rollouts.jsonl"
+    source.parent.mkdir(exist_ok=True)
+    prefix = _EARLIER
+    appends = [f'{{"seq":{index}}}\n'.encode() for index in range(48)]
+    source.write_bytes(prefix + b"".join(appends))
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        _insert_raw(
+            conn,
+            "many-full",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=0,
+            blob=prefix,
+            acquired_at_ms=1,
+            revision_kind="full",
+        )
+        for index, blob in enumerate(appends):
+            _insert_raw(
+                conn,
+                f"many-append-{index}",
+                origin="codex-session",
+                capture_mode="codex",
+                source_path=str(source),
+                source_index=-1,
+                blob=blob,
+                acquired_at_ms=index + 2,
+                revision_kind="unknown",
+            )
+        rows = tuple(
+            row
+            for index in range(len(appends))
+            if (row := read_raw_source_evidence(conn, f"many-append-{index}")) is not None
+        )
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+
+        sources = retained_blob_sources_many(conn, rows, root=tmp_path)
+
+        scans = [statement for statement in statements if "WITH raw_cohort AS MATERIALIZED" in statement]
+        assert len(scans) == 1
+        assert len(sources) == len(appends)
+        offset = len(prefix)
+        for index, blob in enumerate(appends):
+            candidates = sources[f"many-append-{index}"].candidates
+            assert candidates[0].window is not None
+            assert candidates[0].window.start == offset
+            assert candidates[0].window.end == offset + len(blob)
+            offset += len(blob)
+
+
+def test_distinct_legacy_paths_restrict_receipt_scans_to_their_source_cohort(tmp_path: Path) -> None:
+    from polylogue.storage.source_blob_restoration import read_raw_source_evidence, retained_blob_sources_many
+
+    bootstrap_archive_root(tmp_path)
+    path_count = 24
+    rows = []
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        for index in range(path_count):
+            source = tmp_path / "inbox" / f"source-{index}.jsonl"
+            source.parent.mkdir(exist_ok=True)
+            prefix = f'{{"anchor":{index}}}\n'.encode()
+            append = f'{{"append":{index}}}\n'.encode()
+            source.write_bytes(prefix + append)
+            _insert_raw(
+                conn,
+                f"distinct-full-{index}",
+                origin="codex-session",
+                capture_mode="codex",
+                source_path=str(source),
+                source_index=0,
+                blob=prefix,
+                acquired_at_ms=index * 2 + 1,
+                revision_kind="full",
+            )
+            _insert_raw(
+                conn,
+                f"distinct-append-{index}",
+                origin="codex-session",
+                capture_mode="codex",
+                source_path=str(source),
+                source_index=-1,
+                blob=append,
+                acquired_at_ms=index * 2 + 2,
+                revision_kind="unknown",
+            )
+            for decoy in range(4):
+                _insert_raw(
+                    conn,
+                    f"unrelated-{index}-{decoy}",
+                    origin="codex-session",
+                    capture_mode="codex",
+                    source_path=str(tmp_path / "unrelated" / f"{index}-{decoy}.jsonl"),
+                    source_index=0,
+                    blob=b'{"unrelated":true}\n',
+                    acquired_at_ms=path_count * 2 + index * 4 + decoy,
+                    revision_kind="full",
+                )
+            row = read_raw_source_evidence(conn, f"distinct-append-{index}")
+            assert row is not None
+            rows.append(row)
+
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+
+        sources = retained_blob_sources_many(conn, tuple(rows), root=tmp_path)
+
+        scans = [statement for statement in statements if "WITH raw_cohort AS MATERIALIZED" in statement]
+        assert len(scans) == path_count
+        assert all("ref_id IN (SELECT raw_id FROM raw_cohort)" in statement for statement in scans)
+        plan = conn.execute(f"EXPLAIN QUERY PLAN {scans[0]}").fetchall()
+        plan_details = [str(row[-1]) for row in plan]
+        assert any("SEARCH blob_refs USING INDEX idx_blob_refs_ref_id" in detail for detail in plan_details)
+        assert not any("SCAN blob_refs" in detail for detail in plan_details)
+        assert len(sources) == path_count
+        for index in range(path_count):
+            (candidate,) = sources[f"distinct-append-{index}"].candidates
+            assert candidate.window is not None
+            assert candidate.window.start == len(f'{{"anchor":{index}}}\n'.encode())
 
 
 def _chatgpt_conversation(name: str) -> dict[str, object]:

@@ -56,8 +56,9 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.source_blob_restoration import (
     RetainedBlobSource,
     RetainedBlobSourceKind,
+    RetainedBlobSources,
     is_legacy_append_without_window,
-    retained_blob_sources,
+    retained_blob_sources_many,
     source_window_holds_blob,
     stage_exact_blob,
 )
@@ -706,6 +707,11 @@ def _prove_missing_hashes(
     recover: Callable[[str, int, IO[bytes]], bool] | None,
 ) -> list[dict[str, str]]:
     proofs: list[dict[str, str]] = []
+    sources_by_raw_id = retained_blob_sources_many(
+        conn,
+        tuple(row for rows in by_hash.values() for row in rows),
+        root=root,
+    )
     for blob_hash in sorted(missing_hashes):
         rows = by_hash.get(blob_hash, [])
         errors: list[str] = []
@@ -714,7 +720,10 @@ def _prove_missing_hashes(
             if not isinstance(source_path, str) or not source_path:
                 errors.append("no_source_path")
                 continue
-            sources = retained_blob_sources(conn, row, root=root)
+            raw_id = row.get("raw_id") or row.get("ref_id")
+            sources = (sources_by_raw_id.get(raw_id) if isinstance(raw_id, str) else None) or RetainedBlobSources(
+                "", False, ()
+            )
             resolved, candidates = sources.source_path, sources.candidates
             if not candidates:
                 errors.append(

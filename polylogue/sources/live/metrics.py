@@ -57,6 +57,7 @@ def split_offered_bytes(
     path_sizes: Mapping[Path, int],
     *,
     succeeded: Iterable[Path],
+    partial_admissions: Mapping[Path, PartialAdmission] | None = None,
     failed: Iterable[Path],
     excluded: Mapping[Path, str],
     deferred: Iterable[Path],
@@ -73,19 +74,28 @@ def split_offered_bytes(
     """
     remaining = dict(path_sizes)
     ingested_bytes = 0
+    refused: dict[str, int] = {}
     for path in succeeded:
-        ingested_bytes += remaining.pop(path, 0)
+        size = remaining.pop(path, 0)
+        partial = (partial_admissions or {}).get(path)
+        if partial is None:
+            ingested_bytes += size
+            continue
+        admitted = min(size, max(0, partial.complete_prefix_bytes))
+        ingested_bytes += admitted
+        left_out = size - admitted
+        if left_out:
+            refused[partial.reason] = refused.get(partial.reason, 0) + left_out
     failed_bytes = 0
     for path in failed:
         failed_bytes += remaining.pop(path, 0)
-    refused: dict[str, int] = {}
     for path, reason in excluded.items():
-        size = remaining.pop(path, None)
-        if size is not None:
+        if path in remaining:
+            size = remaining.pop(path)
             refused[reason] = refused.get(reason, 0) + size
     for path in deferred:
-        size = remaining.pop(path, None)
-        if size is not None:
+        if path in remaining:
+            size = remaining.pop(path)
             refused[REFUSED_DEFERRED_PENDING_AUTHORITY] = refused.get(REFUSED_DEFERRED_PENDING_AUTHORITY, 0) + size
     if remaining:
         refused[unattempted_reason] = refused.get(unattempted_reason, 0) + sum(remaining.values())

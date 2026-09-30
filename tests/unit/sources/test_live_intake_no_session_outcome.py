@@ -226,7 +226,9 @@ def _claude_record(uuid: str, parent: str | None, role: str, text: str) -> bytes
 
 
 @pytest.mark.asyncio
-async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(workspace_env: dict[str, Path]) -> None:
+async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A stable capture whose final record is truncated admits its complete records, visibly in part.
 
     The intake result is ``ADMITTED`` (the complete records are admitted, as
@@ -248,6 +250,19 @@ async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(workspa
     payload = complete + b'{"type":"user","message":{"role":"user","cont'
     source_path.write_bytes(payload)
 
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    writer_entry_prefix_counts: list[tuple[int, ...]] = []
+    original_writer = LiveBatchProcessor._ingest_full_records_archive
+
+    def observe_prepared_prefix_count(self: Any, records: list[Any], *args: Any, **kwargs: Any) -> Any:
+        writer_entry_prefix_counts.append(
+            tuple(record.complete_prefix_record_count for record in records if record.complete_prefix_size is not None)
+        )
+        return original_writer(self, records, *args, **kwargs)
+
+    monkeypatch.setattr(LiveBatchProcessor, "_ingest_full_records_archive", observe_prepared_prefix_count)
+
     batches: list[Any] = []
     with capture() as events:
         outcomes = await _admit(archive_root, source_root, batches)
@@ -261,12 +276,15 @@ async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(workspa
         source_bytes=len(payload),
     )
     assert result.partial == expected
+    assert writer_entry_prefix_counts == [(2,)], "acquisition did not seal the count before archive writer entry"
     metrics = batches[-1]
     assert metrics.partial_admission_paths == {str(source_path): expected}
     payload_fields = metrics.to_payload()
     assert payload_fields["partial_file_count"] == 1
     assert payload_fields["partial_reasons"] == {PARTIAL_TRUNCATED_TAIL: 1}
     assert payload_fields["partial_left_out_bytes"] == len(payload) - len(complete)
+    assert payload_fields["ingested_bytes"] == len(complete)
+    assert payload_fields["refused_bytes_by_reason"] == {PARTIAL_TRUNCATED_TAIL: len(payload) - len(complete)}
     (chunk,) = [event for event in events if event.get("event") == "live.ingest.chunk"]
     assert chunk["outcome"] == "degraded"
     assert chunk["partial_file_count"] == 1

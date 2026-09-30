@@ -48,8 +48,9 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
 )
 from polylogue.storage.source_blob_restoration import (
+    RetainedBlobSources,
     read_raw_source_evidence,
-    retained_blob_sources,
+    retained_blob_sources_many,
     stage_exact_blob,
     stage_exact_source_window_blob,
 )
@@ -1031,6 +1032,15 @@ class RawObservationDerivation:
         blob_store = BlobStore(self.archive_root / "blob")
         staged: list[tuple[str, PreparedBlob]] = []
         staged_hashes: set[str] = set()
+        conn = archive.source_connection
+        evidence_rows = {
+            raw_id: row for raw_id in raw_ids if (row := read_raw_source_evidence(conn, raw_id)) is not None
+        }
+        sources_by_raw_id = retained_blob_sources_many(
+            conn,
+            tuple(evidence_rows.values()),
+            root=self.archive_root,
+        )
         try:
             for raw_id in raw_ids:
                 _provider, blob_hash, _path, _kind, _size = descriptors[raw_id]
@@ -1046,7 +1056,12 @@ class RawObservationDerivation:
                     # retryable disappearance, not as lost bytes.
                     continue
                 prepared, reason = self._stage_blob_from_recorded_source(
-                    archive, blob_store, raw_id, blob_hash=blob_hash
+                    archive,
+                    blob_store,
+                    raw_id,
+                    blob_hash=blob_hash,
+                    row=evidence_rows.get(raw_id),
+                    sources=sources_by_raw_id.get(raw_id),
                 )
                 if prepared is None:
                     raise RetainedPreparationRetryableError(
@@ -1069,6 +1084,8 @@ class RawObservationDerivation:
         raw_id: str,
         *,
         blob_hash: str,
+        row: Mapping[str, object] | None = None,
+        sources: RetainedBlobSources | None = None,
     ) -> tuple[PreparedBlob | None, str | None]:
         """Stage one absent blob from the first recorded source window holding its exact bytes.
 
@@ -1081,10 +1098,12 @@ class RawObservationDerivation:
         staged blob, or ``None`` with the last candidate's refusal reason.
         """
         conn = archive.source_connection
-        row = read_raw_source_evidence(conn, raw_id)
+        row = row or read_raw_source_evidence(conn, raw_id)
         if row is None:
             raise KeyError(raw_id)
-        sources = retained_blob_sources(conn, row, root=self.archive_root)
+        sources = sources or retained_blob_sources_many(conn, (row,), root=self.archive_root).get(raw_id)
+        if sources is None:
+            return None, "no_source_window"
         source_path, candidates = sources.source_path, sources.candidates
         if not candidates:
             return None, "no_source_window"
