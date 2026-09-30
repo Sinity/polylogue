@@ -237,7 +237,9 @@ def _validate_sidecar_binding(
         raise DurableChangeTrainError(
             f"backup-required durable migration sidecar lacks a backup plan: {sidecar.resource_name}"
         )
-    if _DROP_SQL_RE.search(sql) is not None and not train.drop_constraints:
+    # The canonical classifier separately proves paired index replacement;
+    # destructive drops still require their declared copy-forward constraints.
+    if _DROP_SQL_RE.search(sql) is not None and expected_claim.requires_backup and not train.drop_constraints:
         raise DurableChangeTrainError(f"durable migration sidecar forbids an unapproved drop: {sidecar.resource_name}")
 
 

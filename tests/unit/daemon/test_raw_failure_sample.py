@@ -83,6 +83,7 @@ class TestRawFailureSampleModel:
                     "terminal_unknown_json_decode",
                     "terminal_unknown_export_no_session",
                     "terminal_unsupported_shape",
+                    "terminal_missing_source_coordinates",
                 }
             )
             == RAW_FAILURE_TERMINAL_EVIDENCE_KINDS
