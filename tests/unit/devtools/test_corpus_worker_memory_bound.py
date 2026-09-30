@@ -1220,14 +1220,22 @@ def test_the_sizing_receipt_records_the_estimate_a_run_was_admitted_on() -> None
     assert overrun["margin_fraction"] < 0
 
 
-def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes() -> None:
+def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes(tmp_path: Path) -> None:
     """The receipt, not a recomputation, is what a later reader has.
 
     Anti-vacuity: compute the estimate only at the call site and a sizing
     payload from either basis carries the components without the conclusion.
     """
-    _workers, sizing = memory_bounded_worker_cap(requested=3)
+    # The unit suite itself runs inside the pytest pool. Model a quiet pool
+    # slice and ample host memory so unrelated xdist workers cannot turn this
+    # payload-shape assertion into a resource_not_ready outcome.
+    workers, sizing = memory_bounded_worker_cap(
+        requested=3,
+        meminfo=_meminfo(tmp_path, available_mib=32_768),
+        **_pytest_slice(tmp_path, current_mib=0),
+    )
 
+    assert workers >= 1
     assert "predicted_charge_mib" in sizing
     assert "margin_mib" in sizing
     assert "margin_fraction" in sizing

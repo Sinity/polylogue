@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from devtools import cloud_sentinels, pytest_slot
+from devtools import cloud_sentinels, pytest_slot, worker_memory
 from devtools.pytest_slot import (
     BASETEMP_ROOT_ENV,
     PytestSlotUnavailableError,
@@ -205,8 +205,63 @@ def _launch_document(root: Path) -> dict[str, Any]:
 
 @pytest.fixture(autouse=True)
 def _outside_the_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The session running these tests may itself hold the slot; the decision under test must not."""
+    """Launcher tests use a controlled roomy budget, never the outer test job's live headroom."""
     stub_cgroup(OUTSIDE_CGROUP, tmp_path=tmp_path, monkeypatch=monkeypatch)
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _environment: None)
+
+    def roomy_worker_cap(
+        requested: int,
+        *,
+        profile: worker_memory.ChargeProfile,
+        max_workers: int | None = None,
+        **_kwargs: Any,
+    ) -> tuple[int, dict[str, Any]]:
+        workers = min(requested, max_workers) if max_workers is not None else requested
+        budget = profile.charge_mib(workers) + 1024.0
+        basis = profile.admission_estimate(workers, budget)
+        basis.update(
+            {
+                "admission": "admitted",
+                "available_mib": budget,
+                "basis": "declared_budget",
+                "cgroup_available_mib": None,
+                "cgroup_directory": "/fixture",
+                "host_available_mib": budget,
+                "limiting_cgroups": ["/fixture"],
+                "narrowed": workers < requested,
+                "requested_workers": requested,
+                "workers": workers,
+            }
+        )
+        return workers, basis
+
+    monkeypatch.setattr(worker_memory, "memory_bounded_worker_cap", roomy_worker_cap)
+
+
+_CONTROLLED_ADMISSION_SETUP = """
+from devtools import pytest_slot, worker_memory
+
+def roomy_worker_cap(requested, *, profile, max_workers=None, **kwargs):
+    workers = min(requested, max_workers) if max_workers is not None else requested
+    budget = profile.charge_mib(workers) + 1024.0
+    basis = profile.admission_estimate(workers, budget)
+    basis.update(dict(
+        admission="admitted",
+        available_mib=budget,
+        basis="declared_budget",
+        cgroup_available_mib=None,
+        cgroup_directory="/fixture",
+        host_available_mib=budget,
+        limiting_cgroups=["/fixture"],
+        narrowed=workers < requested,
+        requested_workers=requested,
+        workers=workers,
+    ))
+    return workers, basis
+
+worker_memory.memory_bounded_worker_cap = roomy_worker_cap
+pytest_slot.admission_ledger = lambda _environment: None
+"""
 
 
 def test_outside_the_pool_the_run_is_submitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1212,6 +1267,7 @@ def test_the_child_reap_leaves_the_majority_of_the_unit_stop_budget() -> None:
 _SIGNALLED_HELD_RUN = """
 import os, pathlib, signal, sys
 sys.path.insert(0, {repo!r})
+{setup}
 from devtools.pytest_slot import _run_held
 
 receipt = pathlib.Path({receipt!r})
@@ -1272,7 +1328,9 @@ def test_a_signalled_held_run_writes_its_receipt_inside_the_stop_budget(tmp_path
         [
             sys.executable,
             "-c",
-            _SIGNALLED_HELD_RUN.format(repo=repo, cwd=str(tmp_path), receipt=str(receipt)),
+            _SIGNALLED_HELD_RUN.format(
+                repo=repo, cwd=str(tmp_path), receipt=str(receipt), setup=_CONTROLLED_ADMISSION_SETUP
+            ),
         ],
         env={"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/home/nobody")},
         stderr=subprocess.PIPE,
@@ -1312,6 +1370,7 @@ def test_a_signalled_held_run_writes_its_receipt_inside_the_stop_budget(tmp_path
 _INTERRUPTED_HELD_RUN = """
 import os, pathlib, sys
 sys.path.insert(0, {repo!r})
+{setup}
 from devtools.pytest_slot import _run_held
 
 telemetry = pathlib.Path({telemetry!r})
@@ -1368,7 +1427,13 @@ def test_an_interrupted_held_run_preserves_its_receipt(tmp_path: Path) -> None:
         [
             sys.executable,
             "-c",
-            _INTERRUPTED_HELD_RUN.format(repo=repo, cwd=str(tmp_path), telemetry=str(telemetry), result=str(result)),
+            _INTERRUPTED_HELD_RUN.format(
+                repo=repo,
+                cwd=str(tmp_path),
+                telemetry=str(telemetry),
+                result=str(result),
+                setup=_CONTROLLED_ADMISSION_SETUP,
+            ),
         ],
         env={"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/home/nobody")},
         stderr=subprocess.PIPE,

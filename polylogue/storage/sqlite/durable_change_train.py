@@ -145,7 +145,7 @@ class _DurableForwardVersionEvidence:
     actual: DurableDatabaseEvidence
     integrity_check: tuple[str, ...]
     live_inventory: _migration_runner.DurableSchemaInventory
-    canonical_inventory: _migration_runner.DurableSchemaInventory
+    expected_live_schema_inventory_sha256: str
 
 
 def durable_migration_sidecar_name(slot: int) -> str:
@@ -1778,6 +1778,26 @@ def _historical_schema_evidence(train: DurableChangeTrain) -> DurableMigrationRe
     return historical
 
 
+def _released_live_schema_inventory_sha256(
+    tier: ArchiveTier,
+    live_version: int,
+    manifests_by_target: dict[int, DurableChangeTrain],
+) -> str:
+    """Return the persisted replay witness for the exact released live version."""
+    train = manifests_by_target.get(live_version)
+    if train is None or train.state is not DurableChangeTrainState.RELEASED:
+        raise DurableChangeTrainError(
+            f"{tier.value} durable tier v{live_version} lacks a released train to witness its live schema"
+        )
+    historical = _historical_schema_evidence(train)
+    if historical.tier is not tier or not historical.from_version < live_version <= historical.target_version:
+        raise DurableChangeTrainError(
+            f"{tier.value} durable tier v{live_version} has an unrelated schema replay witness"
+        )
+    step = _migration_runner._durable_migration_replay_step(historical, live_version)
+    return step.after_schema_inventory_sha256
+
+
 def _canonical_schema_inventory(tier: ArchiveTier, target_version: int) -> _migration_runner.DurableSchemaInventory:
     """Construct the canonical object set for one live durable schema version."""
     try:
@@ -1826,7 +1846,7 @@ def _verify_released_train_live_tier(
     actual_evidence: DurableDatabaseEvidence | None = None,
     integrity_check: tuple[str, ...] | None = None,
     live_inventory: _migration_runner.DurableSchemaInventory | None = None,
-    canonical_inventory: _migration_runner.DurableSchemaInventory | None = None,
+    expected_live_schema_inventory_sha256: str | None = None,
 ) -> DurableForwardVersionReceipt | None:
     """Verify a released train remains represented after later trains advance it."""
     if train.apply_evidence is None:
@@ -1861,20 +1881,14 @@ def _verify_released_train_live_tier(
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier schema inventory changed during forward admission"
         )
-    expected_inventory = canonical_inventory or _canonical_schema_inventory(train.tier, actual.user_version)
-    expected_by_ref = {item.object_ref: item for item in expected_inventory.objects}
-    live_by_ref = {item.object_ref: item for item in live_inventory.objects}
-    missing = sorted(set(expected_by_ref) - set(live_by_ref))
-    unexpected = sorted(set(live_by_ref) - set(expected_by_ref))
-    changed = sorted(
-        object_ref
-        for object_ref in set(expected_by_ref) & set(live_by_ref)
-        if expected_by_ref[object_ref].definition_sha256 != live_by_ref[object_ref].definition_sha256
-    )
-    if missing or unexpected or changed:
+    if expected_live_schema_inventory_sha256 is None:
         raise DurableChangeTrainError(
-            f"{train.tier.value} durable tier schema differs from the canonical live version: "
-            f"missing={missing}, unexpected={unexpected}, changed={changed}"
+            f"{train.tier.value} durable tier v{actual.user_version} lacks persisted replay evidence for its live schema"
+        )
+    if live_inventory.sha256 != expected_live_schema_inventory_sha256:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier schema inventory differs from the released migration replay witness "
+            f"for live v{actual.user_version}"
         )
     runtime_target = (
         cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[train.tier]
@@ -1931,7 +1945,9 @@ def _forward_version_receipt_for_current_tier(
             actual=actual,
             integrity_check=tuple(str(row[0]) for row in conn.execute("PRAGMA integrity_check")),
             live_inventory=_migration_runner.capture_durable_schema_inventory(conn),
-            canonical_inventory=_canonical_schema_inventory(tier, actual.user_version),
+            expected_live_schema_inventory_sha256=_released_live_schema_inventory_sha256(
+                tier, actual.user_version, manifests_by_target
+            ),
         )
     for train in sorted(historical, key=lambda item: item.target_version, reverse=True):
         receipt = _verify_released_train_live_tier(
@@ -1941,7 +1957,7 @@ def _forward_version_receipt_for_current_tier(
             actual_evidence=evidence.actual,
             integrity_check=evidence.integrity_check,
             live_inventory=evidence.live_inventory,
-            canonical_inventory=evidence.canonical_inventory,
+            expected_live_schema_inventory_sha256=evidence.expected_live_schema_inventory_sha256,
         )
         if receipt is not None:
             return receipt
@@ -2245,8 +2261,10 @@ def execute_durable_change_train(
                 live_inventory=(
                     forward_version_evidence[tier].live_inventory if tier in forward_version_evidence else None
                 ),
-                canonical_inventory=(
-                    forward_version_evidence[tier].canonical_inventory if tier in forward_version_evidence else None
+                expected_live_schema_inventory_sha256=(
+                    forward_version_evidence[tier].expected_live_schema_inventory_sha256
+                    if tier in forward_version_evidence
+                    else None
                 ),
             )
         return DurableChangeTrainExecution(
@@ -2385,7 +2403,7 @@ def _reconcile_durable_change_train_startup_locked(
     live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
     live_integrity_by_tier: dict[ArchiveTier, tuple[str, ...]] = {}
     live_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
-    canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
+    expected_live_schema_inventory_by_tier: dict[ArchiveTier, str] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     validated_tiers: set[ArchiveTier] = set()
     manifest_paths = _durable_train_manifest_paths(manifest_root)
@@ -2528,16 +2546,18 @@ def _reconcile_durable_change_train_startup_locked(
                     )
                 if train.tier not in live_inventory_by_tier:
                     live_inventory_by_tier[train.tier] = _migration_runner.capture_durable_schema_inventory(live)
-                if train.tier not in canonical_inventory_by_tier:
-                    canonical_inventory_by_tier[train.tier] = _canonical_schema_inventory(
-                        train.tier, actual.user_version
+                if train.tier not in expected_live_schema_inventory_by_tier:
+                    expected_live_schema_inventory_by_tier[train.tier] = _released_live_schema_inventory_sha256(
+                        train.tier,
+                        actual.user_version,
+                        manifests_by_tier[train.tier],
                     )
                 if live_evidence_cache is not None:
                     live_evidence_cache[train.tier] = _DurableForwardVersionEvidence(
                         actual=actual,
                         integrity_check=live_integrity_by_tier[train.tier],
                         live_inventory=live_inventory_by_tier[train.tier],
-                        canonical_inventory=canonical_inventory_by_tier[train.tier],
+                        expected_live_schema_inventory_sha256=(expected_live_schema_inventory_by_tier[train.tier]),
                     )
             _verify_released_train_live_tier(
                 live,
@@ -2545,7 +2565,7 @@ def _reconcile_durable_change_train_startup_locked(
                 actual_evidence=actual,
                 integrity_check=live_integrity_by_tier.get(train.tier),
                 live_inventory=live_inventory_by_tier.get(train.tier),
-                canonical_inventory=canonical_inventory_by_tier.get(train.tier),
+                expected_live_schema_inventory_sha256=expected_live_schema_inventory_by_tier.get(train.tier),
             )
         record_reconciled(manifest_path)
     return tuple(reconciled)

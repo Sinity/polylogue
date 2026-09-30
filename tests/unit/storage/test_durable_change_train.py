@@ -1033,6 +1033,21 @@ def test_maintenance_route_rehearses_an_intermediate_sidecar_to_the_shipped_targ
         single_writer_evidence_ref="proof:archive-ownership-lock",
         release_archive_ownership=lambda: None,
     )
+    released_v3_path = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3)
+    assert reconcile_durable_change_train_startup(tmp_path) == (released_v2_path, released_v3_path)
+
+    # The v3 train's witnessed intermediate inventory remains the authority
+    # while today's runtime DDL already describes v4.  An undeclared object
+    # at v3 must therefore refuse startup before v4 is applied.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE unexpected_intermediate (id INTEGER PRIMARY KEY) STRICT")
+        conn.commit()
+    with pytest.raises(DurableChangeTrainError, match="differs from the released migration replay witness"):
+        reconcile_durable_change_train_startup(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE unexpected_intermediate")
+        conn.commit()
+
     third = execute_durable_change_train(
         tmp_path,
         ArchiveTier.SOURCE,
