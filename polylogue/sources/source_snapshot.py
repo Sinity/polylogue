@@ -329,6 +329,12 @@ class CandidateInput:
     size_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class SourceSnapshotResult:
+    candidate_items: tuple[CutItem, ...]
+    observation_binding: SourceCutBinding
+
+
 class SourceSnapshotStrategy(Protocol):
     mode: SnapshotMode
 
@@ -337,7 +343,7 @@ class SourceSnapshotStrategy(Protocol):
         binding: SourceCutBinding,
         destination: Path,
         baseline: tuple[CutItem, ...],
-    ) -> tuple[CutItem, ...]: ...
+    ) -> SourceSnapshotResult: ...
 
 
 def _sha256_path(path: Path) -> str:
@@ -772,8 +778,8 @@ class _FilesystemStrategy:
 
     def snapshot(
         self, binding: SourceCutBinding, destination: Path, baseline: tuple[CutItem, ...]
-    ) -> tuple[CutItem, ...]:
-        return _copy_candidates(binding, baseline, destination)
+    ) -> SourceSnapshotResult:
+        return SourceSnapshotResult(_copy_candidates(binding, baseline, destination), binding)
 
 
 class _BoundedSnapshotWriter:
@@ -798,7 +804,7 @@ class _BoundedSnapshotWriter:
 class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
     def snapshot(
         self, binding: SourceCutBinding, destination: Path, baseline: tuple[CutItem, ...]
-    ) -> tuple[CutItem, ...]:
+    ) -> SourceSnapshotResult:
         root = Path(binding.source.root)
         if root.is_dir():
             raise SourceSnapshotError("mutable-sqlite declarations must name one database")
@@ -816,8 +822,12 @@ class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
         if sqlite_member_revision(root) != baseline[0].identity:
             raise SourceMutationError(f"SQLite source changed during logical export: {root}")
         size = destination.stat().st_size
-        return tuple(
-            CutItem(item.source_id, item.coordinate, item.identity, digest, size, str(destination)) for item in baseline
+        return SourceSnapshotResult(
+            tuple(
+                CutItem(item.source_id, item.coordinate, item.identity, digest, size, str(destination))
+                for item in baseline
+            ),
+            binding,
         )
 
 
@@ -826,7 +836,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
 
     def snapshot(
         self, binding: SourceCutBinding, destination: Path, baseline: tuple[CutItem, ...]
-    ) -> tuple[CutItem, ...]:
+    ) -> SourceSnapshotResult:
         root = Path(binding.source.root)
         if not root.is_dir():
             raise SourceSnapshotError("spool handoff requires a directory root")
@@ -835,6 +845,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
             raise SourceSnapshotError(f"stale spool handoff generation exists: {retired}")
         os.replace(root, retired)
         root.mkdir(mode=0o700)
+        active_binding = SourceCutBinding(binding.source, _root_identity(root), binding.policy)
         _fsync_directory(root.parent)
         retired_binding = SourceCutBinding(
             SourceDeclaration(binding.source.source_id, binding.source.role, retired, binding.source.mutable),
@@ -847,7 +858,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
             # The old generation is still the only copy of pre-cut spool
             # material. Keep it for recovery if candidate copying fails.
             raise
-        return copied
+        return SourceSnapshotResult(copied, active_binding)
 
 
 def _default_policy(role: SourceRole) -> SourceCutPolicy:
@@ -1148,6 +1159,7 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         baselines = {binding.source.source_id: _observe(binding) for binding in preflight.bindings}
         _preflight_copy_capacity(preflight, baselines, staging.parent)
         candidate_items: list[CutItem] = []
+        observation_bindings: list[SourceCutBinding] = []
         for binding in preflight.bindings:
             source_destination = staging / "candidate" / binding.source.source_id
             if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
@@ -1156,9 +1168,11 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
                 source_destination = source_destination.with_name(
                     source_destination.name + Path(binding.source.root).suffix
                 )
-            candidate_items.extend(
-                _strategy(binding.policy).snapshot(binding, source_destination, baselines[binding.source.source_id])
+            snapshot = _strategy(binding.policy).snapshot(
+                binding, source_destination, baselines[binding.source.source_id]
             )
+            candidate_items.extend(snapshot.candidate_items)
+            observation_bindings.append(snapshot.observation_binding)
         candidate_items = [
             CutItem(
                 item.source_id,
@@ -1180,7 +1194,7 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
                 and _root_identity(binding.source.root) != binding.root_identity
             ):
                 raise SourceMutationError(f"source root identity changed: {binding.source.source_id}")
-        post_items = [item for binding in preflight.bindings for item in _observe(binding)]
+        post_items = [item for binding in observation_bindings for item in _observe(binding)]
         modes = {binding.source.source_id: binding.policy.mode for binding in preflight.bindings}
         candidate_keys = {_ownership_key(item, mode=modes[item.source_id]) for item in candidate_items}
         baseline_coordinates = {(item.source_id, item.coordinate) for items in baselines.values() for item in items}
@@ -1340,6 +1354,7 @@ __all__ = [
     "SourceSeal",
     "SourceSnapshotError",
     "SourceSnapshotStrategy",
+    "SourceSnapshotResult",
     "execute_source_cut",
     "load_source_cut",
     "preflight_source_cut",

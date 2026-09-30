@@ -495,6 +495,36 @@ def test_spool_handoff_leaves_a_new_empty_active_generation(tmp_path: Path, role
     assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
 
 
+@pytest.mark.parametrize("role", [SourceRole.SPOOL, SourceRole.QUEUE])
+@pytest.mark.parametrize("replace_active", [False, True])
+def test_handoff_observes_only_the_producer_bound_active_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: SourceRole, replace_active: bool
+) -> None:
+    """A fresh-stat rebind would accept an unrelated active root after copying."""
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "event.json").write_text("event", encoding="utf-8")
+    original_copy = source_snapshot._copy_candidates
+
+    def copy_with_arrival(binding, baseline, destination):
+        copied = original_copy(binding, baseline, destination)
+        if replace_active:
+            spool.rename(tmp_path / "displaced-active")
+            spool.mkdir()
+        (spool / "arrival.json").write_text("arrival", encoding="utf-8")
+        return copied
+
+    monkeypatch.setattr(source_snapshot, "_copy_candidates", copy_with_arrival)
+    preflight = preflight_source_cut([SourceDeclaration("spool", role, spool, True)])
+    if replace_active:
+        with pytest.raises(source_snapshot.SourceMutationError):
+            execute_source_cut(preflight, tmp_path / "cut")
+    else:
+        result = execute_source_cut(preflight, tmp_path / "cut")
+        assert {item.coordinate for item in result.carry_forward_manifest.items} == {"arrival.json"}
+        assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
+
+
 def test_cut_reclaims_only_staging_it_owns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A crash before the final marker is retried as absent output.
 
