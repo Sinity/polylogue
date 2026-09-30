@@ -2856,6 +2856,11 @@ def _publish_sealed_staging(staging: Path, final_root: Path, *, probe: _Construc
                     validate_source_files=lambda: _assert_authenticated_source_files(staging, entries),
                 )
                 if proof is not None:
+                    # Destination train admission opens Source in WAL mode.
+                    # Its connections have drained when population returns;
+                    # collapse that private destination before measuring and
+                    # sealing it for ordinary mode=ro frontier readers.
+                    _sqlite_integrity(handoff)
                     unchanged = tuple(entry for entry in entries if entry[0] not in proof.replaced_paths)
                     expected = {path: (size, digest) for path, size, digest in unchanged}
                     actual = {

@@ -2883,8 +2883,9 @@ def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path, offset: int) 
         seal_fixture_tree(root)
 
 
+@pytest.mark.parametrize("artifact_kind", ["seeded", "immutable"])
 def test_sealed_archive_copy_publication_owns_its_released_train(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact_kind: str
 ) -> None:
     import tests.infra.workload_artifacts as artifacts
 
@@ -2899,16 +2900,42 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         real_rename(source, destination)
 
     monkeypatch.setattr(artifacts, "_rename_sealed", force_cross_parent_copy)
-    artifact = build_seeded_archive(_SMALL_SPECS, cache_root=tmp_path / "cache")
+    if artifact_kind == "seeded":
+        artifact = build_seeded_archive(_SMALL_SPECS, cache_root=tmp_path / "cache")
+        root = artifact.root
+        manifest_files = artifact.manifest.files
+    else:
+
+        def builder(root: Path) -> None:
+            with ArchiveStore(root):
+                pass
+            _sqlite_integrity(root)
+
+        tree = build_immutable_tree(cache_root=tmp_path / "cache", key="sealed-archive-copy", builder=builder)
+        root = tree.root
+        manifest_files = tree.files
     assert copies == 1
-    provenance = next((artifact.root / ".fixture-archive-provenance").glob("*/original-history/source-002.json"))
-    released = artifact.root / ".maintenance-state/durable-change-trains/source-002.json"
+    # Removing handoff finalization leaves Source's WAL header without
+    # sidecars in a sealed directory: ordinary mode=ro refuses with 1544.
+    for tier in ArchiveTier:
+        path = root / f"{tier.value}.db"
+        with path.open("rb") as handle:
+            assert handle.read(20)[18:20] == bytes((1, 1))
+        assert not path.with_name(path.name + "-wal").exists()
+        assert not path.with_name(path.name + "-shm").exists()
+    readiness = raw_materialization_readiness_snapshot(root)
+    assert raw_materialization_ready(readiness), readiness
+    provenance = next((root / ".fixture-archive-provenance").glob("*/original-history/source-002.json"))
+    released = root / ".maintenance-state/durable-change-trains/source-002.json"
     assert provenance.read_bytes() != released.read_bytes()
-    assert {item["path"] for item in artifact.manifest.files} == {
-        str(path.relative_to(artifact.root))
-        for path in artifact.root.rglob("*")
-        if path.is_file() and path.name != "manifest.json"
+    assert {item["path"] for item in manifest_files} == {
+        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file() and path.name != "manifest.json"
     }
-    with clone_seeded_archive(artifact, tmp_path / "clone") as clone:
-        with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
-            assert archive.count_sessions() > 0
+    if artifact_kind == "seeded":
+        with clone_seeded_archive(artifact, tmp_path / "clone") as clone:
+            with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
+                assert archive.count_sessions() == 2
+    else:
+        cloned_tree = clone_immutable_tree(tree, tmp_path / "clone")
+        with ArchiveStore.open_existing(cloned_tree.root, read_only=False) as archive:
+            assert archive.count_sessions() == 0
