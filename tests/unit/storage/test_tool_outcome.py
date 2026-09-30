@@ -628,7 +628,14 @@ def test_ownerless_sidecar_conflicts_with_different_owned_outcome(ownerless_firs
                 ParsedMessage(
                     provider_message_id="result-owned",
                     role=Role.TOOL,
-                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="done")],
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_RESULT,
+                            tool_id="call-1",
+                            text="done",
+                            outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
+                        )
+                    ],
                 ),
             ],
             session_events=[ownerless, owned] if ownerless_first else [owned, ownerless],
@@ -665,7 +672,14 @@ def test_ownerless_sidecar_accepts_matching_owned_outcome(ownerless_first: bool,
                 ParsedMessage(
                     provider_message_id="result-owned",
                     role=Role.TOOL,
-                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="done")],
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_RESULT,
+                            tool_id="call-1",
+                            text="done",
+                            outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
+                        )
+                    ],
                 ),
             ],
             session_events=[ownerless, owned] if ownerless_first else [owned, ownerless],
