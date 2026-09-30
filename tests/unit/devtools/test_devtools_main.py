@@ -271,3 +271,20 @@ def test_help_output_includes_devtools_prog_name(capsys: pytest.CaptureFixture[s
     # Click outputs "Usage: devtools ..." or "Usage: python -m devtools ..."
     assert "devtools" in captured.out
     assert "Options" in captured.out
+
+
+@pytest.mark.parametrize(
+    ("sentinel", "expected"),
+    [
+        ("--help", "Usage: devtools test"),
+        ("-h", "Usage: devtools test"),
+        ("--version", "pytest "),
+        ("-V", "pytest "),
+    ],
+)
+def test_focused_test_meta_options_reach_the_no_launch_handler(
+    capsys: pytest.CaptureFixture[str], sentinel: str, expected: str
+) -> None:
+    """Click forwarding preserves pytest meta-options without starting a run."""
+    assert devtools_main.main(["test", sentinel]) == 0
+    assert expected in capsys.readouterr().out

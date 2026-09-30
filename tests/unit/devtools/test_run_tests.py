@@ -74,6 +74,29 @@ def test_build_pytest_cmd_defaults_to_single_process() -> None:
     assert "-n" not in cmd
 
 
+@pytest.mark.parametrize(
+    ("sentinel", "expected"),
+    [
+        ("--help", "Usage: devtools test"),
+        ("-h", "Usage: devtools test"),
+        ("--version", "pytest "),
+        ("-V", "pytest "),
+    ],
+)
+def test_meta_options_never_become_a_test_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sentinel: str,
+    expected: str,
+) -> None:
+    """The pytest CLI's sibling help/version spellings never enter admission."""
+    monkeypatch.setattr(run_tests, "run_pytest", lambda *_args, **_kwargs: pytest.fail("pytest launched"))
+
+    assert run_tests.main([sentinel]) == 0
+    output = capsys.readouterr().out
+    assert expected in output
+
+
 def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     """The repository's own plugins load, then the third-party contract, in order.
 
@@ -1193,7 +1216,11 @@ def _green_receipt(runs: Path, name: str, *, argv: list[str], digest: str, **ove
         "argv": argv,
         "git_worktree_content_sha256": digest,
         "pytest_aggregate": {"terminal_green": True},
-        "environment_fingerprint": {"python_executable": sys.executable, "python_version": platform.python_version()},
+        "environment_fingerprint": {
+            "checkout_root": str(checkout.absolute()),
+            "python_executable": sys.executable,
+            "python_version": platform.python_version(),
+        },
     }
     payload.update(overrides)
     (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -1214,6 +1241,27 @@ def test_a_green_run_of_the_same_selection_and_tree_is_reused(tmp_path: Path) ->
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d2") is None
     assert run_tests.reusable_green_receipt(["tests/unit/test_b.py"], root=tmp_path, content_sha256="d1") is None
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256=None) is None
+
+
+def test_a_receipt_from_another_checkout_is_never_reused(tmp_path: Path) -> None:
+    import platform
+    import sys
+
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-a",
+        argv=selection,
+        digest="d1",
+        environment_fingerprint={
+            "checkout_root": str((tmp_path / "sibling").absolute()),
+            "python_executable": sys.executable,
+            "python_version": platform.python_version(),
+        },
+    )
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
 
 
 @pytest.mark.parametrize(

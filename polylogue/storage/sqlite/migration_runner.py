@@ -40,7 +40,7 @@ _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _ADDITIVE_NO_BACKUP_MARKER = "-- migration-safety: additive-no-backup"
 _SQL_TRANSACTION_CONTROL_RE = re.compile(r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b", re.IGNORECASE)
-DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v1"
+DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v2"
 DURABLE_MIGRATION_COLLISION_REPORT_FORMAT: Final = "polylogue.durable-migration-collisions.v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -997,6 +997,7 @@ def migrate_archive_tier(
     *,
     backup_manifest: Path | None,
     target_version: int | None = None,
+    schema_replay_proof: DurableMigrationReplayProof | None = None,
 ) -> MigrationResult:
     """Apply additive migrations for one durable tier."""
     if tier not in DURABLE_MIGRATION_TIERS:
@@ -1036,6 +1037,21 @@ def migrate_archive_tier(
     from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
 
     validate_durable_migration_sidecars(tier, tuple((step.name, step.sql) for step in _load_migrations(tier)))
+    if schema_replay_proof is None and precheck_version < runtime_target_version:
+        schema_replay_proof = rehearse_durable_migration_chain(
+            conn,
+            tier,
+            target_version=runtime_target_version,
+            evidence_ref=f"proof:migration-preflight:{tier.value}:v{precheck_version}-to-v{runtime_target_version}",
+        )
+    if schema_replay_proof is not None:
+        validate_durable_migration_replay_proof(schema_replay_proof, recompute_installed_bindings=True)
+        if (
+            schema_replay_proof.tier is not tier
+            or schema_replay_proof.from_version > precheck_version
+            or target_version > schema_replay_proof.target_version
+        ):
+            raise MigrationError("durable migration replay proof does not match the live starting version")
     precheck_requires_backup = any(step.requires_backup for step in precheck_steps)
     if precheck_requires_backup and backup_manifest is None:
         raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
@@ -1118,10 +1134,25 @@ def migrate_archive_tier(
                 raise MigrationError(
                     f"{tier.value} migration {step.name} expected version {step.version - 1}, found {before}"
                 )
+            replay_step = None
+            if schema_replay_proof is not None:
+                replay_step = _durable_migration_replay_step(schema_replay_proof, step.version)
+                before_inventory = capture_durable_schema_inventory(conn)
+                if (
+                    replay_step.version != step.version
+                    or replay_step.name != step.name
+                    or replay_step.sql_sha256 != hashlib.sha256(step.sql.encode("utf-8")).hexdigest()
+                    or replay_step.before_schema_inventory_sha256 != before_inventory.sha256
+                ):
+                    raise MigrationError(f"{tier.value} migration {step.name} does not match its rehearsed input")
             _execute_migration_sql(conn, step.sql)
             conn.execute(f"PRAGMA user_version = {step.version}")
             if not conn.in_transaction:
                 raise MigrationError("durable migration SQL escaped the existing transaction")
+            if replay_step is not None:
+                after_inventory = capture_durable_schema_inventory(conn)
+                if replay_step.after_schema_inventory_sha256 != after_inventory.sha256:
+                    raise MigrationError(f"{tier.value} migration {step.name} does not match its rehearsed output")
             applied.append(step.version)
         quick_check = conn.execute("PRAGMA quick_check").fetchone()
         if quick_check is None or str(quick_check[0]).lower() != "ok":
@@ -1150,24 +1181,8 @@ def migrate_archive_tier(
                 raise MigrationError(
                     "durable migration row parity failed: " + "; ".join(row_parity.unauthorized_changes)
                 )
-            with closing(sqlite3.connect(":memory:")) as fresh_connection:
-                fresh_connection.execute("PRAGMA foreign_keys = ON")
-                fresh_connection.executescript(ARCHIVE_DDL_BY_TIER[tier])
-                fresh_connection.execute(f"PRAGMA user_version = {target_version}")
-                fresh_connection.commit()
-                fresh_parity = prove_durable_fresh_ddl_parity(
-                    tier,
-                    target_version,
-                    migrated_connection=conn,
-                    fresh_connection=fresh_connection,
-                    evidence_ref=f"proof:fresh-ddl-before-commit:{tier.value}:v{target_version}",
-                )
-            if not fresh_parity.matches:
-                raise MigrationError(
-                    f"{tier.value} migration canonical DDL parity failed: "
-                    f"missing={fresh_parity.missing_objects}, unexpected={fresh_parity.unexpected_objects}, "
-                    f"changed={fresh_parity.changed_objects}"
-                )
+            if schema_replay_proof is None or not schema_replay_proof.matches:
+                raise MigrationError(f"{tier.value} migration lacks a matching complete schema replay to canonical DDL")
     except Exception:
         if conn.in_transaction:
             conn.rollback()
@@ -1314,31 +1329,36 @@ class DurableSchemaObjectEvidence:
 
 @dataclass(frozen=True, slots=True)
 class DurableSchemaInventory:
-    """Canonical inventory used by fresh-DDL and migrated-schema parity."""
+    """Canonical inventory used by schema replay and live-step checks."""
 
     objects: tuple[DurableSchemaObjectEvidence, ...]
     sha256: str
 
 
 @dataclass(frozen=True, slots=True)
-class DurableFreshDDLParityProof:
-    """Comparison between an upgraded database and a fresh canonical create.
+class DurableMigrationReplayStep:
+    """One exact numbered migration and its rehearsed before/after schemas."""
 
-    ``migrated_inventory_sha256`` is the digest ``capture_durable_database_evidence``
-    records as ``DurableDatabaseEvidence.schema_inventory_sha256``, so the train
-    gates that compare this proof against ``apply_evidence.post`` compare two
-    captures of the same bytes.
-    """
+    version: int
+    name: str
+    sql_sha256: str
+    before_schema_inventory_sha256: str
+    after_schema_inventory_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class DurableMigrationReplayProof:
+    """A complete schema-only replay bound to installed steps and current DDL."""
 
     tier: ArchiveTier
+    from_version: int
     target_version: int
-    migrated_version: int
-    fresh_version: int
-    migrated_inventory_sha256: str
-    fresh_inventory_sha256: str
-    missing_objects: tuple[str, ...]
-    unexpected_objects: tuple[str, ...]
-    changed_objects: tuple[str, ...]
+    original_schema_inventory_sha256: str
+    steps: tuple[DurableMigrationReplayStep, ...]
+    terminal_schema_inventory_sha256: str
+    canonical_version: int
+    canonical_schema_inventory_sha256: str
+    chain_sha256: str
     evidence_ref: str
     matches: bool
 
@@ -1436,7 +1456,7 @@ class DurableRestartConvergenceProof:
 class DurableTrainProof:
     """Complete proof bundle required before release."""
 
-    fresh_ddl_parity: DurableFreshDDLParityProof
+    schema_replay_proof: DurableMigrationReplayProof
     runtime_consumers: tuple[DurableRuntimeConsumerResult, ...]
     restart_convergence: DurableRestartConvergenceProof
     proof_refs: tuple[str, ...]
@@ -1480,7 +1500,7 @@ class DurableChangeTrain:
     declared_at_ms: int
     admitted_at_ms: int | None
     admission_evidence_ref: str | None
-    fresh_ddl_parity: DurableFreshDDLParityProof | None
+    schema_replay_proof: DurableMigrationReplayProof | None
     reservation: DurableWriterReservation | None
     backup_authorization: DurableBackupAuthorization | None
     pre_apply_evidence: DurableDatabaseEvidence | None
@@ -1652,54 +1672,254 @@ def capture_durable_schema_inventory(conn: sqlite3.Connection) -> DurableSchemaI
     return _schema_inventory_from_objects(tuple(objects))
 
 
-def prove_durable_fresh_ddl_parity(
-    tier: ArchiveTier,
-    target_version: int,
+def _schema_only_replica(source: sqlite3.Connection) -> sqlite3.Connection:
+    """Create an empty in-memory tier with the source's exact schema/version."""
+    replica = sqlite3.connect(":memory:")
+    replica.execute("PRAGMA foreign_keys = OFF")
+    rows = source.execute(
+        """
+        SELECT type, sql FROM sqlite_schema
+        WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+          AND type IN ('table', 'index', 'view', 'trigger')
+        ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END, name
+        """
+    ).fetchall()
+    try:
+        for _kind, statement in rows:
+            replica.execute(str(statement))
+        version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
+        replica.execute(f"PRAGMA user_version = {version}")
+        replica.commit()
+    except sqlite3.Error:
+        replica.close()
+        raise
+    return replica
+
+
+def _migration_replay_chain_digest(
     *,
-    migrated_connection: sqlite3.Connection,
-    fresh_connection: sqlite3.Connection,
-    evidence_ref: str,
-) -> DurableFreshDDLParityProof:
-    """Prove a migration result has the same canonical inventory as fresh DDL."""
-    if tier not in DURABLE_MIGRATION_TIERS:
-        raise DurableChangeTrainError(f"fresh-DDL parity is not a durable-tier proof for {tier.value}")
-    evidence = _require_nonempty(evidence_ref, label="fresh-DDL parity evidence")
-    migrated_version = int(migrated_connection.execute("PRAGMA user_version").fetchone()[0] or 0)
-    fresh_version = int(fresh_connection.execute("PRAGMA user_version").fetchone()[0] or 0)
-    migrated = capture_durable_schema_inventory(migrated_connection)
-    fresh = capture_durable_schema_inventory(fresh_connection)
-    migrated_by_ref = {item.object_ref: item for item in migrated.objects}
-    fresh_by_ref = {item.object_ref: item for item in fresh.objects}
-    missing = tuple(sorted(set(fresh_by_ref) - set(migrated_by_ref)))
-    unexpected = tuple(sorted(set(migrated_by_ref) - set(fresh_by_ref)))
-    changed = tuple(
-        sorted(
-            object_ref
-            for object_ref in set(migrated_by_ref) & set(fresh_by_ref)
-            if migrated_by_ref[object_ref].definition_sha256 != fresh_by_ref[object_ref].definition_sha256
+    tier: ArchiveTier,
+    from_version: int,
+    target_version: int,
+    original_schema_inventory_sha256: str,
+    steps: Sequence[DurableMigrationReplayStep],
+    terminal_schema_inventory_sha256: str,
+    canonical_version: int,
+    canonical_schema_inventory_sha256: str,
+) -> str:
+    return _canonical_json_sha256(
+        {
+            "tier": tier.value,
+            "from_version": from_version,
+            "target_version": target_version,
+            "original_schema_inventory_sha256": original_schema_inventory_sha256,
+            "steps": [
+                {
+                    "version": step.version,
+                    "name": step.name,
+                    "sql_sha256": step.sql_sha256,
+                    "before_schema_inventory_sha256": step.before_schema_inventory_sha256,
+                    "after_schema_inventory_sha256": step.after_schema_inventory_sha256,
+                }
+                for step in steps
+            ],
+            "terminal_schema_inventory_sha256": terminal_schema_inventory_sha256,
+            "canonical_version": canonical_version,
+            "canonical_schema_inventory_sha256": canonical_schema_inventory_sha256,
+        }
+    )
+
+
+def validate_durable_migration_replay_proof(
+    proof: DurableMigrationReplayProof,
+    *,
+    recompute_installed_bindings: bool = False,
+) -> None:
+    """Validate the witness and, during recovery/apply, rebind installed SQL and DDL."""
+    if proof.tier not in DURABLE_MIGRATION_TIERS:
+        raise DurableChangeTrainError(f"schema replay is not a durable-tier proof for {proof.tier.value}")
+    if proof.from_version < 1 or proof.target_version <= proof.from_version:
+        raise DurableChangeTrainError("schema replay does not span a numbered migration chain")
+    expected_versions = tuple(range(proof.from_version + 1, proof.target_version + 1))
+    if tuple(step.version for step in proof.steps) != expected_versions:
+        raise DurableChangeTrainError("schema replay step versions are not a complete numbered chain")
+    for step in proof.steps:
+        if Path(step.name).name != step.name:
+            raise DurableChangeTrainError("schema replay migration name is not a filename")
+        for value, label in (
+            (step.sql_sha256, "schema replay migration SQL"),
+            (step.before_schema_inventory_sha256, "schema replay before inventory"),
+            (step.after_schema_inventory_sha256, "schema replay after inventory"),
+        ):
+            if _SHA256_RE.fullmatch(value) is None:
+                raise DurableChangeTrainError(f"{label} is not a lowercase SHA-256 digest")
+    for value, label in (
+        (proof.original_schema_inventory_sha256, "schema replay original inventory"),
+        (proof.terminal_schema_inventory_sha256, "schema replay terminal inventory"),
+        (proof.canonical_schema_inventory_sha256, "schema replay canonical inventory"),
+        (proof.chain_sha256, "schema replay chain"),
+    ):
+        if _SHA256_RE.fullmatch(value) is None:
+            raise DurableChangeTrainError(f"{label} is not a lowercase SHA-256 digest")
+    if proof.canonical_version != proof.target_version:
+        raise DurableChangeTrainError("schema replay canonical version does not match its target")
+    if proof.steps[0].before_schema_inventory_sha256 != proof.original_schema_inventory_sha256:
+        raise DurableChangeTrainError("schema replay first step does not bind the original schema")
+    if any(
+        prior.after_schema_inventory_sha256 != following.before_schema_inventory_sha256
+        for prior, following in zip(proof.steps, proof.steps[1:], strict=False)
+    ):
+        raise DurableChangeTrainError("schema replay adjacent step inventories do not join")
+    if proof.steps[-1].after_schema_inventory_sha256 != proof.terminal_schema_inventory_sha256:
+        raise DurableChangeTrainError("schema replay terminal inventory does not bind the last step")
+    if proof.chain_sha256 != _migration_replay_chain_digest(
+        tier=proof.tier,
+        from_version=proof.from_version,
+        target_version=proof.target_version,
+        original_schema_inventory_sha256=proof.original_schema_inventory_sha256,
+        steps=proof.steps,
+        terminal_schema_inventory_sha256=proof.terminal_schema_inventory_sha256,
+        canonical_version=proof.canonical_version,
+        canonical_schema_inventory_sha256=proof.canonical_schema_inventory_sha256,
+    ):
+        raise DurableChangeTrainError("schema replay chain digest does not bind its step records")
+    if proof.terminal_schema_inventory_sha256 != proof.canonical_schema_inventory_sha256 or not proof.matches:
+        raise DurableChangeTrainError("schema replay terminal schema does not match its canonical DDL identity")
+    if recompute_installed_bindings:
+        migrations = tuple(
+            step for step in _load_migrations(proof.tier) if proof.from_version < step.version <= proof.target_version
         )
-    )
-    matches = (
-        migrated_version == target_version
-        and fresh_version == target_version
-        and not missing
-        and not unexpected
-        and not changed
-        and migrated.sha256 == fresh.sha256
-    )
-    return DurableFreshDDLParityProof(
-        tier=tier,
+        if tuple(step.version for step in migrations) != expected_versions:
+            raise DurableChangeTrainError("schema replay installed migration chain is incomplete")
+        if tuple(
+            (step.version, step.name, hashlib.sha256(step.sql.encode("utf-8")).hexdigest()) for step in migrations
+        ) != tuple((step.version, step.name, step.sql_sha256) for step in proof.steps):
+            raise DurableChangeTrainError("schema replay no longer binds the installed migration SQL and versions")
+        if proof.canonical_version > ARCHIVE_VERSION_BY_TIER[proof.tier]:
+            raise DurableChangeTrainError("schema replay targets a version newer than the installed runtime")
+        if proof.canonical_version == ARCHIVE_VERSION_BY_TIER[proof.tier]:
+            with closing(sqlite3.connect(":memory:")) as canonical:
+                canonical.execute("PRAGMA foreign_keys = ON")
+                canonical.executescript(ARCHIVE_DDL_BY_TIER[proof.tier])
+                canonical.execute(f"PRAGMA user_version = {proof.canonical_version}")
+                canonical.commit()
+                canonical_inventory = capture_durable_schema_inventory(canonical)
+            if canonical_inventory.sha256 != proof.canonical_schema_inventory_sha256:
+                raise DurableChangeTrainError("schema replay no longer binds the current canonical DDL identity")
+
+
+def _durable_migration_replay_step(
+    proof: DurableMigrationReplayProof,
+    version: int,
+) -> DurableMigrationReplayStep:
+    """Select a persisted witness step without leaking malformed-index errors."""
+    index = version - proof.from_version - 1
+    if (
+        version <= proof.from_version
+        or version > proof.target_version
+        or index < 0
+        or index >= len(proof.steps)
+        or proof.steps[index].version != version
+    ):
+        raise DurableChangeTrainError(f"schema replay does not bind numbered migration v{version}")
+    return proof.steps[index]
+
+
+def rehearse_durable_migration_chain(
+    source: sqlite3.Connection,
+    tier: ArchiveTier,
+    *,
+    target_version: int,
+    evidence_ref: str,
+) -> DurableMigrationReplayProof:
+    """Replay every pending step on a schema-only clone and prove final DDL parity."""
+    if tier not in DURABLE_MIGRATION_TIERS:
+        raise DurableChangeTrainError(f"schema replay is not a durable-tier proof for {tier.value}")
+    evidence = _require_nonempty(evidence_ref, label="schema replay evidence")
+    from_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
+    canonical_version = ARCHIVE_VERSION_BY_TIER[tier]
+    if target_version != canonical_version:
+        raise DurableChangeTrainError(
+            f"schema replay must reach current canonical {tier.value} v{canonical_version}, got v{target_version}"
+        )
+    from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
+
+    migrations = _pending_migration_steps(
+        source,
+        tier,
+        current_version=from_version,
         target_version=target_version,
-        migrated_version=migrated_version,
-        fresh_version=fresh_version,
-        migrated_inventory_sha256=migrated.sha256,
-        fresh_inventory_sha256=fresh.sha256,
-        missing_objects=missing,
-        unexpected_objects=unexpected,
-        changed_objects=changed,
-        evidence_ref=evidence,
-        matches=matches,
     )
+    sidecars = validate_durable_migration_sidecars(
+        tier, tuple((step.name, step.sql) for step in _load_migrations(tier))
+    )
+    if {sidecar.slot for sidecar in sidecars if from_version < sidecar.slot <= target_version} != set(
+        range(from_version + 1, target_version + 1)
+    ):
+        raise DurableChangeTrainError("schema replay does not have a complete durable train sidecar chain")
+    source_inventory = capture_durable_schema_inventory(source)
+    replica = _schema_only_replica(source)
+    replay_steps: list[DurableMigrationReplayStep] = []
+    try:
+        for step in migrations:
+            before = capture_durable_schema_inventory(replica)
+            replica.execute("BEGIN IMMEDIATE")
+            _execute_migration_sql(replica, step.sql)
+            if not replica.in_transaction:
+                raise MigrationError("schema-only rehearsal SQL escaped the existing transaction")
+            replica.execute(f"PRAGMA user_version = {step.version}")
+            if not replica.in_transaction:
+                raise MigrationError("schema-only rehearsal lost its migration transaction")
+            replica.commit()
+            after = capture_durable_schema_inventory(replica)
+            replay_steps.append(
+                DurableMigrationReplayStep(
+                    version=step.version,
+                    name=step.name,
+                    sql_sha256=hashlib.sha256(step.sql.encode("utf-8")).hexdigest(),
+                    before_schema_inventory_sha256=before.sha256,
+                    after_schema_inventory_sha256=after.sha256,
+                )
+            )
+        terminal_version = int(replica.execute("PRAGMA user_version").fetchone()[0] or 0)
+        terminal = capture_durable_schema_inventory(replica)
+        with closing(sqlite3.connect(":memory:")) as canonical:
+            canonical.execute("PRAGMA foreign_keys = ON")
+            canonical.executescript(ARCHIVE_DDL_BY_TIER[tier])
+            canonical.execute(f"PRAGMA user_version = {canonical_version}")
+            canonical.commit()
+            canonical_inventory = capture_durable_schema_inventory(canonical)
+        matches = terminal_version == canonical_version and terminal.sha256 == canonical_inventory.sha256
+        proof = DurableMigrationReplayProof(
+            tier=tier,
+            from_version=from_version,
+            target_version=target_version,
+            original_schema_inventory_sha256=source_inventory.sha256,
+            steps=tuple(replay_steps),
+            terminal_schema_inventory_sha256=terminal.sha256,
+            canonical_version=canonical_version,
+            canonical_schema_inventory_sha256=canonical_inventory.sha256,
+            chain_sha256="",
+            evidence_ref=evidence,
+            matches=matches,
+        )
+        proof = replace(
+            proof,
+            chain_sha256=_migration_replay_chain_digest(
+                tier=proof.tier,
+                from_version=proof.from_version,
+                target_version=proof.target_version,
+                original_schema_inventory_sha256=proof.original_schema_inventory_sha256,
+                steps=proof.steps,
+                terminal_schema_inventory_sha256=proof.terminal_schema_inventory_sha256,
+                canonical_version=proof.canonical_version,
+                canonical_schema_inventory_sha256=proof.canonical_schema_inventory_sha256,
+            ),
+        )
+        validate_durable_migration_replay_proof(proof, recompute_installed_bindings=True)
+        return proof
+    finally:
+        replica.close()
 
 
 def _schema_inventory_from_objects(objects: tuple[DurableSchemaObjectEvidence, ...]) -> DurableSchemaInventory:
@@ -1886,7 +2106,7 @@ def declare_durable_change_train(
         declared_at_ms=declared_at_ms if declared_at_ms is not None else _durable_now_ms(),
         admitted_at_ms=None,
         admission_evidence_ref=None,
-        fresh_ddl_parity=None,
+        schema_replay_proof=None,
         reservation=None,
         backup_authorization=None,
         pre_apply_evidence=None,
@@ -2040,14 +2260,14 @@ def admit_durable_change_train(
     train: DurableChangeTrain,
     *,
     observed_current_version: int,
-    fresh_ddl_parity: DurableFreshDDLParityProof,
+    schema_replay_proof: DurableMigrationReplayProof,
     admission_evidence_ref: str,
     active_trains: Sequence[DurableChangeTrain] = (),
     migration_claims: Sequence[DurableMigrationClaim] | None = None,
     canonical_target_version: int | None = None,
     admitted_at_ms: int | None = None,
 ) -> DurableChangeTrain:
-    """Admit exact migration/runtime/fresh-DDL wiring and freeze the rider set."""
+    """Admit exact migration/runtime/replay wiring and freeze the rider set."""
     if train.state is not DurableChangeTrainState.DECLARED:
         raise DurableChangeTrainError(f"only a declared train may be admitted, found {train.state.value}")
     validate_durable_change_train_manifest(train)
@@ -2088,23 +2308,23 @@ def admit_durable_change_train(
     if train.migration.requires_backup and not train.backup_plan_ref:
         raise DurableChangeTrainError("durable train migration requires backup authority but declares no backup plan")
     _validate_riders(train)
-    if fresh_ddl_parity.tier is train.tier and fresh_ddl_parity.fresh_version != train.target_version:
-        # Bootstrap DDL describes only the shipped version; there is no
-        # historical projection, so an intermediate slot has no fresh image.
-        raise DurableChangeTrainError(
-            f"durable train v{train.target_version} has no canonical fresh-DDL image: shipped "
-            f"{train.tier.value} DDL is v{fresh_ddl_parity.fresh_version}; catch-up across more than "
-            "one numbered slot is not supported"
-        )
+    validate_durable_migration_replay_proof(schema_replay_proof)
+    try:
+        replay_step = _durable_migration_replay_step(schema_replay_proof, train.target_version)
+    except DurableChangeTrainError:
+        replay_step = None
     if (
-        fresh_ddl_parity.tier is not train.tier
-        or fresh_ddl_parity.target_version != train.target_version
-        or not fresh_ddl_parity.matches
+        schema_replay_proof.tier is not train.tier
+        or schema_replay_proof.from_version > train.current_version
+        or schema_replay_proof.target_version != ARCHIVE_VERSION_BY_TIER[train.tier]
+        or not schema_replay_proof.matches
+        or replay_step is None
+        or replay_step.version != train.target_version
+        or replay_step.name != Path(train.migration.path).name
+        or replay_step.sql_sha256 != train.migration.sql_sha256
     ):
         raise DurableChangeTrainError(
-            "durable train admission requires matching fresh-DDL parity for its exact tier and target; "
-            f"missing={fresh_ddl_parity.missing_objects}, unexpected={fresh_ddl_parity.unexpected_objects}, "
-            f"changed={fresh_ddl_parity.changed_objects}"
+            "durable train admission requires a matching complete schema replay with this exact next migration"
         )
     evidence = _require_nonempty(admission_evidence_ref, label="admission evidence")
     updated = replace(
@@ -2113,8 +2333,8 @@ def admit_durable_change_train(
         revision=train.revision + 1,
         admitted_at_ms=admitted_at_ms if admitted_at_ms is not None else _durable_now_ms(),
         admission_evidence_ref=evidence,
-        fresh_ddl_parity=fresh_ddl_parity,
-        proof_refs=_append_proof_refs(train.proof_refs, evidence, fresh_ddl_parity.evidence_ref),
+        schema_replay_proof=schema_replay_proof,
+        proof_refs=_append_proof_refs(train.proof_refs, evidence, schema_replay_proof.evidence_ref),
     )
     validate_durable_change_train_manifest(updated)
     return updated
@@ -2389,11 +2609,14 @@ def apply_durable_change_train(
             or observed_pre.row_counts != pre.row_counts
         ):
             raise DurableChangeTrainError("live durable tier changed after pre-apply evidence was authorized")
+        if train.schema_replay_proof is None:
+            raise DurableChangeTrainError("apply requires the admitted complete schema replay proof")
         result = migrate_archive_tier(
             conn,
             train.tier,
             backup_manifest=backup_manifest,
             target_version=train.target_version,
+            schema_replay_proof=train.schema_replay_proof,
         )
         if (
             result.from_version != train.current_version
@@ -2638,7 +2861,7 @@ def capture_durable_restart_convergence(
 def prove_durable_change_train(
     train: DurableChangeTrain,
     *,
-    fresh_ddl_parity: DurableFreshDDLParityProof,
+    schema_replay_proof: DurableMigrationReplayProof,
     runtime_consumers: Sequence[DurableRuntimeConsumerResult],
     restart_convergence: DurableRestartConvergenceProof,
     proof_refs: Sequence[str] = (),
@@ -2650,17 +2873,20 @@ def prove_durable_change_train(
     validate_durable_change_train_manifest(train)
     if train.reservation is None or train.reservation.active:
         raise DurableChangeTrainError("writer reservation must be released before restart convergence proof")
-    if train.fresh_ddl_parity is None:
-        raise DurableChangeTrainError("admission fresh-DDL parity evidence is missing")
+    if train.schema_replay_proof is None or train.pre_apply_evidence is None:
+        raise DurableChangeTrainError("admission schema replay proof is missing")
+    validate_durable_migration_replay_proof(schema_replay_proof)
+    replay_step = _durable_migration_replay_step(schema_replay_proof, train.target_version)
     if (
-        not fresh_ddl_parity.matches
-        or fresh_ddl_parity.tier is not train.tier
-        or fresh_ddl_parity.target_version != train.target_version
-        or fresh_ddl_parity.migrated_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256
-        or fresh_ddl_parity.migrated_inventory_sha256 != fresh_ddl_parity.fresh_inventory_sha256
-        or fresh_ddl_parity.fresh_inventory_sha256 != train.fresh_ddl_parity.fresh_inventory_sha256
+        not schema_replay_proof.matches
+        or schema_replay_proof != train.schema_replay_proof
+        or schema_replay_proof.tier is not train.tier
+        or schema_replay_proof.from_version > train.current_version
+        or replay_step.version != train.target_version
+        or replay_step.before_schema_inventory_sha256 != train.pre_apply_evidence.schema_inventory_sha256
+        or replay_step.after_schema_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256
     ):
-        raise DurableChangeTrainError("actual post-apply bytes do not have admitted fresh-DDL parity")
+        raise DurableChangeTrainError("actual post-apply schema differs from its admitted replay step")
     expected_consumers = {
         consumer.consumer_id: consumer for rider in train.riders for consumer in rider.runtime_consumers
     }
@@ -2697,13 +2923,13 @@ def prove_durable_change_train(
     references = train.proof_refs
     references = _append_proof_refs(
         references,
-        fresh_ddl_parity.evidence_ref,
+        schema_replay_proof.evidence_ref,
         restart_convergence.evidence_ref,
         *[result.behavior_proof_ref for result in runtime_consumers],
         *proof_refs,
     )
     proof = DurableTrainProof(
-        fresh_ddl_parity=fresh_ddl_parity,
+        schema_replay_proof=schema_replay_proof,
         runtime_consumers=tuple(sorted(runtime_consumers, key=lambda item: item.consumer_id)),
         restart_convergence=restart_convergence,
         proof_refs=references,
@@ -2760,34 +2986,33 @@ def _validate_proof_refs(proof_refs: tuple[str, ...]) -> None:
 
 
 def _validate_admission_evidence(train: DurableChangeTrain) -> None:
-    parity = train.fresh_ddl_parity
+    replay = train.schema_replay_proof
     if train.admitted_at_ms is None or train.admitted_at_ms < train.declared_at_ms:
         raise DurableChangeTrainError("durable train admission timestamp is invalid")
     admission_ref = _require_nonempty(
         train.admission_evidence_ref or "",
         label="admission evidence",
     )
-    if parity is None:
-        raise DurableChangeTrainError("durable train admission lacks fresh-DDL parity")
+    if replay is None:
+        raise DurableChangeTrainError("durable train admission lacks its complete schema replay")
+    validate_durable_migration_replay_proof(replay)
     if (
-        parity.tier is not train.tier
-        or parity.target_version != train.target_version
-        or parity.migrated_version != train.target_version
-        or parity.fresh_version != train.target_version
+        replay.tier is not train.tier
+        or replay.from_version > train.current_version
+        or replay.target_version < train.target_version
+        or not replay.matches
+        or train.target_version > replay.target_version
     ):
-        raise DurableChangeTrainError("fresh-DDL parity does not bind the train tier and target")
-    _validate_sha256(parity.migrated_inventory_sha256, label="migrated fresh-DDL inventory")
-    _validate_sha256(parity.fresh_inventory_sha256, label="canonical fresh-DDL inventory")
-    parity_ref = _require_nonempty(parity.evidence_ref, label="fresh-DDL parity evidence")
+        raise DurableChangeTrainError("schema replay does not bind the train's origin and current canonical target")
+    step = _durable_migration_replay_step(replay, train.target_version)
     if (
-        not parity.matches
-        or parity.missing_objects
-        or parity.unexpected_objects
-        or parity.changed_objects
-        or parity.migrated_inventory_sha256 != parity.fresh_inventory_sha256
+        step.version != train.target_version
+        or step.name != Path(train.migration.path).name
+        or step.sql_sha256 != train.migration.sql_sha256
     ):
-        raise DurableChangeTrainError("admitted fresh-DDL parity is not an exact match")
-    required_refs = {admission_ref, parity_ref}
+        raise DurableChangeTrainError("schema replay does not bind this train's exact numbered migration")
+    replay_ref = _require_nonempty(replay.evidence_ref, label="schema replay evidence")
+    required_refs = {admission_ref, replay_ref}
     if not required_refs.issubset(train.proof_refs):
         raise DurableChangeTrainError("admission proof references are not retained by the train")
     if train.migration.requires_backup and not train.backup_plan_ref:
@@ -2970,26 +3195,21 @@ def _validate_apply_evidence(train: DurableChangeTrain) -> None:
 def _validate_train_proof(train: DurableChangeTrain) -> None:
     proof = train.proof
     apply_evidence = train.apply_evidence
-    admitted_parity = train.fresh_ddl_parity
-    if proof is None or apply_evidence is None or admitted_parity is None:
+    admitted_parity = train.schema_replay_proof
+    if proof is None or apply_evidence is None or admitted_parity is None or train.pre_apply_evidence is None:
         raise DurableChangeTrainError(f"{train.state.value} manifest lacks proof evidence")
-    parity = proof.fresh_ddl_parity
+    replay = proof.schema_replay_proof
+    validate_durable_migration_replay_proof(replay)
+    step = _durable_migration_replay_step(replay, train.target_version)
     if (
-        parity.tier is not train.tier
-        or parity.target_version != train.target_version
-        or parity.migrated_version != train.target_version
-        or parity.fresh_version != train.target_version
-        or not parity.matches
-        or parity.missing_objects
-        or parity.unexpected_objects
-        or parity.changed_objects
-        or parity.migrated_inventory_sha256 != apply_evidence.post.schema_inventory_sha256
-        or parity.migrated_inventory_sha256 != parity.fresh_inventory_sha256
-        or parity.fresh_inventory_sha256 != admitted_parity.fresh_inventory_sha256
+        replay != admitted_parity
+        or replay.tier is not train.tier
+        or replay.from_version > train.current_version
+        or step.version != train.target_version
+        or step.before_schema_inventory_sha256 != train.pre_apply_evidence.schema_inventory_sha256
+        or step.after_schema_inventory_sha256 != apply_evidence.post.schema_inventory_sha256
     ):
-        raise DurableChangeTrainError("proof fresh-DDL parity does not bind admitted and applied schema bytes")
-    _validate_sha256(parity.migrated_inventory_sha256, label="proof migrated inventory")
-    _validate_sha256(parity.fresh_inventory_sha256, label="proof fresh inventory")
+        raise DurableChangeTrainError("proof schema replay does not bind admitted and applied schema bytes")
     expected_consumers = {
         consumer.consumer_id: consumer for rider in train.riders for consumer in rider.runtime_consumers
     }
@@ -3021,7 +3241,7 @@ def _validate_train_proof(train: DurableChangeTrain) -> None:
         raise DurableChangeTrainError("proof timestamp predates restart convergence")
     _validate_proof_refs(proof.proof_refs)
     required_refs = {
-        parity.evidence_ref,
+        replay.evidence_ref,
         restart.evidence_ref,
         *(result.behavior_proof_ref for result in proof.runtime_consumers),
     }
@@ -3088,7 +3308,7 @@ def validate_durable_change_train_manifest(train: DurableChangeTrain) -> None:
             for value in (
                 train.admitted_at_ms,
                 train.admission_evidence_ref,
-                train.fresh_ddl_parity,
+                train.schema_replay_proof,
                 train.reservation,
                 train.backup_authorization,
                 train.pre_apply_evidence,
@@ -3492,6 +3712,8 @@ def write_durable_change_train_manifest(
 
 
 __all__ = [
+    "ARCHIVE_DDL_BY_TIER",
+    "ARCHIVE_VERSION_BY_TIER",
     "DURABLE_CHANGE_TRAIN_FORMAT",
     "DURABLE_MIGRATION_COLLISION_REPORT_FORMAT",
     "DURABLE_MIGRATION_TIERS",
@@ -3507,9 +3729,10 @@ __all__ = [
     "DurableDatabaseEvidence",
     "DurableDropConstraint",
     "DurableFailureClassification",
-    "DurableFreshDDLParityProof",
+    "DurableMigrationReplayProof",
     "DurableMigrationClaim",
     "DurableMigrationCollision",
+    "DurableMigrationReplayStep",
     "DurableOrderingConstraint",
     "DurableRestartConvergenceProof",
     "DurableRowChangeAllowance",
@@ -3541,14 +3764,15 @@ __all__ = [
     "load_durable_change_train_manifest",
     "migrate_archive_tier",
     "prove_durable_change_train",
-    "prove_durable_fresh_ddl_parity",
     "prove_durable_row_parity",
+    "rehearse_durable_migration_chain",
     "reconcile_interrupted_durable_change_train",
     "record_durable_writer_release",
     "recover_durable_change_train",
     "release_durable_change_train",
     "reserve_durable_change_train",
     "validate_durable_change_train_manifest",
+    "validate_durable_migration_replay_proof",
     "validate_backup_manifest_covers_derived_tier",
     "validate_migration_backup_live_fingerprint",
     "validate_migration_backup_manifest",

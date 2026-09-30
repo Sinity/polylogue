@@ -46,6 +46,13 @@ from typing import IO, Any, Final
 from devtools.agent_env import PYTEST_POOL, PYTEST_POOLS, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.pytest_memory import ProcessGroupMemorySampler
+from devtools.pytest_memory_admission import (
+    EX_TEMPFAIL,
+    RESOURCE_NOT_READY,
+    admission_ledger,
+    admission_not_ready,
+    admit_width,
+)
 from devtools.worker_memory import ChargeProfile, charge_profile_for, corroborate_profile, resize_worker_argument
 
 __all__ = [
@@ -1092,6 +1099,11 @@ def _write_interrupted_result(
     return receipt
 
 
+def _report_admission_wait(message: str) -> None:
+    sys.stderr.write(message + "\n")
+    sys.stderr.flush()
+
+
 def _run_held(
     argv: Sequence[str],
     *,
@@ -1121,7 +1133,63 @@ def _run_held(
     started = time.monotonic()
     worktree_provenance = _focused_worktree_provenance(cwd, env)
     profile, max_workers = charge_profile_for(env)
-    command, sizing = resize_worker_argument(list(argv), profile=profile, max_workers=max_workers)
+    ledger = admission_ledger(env)
+    try:
+        command, sizing = admit_width(
+            argv,
+            size=resize_worker_argument,
+            profile=profile,
+            max_workers=max_workers,
+            ledger=ledger,
+            report=_report_admission_wait,
+        )
+        if admission_not_ready(sizing):
+            receipt = _slot_receipt(
+                status="deferred",
+                elapsed_s=time.monotonic() - started,
+                sizing=sizing,
+                memory=None,
+                exit_code=EX_TEMPFAIL,
+                profile=profile,
+                extra={"diagnosis": RESOURCE_NOT_READY},
+            )
+            if result_path is not None:
+                _persist_slot_result(result_path, receipt)
+            return EX_TEMPFAIL, receipt
+        return _run_held_admitted(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=stdout,
+            on_exit=on_exit,
+            started=started,
+            worktree_provenance=worktree_provenance,
+            profile=profile,
+            sizing=sizing,
+            telemetry_path=telemetry_path,
+            result_path=result_path,
+            on_interrupt=on_interrupt,
+        )
+    finally:
+        if ledger is not None:
+            ledger.release()
+
+
+def _run_held_admitted(
+    command: Sequence[str],
+    *,
+    cwd: str,
+    env: Mapping[str, str],
+    stdout: IO[Any] | None,
+    on_exit: Callable[[], None],
+    started: float,
+    worktree_provenance: dict[str, Any] | None,
+    profile: ChargeProfile,
+    sizing: dict[str, Any] | None,
+    telemetry_path: Path | None,
+    result_path: Path | None,
+    on_interrupt: Callable[[], None] | None,
+) -> tuple[int, dict[str, Any]]:
     note = _sizing_note(sizing)
     if note is not None:
         sys.stderr.write(note + "\n")
@@ -1135,18 +1203,44 @@ def _run_held(
         # report someone else's interruption.
         _slot_result_path(result_path).unlink(missing_ok=True)
     process = subprocess.Popen(command, cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout, process_group=0)
-    sampler = ProcessGroupMemorySampler(
-        process.pid,
-        snapshot_path=telemetry_path,
-        snapshot_context=lambda: {
-            "status": terminal_status,
-            "pid": process.pid,
-            "process_group": process.pid,
-            "sizing": sizing,
-            "progress": progress(),
-        },
-    )
-    sampler.start()
+    try:
+        sampler = ProcessGroupMemorySampler(
+            process.pid,
+            snapshot_path=telemetry_path,
+            snapshot_context=lambda: {
+                "status": terminal_status,
+                "pid": process.pid,
+                "process_group": process.pid,
+                "sizing": sizing,
+                "progress": progress(),
+            },
+        )
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=STOP_TERM_GRACE_S)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=STOP_KILL_GRACE_S)
+        raise
+    try:
+        sampler.start()
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=STOP_TERM_GRACE_S)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=STOP_KILL_GRACE_S)
+        with contextlib.suppress(Exception):
+            sampler.stop()
+        raise
 
     def preserve(signal_number: int) -> None:
         """Write the terminated run's receipt before anything is disposed."""
@@ -1633,84 +1727,121 @@ def _run_launch(launch_path: Path) -> int:
         os._exit(128 + signal_number)
 
     previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
-    # The width is chosen here rather than where the command was built: a run
-    # can sit in this queue for hours, and what matters is the memory this job
-    # may take when its workers start.
-    command, sizing = resize_worker_argument(list(launch["argv"]), profile=profile, max_workers=max_workers)
-    _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
-    note = _sizing_note(sizing)
-    with open(log_path, "wb") as log:
-        if note is not None:
-            log.write((note + "\n").encode())
-            log.flush()
-        try:
-            child = subprocess.Popen(
-                command,
-                cwd=launch["working_directory"],
-                env=environment,
-                stdout=log,
-                stderr=log,
-                start_new_session=True,
+    ledger = None
+    try:
+        ledger = admission_ledger(environment)
+        command, sizing = admit_width(
+            launch["argv"],
+            size=resize_worker_argument,
+            profile=profile,
+            max_workers=max_workers,
+            ledger=ledger,
+            report=_report_admission_wait,
+        )
+        if admission_not_ready(sizing):
+            receipt = _slot_receipt(
+                status="deferred",
+                elapsed_s=time.monotonic() - started,
+                sizing=sizing,
+                memory=None,
+                exit_code=EX_TEMPFAIL,
+                log_path=log_path,
+                profile=profile,
+                extra={"diagnosis": RESOURCE_NOT_READY},
             )
-            # The process being measured; the in-slot rerun replaces it, and
-            # live telemetry names whichever attempt is running now.
-            measured = [child]
-            started_groups.append(child.pid)
-            sampler = ProcessGroupMemorySampler(
-                child.pid,
-                snapshot_path=telemetry_path,
-                snapshot_context=lambda: {
-                    "status": terminal_status,
-                    "pid": measured[0].pid,
-                    "process_group": measured[0].pid,
-                    "sizing": sizing,
-                    "progress": progress(),
-                },
-            )
-            sampler.start()
-            returncode = child.wait()
-            if returncode == 1:
-
-                def register(process: subprocess.Popen[Any]) -> None:
-                    nonlocal child
-                    child = process
-                    measured[0] = process
-                    started_groups.append(process.pid)
-                    if sampler is not None:
-                        sampler.follow(process.pid)
-
-                _rerun_failures_in_slot(
-                    environment,
+            with open(log_path, "wb") as log:
+                log.write((json.dumps(receipt, sort_keys=True) + "\n").encode())
+            _persist_slot_result(log_path, receipt)
+            _print_result(receipt)
+            return EX_TEMPFAIL
+        _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
+        note = _sizing_note(sizing)
+        with open(log_path, "wb") as log:
+            if note is not None:
+                log.write((note + "\n").encode())
+                log.flush()
+            try:
+                child = subprocess.Popen(
+                    command,
                     cwd=launch["working_directory"],
-                    log=log,
-                    on_start=register,
-                    first_group=child.pid,
+                    env=environment,
+                    stdout=log,
+                    stderr=log,
+                    start_new_session=True,
                 )
-            terminal_status = "passed" if returncode == 0 else "failed"
-        except OSError as exc:
-            log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
-            return 125
-        finally:
-            memory = sampler.stop() if sampler is not None else None
-            for number, handler in previous.items():
-                with contextlib.suppress(ValueError, OSError):
-                    signal.signal(number, handler)
-    receipt = _slot_receipt(
-        status="success" if returncode == 0 else "failed",
-        profile=profile,
-        exit_code=returncode,
-        elapsed_s=time.monotonic() - started,
-        sizing=sizing,
-        memory=memory,
-        log_path=log_path,
-        extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
-    )
-    # Written as well as printed: the waiting client reads the file, and the
-    # job's stdout is the result artifact.
-    with contextlib.suppress(OSError):
-        _persist_slot_result(log_path, receipt)
-    _print_result(receipt)
-    return returncode
+                # The process being measured; the in-slot rerun replaces it, and
+                # live telemetry names whichever attempt is running now.
+                measured = [child]
+                started_groups.append(child.pid)
+                sampler = ProcessGroupMemorySampler(
+                    child.pid,
+                    snapshot_path=telemetry_path,
+                    snapshot_context=lambda: {
+                        "status": terminal_status,
+                        "pid": measured[0].pid,
+                        "process_group": measured[0].pid,
+                        "sizing": sizing,
+                        "progress": progress(),
+                    },
+                )
+                sampler.start()
+                returncode = child.wait()
+                if returncode == 1:
+
+                    def register(process: subprocess.Popen[Any]) -> None:
+                        nonlocal child
+                        child = process
+                        measured[0] = process
+                        started_groups.append(process.pid)
+                        if sampler is not None:
+                            sampler.follow(process.pid)
+
+                    _rerun_failures_in_slot(
+                        environment,
+                        cwd=launch["working_directory"],
+                        log=log,
+                        on_start=register,
+                        first_group=child.pid,
+                    )
+                terminal_status = "passed" if returncode == 0 else "failed"
+            except OSError as exc:
+                log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
+                return 125
+            finally:
+                if child is not None and child.poll() is None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=STOP_TERM_GRACE_S)
+                    except subprocess.TimeoutExpired:
+                        with contextlib.suppress(ProcessLookupError, PermissionError):
+                            os.killpg(child.pid, signal.SIGKILL)
+                        with contextlib.suppress(subprocess.TimeoutExpired):
+                            child.wait(timeout=STOP_KILL_GRACE_S)
+                memory = sampler.stop() if sampler is not None else None
+        receipt = _slot_receipt(
+            status="success" if returncode == 0 else "failed",
+            profile=profile,
+            exit_code=returncode,
+            elapsed_s=time.monotonic() - started,
+            sizing=sizing,
+            memory=memory,
+            log_path=log_path,
+            extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
+        )
+        # Written as well as printed: the waiting client reads the file, and the
+        # job's stdout is the result artifact.
+        with contextlib.suppress(OSError):
+            _persist_slot_result(log_path, receipt)
+        _print_result(receipt)
+        return returncode
+
+    finally:
+        if ledger is not None:
+            ledger.release()
+        for number, handler in previous.items():
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(number, handler)
 
 
 def _print_result(document: Mapping[str, Any]) -> None:
