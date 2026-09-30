@@ -17,7 +17,11 @@ from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError, r
 
 
 def _install_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
-    package = "fixture_replay_chain"
+    # Each test needs importlib.resources to resolve its own fixture root. A
+    # shared top-level package name leaves the first package's __path__ in
+    # sys.modules, so later edits can target a different SQL file than the
+    # production loader reads.
+    package = f"fixture_replay_chain_{tmp_path.name.replace('-', '_')}"
     source = tmp_path / package / "source"
     source.mkdir(parents=True)
     (tmp_path / package / "__init__.py").write_text("", encoding="utf-8")
@@ -112,6 +116,10 @@ def test_recovery_rejects_changed_installed_sql_for_a_persisted_step(
         "-- migration-safety: additive-no-backup\nCREATE TABLE changed_items (id INTEGER PRIMARY KEY) STRICT;\n",
         encoding="utf-8",
     )
+    installed = migration_runner._load_migrations(ArchiveTier.SOURCE)
+    assert next(step for step in installed if step.version == 2).sql == (source / "002_items.sql").read_text(
+        encoding="utf-8"
+    )
     with pytest.raises(DurableChangeTrainError, match="installed migration SQL and versions"):
         migration_runner.validate_durable_migration_replay_proof(proof, recompute_installed_bindings=True)
 
@@ -131,17 +139,16 @@ def test_schema_rehearsal_refuses_source_shapes_outside_canonical_ddl(
             live.execute("CREATE TABLE undeclared_source (id INTEGER PRIMARY KEY) STRICT")
         live.execute("PRAGMA user_version = 1")
         live.commit()
-        proof = rehearse_durable_migration_chain(
-            live,
-            ArchiveTier.SOURCE,
-            target_version=3,
-            evidence_ref=f"proof:source-drift:{source_drift}",
-        )
-
-    assert proof.matches is False
-    assert proof.terminal_schema_inventory_sha256 != proof.canonical_schema_inventory_sha256
-    with pytest.raises(DurableChangeTrainError, match="terminal schema does not match its canonical DDL identity"):
-        migration_runner.validate_durable_migration_replay_proof(proof)
+        with pytest.raises(
+            DurableChangeTrainError,
+            match="terminal schema does not match its canonical DDL identity",
+        ):
+            rehearse_durable_migration_chain(
+                live,
+                ArchiveTier.SOURCE,
+                target_version=3,
+                evidence_ref=f"proof:source-drift:{source_drift}",
+            )
 
 
 def test_a_released_historical_prefix_remains_valid_under_a_later_runtime(
@@ -180,6 +187,10 @@ def test_a_released_historical_prefix_remains_valid_under_a_later_runtime(
     (source / "002_items.sql").write_text(
         "-- migration-safety: additive-no-backup\nCREATE TABLE changed_items (id INTEGER PRIMARY KEY) STRICT;\n",
         encoding="utf-8",
+    )
+    installed = migration_runner._load_migrations(ArchiveTier.SOURCE)
+    assert next(step for step in installed if step.version == 2).sql == (source / "002_items.sql").read_text(
+        encoding="utf-8"
     )
     with pytest.raises(DurableChangeTrainError, match="installed migration SQL and versions"):
         migration_runner.validate_durable_migration_replay_proof(

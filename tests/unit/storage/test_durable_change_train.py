@@ -1003,9 +1003,7 @@ def test_maintenance_route_rehearses_an_intermediate_sidecar_to_the_shipped_targ
 
     _pin_source_runtime_version(monkeypatch, 4)
     final_ddl = dict(ddl)
-    final_ddl[ArchiveTier.SOURCE] = "\n".join(
-        (ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE], migrations[1][2], migrations[2][2])
-    )
+    final_ddl[ArchiveTier.SOURCE] = "\n".join((ddl[ArchiveTier.SOURCE], migrations[1][2], migrations[2][2]))
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", final_ddl)
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", final_ddl)
 
@@ -2579,6 +2577,7 @@ def test_startup_keeps_persisted_indeterminate_failure_blocked(
 ) -> None:
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
     train = _admitted(ArchiveTier.SOURCE)
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
