@@ -838,7 +838,7 @@ def test_reopening_a_current_ops_db_writes_nothing(tmp_path: Path) -> None:
     """A converged ops database is opened read-only by every later initializer.
 
     Anti-vacuity: restoring the unconditional DELETE/INSERT in
-    ``_record_ops_schema_state`` commits a transaction on reopen and moves
+    Replaying bootstrap writes on reopen moves
     ``PRAGMA data_version`` as seen from the observer connection.
     """
     ops_db = tmp_path / "ops.db"
@@ -847,7 +847,7 @@ def test_reopening_a_current_ops_db_writes_nothing(tmp_path: Path) -> None:
     observer = sqlite3.connect(ops_db)
     try:
         before = observer.execute("PRAGMA data_version").fetchone()[0]
-        observer.execute("SELECT count(*) FROM polylogue_ops_schema_state").fetchone()
+        observer.execute("SELECT count(*) FROM schema_identity").fetchone()
         initialize_archive_database(ops_db, ArchiveTier.OPS)
         after = observer.execute("PRAGMA data_version").fetchone()[0]
     finally:

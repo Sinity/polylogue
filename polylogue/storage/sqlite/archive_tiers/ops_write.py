@@ -49,34 +49,6 @@ SCHEMA_DRIFT_SAMPLE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 SCHEMA_DRIFT_SAMPLE_ROW_CAP = 20_000
 
 
-def _record_ops_schema_state(conn: sqlite3.Connection, schema_digest: str) -> None:
-    """Record the DDL digest used to converge this disposable OPS database.
-
-    Opening an already-current database must not write: every reader that
-    constructs a cursor store re-enters this path, and a write here contends
-    with the daemon's writer lease on the same file.
-    """
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS polylogue_ops_schema_state (
-            schema_digest TEXT PRIMARY KEY
-        ) STRICT
-        """
-    )
-    recorded = [row[0] for row in conn.execute("SELECT schema_digest FROM polylogue_ops_schema_state")]
-    if recorded == [schema_digest]:
-        return
-    if recorded:
-        conn.execute(
-            "DELETE FROM polylogue_ops_schema_state WHERE schema_digest <> ?",
-            (schema_digest,),
-        )
-    conn.execute(
-        "INSERT OR IGNORE INTO polylogue_ops_schema_state(schema_digest) VALUES (?)",
-        (schema_digest,),
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class OpsCompactState:
     """Compact one-row status snapshot from OPS-tier tables."""

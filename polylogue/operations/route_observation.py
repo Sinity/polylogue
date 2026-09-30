@@ -379,7 +379,7 @@ def record_unobserved_client_route(*, surface: str, route: str) -> RouteObservat
 
     reason = RouteObservationDropReason.CLIENT_NOT_OWNER
     _DROP_LEDGER.record(reason, surface=surface, route=route, ops_db=None, observed_at_ms=int(time.time() * 1000))
-    emit("route_observation.unobserved", level=INFO, outcome="skipped", reason=reason.value)
+    emit("route_observation.unobserved", level=INFO, outcome="skipped", reason=reason.value, route=route)
     return reason
 
 

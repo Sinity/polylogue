@@ -142,6 +142,33 @@ def archive_tiers_are_closed(archive_root: Path) -> bool:
     return _CLOSED_ARCHIVE.get() == archive_root.resolve(strict=False)
 
 
+def discard_closed_derived_tier(archive_root: Path, database: Path) -> tuple[Path, ...]:
+    """Discard one resettable file family only at the owned startup seam.
+
+    The caller has admitted the reason and exact file identity; this shared
+    disposal path enforces that no tier handle can remain on an unlinked file.
+    Remove sidecars first so interrupted disposal cannot leave an old WAL
+    beside the fresh database bootstrap creates on restart.
+    """
+    if not archive_tiers_are_closed(archive_root):
+        raise LiveArchiveTierResetError((database.name,))
+    classes = classify_reset_targets(
+        archive_root, ((database.name, database),), served_index_path=archive_root / "index.db"
+    )
+    if classes.unresettable or not classes.derived_tier_files:
+        raise UnresettableArchiveTierError((database.name,))
+    removed: list[Path] = []
+    for suffix in SQLITE_SIDECAR_SUFFIXES:
+        sidecar = database.with_name(database.name + suffix)
+        if sidecar.is_symlink() or sidecar.exists():
+            sidecar.unlink()
+            removed.append(sidecar)
+    if database.is_symlink() or database.exists():
+        database.unlink()
+        removed.insert(0, database)
+    return tuple(removed)
+
+
 __all__ = [
     "RESETTABLE_TIERS",
     "SQLITE_SIDECAR_SUFFIXES",
@@ -151,5 +178,6 @@ __all__ = [
     "archive_tiers_are_closed",
     "archive_tiers_closed",
     "classify_reset_targets",
+    "discard_closed_derived_tier",
     "sqlite_primary",
 ]

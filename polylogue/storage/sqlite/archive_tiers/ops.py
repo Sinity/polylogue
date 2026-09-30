@@ -87,9 +87,6 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
         "context scheduler", "one admission decision per candidate item", True, "retain"
     ),
     "schema_identity": OpsTableDisposition("schema bootstrap", "one derived-schema identity", True, "retain"),
-    "polylogue_ops_schema_state": OpsTableDisposition(
-        "schema bootstrap", "one current derived-schema digest", True, "retain"
-    ),
 }
 # Batch aggregation is a terminal run state distinct from both success and
 # failure: completed siblings and retryable failed siblings remain visible.

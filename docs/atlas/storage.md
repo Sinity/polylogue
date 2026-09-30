@@ -97,3 +97,11 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 - The `docs/architecture.md` ring diagram draws only source, index, embeddings, user, and ops; code has six tiers and includes `audit.db` (`docs/architecture.md:25`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
 - `docs/architecture.md` calls embeddings plainly rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:52-55`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:62-67`).
+
+Existing index and ops tiers are admitted by their derived schema identity
+before initialization issues any DDL. A mismatch raises typed `SchemaSkew`;
+initialization never patches or restamps an existing derived tier. At daemon
+startup, exclusive archive ownership and a write lease allow replacement of a
+stale disposable ops file before persistent tier handles open. Index
+reconvergence keeps its declared reset/rebuild route; purchased embeddings and
+durable tiers are never replaced by ops startup.

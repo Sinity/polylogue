@@ -246,14 +246,16 @@ def test_readiness_surface_exposes_outbox_pressure(
             _set_runtime_services(None)
 
 
-def test_existing_same_version_ops_database_receives_additive_call_log(tmp_path: Path) -> None:
+def test_unstamped_same_version_ops_database_is_refused_before_ddl(tmp_path: Path) -> None:
+    from polylogue.core.errors import SchemaSkew
+
     ops_db = tmp_path / "ops.db"
     with sqlite3.connect(ops_db) as conn:
         conn.execute("PRAGMA user_version = 1")
-    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with pytest.raises(SchemaSkew):
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
     with sqlite3.connect(ops_db) as conn:
-        tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert "mcp_call_log" in tables
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
 
 
 def test_record_mcp_call_prunes_expired_rows_in_same_transaction(tmp_path: Path) -> None:

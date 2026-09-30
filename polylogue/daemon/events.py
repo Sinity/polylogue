@@ -33,12 +33,10 @@ def _events_db_path() -> Path:
     return archive_root() / "ops.db"
 
 
-#: Ops-tier convergence runs once per (process, path): the multi-statement
-#: tier initialization can wait out SQLite lock timeouts statement by
-#: statement, and running it on EVERY emit put that aggregate wait inside the
-#: write-coordinator's shutdown window -- a SIGTERM'd daemon then exceeded its
-#: 15s exit deadline stuck in tier DDL (polylogue-b9oi8). First emit still
-#: converges the tier.
+#: Ops-tier admission runs once per (process, path):
+#: repeated tier admission used to put schema work inside every emitter.
+#: Startup reconverges a stale disposable tier under exclusive ownership;
+#: emitters admit the current identity and never patch an existing schema.
 _CONVERGED_EVENT_DBS: set[Path] = set()
 
 

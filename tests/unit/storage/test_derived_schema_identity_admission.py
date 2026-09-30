@@ -314,3 +314,42 @@ def test_canonical_manifest_excludes_fts5_shadow_tables() -> None:
     assert "messages_fts" in names, "the declaring virtual table stays in the contract"
     assert "messages_fts_identity" in names, "a declared table sharing the prefix is not a shadow table"
     assert not (names & {f"messages_fts{suffix}" for suffix in ("_data", "_idx", "_content", "_docsize", "_config")})
+
+
+@pytest.mark.parametrize("tier", [ArchiveTier.INDEX, ArchiveTier.OPS], ids=lambda tier: tier.value)
+@pytest.mark.parametrize("boundary", ["connection", "path", "initialized_open", "active_root"])
+def test_every_derived_initializer_refuses_foreign_identity_before_ddl(
+    tmp_path: Path, tier: ArchiveTier, boundary: str
+) -> None:
+    """A foreign stamp cannot be erased by any initialization entrypoint."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        initialize_active_archive_root,
+        initialize_archive_database,
+    )
+    from tests.infra.stale_ops import make_ops_event_schema_stale
+
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / f"{tier.value}.db"
+    if tier is ArchiveTier.OPS:
+        make_ops_event_schema_stale(path)
+    else:
+        with sqlite3.connect(path) as conn:
+            conn.execute("UPDATE schema_identity SET identity = 'synthetic-parent-runtime' WHERE tier = 'index'")
+    with sqlite3.connect(path) as before:
+        schema = before.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+    with pytest.raises(SchemaSkew):
+        if boundary == "connection":
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
+        elif boundary == "path":
+            initialize_archive_database(path, tier)
+        elif boundary == "initialized_open":
+            open_initialized_tier_connection(path, tier, daemon=False)
+        else:
+            from polylogue.storage.sqlite.archive_tiers.bootstrap import invalidate_active_archive_bootstrap
+
+            invalidate_active_archive_bootstrap(tmp_path)
+            initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(path) as after:
+        assert after.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall() == schema
+        assert read_schema_identity(after, DerivedTier(tier.value)) == "synthetic-parent-runtime"

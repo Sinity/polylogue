@@ -2249,6 +2249,16 @@ async def _run_daemon_services_under_active_writer_lease(
         if not durable_tier_schema_mismatch():
             with write_lease("daemon.archive_reset.startup", archive_root=archive_root_path):
                 applied_resets = apply_staged_archive_resets(archive_root_path)
+            from polylogue.operations.mutation_replay import reconverge_disposable_ops_on_startup
+            from polylogue.operations.reset_safety import archive_tiers_closed
+
+            with (
+                write_lease("daemon.ops_reconvergence.startup", archive_root=archive_root_path),
+                archive_tiers_closed(archive_root_path),
+            ):
+                ops_reconverged = reconverge_disposable_ops_on_startup(archive_root_path, archive_owner=archive_owner)
+            if ops_reconverged:
+                emit("daemon.ops_reconverged", level=WARNING, outcome="ok", reason="derived_schema_skew", tier="ops")
             if applied_resets:
                 emit(
                     "daemon.archive_reset.applied",

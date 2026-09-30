@@ -12,6 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.storage.archive_identity import OwnedArchiveLocation
 
 from polylogue.operations.mutation_transaction import (
     RecoverableActuator,
@@ -136,4 +140,47 @@ def apply_staged_archive_resets(archive_root: Path) -> tuple[str, ...]:
     return tuple(operation.operation_id for operation in staged if operation.operation_id not in deferred)
 
 
-__all__ = ["apply_staged_archive_resets", "recover_interrupted_operations", "recoverable_actuators"]
+def reconverge_disposable_ops_on_startup(archive_root: Path, *, archive_owner: OwnedArchiveLocation) -> bool:
+    """Replace a stale ops tier under exclusive ownership, with no live handles.
+
+    Inspection failures propagate: a lock or unreadable page is not evidence
+    of schema drift. Only typed schema skew authorizes discarding disposable
+    state. Durable tiers, index generations and purchased vectors are untouched.
+    """
+    from contextlib import closing
+
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.operations.durable_change_train import assert_holds_archive_ownership
+    from polylogue.operations.reset_safety import LiveArchiveTierResetError, archive_tiers_are_closed
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported, open_readonly_connection
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    assert_holds_archive_ownership(archive_owner, archive_root)
+    require_write_lease("daemon ops reconvergence", archive_root=archive_root)
+    if not archive_tiers_are_closed(archive_root):
+        raise LiveArchiveTierResetError(("ops.db",))
+    path = archive_owner.location.configured_tier("ops").resolved_path
+    if not path.exists():
+        return False
+    try:
+        with closing(open_readonly_connection(path, validate_schema=False)) as conn:
+            assert_tier_schema_supported(conn, path, ArchiveTier.OPS)
+    except SchemaSkew:
+        # Close the inspection handle before unlinking any member of the file
+        # family. A restart interrupted here sees absence and bootstraps fresh.
+        from polylogue.operations.reset_safety import discard_closed_derived_tier
+
+        discard_closed_derived_tier(archive_root, path)
+        initialize_archive_database(path, ArchiveTier.OPS)
+        return True
+    return False
+
+
+__all__ = [
+    "apply_staged_archive_resets",
+    "recover_interrupted_operations",
+    "recoverable_actuators",
+    "reconverge_disposable_ops_on_startup",
+]

@@ -701,10 +701,10 @@ class FilesystemResetActuator(ConvergentReplay):
         import shutil
 
         from polylogue.operations.reset_safety import (
-            SQLITE_SIDECAR_SUFFIXES,
             UnresettableArchiveTierError,
             archive_tiers_are_closed,
             classify_reset_targets,
+            discard_closed_derived_tier,
             sqlite_primary,
         )
 
@@ -744,17 +744,13 @@ class FilesystemResetActuator(ConvergentReplay):
             deleted.append(name)
         for database, name in databases.items():
             current = _path_identity(database)
-            if current is not None:
-                if current != identities.get(str(database)):
-                    # Recreated after the preview: not the authorized object.
-                    continue
-                database.unlink()
-                deleted.append(name)
-            for suffix in SQLITE_SIDECAR_SUFFIXES:
-                sidecar = database.with_name(f"{database.name}{suffix}")
-                if sidecar.is_symlink() or sidecar.exists():
-                    sidecar.unlink()
-                    deleted.append(f"{name} {suffix}")
+            if current is not None and current != identities.get(str(database)):
+                # Recreated after the preview: not the authorized object.
+                continue
+            removed = discard_closed_derived_tier(args.archive_root, database)
+            for removed_path in removed:
+                suffix = removed_path.name.removeprefix(database.name)
+                deleted.append(name if not suffix else f"{name} {suffix}")
         receipt = MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
