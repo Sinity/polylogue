@@ -114,6 +114,7 @@ class RawRead(Request):
     reference: Text
     offset: Offset = 0
     max_bytes: Annotated[int, Field(ge=4, le=64_000)] = 64_000
+    expected_observation: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
 
 
 class RawTimeline(Request):
@@ -195,6 +196,8 @@ class RawObservation(BaseModel):
     bytes: int
     line: int | None = None
     offset: int | None = None
+    match_offset: int | None = None
+    match_end: int | None = None
     text: str | None = None
 
 
@@ -218,6 +221,8 @@ class RawPage(BaseModel):
 class RawContent(BaseModel):
     reference: str
     origin: RawOrigin
+    observation: str
+    consistency: Literal["live", "bound"]
     indexed_session_id: None = None
     mtime_ns: int
     offset: int

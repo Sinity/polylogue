@@ -523,7 +523,20 @@ def test_fresh_shard_build_finishes_equivalent_to_retained_indexes(tmp_path: Pat
     fresh.close()
 
     assert fresh_indexes == retained_indexes
-    assert _finished_output_snapshot(fresh_path) == _finished_output_snapshot(retained_path)
+    fresh_output = _finished_output_snapshot(fresh_path)
+    retained_output = _finished_output_snapshot(retained_path)
+    if fresh_output != retained_output:
+        fresh_digests, fresh_fts = fresh_output
+        retained_digests, retained_fts = retained_output
+        differing_tables = {
+            table: (retained_digests.get(table), fresh_digests.get(table))
+            for table in retained_digests.keys() | fresh_digests.keys()
+            if retained_digests.get(table) != fresh_digests.get(table)
+        }
+        assert not differing_tables and fresh_fts == retained_fts, (
+            f"fresh-shard output differs from retained output: tables={differing_tables!r}, "
+            f"fts_equal={fresh_fts == retained_fts}"
+        )
     with sqlite3.connect(fresh_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == len(sessions)
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] > len(sessions)

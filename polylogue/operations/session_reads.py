@@ -364,23 +364,18 @@ def raw_operation(
     # Roots are exclusively owner configuration, never supplied in a request.
     key = hashlib.sha256(repr(service.sources).encode()).digest()
     if isinstance(request, RawRead):
-        _, path = service._path_from_reference(request.reference)
-        before = path.stat()
-        result = service.read(request.reference, request.offset, request.max_bytes)
-        after = path.stat()
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-        ):
-            from polylogue.operations.raw_sessions.sessions import SessionError
-
-            raise SessionError("session source changed during read")
+        result = service.read(
+            request.reference,
+            request.offset,
+            request.max_bytes,
+            expected_observation=request.expected_observation,
+        )
         return RawContent(
             reference=result["reference"],
             origin=_raw_origin(result["provider"]),
-            mtime_ns=before.st_mtime_ns,
+            observation=result["observation"],
+            consistency=result["consistency"],
+            mtime_ns=result["mtime_ns"],
             offset=result["offset"],
             bytes=result["bytes"],
             next_offset=result["next_offset"],
@@ -498,6 +493,8 @@ def raw_operation(
                 bytes=size,
                 line=row.get("line"),
                 offset=row.get("offset"),
+                match_offset=row.get("match_offset"),
+                match_end=row.get("match_end"),
                 text=row.get("text", row.get("snippet")),
             )
         )
