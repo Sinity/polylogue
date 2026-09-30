@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.durable_change_train import (
 )
 from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainError,
+    DurableMigrationReplayProof,
     DurableRuntimeConsumerResult,
 )
 
@@ -88,6 +89,25 @@ def pending_durable_migrations(archive_root: Path) -> tuple[PendingDurableMigrat
     return tuple(pending)
 
 
+def rehearse_pending_durable_migration(
+    archive_root: Path,
+    migration: PendingDurableMigration,
+) -> DurableMigrationReplayProof:
+    """Rehearse this pending tier's complete route to the shipped schema."""
+    from polylogue.storage.sqlite import migration_runner
+
+    tier_path = archive_root / f"{migration.tier.value}.db"
+    with closing(open_readonly_connection(tier_path, validate_schema=False)) as source:
+        return migration_runner.rehearse_durable_migration_chain(
+            source,
+            migration.tier,
+            target_version=ARCHIVE_VERSION_BY_TIER[migration.tier],
+            evidence_ref=(
+                f"proof:daemon-chain-rehearsal:{migration.tier.value}:v{migration.current_version}-to-current"
+            ),
+        )
+
+
 def execute_durable_change_train(
     archive_root: Path,
     tier: ArchiveTier,
@@ -96,6 +116,7 @@ def execute_durable_change_train(
     daemon_stopped_evidence_ref: str,
     single_writer_evidence_ref: str,
     runtime_consumer_results: tuple[DurableRuntimeConsumerResult, ...] | None = None,
+    schema_replay_proof: DurableMigrationReplayProof | None = None,
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
     """Run one durable migration through the storage authority contract."""
@@ -106,6 +127,7 @@ def execute_durable_change_train(
         daemon_stopped_evidence_ref=daemon_stopped_evidence_ref,
         single_writer_evidence_ref=single_writer_evidence_ref,
         runtime_consumer_results=runtime_consumer_results,
+        schema_replay_proof=schema_replay_proof,
         release_archive_ownership=release_archive_ownership,
     )
 
@@ -119,10 +141,12 @@ __all__ = [
     "acquire_durable_archive_ownership",
     "ArchiveOwnershipError",
     "DurableChangeTrainError",
+    "DurableMigrationReplayProof",
     "OwnedArchiveLocation",
     "PendingDurableMigration",
     "assert_holds_archive_ownership",
     "execute_durable_change_train",
     "pending_durable_migrations",
+    "rehearse_pending_durable_migration",
     "reconcile_durable_change_trains_on_startup",
 ]

@@ -71,6 +71,7 @@ from typing import TypedDict
 
 import pytest
 
+from devtools import worker_memory
 from devtools.worker_memory import (
     ANONYMOUS_MEMORY_MODEL,
     CORPUS_MAX_WORKERS,
@@ -236,7 +237,7 @@ def _occupancy_for_width(workers: int) -> int:
 #: 6 GiB -> 12 GiB: a host of 10 GiB stopped being the roomier of the two and
 #: the cases silently changed which bound they were testing.
 HOST_NOT_THE_BOUND_MIB = PYTEST_SLICE_MAX_MIB + 2 * 1024
-#: A budget too small even for one worker, so only the never-zero floor answers.
+#: A budget one MiB below the measured charge for the first xdist worker.
 STARVED_CGROUP_MIB = _budget_for_width(1) - 1
 #: A host that holds one worker fewer than the slice does, so the host decides.
 HOST_NARROWER_THAN_THE_SLICE_MIB = _budget_for_width(CORPUS_MAX_WORKERS - 1)
@@ -268,17 +269,57 @@ def test_a_loaded_host_does_not_narrow_an_admitted_run(tmp_path: Path) -> None:
     assert basis["host_available_mib"] == host_mib
 
 
-def test_a_starved_cgroup_still_runs_one_worker(tmp_path: Path) -> None:
-    """Headroom never reduces the launch to zero workers."""
+def test_a_starved_cgroup_defers_instead_of_launching_one_worker(tmp_path: Path) -> None:
+    """A slot that cannot hold one worker reports a typed deferral."""
     paths = _cgroup(tmp_path, [("job.slice", {"memory.max": _bytes(STARVED_CGROUP_MIB), "memory.current": "0"})])
     workers, basis = memory_bounded_worker_cap(
         meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB),
         process_cgroup=paths["process_cgroup"],
         cgroup_root=paths["cgroup_root"],
     )
-    assert width_within(STARVED_CGROUP_MIB) == 1
-    assert workers == 1
+    assert width_within(STARVED_CGROUP_MIB) == 0
+    assert workers == 0
     assert basis["basis"] == "cgroup_budget"
+    assert basis["admission"] == "resource_not_ready"
+    assert basis["margin_mib"] < 0
+
+
+def test_the_declared_budget_is_reduced_by_unreadable_layout_reservations(tmp_path: Path) -> None:
+    paths = _unbounded_cgroup(tmp_path)
+    workers, basis = memory_bounded_worker_cap(
+        requested=CORPUS_MAX_WORKERS,
+        meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB),
+        outstanding_mib=lambda _level: float(PYTEST_SLICE_MEMORY_HIGH_MIB - 1),
+        process_cgroup=paths["process_cgroup"],
+        cgroup_root=paths["cgroup_root"],
+    )
+
+    assert workers == 0
+    assert basis["basis"] == "declared_budget"
+    assert basis["cgroup_directory"] == "/"
+    assert basis["admission"] == "resource_not_ready"
+
+
+def test_an_in_process_run_uses_its_measured_single_process_charge(tmp_path: Path) -> None:
+    profile = ChargeProfile(worker_anon_mib=200, worker_cache_mib=30, controller_mib=100, in_process_mib=70)
+    paths = _cgroup(
+        tmp_path,
+        [("job.slice", {"memory.max": _bytes(69), "memory.current": "0"})],
+    )
+
+    workers, basis = memory_bounded_worker_cap(
+        requested=1,
+        in_process=True,
+        profile=profile,
+        meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB),
+        process_cgroup=paths["process_cgroup"],
+        cgroup_root=paths["cgroup_root"],
+    )
+
+    assert workers == 0
+    assert basis["predicted_charge_mib"] == 70
+    assert basis["margin_mib"] == -1
+    assert basis["admission"] == "resource_not_ready"
 
 
 def test_an_unbounded_cgroup_falls_back_to_the_declared_budget(tmp_path: Path) -> None:
@@ -534,6 +575,46 @@ def test_the_pytest_slice_ignores_shared_agent_slice_usage(tmp_path: Path) -> No
     assert basis["available_mib"] == PYTEST_SLICE_HIGH_MIB - occupied_mib
     assert basis["host_available_mib"] == HOST_NOT_THE_BOUND_MIB
     assert workers == CORPUS_MAX_WORKERS
+
+
+def test_limiter_owners_come_from_the_same_cgroup_read_as_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changing cgroup counter cannot erase the level that constrains admission.
+
+    The first observation is constrained by the pool child at 6 GiB. A second
+    observation would see that counter change and make an equality join against
+    the first minimum lose every owner, which also loses this pool's reservation
+    holders from the admission wait decision.
+    """
+    pool = tmp_path / "agentctl-pytest-quick.slice"
+    child = pool / "job.service"
+    reads = iter(
+        (
+            [(pool, 8_000), (child, 6_000)],
+            [(pool, 7_000), (child, 9_000)],
+        )
+    )
+    count = 0
+
+    def budget_read(**_kwargs: object) -> list[tuple[Path, int]]:
+        nonlocal count
+        count += 1
+        return next(reads)
+
+    monkeypatch.setattr(worker_memory, "_pytest_slot_budget_levels", budget_read)
+    monkeypatch.setattr(worker_memory, "job_cgroup_directory", lambda **_kwargs: child)
+
+    workers, basis = memory_bounded_worker_cap(
+        requested=1,
+        profile=ChargeProfile(worker_anon_mib=1000, worker_cache_mib=0, controller_mib=0),
+        meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB),
+    )
+
+    assert workers == 1
+    assert basis["available_mib"] == 6_000
+    assert basis["limiting_cgroups"] == [str(child)]
+    assert count == 1
 
 
 def test_a_host_narrower_than_the_slice_does_not_decide(tmp_path: Path) -> None:
@@ -1097,9 +1178,9 @@ def test_corroboration_reports_width_one_model_drift_not_the_width_two_constant(
     assert corroboration["tests_per_worker_source"] == "admission_estimate"
 
 
-def test_width_one_survives_a_negative_admission_margin() -> None:
-    """MEM-4: negative margin records pressure but never refuses all work."""
-    assert width_within(100) == 1
+def test_width_zero_records_a_negative_admission_margin() -> None:
+    """A budget below one worker is retained as a typed admission shortfall."""
+    assert width_within(100) == 0
     estimate = MEASURED_CHARGE.admission_estimate(1, 100)
     assert estimate["margin_mib"] < 0
     assert estimate["margin_fraction"] < 0
@@ -1139,14 +1220,22 @@ def test_the_sizing_receipt_records_the_estimate_a_run_was_admitted_on() -> None
     assert overrun["margin_fraction"] < 0
 
 
-def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes() -> None:
+def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes(tmp_path: Path) -> None:
     """The receipt, not a recomputation, is what a later reader has.
 
     Anti-vacuity: compute the estimate only at the call site and a sizing
     payload from either basis carries the components without the conclusion.
     """
-    _workers, sizing = memory_bounded_worker_cap(requested=3)
+    # The unit suite itself runs inside the pytest pool. Model a quiet pool
+    # slice and ample host memory so unrelated xdist workers cannot turn this
+    # payload-shape assertion into a resource_not_ready outcome.
+    workers, sizing = memory_bounded_worker_cap(
+        requested=3,
+        meminfo=_meminfo(tmp_path, available_mib=32_768),
+        **_pytest_slice(tmp_path, current_mib=0),
+    )
 
+    assert workers >= 1
     assert "predicted_charge_mib" in sizing
     assert "margin_mib" in sizing
     assert "margin_fraction" in sizing

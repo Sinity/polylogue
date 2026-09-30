@@ -14,7 +14,8 @@ budget is what matters when workers start.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -40,8 +41,11 @@ __all__ = [
     "WORKER_PEAK_ANON_MIB",
     "WORKER_PEAK_CACHE_MIB",
     "ChargeProfile",
+    "OutstandingReservations",
     "available_memory_mib",
     "cgroup_available_mib",
+    "cgroup_usage_mib",
+    "job_cgroup_directory",
     "corroborate_profile",
     "memory_bounded_worker_cap",
     "pytest_slot_available_mib",
@@ -268,6 +272,15 @@ class ChargeProfile:
     #: their scalar anonymous term.
     anon_model: AnonymousMemoryModel | None = None
     corpus_test_count: int | None = None
+    #: The whole charge of a run without xdist, where one process collects and
+    #: runs every test. ``None`` charges it as a controller plus one worker,
+    #: which overstates it -- the safe direction -- for a profile that has no
+    #: measurement of its own.
+    in_process_mib: float | None = None
+
+    def in_process_charge_mib(self) -> float:
+        """What a run without xdist charges its slice at peak."""
+        return self.charge_mib(1) if self.in_process_mib is None else float(self.in_process_mib)
 
     def worker_anon_for_tests(self, tests_per_worker: float | None = None) -> float:
         """Return the anonymous estimate at a worker's test count.
@@ -359,13 +372,13 @@ def width_within(budget_mib: float, *, profile: ChargeProfile = MEASURED_CHARGE)
     memory a sampler sees. The ceiling already carries its own headroom, so
     nothing is held back here beyond the controller's own charge.
 
-    Never zero: a slow run beats a run that does not start.
+    Zero when the budget cannot hold the controller plus one worker: the slot
+    then waits for, or defers to, the jobs holding that memory, instead of
+    launching a worker the slice's pressure kill will take.
     """
     # Evaluate the width-dependent term at each candidate's projected corpus
-    # share.  A negative margin at width 1 still returns one: slow work is
-    # preferable to refusing to start, and the negative admission margin is
-    # retained in the receipt for the owner to act on.
-    workers = 1
+    # share.
+    workers = 0
     while profile.charge_mib(workers + 1) <= budget_mib:
         workers += 1
     return workers
@@ -389,6 +402,9 @@ FOCUSED_CHARGE: Final = ChargeProfile(
     worker_anon_mib=FOCUSED_WORKER_PEAK_MIB,
     worker_cache_mib=WORKER_PEAK_CACHE_MIB,
     controller_mib=FOCUSED_CONTROLLER_PEAK_MIB,
+    # The 106 measured runs above were single-process: their maximum is the
+    # in-process charge itself, not a controller plus a worker.
+    in_process_mib=FOCUSED_WORKER_PEAK_MIB + WORKER_PEAK_CACHE_MIB,
 )
 #: The widest a focused selection runs: xdist start-up and per-worker
 #: collection stop paying for themselves past this on a bounded selection.
@@ -601,6 +617,11 @@ def _cgroup_directories(process_cgroup: Path, root: Path) -> list[Path]:
     return []
 
 
+#: What other admitted jobs have reserved under one cgroup level and not yet
+#: charged it, in MiB. See ``devtools.pytest_memory_admission``.
+OutstandingReservations = Callable[[Path], float]
+
+
 def cgroup_available_mib(*, process_cgroup: Path = CGROUP_PROCESS_PATH, root: Path = CGROUP_ROOT) -> int | None:
     """What this cgroup still allows before its tightest level bounds it, in MiB.
 
@@ -618,26 +639,66 @@ def cgroup_available_mib(*, process_cgroup: Path = CGROUP_PROCESS_PATH, root: Pa
     return min(budgets) if budgets else None
 
 
-def pytest_slot_available_mib(*, process_cgroup: Path = CGROUP_PROCESS_PATH, root: Path = CGROUP_ROOT) -> int | None:
+def pytest_slot_available_mib(
+    *,
+    process_cgroup: Path = CGROUP_PROCESS_PATH,
+    root: Path = CGROUP_ROOT,
+    outstanding_mib: OutstandingReservations | None = None,
+) -> int | None:
     """Return the local pytest-pool budget, excluding shared parent slices.
 
     ``agentctl.slice`` also contains agent workers.  Its *current* use is a
     host-admission concern, not capacity already consumed by this pytest
     command.  Stop at the named pytest pool when present.  A different runtime
     layout has no such proof, so fall back to every applicable cgroup limit.
+
+    Without the pool (a different layout) the walk simply reaches the root,
+    which is every applicable limit.
+
+    ``outstanding_mib`` is what other admitted jobs have reserved under a
+    level and not yet charged to it. Without it two jobs that start together
+    each read the whole headroom and both take the full width (polylogue-h9da0).
     """
-    budgets: list[int] = []
-    found_pytest_pool = False
+    budgets = [
+        budget
+        for _directory, budget in _pytest_slot_budget_levels(
+            process_cgroup=process_cgroup,
+            root=root,
+            outstanding_mib=outstanding_mib,
+        )
+    ]
+    return min(budgets) if budgets else None
+
+
+def _pytest_slot_budget_levels(
+    *,
+    process_cgroup: Path = CGROUP_PROCESS_PATH,
+    root: Path = CGROUP_ROOT,
+    outstanding_mib: OutstandingReservations | None = None,
+) -> list[tuple[Path, int]]:
+    """Finite pytest-pool limits and their remaining budgets, tightest first."""
+    budgets: list[tuple[Path, int]] = []
     for directory in _cgroup_directories(process_cgroup, root):
         limits = [value for name in _CGROUP_LIMIT_FILES if (value := _cgroup_bytes(directory / name)) is not None]
         if limits:
-            budgets.append(max(0, min(limits) // _MIB - _cgroup_usage_mib(directory)))
+            reserved = outstanding_mib(directory) if outstanding_mib is not None else 0.0
+            budgets.append(
+                (directory, max(0, min(limits) // _MIB - _cgroup_usage_mib(directory) - math.ceil(reserved)))
+            )
         if directory.name == "agentctl-pytest.slice":
-            found_pytest_pool = True
             break
-    if found_pytest_pool:
-        return min(budgets) if budgets else None
-    return cgroup_available_mib(process_cgroup=process_cgroup, root=root)
+    return budgets
+
+
+def job_cgroup_directory(*, process_cgroup: Path = CGROUP_PROCESS_PATH, root: Path = CGROUP_ROOT) -> Path | None:
+    """This process's own cgroup directory, or None when the hierarchy is unreadable."""
+    directories = _cgroup_directories(process_cgroup, root)
+    return directories[0] if directories else None
+
+
+def cgroup_usage_mib(directory: Path) -> int:
+    """What one cgroup level currently holds, reclaimable page cache excluded."""
+    return _cgroup_usage_mib(directory)
 
 
 def memory_bounded_worker_cap(
@@ -648,6 +709,8 @@ def memory_bounded_worker_cap(
     cgroup_root: Path = CGROUP_ROOT,
     profile: ChargeProfile = MEASURED_CHARGE,
     max_workers: int | None = None,
+    in_process: bool = False,
+    outstanding_mib: OutstandingReservations | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """The widest run this job's pytest cgroup may hold right now.
 
@@ -661,8 +724,15 @@ def memory_bounded_worker_cap(
     reading is kept in the receipt as an observation of the machine at launch.
 
     The reading is live at launch, so a job that waited in the queue is sized
-    against the budget it actually has.  The derived ``CORPUS_MAX_WORKERS``
-    cap remains the upper bound even when the cgroup is roomy.
+    against the budget it actually has, less what other admitted jobs in the
+    same pool have reserved and not yet charged (``outstanding_mib``).  The
+    derived ``CORPUS_MAX_WORKERS`` cap remains the upper bound even when the
+    cgroup is roomy.
+
+    ``in_process`` is a run without xdist: one process, charged
+    :meth:`ChargeProfile.in_process_charge_mib`. A width of zero means the
+    budget holds not even that (or a controller plus one worker); the basis
+    then says ``admission: resource_not_ready`` and the slot does not launch.
 
     When the cgroup carries no readable limit the fallback is the *declared*
     slice budget, not the host: ``requested`` is whatever ``-n`` the command
@@ -674,39 +744,65 @@ def memory_bounded_worker_cap(
     """
     ceiling = CORPUS_MAX_WORKERS if max_workers is None else max_workers
     host = available_memory_mib(meminfo=meminfo)
-    cgroup = pytest_slot_available_mib(process_cgroup=process_cgroup, root=cgroup_root)
+    # Derive both the available budget and its owning hierarchy levels from
+    # one observation.  Cgroup counters can change between reads; mixing an
+    # old minimum with newly sampled levels can lose every limiting owner and
+    # make admission ignore reservations that could free that budget.
+    budget_levels = _pytest_slot_budget_levels(
+        process_cgroup=process_cgroup,
+        root=cgroup_root,
+        outstanding_mib=outstanding_mib,
+    )
+    cgroup = min((budget for _directory, budget in budget_levels), default=None)
     if cgroup is None:
-        workers = max(1, min(requested, ceiling))
-        return workers, {
-            "basis": "declared_budget",
-            "available_mib": PYTEST_SLICE_MEMORY_HIGH_MIB,
-            "host_available_mib": host,
-            "cgroup_available_mib": None,
-            "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
-            "controller_peak_mib": profile.controller_mib,
-            "worker_peak_anon_mib": round(profile.worker_anon_for_tests(profile.tests_per_worker(workers)), 1),
-            "worker_peak_cache_mib": profile.worker_cache_mib,
-            "worker_peak_charge_mib": round(profile.worker_charge_for_workers(workers), 1),
-            "workers": workers,
-            "requested_workers": requested,
-            "narrowed": workers < requested,
-            **profile.admission_estimate(workers, PYTEST_SLICE_MEMORY_HIGH_MIB),
-        }
-    workers = max(1, min(requested, ceiling, width_within(cgroup, profile=profile)))
+        available = PYTEST_SLICE_MEMORY_HIGH_MIB
+        if outstanding_mib is not None:
+            available = max(0, available - math.ceil(outstanding_mib(Path("/"))))
+        if in_process:
+            workers = 1 if profile.in_process_charge_mib() <= available else 0
+        else:
+            workers = min(requested, ceiling, width_within(available, profile=profile))
+        basis_name = "declared_budget"
+        # A root reservation lets concurrent jobs in an unreadable cgroup
+        # layout share the declared pool budget through the same ledger.
+        job_directory = Path("/") if outstanding_mib is not None else None
+    else:
+        available = cgroup
+        if in_process:
+            workers = 1 if profile.in_process_charge_mib() <= cgroup else 0
+        else:
+            workers = min(requested, ceiling, width_within(cgroup, profile=profile))
+        basis_name = "cgroup_budget"
+        job_directory = job_cgroup_directory(process_cgroup=process_cgroup, root=cgroup_root)
+    limiting_cgroups = (
+        [str(directory) for directory, budget in budget_levels if budget == available] if cgroup is not None else ["/"]
+    )
+    estimate = profile.admission_estimate(max(workers, 1), available)
+    if in_process:
+        predicted = profile.in_process_charge_mib()
+        estimate.update(
+            predicted_charge_mib=round(predicted, 1),
+            margin_mib=round(available - predicted, 1),
+            margin_fraction=round((available - predicted) / available, 4) if available else 0.0,
+        )
     return workers, {
-        "basis": "cgroup_budget",
-        "available_mib": cgroup,
+        "basis": basis_name,
+        "admission": "admitted" if workers >= 1 else "resource_not_ready",
+        "in_process": in_process,
+        "available_mib": available,
         "host_available_mib": host,
         "cgroup_available_mib": cgroup,
+        "cgroup_directory": str(job_directory) if job_directory is not None else None,
+        "limiting_cgroups": limiting_cgroups,
         "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
         "controller_peak_mib": profile.controller_mib,
-        "worker_peak_anon_mib": round(profile.worker_anon_for_tests(profile.tests_per_worker(workers)), 1),
+        "worker_peak_anon_mib": round(profile.worker_anon_for_tests(profile.tests_per_worker(max(workers, 1))), 1),
         "worker_peak_cache_mib": profile.worker_cache_mib,
-        "worker_peak_charge_mib": round(profile.worker_charge_for_workers(workers), 1),
+        "worker_peak_charge_mib": round(profile.worker_charge_for_workers(max(workers, 1)), 1),
         "workers": workers,
         "requested_workers": requested,
         "narrowed": workers < requested,
-        **profile.admission_estimate(workers, cgroup),
+        **estimate,
     }
 
 
@@ -767,6 +863,7 @@ def resize_worker_argument(
     cgroup_root: Path = CGROUP_ROOT,
     profile: ChargeProfile = MEASURED_CHARGE,
     max_workers: int | None = None,
+    outstanding_mib: OutstandingReservations | None = None,
 ) -> tuple[list[str], dict[str, Any] | None]:
     """Narrow the xdist width ``argv`` requests to what memory allows.
 
@@ -785,6 +882,10 @@ def resize_worker_argument(
     xdist would start and always written back as that count, capped: left
     symbolic, xdist would resolve them again after this cap and start every
     CPU. A rewrite puts the selected width in every occurrence.
+
+    A missing width or ``-n 0`` is a run without xdist and is charged as one
+    process; ``-n 1`` is still a controller and a worker. A basis whose
+    ``admission`` is ``resource_not_ready`` must not be launched.
     """
     requests = _worker_requests(argv)
     requested_text = requests[-1][1] if requests else None
@@ -806,7 +907,11 @@ def resize_worker_argument(
         cgroup_root=cgroup_root,
         profile=profile,
         max_workers=max_workers,
+        in_process=requested is None or requested == 0,
+        outstanding_mib=outstanding_mib,
     )
+    if workers < 1:
+        return argv, basis
     if requested is None:
         return argv, basis
     if automatic:
