@@ -62,6 +62,8 @@ from polylogue.storage.blob_publication import abandon_blob_publication_receipts
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, schema_identity
+from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+from polylogue.storage.sqlite.lock_isolated_file_read import read_sqlite_file_in_lock_isolated_process
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
 from tests.infra.workload_declarations import (
     BENCHMARK_WORKLOAD_PROFILES,
@@ -132,6 +134,9 @@ _RECIPE_INPUT_ROOTS = (
 )
 _RECIPE_PROVIDER_ROOT = _REPOSITORY_ROOT / "polylogue" / "schemas" / "providers"
 _ARCHIVE_DB_NAMES = ("source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db")
+_ARCHIVE_SQLITE_FILE_NAMES = frozenset(
+    name + suffix for name in _ARCHIVE_DB_NAMES for suffix in ("", "-wal", "-shm", "-journal")
+)
 _OBSOLETE_STAGING_SCAN_BUDGET = 32
 
 
@@ -1174,6 +1179,8 @@ def _configured_archive_root(root: Path) -> Iterator[None]:
 
 
 def _sha256_fd(fd: int) -> str:
+    if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_PATH:
+        return read_sqlite_file_in_lock_isolated_process(Path("/proc/self/fd") / str(fd), opened_identity_fd=fd).sha256
     digest = hashlib.sha256()
     os.lseek(fd, 0, os.SEEK_SET)
     while True:
@@ -1184,6 +1191,12 @@ def _sha256_fd(fd: int) -> str:
 
 
 def _open_file_fd(path: Path) -> int:
+    if path.name in _ARCHIVE_SQLITE_FILE_NAMES:
+        parent, leaf = _open_pinned_parent(path)
+        try:
+            return open_sqlite_identity_descriptor(leaf, dir_fd=parent)
+        finally:
+            os.close(parent)
     return _open_no_follow(path, os.O_RDONLY | os.O_NONBLOCK)
 
 
@@ -1302,6 +1315,13 @@ def _safe_stat(path: Path) -> os.stat_result:
 
 def _chmod_at(directory_fd: int, leaf: str, mode: int) -> None:
     """Change mode through an O_NOFOLLOW descriptor, never a symlink target."""
+    if leaf in _ARCHIVE_SQLITE_FILE_NAMES:
+        descriptor = open_sqlite_identity_descriptor(leaf, dir_fd=directory_fd)
+        try:
+            os.chmod(Path("/proc/self/fd") / str(descriptor), mode)
+        finally:
+            os.close(descriptor)
+        return
     fd = os.open(leaf, os.O_RDONLY | os.O_NONBLOCK | _O_NOFOLLOW, dir_fd=directory_fd)
     try:
         os.fchmod(fd, mode)
@@ -3230,6 +3250,19 @@ def _copy_tree(source: Path, destination: Path) -> None:
                             os.close(child_src)
                             os.close(child_dst)
                     elif stat.S_ISREG(info.st_mode):
+                        if entry.name in _ARCHIVE_SQLITE_FILE_NAMES:
+                            in_fd = open_sqlite_identity_descriptor(entry.name, dir_fd=src)
+                            try:
+                                read_sqlite_file_in_lock_isolated_process(
+                                    Path(entry.name),
+                                    opened_identity_fd=in_fd,
+                                    copy_to=Path(entry.name),
+                                    copy_directory_fd=dst,
+                                    copy_exclusive=True,
+                                )
+                            finally:
+                                os.close(in_fd)
+                            continue
                         in_fd = os.open(entry.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=src)
                         out_fd = -1
                         try:

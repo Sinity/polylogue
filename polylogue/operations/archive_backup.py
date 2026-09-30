@@ -67,6 +67,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_isolated_write_connection,
     open_readonly_connection,
 )
+from polylogue.storage.sqlite.lock_isolated_file_read import read_sqlite_file_in_lock_isolated_process
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 if TYPE_CHECKING:
@@ -310,13 +311,17 @@ def _readable_sqlite_index(path: Path) -> bool:
 
 
 def _sqlite_source_fingerprint(path: Path) -> dict[str, object]:
-    metadata = path.stat()
+    physical = read_sqlite_file_in_lock_isolated_process(path)
+    return _sqlite_physical_fingerprint(path, physical.metadata, physical.sha256)
+
+
+def _sqlite_physical_fingerprint(path: Path, metadata: os.stat_result, digest: str) -> dict[str, object]:
     return {
         "path": str(path),
         "device": metadata.st_dev,
         "inode": metadata.st_ino,
         "size_bytes": metadata.st_size,
-        "sha256": _sha256_file(path),
+        "sha256": digest,
         "user_version": _sqlite_user_version(path),
     }
 
@@ -546,9 +551,11 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
             if wal_path.exists() and wal_path.stat().st_size:
                 conn.rollback()
                 continue
-            fingerprint = _sqlite_source_fingerprint(live_path)
             try:
-                shutil.copy2(live_path, dst)
+                physical = read_sqlite_file_in_lock_isolated_process(live_path, copy_to=dst)
+                if physical.size_bytes != physical.metadata.st_size:
+                    raise RuntimeError(f"SQLite physical file size changed during backup: {live_path}")
+                fingerprint = _sqlite_physical_fingerprint(live_path, physical.metadata, physical.sha256)
             except Exception:
                 dst.unlink(missing_ok=True)
                 raise

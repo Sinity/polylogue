@@ -13,7 +13,8 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any
 
-_SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
+from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+from polylogue.storage.sqlite.lock_isolated_file_read import read_sqlite_file_in_lock_isolated_process
 
 
 class IndexSnapshotRaceError(RuntimeError):
@@ -55,9 +56,8 @@ class OpenedIndexFileSet:
 
 def _open_regular_index_file(path: Path, *, sidecar: bool, missing_ok: bool = False) -> int:
     """Open one selected index object without blocking on non-regular files."""
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = open_sqlite_identity_descriptor(path)
     except FileNotFoundError:
         if missing_ok:
             raise
@@ -102,23 +102,10 @@ def open_index_file_handle(index_db: Path) -> Iterator[int]:
         yield file_set.main_fd
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_SNAPSHOT_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _file_sha256_descriptor(descriptor: int) -> str:
-    digest = hashlib.sha256()
-    offset = 0
-    while True:
-        chunk = os.pread(descriptor, _SNAPSHOT_HASH_CHUNK_BYTES, offset)
-        if not chunk:
-            return digest.hexdigest()
-        digest.update(chunk)
-        offset += len(chunk)
+    return read_sqlite_file_in_lock_isolated_process(
+        Path("/proc/self/fd") / str(descriptor), opened_identity_fd=descriptor
+    ).sha256
 
 
 def data_version(conn: Connection) -> int:
@@ -234,6 +221,12 @@ def snapshot_index_file_set(
                     error = IndexSnapshotRaceError if path == index_db else IndexSnapshotUnsafeSidecarError
                     raise error(f"{label} was replaced during snapshot observation: {path}")
                 path_present = True
+            handle_after = os.fstat(opened_fd)
+            unchanged = (handle_metadata.st_size, handle_metadata.st_mtime_ns) == (
+                handle_after.st_size,
+                handle_after.st_mtime_ns,
+            )
+            complete = complete and unchanged
             files.append(
                 {
                     "path": str(path),
@@ -242,7 +235,7 @@ def snapshot_index_file_set(
                     "mtime_ns": handle_metadata.st_mtime_ns,
                     "inode": handle_metadata.st_ino,
                     "sha256": digest,
-                    "changed_during_observation": False,
+                    "changed_during_observation": not unchanged,
                 }
             )
             continue

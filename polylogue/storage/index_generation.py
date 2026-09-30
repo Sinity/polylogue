@@ -1540,8 +1540,9 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     target, expected_identity, is_directory = _stable_link_target(path, label="source snapshot")
     if is_directory:
         raise RuntimeError(f"source snapshot is not a regular file: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(target, flags)
+    from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+
+    fd = open_sqlite_identity_descriptor(target)
     try:
         opened = os.fstat(fd)
         if (opened.st_dev, opened.st_ino) != expected_identity:
@@ -1703,18 +1704,18 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
     assertion, and every caller already knows which archive it is promoting
     into (polylogue-8qm4k AC1).
     """
+    from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
     from polylogue.storage.sqlite.write_lease import require_write_lease
 
     require_write_lease(f"index generation {label} WAL checkpoint({path})", archive_root=archive_root)
+    fd = -1
+    reopened_fd = -1
     try:
         open_path = path.resolve(strict=True)
-        fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
+        fd = open_sqlite_identity_descriptor(open_path)
         before = os.fstat(fd)
-        reopened_fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
+        reopened_fd = open_sqlite_identity_descriptor(open_path)
         after = os.fstat(reopened_fd)
-    except OSError as exc:
-        raise RuntimeError(f"cannot securely open {label}: {path}") from exc
-    try:
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise RuntimeError(f"{label} changed during descriptor validation: {path}")
         os.close(reopened_fd)
@@ -1724,10 +1725,13 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
             raise RuntimeError(f"no validated descriptor alias for {label}: {path}")
         with closing(sqlite3.connect(str(alias))) as conn:
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
+    except OSError as exc:
+        raise RuntimeError(f"cannot securely open {label}: {path}") from exc
     finally:
         if reopened_fd >= 0:
             os.close(reopened_fd)
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
     if int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
 

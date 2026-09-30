@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import parse_qs, quote, urlsplit
 
 from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.file_identity import require_sqlite_identity_descriptor
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 if TYPE_CHECKING:
@@ -1210,7 +1211,8 @@ def open_readonly_connection(
     helper does not perform it, since the check is specific to how the caller
     obtained the snapshot.
 
-    When ``opened_main_fd`` is supplied, the reader is bound to that opened
+    When ``opened_main_fd`` is supplied, it must be an O_PATH identity descriptor
+    from ``open_sqlite_identity_descriptor``. The reader is bound to that opened
     inode through a validated ``/dev/fd`` or ``/proc/self/fd`` alias. A caller
     that needs descriptor binding fails closed when neither alias is available.
 
@@ -1245,6 +1247,8 @@ def open_readonly_connection(
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
+    if opened_main_fd is not None:
+        require_sqlite_identity_descriptor(opened_main_fd)
     opened_fd = opened_main_fd
     if opened_fd is None:
         # Percent-encode the path: an unescaped '?' or '#' in a filename would

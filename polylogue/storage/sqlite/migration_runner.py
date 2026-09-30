@@ -31,6 +31,7 @@ from polylogue.storage.backup_blob_closure import package_blob_closure
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.lock_isolated_file_read import read_sqlite_file_in_lock_isolated_process
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
@@ -627,7 +628,11 @@ def _validate_live_source_fingerprint(conn: sqlite3.Connection, artifact: dict[s
         )
     if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
         raise MigrationError("migration backup receipt live tier size mismatch")
-    if str(fingerprint.get("sha256")) != _sha256_file(live_path):
+    try:
+        live_hash = read_sqlite_file_in_lock_isolated_process(live_path).sha256
+    except OSError as exc:
+        raise MigrationError("cannot fingerprint the live migration tier without disturbing its SQLite locks") from exc
+    if str(fingerprint.get("sha256")) != live_hash:
         raise MigrationError("migration backup receipt live tier hash mismatch")
     if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
         raise MigrationError("migration backup receipt live tier user_version mismatch")

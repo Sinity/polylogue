@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
@@ -12,6 +13,7 @@ from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
 from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
 
@@ -46,15 +48,15 @@ def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path)
         connection.execute("CREATE TABLE evidence (value TEXT)")
         connection.execute("INSERT INTO evidence VALUES ('selected')")
 
-    descriptor_handle = db_path.open("rb")
+    descriptor = open_sqlite_identity_descriptor(db_path)
     try:
-        reader = connection_profile.open_readonly_connection(db_path, opened_main_fd=descriptor_handle.fileno())
+        reader = connection_profile.open_readonly_connection(db_path, opened_main_fd=descriptor)
         try:
             assert reader.execute("SELECT value FROM evidence").fetchone() == ("selected",)
         finally:
             reader.close()
     finally:
-        descriptor_handle.close()
+        os.close(descriptor)
 
 
 def test_open_readonly_connection_refuses_without_descriptor_bound_path(
@@ -64,13 +66,13 @@ def test_open_readonly_connection_refuses_without_descriptor_bound_path(
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
 
-    descriptor_handle = db_path.open("rb")
+    descriptor = open_sqlite_identity_descriptor(db_path)
     try:
         monkeypatch.setattr(connection_profile, "_descriptor_database_uri", lambda _fd, _suffix: None)
         with pytest.raises(RuntimeError, match="descriptor-bound path"):
-            connection_profile.open_readonly_connection(db_path, opened_main_fd=descriptor_handle.fileno())
+            connection_profile.open_readonly_connection(db_path, opened_main_fd=descriptor)
     finally:
-        descriptor_handle.close()
+        os.close(descriptor)
 
 
 def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Path) -> None:
@@ -78,16 +80,16 @@ def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Pa
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
 
-    descriptor_handle = db_path.open("rb")
+    descriptor = open_sqlite_identity_descriptor(db_path)
     try:
         with pytest.raises(ValueError, match="immutable mode"):
             connection_profile.open_readonly_connection(
                 db_path,
                 immutable=True,
-                opened_main_fd=descriptor_handle.fileno(),
+                opened_main_fd=descriptor,
             )
     finally:
-        descriptor_handle.close()
+        os.close(descriptor)
 
 
 @pytest.mark.parametrize(
