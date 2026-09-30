@@ -22,11 +22,6 @@ runtime_tables:
     table: "node_evidence_refs"
     disposition: disposable_scratch
     reason: "Created on the graph.db connection materialize_delegation_work_evidence_archive opens under its own tempfile.TemporaryDirectory; pages fold into it and publication streams it into index.db, after which the directory is removed. No archive connection reaches this relation."
-  - file: "polylogue/storage/sqlite/archive_tiers/ops_write.py"
-    function: "_record_ops_schema_state"
-    table: "polylogue_ops_schema_state"
-    disposition: disposable_ops
-    reason: "The relation records only the current DDL digest of disposable ops.db. It is created by the OPS writer itself, is neither source/user/audit state nor an archive authority, and is deliberately excluded from canonical durable-tier ownership."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_DiskDuplicateNativeIds.__init__"
     table: "ids"

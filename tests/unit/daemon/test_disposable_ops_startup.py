@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from polylogue.core.write_lease import write_lease
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.events import emit_daemon_event, query_events_since
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -37,7 +39,8 @@ def test_production_startup_reconverges_stale_ops_then_restart_keeps_event_ident
     def reached_preflight() -> None:
         if current_ops_digest is not None:
             assert hashlib.sha256((root / "ops.db").read_bytes()).digest() == current_ops_digest
-        emit_daemon_event("synthetic_startup", archive_root_path=root, idempotency_key="same-startup")
+        with write_lease("daemon.startup.test_event", archive_root=root):
+            emit_daemon_event("synthetic_startup", archive_root_path=root, idempotency_key="same-startup")
         raise StartupCheckpointError
 
     monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", reached_preflight)
@@ -58,3 +61,51 @@ def test_production_startup_reconverges_stale_ops_then_restart_keeps_event_ident
         assert {
             p.name: hashlib.sha256(p.read_bytes()).digest() for p in root.glob("*.db") if p.name != "ops.db"
         } == protected
+
+
+@pytest.mark.parametrize(
+    "failure", [PermissionError("synthetic permission fault"), sqlite3.OperationalError("database is locked")]
+)
+def test_ops_inspection_fault_does_not_authorize_disposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """A failed inspection must leave even a stale ops tier byte-for-byte intact."""
+    from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+    from polylogue.operations.mutation_replay import reconverge_disposable_ops_on_startup
+    from polylogue.operations.reset_safety import archive_tiers_closed
+
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "ops.db"
+    make_ops_event_schema_stale(path)
+    before = path.read_bytes()
+    owner = acquire_durable_archive_ownership(tmp_path, owner_id="synthetic-startup")
+
+    def fail_read(*_args: object, **_kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_readonly_connection", fail_read)
+    try:
+        with write_lease("daemon.startup.test", archive_root=tmp_path), archive_tiers_closed(tmp_path):
+            with pytest.raises(type(failure)):
+                reconverge_disposable_ops_on_startup(tmp_path, archive_owner=owner)
+    finally:
+        owner.release()
+    assert path.read_bytes() == before
+
+
+def test_ops_reconvergence_refuses_outside_closed_owned_startup(tmp_path: Path) -> None:
+    """Holding the lease alone cannot unlink a tier another handle may retain."""
+    from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+    from polylogue.operations.mutation_replay import reconverge_disposable_ops_on_startup
+    from polylogue.operations.reset_safety import LiveArchiveTierResetError
+
+    initialize_active_archive_root(tmp_path)
+    before = (tmp_path / "ops.db").read_bytes()
+    owner = acquire_durable_archive_ownership(tmp_path, owner_id="synthetic-startup")
+    try:
+        with write_lease("daemon.startup.test", archive_root=tmp_path):
+            with pytest.raises(LiveArchiveTierResetError):
+                reconverge_disposable_ops_on_startup(tmp_path, archive_owner=owner)
+    finally:
+        owner.release()
+    assert (tmp_path / "ops.db").read_bytes() == before

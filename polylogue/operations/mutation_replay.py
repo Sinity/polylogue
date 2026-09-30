@@ -162,7 +162,9 @@ def reconverge_disposable_ops_on_startup(archive_root: Path, *, archive_owner: O
     if not archive_tiers_are_closed(archive_root):
         raise LiveArchiveTierResetError(("ops.db",))
     path = archive_owner.location.configured_tier("ops").resolved_path
-    if not path.exists():
+    try:
+        path.lstat()
+    except FileNotFoundError:
         return False
     try:
         with closing(open_readonly_connection(path, validate_schema=False)) as conn:
