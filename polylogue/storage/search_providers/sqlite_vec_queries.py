@@ -45,6 +45,8 @@ class SqliteVecQueryMixin:
 
         def _get_connection(self) -> sqlite3.Connection: ...
 
+        def _get_read_connection(self) -> sqlite3.Connection: ...
+
         def _release_connection(self, conn: sqlite3.Connection) -> None: ...
 
     def upsert(self, session_id: str, messages: list[MessageRecord], *, origin: str | None = None) -> None:
@@ -235,9 +237,7 @@ class SqliteVecQueryMixin:
         embeddings (including when the vector table does not exist yet) so the caller
         fails typed rather than returning an empty/unfiltered listing.
         """
-        self._ensure_vec_available()
-
-        conn = self._get_connection()
+        conn = self._get_read_connection()
         try:
             seed_rows: list[sqlite3.Row] = []
             try:
@@ -252,7 +252,7 @@ class SqliteVecQueryMixin:
                     (session_id,),
                 ).fetchall()
             except sqlite3.OperationalError as exc:
-                raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
+                raise SqliteVecError("stored session vectors could not be read") from exc
             if not seed_rows:
                 raise SqliteVecError(
                     f"session {session_id!r} has no stored message embeddings; cannot run session-seeded similarity"
@@ -303,8 +303,7 @@ class SqliteVecQueryMixin:
         embedded, and a session mid-materialization or with failed embeds
         would otherwise report vectors it does not have.
         """
-        self._ensure_vec_available()
-        conn = self._get_connection()
+        conn = self._get_read_connection()
         try:
             try:
                 row = conn.execute(
@@ -318,7 +317,7 @@ class SqliteVecQueryMixin:
                     (session_id,),
                 ).fetchone()
             except sqlite3.OperationalError as exc:
-                raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
+                raise SqliteVecError("stored session vectors could not be read") from exc
             return int(row["count"]) if row is not None else 0
         finally:
             self._release_connection(conn)

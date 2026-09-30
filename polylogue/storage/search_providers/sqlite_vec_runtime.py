@@ -278,6 +278,20 @@ class SqliteVecRuntimeMixin:
 
         return conn
 
+    def _get_read_connection(self) -> sqlite3.Connection:
+        """Read retained vectors without acquiring a writable tier handle."""
+        if self._snapshot_connection is not None:
+            return self._snapshot_connection
+        if getattr(self, "_legacy_compatibility", False):
+            return self._get_connection()
+        self._assert_lifecycle_binding()
+        assert self.archive_root is not None
+        return open_vector_read_snapshot(
+            embeddings_path=self.db_path,
+            index_path=resolve_active_index_path(self.archive_root),
+            recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
+        )
+
     def _release_connection(self, conn: sqlite3.Connection) -> None:
         """Release ordinary provider handles without closing an operation snapshot."""
 

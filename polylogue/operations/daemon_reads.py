@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 class VectorReadBinding:
     """Pinned configuration needed to bind one supplied vector snapshot."""
 
-    voyage_key: str
+    voyage_key: str | None
     model: str
     dimension: int
 
@@ -79,8 +79,6 @@ def vector_binding_from_config(config: Config) -> VectorReadBinding | None:
 
     index_config = config.index_config
     voyage_key = index_config.voyage_api_key if index_config is not None else None
-    if not voyage_key:
-        return None
     return VectorReadBinding(
         voyage_key=voyage_key,
         model=config.embedding_model,

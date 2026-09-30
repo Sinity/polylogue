@@ -88,7 +88,6 @@ class RepositoryVectorMixin:
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
         provider_db_path: Path | None = None,
-        voyage_api_key: str | None = None,
     ) -> dict[str, object]:
         """Rank sessions from ``query_by_session`` message hits.
 
@@ -96,11 +95,10 @@ class RepositoryVectorMixin:
         resolves each returned message to its session, keeps the closest hit
         per session, and hydrates the metadata needed by read surfaces.
         """
-        vector_provider = resolve_optional_vector_provider(
-            vector_provider,
-            db_path=provider_db_path,
-            voyage_api_key=voyage_api_key,
-        )
+        if vector_provider is None:
+            from polylogue.storage.search_providers import create_vector_provider
+
+            vector_provider = create_vector_provider(db_path=provider_db_path, require_credentials=False)
         if vector_provider is None:
             raise ValueError("No vector provider configured")
 
@@ -108,6 +106,8 @@ class RepositoryVectorMixin:
             cast(_SessionEmbeddingCounter, vector_provider).count_session_embeddings,
             session_id,
         )
+        if source_embedded_messages == 0:
+            return {"source_embedded_messages": 0, "results": [], "unresolved_message_hits": 0}
         results = await asyncio.to_thread(
             vector_provider.query_by_session,
             session_id,

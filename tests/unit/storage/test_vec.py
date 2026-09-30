@@ -553,3 +553,13 @@ def test_serialize_f32_contract() -> None:
     packed = _serialize_f32([1.0, 2.0, 3.0, 4.0])
     assert len(packed) == 16
     assert struct.unpack("<4f", packed) == (1.0, 2.0, 3.0, 4.0)
+
+
+def test_retained_reader_refuses_acquisition_without_key(tmp_path: Path) -> None:
+    """Removing the acquisition guard would attempt a provider call."""
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
+
+    provider = SqliteVecProvider(voyage_key=None, db_path=tmp_path / "embeddings.db")
+    with pytest.raises(SqliteVecError):
+        provider._get_embeddings(["synthetic query"], input_type="query")

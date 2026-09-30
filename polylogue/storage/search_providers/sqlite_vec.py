@@ -27,7 +27,7 @@ class SqliteVecProvider(
 
     def __init__(
         self,
-        voyage_key: str,
+        voyage_key: str | None,
         db_path: Path | None = None,
         model: str = DEFAULT_MODEL,
         dimension: int = DEFAULT_DIMENSION,
@@ -66,7 +66,7 @@ class SqliteVecProvider(
     def from_vector_read_snapshot(
         cls,
         *,
-        voyage_key: str,
+        voyage_key: str | None,
         connection: sqlite3.Connection,
         model: str = DEFAULT_MODEL,
         dimension: int = DEFAULT_DIMENSION,

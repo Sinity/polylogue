@@ -211,15 +211,12 @@ def test_vector_binding_uses_only_explicit_resolved_config_values() -> None:
 
     assert binding is not None
     assert (binding.voyage_key, binding.model, binding.dimension) == ("test-voyage-key", "voyage-3-lite", 512)
-    assert (
-        vector_binding_from_config(
-            cast(
-                Config,
-                _VectorConfig(index_config=None, embedding_model="voyage-4-lite", embedding_dimension=1024),
-            )
-        )
-        is None
+    retained_binding = vector_binding_from_config(
+        cast(Config, _VectorConfig(index_config=None, embedding_model="voyage-4-lite", embedding_dimension=1024))
     )
+    assert retained_binding is not None
+    assert retained_binding.voyage_key is None
+    assert retained_binding.model == "voyage-4-lite"
 
 
 def test_hybrid_query_names_an_absent_vector_provider_as_a_degraded_lane(tmp_path: Path) -> None:

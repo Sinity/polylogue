@@ -10,7 +10,7 @@ Contract:
 - The endpoint never embeds new content. It only reads vectors that have
   already been materialized by the daemon's embedding stage.
 - When the operator has not enabled embeddings (``embedding_enabled`` is
-  false or ``voyage_api_key`` is missing in ``polylogue.toml``), the
+  false in ``polylogue.toml``), the
   endpoint returns ``status="disabled"`` with a machine-readable
   ``reason`` and an empty result list.
 - When embeddings are enabled but the runtime is missing
@@ -74,19 +74,9 @@ def _confidence_for_score(score: float) -> str:
     return "q-heuristic"
 
 
-def _disabled_reason(*, embedding_enabled: bool, voyage_api_key: str | None) -> str | None:
-    """Return the explicit disabled-state reason, or ``None`` if enabled.
-
-    The two failure modes are kept distinct so the reader can render
-    actionable guidance — "set ``VOYAGE_API_KEY``" vs. "flip
-    ``embedding_enabled`` in polylogue.toml" are different fixes.
-    """
-
-    if not embedding_enabled:
-        return "embeddings_not_enabled"
-    if not voyage_api_key:
-        return "no_voyage_api_key"
-    return None
+def _disabled_reason(*, embedding_enabled: bool) -> str | None:
+    """Retained vector reads depend on policy, never acquisition credentials."""
+    return None if embedding_enabled else "embeddings_not_enabled"
 
 
 def _empty_envelope(status: str, *, reason: str | None) -> dict[str, object]:
@@ -138,33 +128,32 @@ def _build_archive_similar_payload(
             envelope["limit"] = bounded_limit
             return envelope
 
-        embeddings_db = archive_root_path / "embeddings.db"
-        if not embeddings_db.exists():
-            envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
-            envelope["session_id"] = session_id
-            envelope["limit"] = bounded_limit
-            return envelope
-        with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
-            if not table_exists(conn, "message_embeddings"):
+        try:
+            embeddings_db = archive_root_path / "embeddings.db"
+            if not embeddings_db.exists():
                 envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
                 envelope["session_id"] = session_id
                 envelope["limit"] = bounded_limit
                 return envelope
+            with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
+                if not table_exists(conn, "message_embeddings"):
+                    envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
+                    envelope["session_id"] = session_id
+                    envelope["limit"] = bounded_limit
+                    return envelope
 
-        from polylogue import Polylogue
-        from polylogue.api.sync.bridge import run_coroutine_sync
+            from polylogue import Polylogue
+            from polylogue.api.sync.bridge import run_coroutine_sync
 
-        async def query() -> dict[str, object]:
-            async with Polylogue(archive_root=archive_root_path, db_path=Path(index_db)) as polylogue:
-                return await polylogue.search_similar_sessions(
-                    session_id,
-                    limit=bounded_limit,
-                    voyage_api_key=load_polylogue_config().voyage_api_key,
-                )
+            async def query() -> dict[str, object]:
+                async with Polylogue(archive_root=archive_root_path, db_path=Path(index_db)) as polylogue:
+                    return await polylogue.search_similar_sessions(
+                        session_id,
+                        limit=bounded_limit,
+                    )
 
-        try:
             query_result = run_coroutine_sync(query())
-        except (DatabaseError, ValueError) as exc:
+        except (DatabaseError, ValueError, sqlite3.Error, OSError) as exc:
             # "not_embedded" is a measured negative content fact. Only a
             # condition that actually proves absence may be reported as one:
             # retryable contention and unreadable storage are typed
@@ -177,8 +166,14 @@ def _build_archive_similar_payload(
             elif "extension" in str(exc).lower():
                 status, reason = "unavailable", "sqlite_vec_not_loaded"
             else:
-                status, reason = "not_embedded", None
+                status, reason = "unavailable", "embedding_read_failed"
             envelope = _empty_envelope(status, reason=reason)
+            envelope["session_id"] = session_id
+            envelope["limit"] = bounded_limit
+            return envelope
+
+        if query_result["source_embedded_messages"] == 0:
+            envelope = _empty_envelope("not_embedded", reason=None)
             envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope
@@ -243,7 +238,7 @@ def build_similar_payload(
 
     The envelope ``status`` field is one of:
 
-    - ``"disabled"`` — embeddings not enabled or no Voyage API key.
+    - ``"disabled"`` — embeddings not enabled.
     - ``"unavailable"`` — embeddings are enabled but the ``vec0`` table
       or the ``sqlite-vec`` extension is missing.
     - ``"not_embedded"`` — the source session has no message
@@ -266,7 +261,6 @@ def build_similar_payload(
     cfg = load_polylogue_config()
     disabled_reason = _disabled_reason(
         embedding_enabled=bool(cfg.embedding_enabled),
-        voyage_api_key=cfg.voyage_api_key,
     )
 
     archive_root_path = archive_root()

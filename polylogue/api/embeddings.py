@@ -44,7 +44,6 @@ class PolylogueEmbeddingsMixin:
         *,
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
-        voyage_api_key: str | None = None,
     ) -> dict[str, object]:
         """Return vector-ranked session hits for a stored session."""
         return cast(
@@ -54,7 +53,6 @@ class PolylogueEmbeddingsMixin:
                 limit=limit,
                 vector_provider=vector_provider,
                 provider_db_path=self.config.archive_root / "embeddings.db",
-                voyage_api_key=voyage_api_key,
             ),
         )
 
