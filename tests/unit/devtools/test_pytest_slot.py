@@ -714,7 +714,23 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
         ),
         encoding="utf-8",
     )
-    process = subprocess.Popen([sys.executable, "-m", "devtools.pytest_slot", str(launch_path)])
+    # This runner is a separate interpreter, so pytest's in-process admission
+    # fixture cannot control its resource estimate. Install the same controlled
+    # admission setup through Python's normal sitecustomize hook while keeping
+    # the real module entrypoint and subprocess lifecycle under test.
+    bootstrap = tmp_path / "python-bootstrap"
+    bootstrap.mkdir()
+    repo_root = Path(__file__).resolve().parents[3]
+    (bootstrap / "sitecustomize.py").write_text(
+        f"import sys\nsys.path.insert(0, {str(repo_root)!r})\n{_CONTROLLED_ADMISSION_SETUP}",
+        encoding="utf-8",
+    )
+    child_environment = os.environ.copy()
+    child_environment["PYTHONPATH"] = os.pathsep.join((str(bootstrap), child_environment.get("PYTHONPATH", "")))
+    process = subprocess.Popen(
+        [sys.executable, "-m", "devtools.pytest_slot", str(launch_path)],
+        env=child_environment,
+    )
     try:
         deadline = time.monotonic() + 5
         while not started.exists() and time.monotonic() < deadline:

@@ -1217,6 +1217,11 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", fake_capture)
     monkeypatch.setattr(durable_change_train_module, "_historical_schema_evidence", lambda _train: None)
     monkeypatch.setattr(
+        durable_change_train_module,
+        "_released_live_schema_inventory_sha256",
+        lambda *_args: "inventory",
+    )
+    monkeypatch.setattr(
         migration_runner,
         "capture_durable_schema_inventory",
         lambda _connection: SimpleNamespace(sha256="inventory"),
