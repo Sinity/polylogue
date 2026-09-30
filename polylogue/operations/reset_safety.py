@@ -160,11 +160,16 @@ def discard_closed_derived_tier(archive_root: Path, database: Path) -> tuple[Pat
     removed: list[Path] = []
     for suffix in SQLITE_SIDECAR_SUFFIXES:
         sidecar = database.with_name(database.name + suffix)
-        if sidecar.is_symlink() or sidecar.exists():
+        try:
             sidecar.unlink()
-            removed.append(sidecar)
-    if database.is_symlink() or database.exists():
+        except FileNotFoundError:
+            continue
+        removed.append(sidecar)
+    try:
         database.unlink()
+    except FileNotFoundError:
+        pass
+    else:
         removed.insert(0, database)
     return tuple(removed)
 

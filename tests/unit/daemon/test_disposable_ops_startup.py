@@ -154,3 +154,30 @@ def test_owned_ops_reconvergence_preserves_every_unrelated_tier_byte(tmp_path: P
         p.name: (p.stat().st_dev, p.stat().st_ino, p.read_bytes()) for p in tmp_path.glob("*.db") if p.name != "ops.db"
     } == protected
     assert custody_file_inventory(tmp_path) == custody
+
+
+@pytest.mark.parametrize("failed_member", ["ops.db-wal", "ops.db"])
+def test_ops_disposal_fault_preserves_primary_and_refuses_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_member: str
+) -> None:
+    """A permission fault cannot become absent state followed by fresh DDL."""
+    from polylogue.operations.reset_safety import archive_tiers_closed, discard_closed_derived_tier
+
+    initialize_active_archive_root(tmp_path)
+    primary = tmp_path / "ops.db"
+    before = primary.read_bytes()
+    wal = tmp_path / "ops.db-wal"
+    wal.write_bytes(b"synthetic old sidecar")
+    unlink = Path.unlink
+
+    def fail_member(path: Path, missing_ok: bool = False) -> None:
+        if path == tmp_path / failed_member:
+            raise PermissionError("synthetic disposal fault")
+        unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_member)
+    with archive_tiers_closed(tmp_path), pytest.raises(PermissionError):
+        discard_closed_derived_tier(tmp_path, primary)
+    assert primary.read_bytes() == before
+    if failed_member == "ops.db-wal":
+        assert wal.read_bytes() == b"synthetic old sidecar"
