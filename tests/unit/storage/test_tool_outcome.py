@@ -612,7 +612,6 @@ def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
     every same-ID sidecar per use makes the large-cohort delta grow with the
     number of record owners.
     """
-    from polylogue.sources import tool_outcomes
 
     def measured_work(sidecars: int, uses: int, name: str) -> int:
         nonlocal_steps = [0]
@@ -651,7 +650,7 @@ def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
                 ],
             )
             with monkeypatch.context() as patch:
-                patch.setattr(tool_outcomes.sqlite3, "connect", traced_connect)
+                patch.setattr(sqlite3, "connect", traced_connect)
                 session_id = write_parsed_session_to_archive(conn, session)
             rows = conn.execute(
                 "SELECT COUNT(*), SUM(tool_outcome = ?) FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
