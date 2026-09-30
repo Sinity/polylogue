@@ -2325,8 +2325,9 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
         raw_failure_lifecycle_reason="source evidence test state",
         raw_frontier_integrity=_proven_healthy_frontier(),
         component_readiness=_verdict_clean_component_readiness(),
-        raw_parse_failures=1 if lifecycle_state == "degraded" else 0,
+        raw_parse_failures=0,
         raw_unexplained_failures=1 if lifecycle_state == "blocked" else 0,
+        raw_missing_source_coordinates=1 if lifecycle_state == "degraded" else 0,
     )
     with (
         patch("polylogue.daemon.status.build_daemon_status", return_value=status),
@@ -2341,6 +2342,8 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
         assert not any("Raw failures: unavailable" in line for line in lines)
     else:
         assert any("Raw failures:" in line for line in lines)
+    if lifecycle_state == "degraded":
+        assert "Retained session bytes missing append coordinates: 1 (degraded)" in lines
 
 
 def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:
