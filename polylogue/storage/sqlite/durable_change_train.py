@@ -2275,6 +2275,10 @@ def execute_durable_change_train(
         )
 
     if train.state is DurableChangeTrainState.DECLARED:
+        if rehearsed_proof is None:
+            raise DurableChangeTrainError(
+                f"declared {tier.value} train {train.train_id} has no schema replay proof for admission"
+            )
         previous_revision = train.revision
         train = admit_durable_change_train(
             train,

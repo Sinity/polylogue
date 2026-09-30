@@ -572,6 +572,7 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     train = record_durable_writer_release(train, evidence_ref="proof:source-hook-event-writer-release")
     with sqlite3.connect(db_path) as restarted:
         actual_parity = train.schema_replay_proof
+        assert actual_parity is not None
         runtime_results = _runtime_consumer_results(train, tmp_path)
         restart = capture_durable_restart_convergence(
             restarted,
@@ -2669,6 +2670,7 @@ def test_restart_and_every_runtime_consumer_are_required_before_release(
     train = record_durable_writer_release(train, evidence_ref="proof:lease-release")
     with sqlite3.connect(db_path) as restarted:
         actual_parity = train.schema_replay_proof
+        assert actual_parity is not None
         incomplete = (DurableRuntimeConsumerResult("consumer-0", "proof:behavior:0", True),)
         restart = capture_durable_restart_convergence(
             restarted,
@@ -2731,6 +2733,7 @@ def test_manifest_semantics_reject_out_of_order_lifecycle_evidence(
 
     with sqlite3.connect(db_path) as restarted:
         parity = released.schema_replay_proof
+        assert parity is not None
         runtime_results = _runtime_results()
         restart = capture_durable_restart_convergence(
             restarted,

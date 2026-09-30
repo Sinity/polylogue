@@ -3707,6 +3707,8 @@ def write_durable_change_train_manifest(
 
 
 __all__ = [
+    "ARCHIVE_DDL_BY_TIER",
+    "ARCHIVE_VERSION_BY_TIER",
     "DURABLE_CHANGE_TRAIN_FORMAT",
     "DURABLE_MIGRATION_COLLISION_REPORT_FORMAT",
     "DURABLE_MIGRATION_TIERS",

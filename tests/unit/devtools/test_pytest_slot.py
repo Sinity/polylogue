@@ -1505,7 +1505,7 @@ def test_a_held_run_defers_when_admission_has_no_worker_capacity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
-    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (worker_memory.ChargeProfile(1, 1, 1), 1))
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
@@ -1515,7 +1515,7 @@ def test_a_held_run_defers_when_admission_has_no_worker_capacity(
         ),
     )
     monkeypatch.setattr(
-        pytest_slot.subprocess,
+        subprocess,
         "Popen",
         lambda *_args, **_kwargs: pytest.fail("resource_not_ready must not launch pytest"),
     )
@@ -1541,7 +1541,7 @@ def test_a_queued_slot_defers_before_starting_pytest_when_admission_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
-    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (worker_memory.ChargeProfile(1, 1, 1), 1))
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
@@ -1551,7 +1551,7 @@ def test_a_queued_slot_defers_before_starting_pytest_when_admission_fails(
         ),
     )
     monkeypatch.setattr(
-        pytest_slot.subprocess,
+        subprocess,
         "Popen",
         lambda *_args, **_kwargs: pytest.fail("resource_not_ready must not launch pytest"),
     )
@@ -1585,7 +1585,7 @@ def test_live_reservations_are_released_when_pytest_cannot_start(
 
     ledger = AdmissionLedger(tmp_path / "admission")
     monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: ledger)
-    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (worker_memory.ChargeProfile(1, 1, 1), 1))
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
@@ -1602,7 +1602,7 @@ def test_live_reservations_are_released_when_pytest_cannot_start(
         ),
     )
     monkeypatch.setattr(
-        pytest_slot.subprocess,
+        subprocess,
         "Popen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("pytest missing")),
     )
@@ -1626,7 +1626,7 @@ def test_launch_reservation_is_released_when_telemetry_setup_fails(
 
     ledger = AdmissionLedger(tmp_path / "admission")
     monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: ledger)
-    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (worker_memory.ChargeProfile(1, 1, 1), 1))
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
@@ -1682,7 +1682,7 @@ def test_held_launch_reaps_child_if_sampler_construction_fails(tmp_path: Path, m
         "resize_worker_argument",
         lambda argv, **_kwargs: (list(argv), {"admission": "admitted", "workers": 1}),
     )
-    monkeypatch.setattr(pytest_slot.subprocess, "Popen", capture)
+    monkeypatch.setattr(subprocess, "Popen", capture)
     monkeypatch.setattr(
         pytest_slot,
         "ProcessGroupMemorySampler",
@@ -1723,13 +1723,13 @@ def test_held_launch_stops_partial_sampler_if_sampler_start_fails(
             return {}
 
     monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
-    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (worker_memory.ChargeProfile(1, 1, 1), 1))
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
         lambda argv, **_kwargs: (list(argv), {"admission": "admitted", "workers": 1}),
     )
-    monkeypatch.setattr(pytest_slot.subprocess, "Popen", capture)
+    monkeypatch.setattr(subprocess, "Popen", capture)
     monkeypatch.setattr(pytest_slot, "ProcessGroupMemorySampler", lambda *_args, **_kwargs: BrokenSampler())
 
     with pytest.raises(RuntimeError, match="sampler start failed"):

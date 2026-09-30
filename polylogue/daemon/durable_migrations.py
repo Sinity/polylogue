@@ -17,18 +17,17 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from contextlib import AbstractContextManager, closing
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from polylogue.operations.durable_change_train import (
+    DurableMigrationReplayProof,
     OwnedArchiveLocation,
     PendingDurableMigration,
     execute_durable_change_train,
     pending_durable_migrations,
+    rehearse_pending_durable_migration,
 )
-from polylogue.storage.sqlite import migration_runner
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.sqlite.migration_runner import DurableMigrationReplayProof
 
 
 def _backup_profile(tier: str) -> str:
@@ -85,18 +84,9 @@ def apply_declared_durable_migrations(
 
     applied: list[PendingDurableMigration] = []
     while pending := pending_durable_migrations(archive_root):
-        replay_proofs: dict[object, DurableMigrationReplayProof] = {}
+        replay_proofs: dict[str, DurableMigrationReplayProof] = {}
         for migration in pending:
-            tier_path = archive_root / f"{migration.tier.value}.db"
-            with closing(open_readonly_connection(tier_path, validate_schema=False)) as source:
-                replay_proofs[migration.tier] = migration_runner.rehearse_durable_migration_chain(
-                    source,
-                    migration.tier,
-                    target_version=migration_runner.ARCHIVE_VERSION_BY_TIER[migration.tier],
-                    evidence_ref=(
-                        f"proof:daemon-chain-rehearsal:{migration.tier.value}:v{migration.current_version}-to-current"
-                    ),
-                )
+            replay_proofs[migration.tier.value] = rehearse_pending_durable_migration(archive_root, migration)
         for migration in pending:
             if migration in applied:
                 raise RuntimeError(
@@ -107,7 +97,7 @@ def apply_declared_durable_migrations(
                 migration,
                 archive_owner=archive_owner,
                 write_lease=write_lease,
-                schema_replay_proof=replay_proofs[migration.tier],
+                schema_replay_proof=replay_proofs[migration.tier.value],
             )
             applied.append(migration)
     return tuple(applied)

@@ -1099,6 +1099,11 @@ def _write_interrupted_result(
     return receipt
 
 
+def _report_admission_wait(message: str) -> None:
+    sys.stderr.write(message + "\n")
+    sys.stderr.flush()
+
+
 def _run_held(
     argv: Sequence[str],
     *,
@@ -1136,7 +1141,7 @@ def _run_held(
             profile=profile,
             max_workers=max_workers,
             ledger=ledger,
-            report=lambda message: sys.stderr.write(message + "\n"),
+            report=_report_admission_wait,
         )
         if admission_not_ready(sizing):
             receipt = _slot_receipt(
@@ -1731,7 +1736,7 @@ def _run_launch(launch_path: Path) -> int:
             profile=profile,
             max_workers=max_workers,
             ledger=ledger,
-            report=lambda message: sys.stderr.write(message + "\n"),
+            report=_report_admission_wait,
         )
         if admission_not_ready(sizing):
             receipt = _slot_receipt(
