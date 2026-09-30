@@ -51,6 +51,14 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.session_profiles import write_session_profile
 
 
+def _fts_fixture_index(tmp_path: Path, case: str) -> Path:
+    # The readiness registry is keyed by path and outlives pytest's removed
+    # successful tmp_path trees, so each fixture needs a distinct child path.
+    root = tmp_path / case
+    root.mkdir()
+    return root / "index.db"
+
+
 def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Anti-vacuity: source-only durable writes invalidate cached readiness."""
     root = tmp_path / "archive"
@@ -2510,7 +2518,7 @@ def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: P
 
 
 def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path) -> None:
-    db = tmp_path / "index.db"
+    db = _fts_fixture_index(tmp_path, "lightweight-table-probe")
     with sqlite3.connect(db) as conn:
         conn.executescript(
             """
@@ -2526,7 +2534,7 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
 
 
 def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
-    archive_db = tmp_path / "index.db"
+    archive_db = _fts_fixture_index(tmp_path, "archive-file-set")
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
         conn.execute(
@@ -2568,8 +2576,8 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "custom.sqlite"
-    archive_db = tmp_path / "index.db"
+    archive_db = _fts_fixture_index(tmp_path, "archive-preference")
+    db_anchor = archive_db.parent / "custom.sqlite"
     with sqlite3.connect(db_anchor) as conn:
         conn.executescript(
             """
@@ -2593,7 +2601,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
 def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    db_path = tmp_path / "index.db"
+    db_path = _fts_fixture_index(tmp_path, "exact-missing-docsize")
     initialize_archive_database(db_path, ArchiveTier.INDEX)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -2638,7 +2646,7 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
 def test_fts_readiness_exact_uses_snapshot_transaction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from polylogue.daemon import fts_status
 
-    db_path = tmp_path / "index.db"
+    db_path = _fts_fixture_index(tmp_path, "exact-snapshot-transaction")
     initialize_archive_database(db_path, ArchiveTier.INDEX)
     traced: list[str] = []
 
@@ -2659,7 +2667,7 @@ def test_fts_readiness_exact_uses_snapshot_transaction(monkeypatch: pytest.Monke
 def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    archive_db = tmp_path / "index.db"
+    archive_db = _fts_fixture_index(tmp_path, "exact-missing-fts-row")
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
         conn.execute(
