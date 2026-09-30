@@ -384,30 +384,24 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
     per-component assertions say which one moved.
     """
 
-    from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import BlockType, Provider
-    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    import json
+
+    from polylogue.sources.parsers.codex import parse
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.convergence_harness import converge_session_profiles
-    from tests.infra.live_ingest import write_index_session
 
     bootstrap_archive_root(tmp_path)
-    # A transform component is MISSING on an archive with no sessions, and that
-    # is correct. The subject here is a populated, healthy archive.
+    # The subject is a populated archive with retained acquisition evidence,
+    # parsed index rows, and derived profiles rather than an index-only seed.
+    source = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
+    payload_bytes = source.read_bytes()
+    session = parse([json.loads(line) for line in payload_bytes.splitlines()], fallback_id="status-subject")
     with ArchiveStore(tmp_path) as archive:
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="direct-status-healthy",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="m1",
-                        role=Role.USER,
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="status subject")],
-                    )
-                ],
-            ),
+        archive.write_raw_and_parsed_result(
+            session,
+            payload=payload_bytes,
+            source_path="relative/status-subject.jsonl",
+            acquired_at_ms=1_700_000_000_000,
         )
     converge_session_profiles(tmp_path / "index.db", tmp_path, None, now=lambda: 0.0)
     prepare_operation_journals(tmp_path)

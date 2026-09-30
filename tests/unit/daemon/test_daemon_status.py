@@ -2545,7 +2545,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is True
+    assert readiness["messages_ready"] is True, readiness
     assert readiness["invariant_ready"] is True
     assert readiness["coverage_exact"] is True
     surfaces = readiness["surfaces"]
@@ -2574,7 +2574,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is True
+    assert readiness["messages_ready"] is True, readiness
     assert readiness["invariant_ready"] is True
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
@@ -2684,7 +2684,7 @@ def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: 
     assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is False
     assert readiness["invariant_ready"] is False
-    assert readiness["message_indexable_count"] == 1
+    assert readiness["message_indexable_count"] == 1, readiness
     assert readiness["message_indexed_count"] == 0
     assert readiness["coverage_pct"] == 0.0
     surfaces = readiness["surfaces"]
@@ -3955,7 +3955,7 @@ def test_insight_freshness_sqlite_failure_remains_unmeasured_and_private(tmp_pat
     with (
         patch("polylogue.daemon.status._active_status_db_path", return_value=path),
         patch(
-            "polylogue.daemon.status.open_readonly_connection",
+            "polylogue.operations.status_insights.open_readonly_connection",
             side_effect=sqlite3.OperationalError("cannot read '/opt/private space/例.json'"),
         ),
     ):

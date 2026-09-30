@@ -947,56 +947,10 @@ def _fts_readiness_info() -> dict[str, object]:
 
 
 def _insight_freshness_info() -> dict[str, object]:
-    """Inspect profile outputs, retaining unavailable SQLite evidence explicitly."""
-    from polylogue.core.evidence import Measured, Unavailable
-    from polylogue.storage.tier_access import capture_sqlite_read
+    """Project the standalone insight-status acquisition owned by operations."""
+    from polylogue.operations.status_insights import insight_freshness_for_path
 
-    dbf = _active_status_db_path()
-    if not dbf.exists():
-        return {
-            "checked": False,
-            "reason": "index tier is unavailable",
-            "sessions_with_profiles": None,
-            "total_sessions": None,
-        }
-
-    def read() -> dict[str, object]:
-        try:
-            conn = open_readonly_connection(dbf, validate_schema=False)
-            try:
-                return _insight_freshness_from_connection(conn)
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
-            emit(
-                "daemon.status.query_failed",
-                level=WARNING,
-                outcome="degraded",
-                reason="insight_freshness_unreadable",
-                path=dbf,
-                error_type=type(exc).__name__,
-                error_detail=redact_status_error(str(exc)),
-            )
-            raise
-
-    evidence = capture_sqlite_read(read)
-    if isinstance(evidence, Measured):
-        return evidence.value
-    if not isinstance(evidence, Unavailable):
-        raise AssertionError("insight freshness read produced unsupported evidence")
-    reason = redact_status_error(evidence.detail or evidence.reason)
-    return {
-        "checked": False,
-        "reason": reason,
-        "sessions_with_profiles": None,
-        "total_sessions": None,
-    }
-
-
-def _insight_freshness_from_connection(conn: sqlite3.Connection) -> dict[str, object]:
-    from polylogue.operations.daemon_status import insight_freshness_from_connection
-
-    return insight_freshness_from_connection(conn)
+    return insight_freshness_for_path(_active_status_db_path())
 
 
 def _session_summary_readiness_info() -> ComponentReadiness:
