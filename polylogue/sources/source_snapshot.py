@@ -510,11 +510,43 @@ def _walk_files(root: Path, anchor: int, root_info: os.stat_result) -> Iterator[
 
 def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
     root = Path(binding.source.root)
+    if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
+        if _root_identity(root) != binding.root_identity:
+            raise SourceMutationError(f"source root identity changed: {root}")
+        if binding.root_identity.kind == "directory":
+            with _open_source_root(binding) as (anchor, root_info):
+                result = _observe_sqlite_members(binding, _walk_files(root, anchor, root_info))
+        else:
+            result = _observe_sqlite_members(binding, ((root.name, root, root.lstat()),))
+        if _root_identity(root) != binding.root_identity:
+            raise SourceMutationError(f"source root identity changed: {root}")
+        return result
     with _open_source_root(binding) as (anchor, root_info):
         result = _observe_root(binding, anchor, root_info)
         if _root_identity(root) != binding.root_identity:
             raise SourceMutationError(f"source root identity changed: {root}")
         return result
+
+
+def _observe_sqlite_members(
+    binding: SourceCutBinding, members: Iterable[tuple[str, Path, os.stat_result]]
+) -> tuple[CutItem, ...]:
+    result = []
+    for coordinate, path, before in members:
+        expected = before.st_dev, before.st_ino
+        for info in (before, path.lstat()):
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != expected:
+                raise SourceMutationError(f"source database identity changed: {path}")
+        # SQLite owns its WAL-aware connection and all database descriptors.
+        # Closing an ordinary guard fd could release another same-process
+        # SQLite connection's POSIX locks. Metadata guards detect persistent
+        # substitution, but cannot bind SQLite's internal pathname open.
+        identity = sqlite_member_revision(path)
+        after = path.lstat()
+        if not stat.S_ISREG(after.st_mode) or (after.st_dev, after.st_ino) != expected:
+            raise SourceMutationError(f"source database identity changed: {path}")
+        result.append(CutItem(binding.source.source_id, coordinate, identity, identity, before.st_size))
+    return tuple(sorted(result, key=lambda item: item.coordinate))
 
 
 def _observe_root(binding: SourceCutBinding, anchor: int, root_info: os.stat_result) -> tuple[CutItem, ...]:
@@ -556,33 +588,13 @@ def _observe_root(binding: SourceCutBinding, anchor: int, root_info: os.stat_res
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
     result: list[CutItem] = []
     for coordinate, path, info in _walk_files(root, anchor, root_info):
-        if mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
-            expected = info.st_dev, info.st_ino
-            with _open_source_file(
-                anchor, coordinate if binding.root_identity.kind == "directory" else "", path, expected
-            ) as (_descriptor, captured):
-                identity = sqlite_member_revision(path)
-                # The SQLite reader owns its WAL-aware transaction. These
-                # guards refuse a persistent coordinate substitution; they
-                # cannot bind SQLite's internal open to our descriptor.
-                with _open_source_file(
-                    anchor, coordinate if binding.root_identity.kind == "directory" else "", path, expected
-                ):
-                    pass
-                info = captured
-            # Logical content is the continuity identity. Filesystem metadata
-            # and page layout are transport observations, not source meaning.
-            content_sha256 = identity
-        else:
-            content_sha256, captured_size, identity = _snapshot_regular_file(
-                path,
-                info,
-                anchor=anchor,
-                coordinate=coordinate if binding.root_identity.kind == "directory" else "",
-            )
-            result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size))
-            continue
-        result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, info.st_size))
+        content_sha256, captured_size, identity = _snapshot_regular_file(
+            path,
+            info,
+            anchor=anchor,
+            coordinate=coordinate if binding.root_identity.kind == "directory" else "",
+        )
+        result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size))
     return tuple(sorted(result, key=lambda item: item.coordinate))
 
 

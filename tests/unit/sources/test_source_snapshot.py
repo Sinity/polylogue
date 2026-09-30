@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -837,3 +839,34 @@ def test_substituted_declared_parent_alias_cannot_publish_external_members(
     frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
     assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
     assert frontier.members == ()
+
+
+@pytest.mark.uses_real_clock("SQLite process locks are verified by an external writer")
+def test_sqlite_observation_preserves_another_connections_process_locks(tmp_path: Path) -> None:
+    """Mutation: closing an ordinary SQLite guard fd releases a concurrent reader's POSIX lock."""
+    database = tmp_path / "declared.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE state (value TEXT)")
+        conn.execute("INSERT INTO state VALUES ('declared')")
+    reader = sqlite3.connect(database)
+    try:
+        reader.execute("BEGIN")
+        assert reader.execute("SELECT value FROM state").fetchone() == ("declared",)
+        frontier = build_source_frontier([SourceDeclaration("database", SourceRole.MUTABLE_SQLITE, database, True)])
+        assert frontier.complete
+        writer = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sqlite3, sys; conn = sqlite3.connect(sys.argv[1], timeout=0); conn.execute(\"UPDATE state SET value = 'foreign'\"); conn.commit()",
+                str(database),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert writer.returncode != 0
+        assert "database is locked" in writer.stderr
+        assert reader.execute("SELECT value FROM state").fetchone() == ("declared",)
+    finally:
+        reader.rollback()
+        reader.close()
