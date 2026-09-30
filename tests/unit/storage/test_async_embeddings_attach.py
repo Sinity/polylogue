@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -167,5 +168,165 @@ def test_async_writer_refusal_closes_unconfigured_handle_without_publishing_it(
                 await handles[0].execute("SELECT 1")
         finally:
             (root / POPULATION_PENDING).unlink()
+
+    asyncio.run(exercise())
+
+
+def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite import async_sqlite
+
+    async def exercise() -> None:
+        backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
+        await backend._ensure_schema_once()
+        handles = []
+        close_attempts = []
+        configure = async_sqlite.configure_read_connection
+        execute = aiosqlite.Connection._execute
+        refuse_close = True
+        primary = ValueError("synthetic configuration refusal")
+
+        async def configure_last(conn: aiosqlite.Connection) -> None:
+            handles.append(conn)
+            await configure(conn)
+            if len(handles) == 3:
+                raise primary
+
+        async def execute_with_close_fault(conn: aiosqlite.Connection, function: Any, *args: Any, **kwargs: Any) -> Any:
+            if getattr(function, "__name__", None) == "close_raw":
+                close_attempts.append(conn)
+                if refuse_close and conn in (handles[0], handles[-1]):
+                    raise OSError("synthetic native close refusal")
+            return await execute(conn, function, *args, **kwargs)
+
+        monkeypatch.setattr(async_sqlite, "configure_read_connection", configure_last)
+        monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
+        try:
+            with pytest.raises(ValueError) as caught:
+                async with backend.read_pool(size=3):
+                    pytest.fail("a refused pool was published")
+            assert caught.value is primary
+            assert len(close_attempts) == 3 and set(close_attempts) == set(handles)
+            assert backend._read_pool is None
+            for conn in (handles[0], handles[2]):
+                assert conn._connection is not None and conn._running
+                assert async_sqlite._BACKEND_CONNECTIONS[id(conn)].backend is backend
+                async with conn.execute("SELECT 1") as cursor:
+                    assert (await cursor.fetchone())[0] == 1
+            assert handles[1]._connection is None
+        finally:
+            refuse_close = False
+            await backend.close()
+        assert all(conn._connection is None for conn in handles)
+        assert not any(entry.backend is backend for entry in async_sqlite._BACKEND_CONNECTIONS.values())
+
+    asyncio.run(exercise())
+
+
+def test_failed_writer_configuration_keeps_actual_handle_until_backend_retirement(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite import async_sqlite
+
+    async def exercise() -> None:
+        backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
+        await backend._ensure_schema_once()
+        handles = []
+        primary = ValueError("synthetic writer configuration refusal")
+        execute = aiosqlite.Connection._execute
+        refuse_close = True
+
+        async def configure(conn: aiosqlite.Connection) -> None:
+            handles.append(conn)
+            raise primary
+
+        async def execute_with_close_fault(conn: aiosqlite.Connection, function: Any, *args: Any, **kwargs: Any) -> Any:
+            if refuse_close and getattr(function, "__name__", None) == "close_raw":
+                raise OSError("synthetic native close refusal")
+            return await execute(conn, function, *args, **kwargs)
+
+        monkeypatch.setattr(async_sqlite, "configure_connection", configure)
+        monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
+        try:
+            with pytest.raises(ValueError) as caught:
+                await backend.begin()
+            assert caught.value is primary
+            conn = handles[0]
+            assert backend._txn_conn is None
+            assert async_sqlite._BACKEND_CONNECTIONS[id(conn)].backend is backend
+            assert conn._connection is not None and conn._running
+        finally:
+            refuse_close = False
+            await backend.close()
+        assert conn._connection is None
+        assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
+
+    asyncio.run(exercise())
+
+
+def test_close_settlement_still_closes_raw_handle_after_rollback_failure(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite import async_sqlite
+
+    async def exercise() -> None:
+        backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
+        conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        failure = OSError("synthetic rollback failure")
+
+        async def rollback() -> None:
+            raise failure
+
+        monkeypatch.setattr(conn, "rollback", rollback)
+        with pytest.raises(OSError) as caught:
+            await async_sqlite._close_backend_connection(conn, rollback=True)
+        assert caught.value is failure
+        assert conn._connection is None and not conn._running
+        assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
+        await backend.close()
+
+    asyncio.run(exercise())
+
+
+def test_cancelled_close_waiter_drains_actual_worker_before_retiring_handle(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from polylogue.storage.sqlite import async_sqlite
+
+    async def exercise() -> None:
+        backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
+        conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        entered, release = threading.Event(), threading.Event()
+        execute = conn._execute
+
+        async def delay_close(function: Any, *args: Any, **kwargs: Any) -> Any:
+            if getattr(function, "__name__", None) == "close_raw":
+
+                def queued_close() -> None:
+                    entered.set()
+                    release.wait()
+                    function()
+
+                return await execute(queued_close)
+            return await execute(function, *args, **kwargs)
+
+        monkeypatch.setattr(conn, "_execute", delay_close)
+        closing = asyncio.create_task(async_sqlite._close_backend_connection(conn))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            closing.cancel()
+            await asyncio.sleep(0)
+            assert not closing.done()
+            assert conn._connection is not None and id(conn) in async_sqlite._BACKEND_CONNECTIONS
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        assert conn._connection is None and not conn._running
+        assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
+        await backend.close()
 
     asyncio.run(exercise())

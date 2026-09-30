@@ -2066,3 +2066,73 @@ def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evid
     assert (destination / POPULATION_PENDING).is_file()
     with pytest.raises(ArchivePopulationPendingError):
         ArchiveStore.open_existing(destination)
+
+
+def test_accepted_restore_outlives_implicit_deadline_and_control_returns_terminal_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from time import monotonic
+
+    from polylogue.daemon import operation_runtime
+    from polylogue.operations import archive_backup
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    entered, release = threading.Event(), threading.Event()
+    restore = archive_backup.restore_verified_backup
+    offset = 0.0
+    responses: queue.Queue[Any] = queue.Queue()
+    destination = tmp_path / "restored"
+
+    def blocked_restore(**kwargs: Any) -> Any:
+        entered.set()
+        release.wait()
+        return restore(**kwargs)
+
+    monkeypatch.setattr(archive_backup, "restore_verified_backup", blocked_restore)
+    monkeypatch.setattr(operation_runtime, "monotonic", lambda: monotonic() + offset)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        backup = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
+            archive_root=str(stack.archive_root),
+        )
+        assert backup is not None and backup["outcome"] == "completed"
+        request_id = "slow-accepted-restore"
+
+        def submit() -> None:
+            try:
+                responses.put(
+                    stack.client.operation(
+                        "maintenance.restore_verified_backup",
+                        {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
+                        archive_root=str(stack.archive_root),
+                        request_id=request_id,
+                    )
+                )
+            except BaseException as exc:
+                responses.put(exc)
+
+        thread = threading.Thread(target=submit)
+        thread.start()
+        try:
+            assert entered.wait(timeout=5)
+            offset = 301.0
+            with stack.runtime._condition:
+                stack.runtime._condition.notify_all()
+            response = responses.get(timeout=5)
+            assert not isinstance(response, BaseException)
+            assert response["outcome"] == "indeterminate"
+            assert not release.is_set()
+            release.set()
+            terminal = stack.client.await_operation(request_id, archive_root=str(stack.archive_root))
+            assert terminal is not None and terminal["result"]["outcome"] == "completed"
+            assert terminal["result"]["result"]["operational_admission"] == "ready"
+            status = stack.client.operation(
+                "operation.status", {"request_id": request_id}, archive_root=str(stack.archive_root)
+            )
+            assert status is not None and status["result"] == terminal["result"]
+        finally:
+            release.set()
+            thread.join()
+    with ArchiveStore.open_existing(destination, read_only=True):
+        pass

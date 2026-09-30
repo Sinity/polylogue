@@ -1854,9 +1854,14 @@ def _quote_sqlite_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _schema_sqlite_value(value: object) -> object:
+    """Decode SQLite metadata text independently of caller result factories."""
+    return value.decode("utf-8") if isinstance(value, bytes) else value
+
+
 def _schema_pragma_rows(conn: sqlite3.Connection, pragma: str, object_name: str) -> list[list[object]]:
     quoted = _quote_sqlite_identifier(object_name)
-    return [list(row) for row in conn.execute(f"PRAGMA {pragma}({quoted})")]
+    return [[_schema_sqlite_value(value) for value in row] for row in conn.execute(f"PRAGMA {pragma}({quoted})")]
 
 
 def capture_durable_schema_inventory(conn: sqlite3.Connection) -> DurableSchemaInventory:
@@ -1872,14 +1877,14 @@ def capture_durable_schema_inventory(conn: sqlite3.Connection) -> DurableSchemaI
     ).fetchall()
     objects: list[DurableSchemaObjectEvidence] = []
     for raw_type, raw_name, raw_table_name, raw_sql in rows:
-        object_type = str(raw_type)
-        name = str(raw_name)
-        table_name = str(raw_table_name)
+        object_type = str(_schema_sqlite_value(raw_type))
+        name = str(_schema_sqlite_value(raw_name))
+        table_name = str(_schema_sqlite_value(raw_table_name))
         payload: dict[str, object] = {
             "type": object_type,
             "name": name,
             "table_name": table_name,
-            "sql": _normalize_schema_sql(str(raw_sql) if raw_sql is not None else None),
+            "sql": _normalize_schema_sql(str(_schema_sqlite_value(raw_sql)) if raw_sql is not None else None),
         }
         if object_type == "table":
             payload["table_xinfo"] = _schema_pragma_rows(conn, "table_xinfo", name)
@@ -1911,7 +1916,7 @@ def _schema_only_replica(source: sqlite3.Connection) -> sqlite3.Connection:
     ).fetchall()
     try:
         for _kind, statement in rows:
-            replica.execute(str(statement))
+            replica.execute(str(_schema_sqlite_value(statement)))
         version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
         replica.execute(f"PRAGMA user_version = {version}")
         replica.commit()
@@ -2087,9 +2092,13 @@ def durable_preparation_fingerprint(
             "source_schema": capture_durable_schema_inventory(conn).sha256,
             "source_version": int(conn.execute("PRAGMA user_version").fetchone()[0]),
             "sqlite": sqlite3.sqlite_version,
-            "compile_options": tuple(conn.execute("PRAGMA compile_options")),
+            "compile_options": tuple(
+                tuple(_schema_sqlite_value(value) for value in row) for row in conn.execute("PRAGMA compile_options")
+            ),
             "configuration": {
-                name: tuple(conn.execute(f"PRAGMA {name}"))
+                name: tuple(
+                    tuple(_schema_sqlite_value(value) for value in row) for row in conn.execute(f"PRAGMA {name}")
+                )
                 for name in (
                     "encoding",
                     "page_size",

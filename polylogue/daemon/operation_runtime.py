@@ -1092,7 +1092,20 @@ class DaemonOperationRuntime:
                                 snapshot,
                             )
                         raise ValueError("operation_reference_unknown")
-                    state = {"outcome": "running", "sequence": 0}
+                    if (
+                        exchange.binding is None
+                        and exchange.acceptance_started
+                        and exchange.future is not None
+                        and exchange.future.done()
+                    ):
+                        terminal = exchange.future.result().to_dict()
+                        result = terminal.get("result")
+                        state = dict(result) if isinstance(result, dict) else {"sequence": 0}
+                        state["outcome"] = terminal["outcome"]
+                        if "error" in terminal:
+                            state["error"] = terminal["error"]
+                    else:
+                        state = {"outcome": "running", "sequence": 0}
                 if exchange is not None and "reference" not in state and exchange.accepted_reference is not None:
                     # A concurrent audit continuity publication may make the
                     # settled read briefly unavailable while progress remains

@@ -781,3 +781,25 @@ def test_source002_retains_large_marker_payloads_with_incremental_row_evidence(t
         assert reopened.execute("SELECT length(payload) FROM pending_accepted_marker_inputs").fetchall() == [
             (lengths[1],)
         ]
+
+
+@pytest.mark.parametrize("rows_as_mapping", (False, True))
+@pytest.mark.parametrize("text_as_bytes", (False, True))
+def test_source_rehearsal_configuration_ignores_caller_result_factories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows_as_mapping: bool, text_as_bytes: bool
+) -> None:
+    monkeypatch.setattr(migration_runner, "_SCHEMA_REHEARSAL_CACHE", {})
+    conn, _raw_ids = source_baseline(tmp_path / "source.db")
+    try:
+        expected = migration_runner.durable_preparation_fingerprint(conn, ArchiveTier.SOURCE)
+        conn.row_factory = sqlite3.Row if rows_as_mapping else None
+        conn.text_factory = bytes if text_as_bytes else str
+        assert migration_runner.durable_preparation_fingerprint(conn, ArchiveTier.SOURCE) == expected
+        proof = migration_runner.rehearse_durable_migration_chain(
+            conn, ArchiveTier.SOURCE, target_version=2, evidence_ref="proof:configured-source"
+        )
+        assert proof.target_version == 2
+        assert conn.row_factory is (sqlite3.Row if rows_as_mapping else None)
+        assert conn.text_factory is (bytes if text_as_bytes else str)
+    finally:
+        conn.close()

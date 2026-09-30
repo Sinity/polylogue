@@ -388,3 +388,13 @@ have passed. Other archive readers and writers refuse that destination while
 population is pending. An interrupted restore retains its partial directory
 and marker as evidence; it is not automatically repaired or resumed. A new
 restore requires a different, absent destination.
+
+
+The machine restore exchange has a 300-second response budget. Once its first
+possible filesystem effect has been admitted, expiry returns `indeterminate`
+and the accepted restore continues; it does not cancel progressing work.
+`operation.await` or `operation.status` with the same request ID and principal
+reads the retained exchange's terminal result while that daemon remains live.
+This unbound filesystem operation does not mint an Audit machine-request
+receipt. After a daemon crash, an unfinished destination therefore remains
+fenced evidence, not a claim of durable terminal success.

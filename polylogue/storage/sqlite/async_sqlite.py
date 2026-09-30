@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
@@ -174,19 +176,140 @@ async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     await conn.set_authorizer(_authorize_read_operation)
 
 
+@dataclass(frozen=True, slots=True)
+class _ConnectionCloseResult:
+    actual_closed: bool
+    error: BaseException | None
+    cancellation: asyncio.CancelledError | None
+
+
+@dataclass(frozen=True, slots=True)
+class _BackendConnectionOwner:
+    backend: SQLiteBackend
+    connection: aiosqlite.Connection
+    thread: threading.Thread
+    task: asyncio.Task[object] | None
+    pid: int
+
+
+# Strong custody survives loss of the caller after a failed raw close.
+_BACKEND_CONNECTIONS: dict[int, _BackendConnectionOwner] = {}
+_BACKEND_CONNECTIONS_LOCK = threading.Lock()
+
+
+async def _settled_connection_operation(
+    awaitable: object,
+) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+    task = asyncio.ensure_future(awaitable)  # type: ignore[arg-type]
+    cancellation = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+        except BaseException:
+            break
+    try:
+        task.result()
+        return None, cancellation
+    except BaseException as exc:
+        return exc, cancellation
+
+
+async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool) -> _ConnectionCloseResult:
+    """Retain the raw handle and worker until native close has actually settled."""
+    error = None
+    cancellation = None
+    if rollback and conn._connection is not None:
+        error, cancellation = await _settled_connection_operation(conn.rollback())
+    if conn._connection is not None:
+
+        def close_raw() -> None:
+            conn._conn.close()
+            conn._connection = None
+
+        close_error, close_cancellation = await _settled_connection_operation(conn._execute(close_raw))
+        error = error or close_error
+        cancellation = cancellation or close_cancellation
+    actual_closed = conn._connection is None
+    if actual_closed and conn._running:
+        stopped = conn.stop()
+        if stopped is not None:
+            stop_error, stop_cancellation = await _settled_connection_operation(stopped)
+            error = error or stop_error
+            cancellation = cancellation or stop_cancellation
+    return _ConnectionCloseResult(actual_closed, error, cancellation)
+
+
+async def _close_backend_connection(conn: aiosqlite.Connection, *, rollback: bool = False) -> None:
+    result = await _settle_connection_close(conn, rollback=rollback)
+    if result.actual_closed:
+        with _BACKEND_CONNECTIONS_LOCK:
+            owner = _BACKEND_CONNECTIONS.pop(id(conn), None)
+        if owner is not None:
+            if owner.backend._txn_conn is conn:
+                owner.backend._txn_conn = None
+                owner.backend._transaction_depth = 0
+            if owner.backend._bulk_conn is conn:
+                owner.backend._bulk_conn = None
+                owner.backend._transaction_depth = 0
+    if result.error is not None:
+        if result.cancellation is not None:
+            result.error.add_note("caller cancellation also occurred during connection cleanup")
+        raise result.error
+    if result.cancellation is not None:
+        raise result.cancellation
+
+
+async def _cleanup_backend_connections(connections: list[aiosqlite.Connection], primary: BaseException | None) -> None:
+    first_error = None
+    for conn in connections:
+        try:
+            await _close_backend_connection(conn, rollback=True)
+        except BaseException as exc:
+            if primary is not None:
+                primary.add_note(f"connection cleanup also failed: {exc}")
+            first_error = first_error or exc
+    if primary is None and first_error is not None:
+        raise first_error
+
+
 async def _open_configured_backend_connection(
     backend: SQLiteBackend, *, read_only: bool = False
 ) -> aiosqlite.Connection:
-    """Close a newly opened handle if admission or configuration refuses it."""
     assert_population_admitted(backend._db_path)
     target = backend._db_path.absolute().as_uri() + "?mode=ro" if read_only else backend._db_path
-    conn = await aiosqlite.connect(target, uri=read_only, timeout=READ_DB_TIMEOUT if read_only else DB_TIMEOUT)
+    conn = aiosqlite.connect(target, uri=read_only, timeout=READ_DB_TIMEOUT if read_only else DB_TIMEOUT)
+    with _BACKEND_CONNECTIONS_LOCK:
+        _BACKEND_CONNECTIONS[id(conn)] = _BackendConnectionOwner(
+            backend, conn, threading.current_thread(), asyncio.current_task(), os.getpid()
+        )
     try:
+        error, cancellation = await _settled_connection_operation(conn)
+        if error is not None:
+            raise error
+        if cancellation is not None:
+            raise cancellation
         await (configure_read_connection if read_only else configure_connection)(conn)
         return conn
-    except BaseException:
-        await conn.close()
+    except BaseException as primary:
+        await _cleanup_backend_connections([conn], primary)
         raise
+
+
+@asynccontextmanager
+async def _scoped_backend_connection(
+    backend: SQLiteBackend, *, read_only: bool = False
+) -> AsyncIterator[aiosqlite.Connection]:
+    conn = await _open_configured_backend_connection(backend, read_only=read_only)
+    primary = None
+    try:
+        yield conn
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        await _cleanup_backend_connections([conn], primary)
 
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:
@@ -195,8 +318,7 @@ async def _read_schema_ready(backend: SQLiteBackend) -> bool:
     if not backend._db_path.exists():
         return False
 
-    async with aiosqlite.connect(f"file:{backend._db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT) as conn:
-        await configure_read_connection(conn)
+    async with _scoped_backend_connection(backend, read_only=True) as conn:
         cursor = await conn.execute("PRAGMA user_version")
         row = await cursor.fetchone()
         if not row or row[0] <= 0:
@@ -329,8 +451,11 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
         try:
             yield
             await _backend_commit(backend)
-        except Exception:
-            await _backend_rollback(backend)
+        except BaseException as primary:
+            try:
+                await _backend_rollback(backend)
+            except BaseException as cleanup_error:
+                primary.add_note(f"transaction rollback also failed: {cleanup_error}")
             raise
 
 
@@ -359,7 +484,7 @@ async def _backend_commit(backend: SQLiteBackend) -> None:
 
     if backend._transaction_depth == 0:
         await backend._txn_conn.commit()
-        await backend._txn_conn.close()
+        await _close_backend_connection(backend._txn_conn)
         backend._txn_conn = None
     else:
         await backend._txn_conn.execute(f"RELEASE SAVEPOINT sp_{backend._transaction_depth}")
@@ -375,19 +500,24 @@ async def _backend_rollback(backend: SQLiteBackend) -> None:
     backend._transaction_depth -= 1
 
     if backend._transaction_depth == 0:
-        await backend._txn_conn.rollback()
-        await backend._txn_conn.close()
+        await _close_backend_connection(backend._txn_conn, rollback=True)
         backend._txn_conn = None
     else:
         await backend._txn_conn.execute(f"ROLLBACK TO SAVEPOINT sp_{backend._transaction_depth}")
 
 
 async def _close_backend(backend: SQLiteBackend) -> None:
-    """Close database connections."""
-    if backend._txn_conn is not None:
-        await backend._txn_conn.close()
-        backend._txn_conn = None
-    backend._transaction_depth = 0
+    """Attempt retirement of every retained handle, including failed admission."""
+    with _BACKEND_CONNECTIONS_LOCK:
+        connections = [entry.connection for entry in _BACKEND_CONNECTIONS.values() if entry.backend is backend]
+    if backend._txn_conn is not None and backend._txn_conn not in connections:
+        connections.append(backend._txn_conn)
+    try:
+        await _cleanup_backend_connections(connections, None)
+    finally:
+        if backend._txn_conn is not None and backend._txn_conn._connection is None:
+            backend._txn_conn = None
+            backend._transaction_depth = 0
 
 
 # ---------------------------------------------------------------------------
@@ -418,22 +548,22 @@ async def _bulk_connection(backend: SQLiteBackend) -> AsyncIterator[None]:
     require_write_lease(f"async bulk transaction({backend._db_path})", archive_root=backend._source_db_path.parent)
     conn = await _open_configured_backend_connection(backend)
     began = False
+    primary = None
     try:
         await conn.execute("BEGIN IMMEDIATE")
         backend._bulk_conn = conn
         backend._transaction_depth += 1
         began = True
-        try:
-            yield
-            await conn.commit()
-        except BaseException:
-            await conn.rollback()
-            raise
+        yield
+        await conn.commit()
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
         if began:
             backend._transaction_depth -= 1
             backend._bulk_conn = None
-        await conn.close()
+        await _cleanup_backend_connections([conn], primary)
 
 
 @asynccontextmanager
@@ -442,6 +572,7 @@ async def _read_pool(backend: SQLiteBackend, size: int = 4) -> AsyncIterator[Non
     await backend._ensure_schema_once()
     pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue()
     connections: list[aiosqlite.Connection] = []
+    primary = None
     try:
         for _ in range(size):
             conn = await _open_configured_backend_connection(backend, read_only=True)
@@ -449,11 +580,13 @@ async def _read_pool(backend: SQLiteBackend, size: int = 4) -> AsyncIterator[Non
             pool.put_nowait(conn)
         backend._read_pool = pool
         yield
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
         if backend._read_pool is pool:
             backend._read_pool = None
-        for conn in connections:
-            await conn.close()
+        await _cleanup_backend_connections(connections, primary)
 
 
 @asynccontextmanager
@@ -484,9 +617,8 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
     # the explicit transaction factories; otherwise an async caller can open
     # a second writer while the daemon coordinator is holding the gate.
     require_write_lease(f"async connection({backend._db_path})", archive_root=backend._source_db_path.parent)
-    async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as conn:
+    async with _scoped_backend_connection(backend) as conn:
         os.chmod(backend._db_path, 0o600)
-        await configure_connection(conn)
         yield conn
 
 
@@ -518,8 +650,7 @@ async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlit
                 pool.put_nowait(conn)
         return
 
-    async with aiosqlite.connect(f"file:{backend._db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT) as conn:
-        await configure_read_connection(conn)
+    async with _scoped_backend_connection(backend, read_only=True) as conn:
         yield conn
 
 
