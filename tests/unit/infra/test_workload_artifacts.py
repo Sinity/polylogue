@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import gc
+import hashlib
 import json
 import os
 import sqlite3
@@ -649,6 +650,11 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     base_manifest = artifact.root.joinpath("manifest.json").read_bytes()
     marker_relative = Path(".maintenance-state/durable-change-trains/source-002.json")
     base_marker = artifact.root.joinpath(marker_relative).read_bytes()
+    inherited_provenance = {
+        path.relative_to(artifact.root): path.read_bytes()
+        for path in (artifact.root / ".fixture-archive-provenance").rglob("*")
+        if path.is_file()
+    }
 
     clone = clone_seeded_archive(artifact, tmp_path / "clone")
     clone.root.joinpath("private-mutation.txt").write_text("private")
@@ -661,7 +667,9 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     assert clone.root.joinpath("index.db").exists()
     assert artifact.root.joinpath("manifest.json").read_bytes() == base_manifest
     assert artifact.root.joinpath(marker_relative).read_bytes() == base_marker
-    provenance = next((clone.root / ".fixture-archive-provenance").glob("*/source.json"))
+    source_namespace = hashlib.sha256(artifact.manifest.manifest_id.encode()).hexdigest()
+    provenance = clone.root / ".fixture-archive-provenance" / source_namespace / "source.json"
+    assert all((clone.root / relative).read_bytes() == value for relative, value in inherited_provenance.items())
     original = json.loads(provenance.read_text())
     assert original["source_manifest_id"] == artifact.manifest.manifest_id
     assert original["owning_artifact"] == str(artifact.root)
@@ -2891,11 +2899,14 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
 
     real_rename = artifacts._rename_sealed
     copies = 0
+    source_manifest_id: str | None = None
 
     def force_cross_parent_copy(source: Path, destination: Path) -> None:
-        nonlocal copies
+        nonlocal copies, source_manifest_id
         if source.parent != destination.parent:
             copies += 1
+            payload = json.loads((source / "manifest.json").read_text())
+            source_manifest_id = str(payload.get("manifest_id", payload["key"]))
             raise PermissionError("synthetic cross-parent sealed rename refusal")
         real_rename(source, destination)
 
@@ -2924,8 +2935,17 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         assert not path.with_name(path.name + "-wal").exists()
         assert not path.with_name(path.name + "-shm").exists()
     readiness = raw_materialization_readiness_snapshot(root)
-    assert raw_materialization_ready(readiness), readiness
-    provenance = next((root / ".fixture-archive-provenance").glob("*/original-history/source-002.json"))
+    assert readiness["available"] is True, readiness
+    if artifact_kind == "seeded":
+        assert raw_materialization_ready(readiness), readiness
+    else:
+        assert readiness["classification"] == "not_run"
+        assert readiness["raw_artifact_count"] == 0
+        assert readiness["materialized_raw_artifact_count"] == 0
+        assert not raw_materialization_ready(readiness)
+    assert source_manifest_id is not None
+    source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
+    provenance = root / ".fixture-archive-provenance" / source_namespace / "original-history/source-002.json"
     released = root / ".maintenance-state/durable-change-trains/source-002.json"
     assert provenance.read_bytes() != released.read_bytes()
     assert {item["path"] for item in manifest_files} == {

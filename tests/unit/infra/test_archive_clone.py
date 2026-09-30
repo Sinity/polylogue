@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -18,7 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.archive_clone import FixtureArchiveCloneError
-from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
 
 
 def _populated_template(root: Path) -> str:
@@ -59,7 +60,8 @@ def test_populated_template_clone_keeps_rows_blobs_and_original_provenance(tmp_p
         assert clone.execute("SELECT raw_id, native_id FROM raw_sessions").fetchall() == [(raw_id, "native\x00suffix")]
     assert original_train.read_bytes() == original_bytes
     assert (destination / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() != original_bytes
-    provenance = next((destination / ".fixture-archive-provenance").glob("*/source.json"))
+    source_namespace = hashlib.sha256(_template_key(source).encode()).hexdigest()
+    provenance = destination / ".fixture-archive-provenance" / source_namespace / "source.json"
     assert json.loads(provenance.read_text())["owning_artifact"] is None
     assert (provenance.parent / "original-history/source-002.json").read_bytes() == original_bytes
     assert {

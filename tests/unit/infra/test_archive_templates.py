@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import sqlite3
 import stat
 import subprocess
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
 
 
 def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
@@ -63,7 +64,8 @@ def test_clone_preserves_original_proof_and_both_owned_roots_open(
     original = template / ".maintenance-state/durable-change-trains/source-002.json"
     regenerated = clone / ".maintenance-state/durable-change-trains/source-002.json"
     assert original.read_bytes() != regenerated.read_bytes()
-    provenance = next((clone / ".fixture-archive-provenance").glob("*/original-history/source-002.json"))
+    source_namespace = hashlib.sha256(_template_key(template).encode()).hexdigest()
+    provenance = clone / ".fixture-archive-provenance" / source_namespace / "original-history/source-002.json"
     assert provenance.read_bytes() == original.read_bytes()
 
 
