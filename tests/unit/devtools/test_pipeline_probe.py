@@ -17,6 +17,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
@@ -118,7 +119,7 @@ def test_partial_rss_components_are_both_unavailable() -> None:
 def test_pipeline_probe_db_stats_and_fanout_read_archive_file_set(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
@@ -271,7 +272,7 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
     blob_store = BlobStore(source_blob_root)
     # The pipeline probe reads raw_sessions.origin/blob_hash directly from
     # source.db.
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     raw_specs = [
         ("chatgpt", "chatgpt-export", "chatgpt-main", 100),
         ("chatgpt", "chatgpt-export", "chatgpt-sidecar", 101),
@@ -741,7 +742,7 @@ async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path
 async def test_run_probe_can_sample_archive_file_set_subset(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     source_blob_root = tmp_path / "source-blobs"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     blob_hash, blob_size = BlobStore(source_blob_root).write_from_bytes(
         SyntheticCorpus.generate_for_spec(
             CorpusSpec.for_provider(
@@ -822,7 +823,7 @@ async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
     empty_db = tmp_path / "source.db"
     # A source tier with no raw rows: the archive-subset probe reads
     # raw_sessions (origin) and must reject the empty archive cleanly.
-    initialize_archive_database(empty_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(empty_db)
     empty_blob_root = tmp_path / "empty-blobs"
     request = _archive_request(
         workdir=tmp_path / "archive-probe-empty",

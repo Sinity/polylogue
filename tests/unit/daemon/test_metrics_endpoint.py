@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 pytestmark = pytest.mark.uses_real_clock(
     "Metrics endpoint test records a live rebuild-ingest heartbeat timestamp; production readiness and metrics intentionally compare it against the host clock."
@@ -241,7 +242,10 @@ class TestFormatMetricsExpositionShape:
     def test_archive_storage_metrics_report_archive_file_sets(self, tmp_path: Path) -> None:
         for spec in ARCHIVE_TIER_SPECS.values():
             if spec.tier is not ArchiveTier.EMBEDDINGS:
-                initialize_archive_database(tmp_path / spec.filename, spec.tier)
+                if spec.tier is ArchiveTier.SOURCE:
+                    initialize_runtime_source_fixture(tmp_path / spec.filename)
+                else:
+                    initialize_archive_database(tmp_path / spec.filename, spec.tier)
         with sqlite3.connect(tmp_path / "embeddings.db") as conn:
             conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
             conn.commit()
@@ -313,7 +317,10 @@ class TestFormatMetricsExpositionShape:
 
     def test_archive_storage_metrics_gate_runtime_readiness_on_schema_match(self, tmp_path: Path) -> None:
         for spec in ARCHIVE_TIER_SPECS.values():
-            initialize_archive_database(tmp_path / spec.filename, spec.tier)
+            if spec.tier is ArchiveTier.SOURCE:
+                initialize_runtime_source_fixture(tmp_path / spec.filename)
+            else:
+                initialize_archive_database(tmp_path / spec.filename, spec.tier)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
@@ -896,7 +903,7 @@ class TestFormatMetricsReadsArchiveState:
         index_db = tmp_path / "index.db"
         source_db = tmp_path / "source.db"
         initialize_archive_database(index_db, ArchiveTier.INDEX)
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         with sqlite3.connect(index_db) as conn:
             conn.executemany(
                 """

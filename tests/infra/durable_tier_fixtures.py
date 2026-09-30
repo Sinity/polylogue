@@ -22,13 +22,60 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 
+import pytest
+
 __all__ = [
     "checkpoint_durable_tier",
     "rebind_archive_format_fingerprints",
     "refresh_archive_format_marker",
-    "refresh_fresh_bootstrap_marker",
     "seed_durable_tier",
+    "bootstrap_baseline_archive",
+    "initialize_runtime_source_fixture",
 ]
+
+
+def initialize_runtime_source_fixture(path: Path) -> None:
+    """Build a synthetic Source through baseline DDL and installed numbered proof."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+
+    current = 0
+    if path.exists():
+        with closing(sqlite3.connect(path)) as probe:
+            current = int(probe.execute("PRAGMA user_version").fetchone()[0])
+    if current == 0:
+        initialize_archive_database(path, ArchiveTier.SOURCE, expected_version=1)
+    elif current != 1:
+        initialize_archive_database(path, ArchiveTier.SOURCE)
+        return
+    with closing(sqlite3.connect(path)) as source:
+        migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None)
+
+
+def bootstrap_baseline_archive(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Construct the immutable baseline through its ordinary owned bootstrap."""
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_DDL_BY_TIER, ARCHIVE_BASELINE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        initialize_active_archive_root,
+        invalidate_active_archive_bootstrap,
+    )
+
+    with monkeypatch.context() as context:
+        for owner in (
+            "polylogue.storage.sqlite.archive_tiers",
+            "polylogue.storage.sqlite.archive_tiers.bootstrap",
+            "polylogue.storage.sqlite.archive_tiers.archive_plan",
+            "polylogue.storage.sqlite.migration_runner",
+            "polylogue.operations.durable_change_train",
+        ):
+            context.setattr(f"{owner}.ARCHIVE_VERSION_BY_TIER", dict(ARCHIVE_BASELINE_VERSION_BY_TIER))
+        for owner in ("polylogue.storage.sqlite.archive_tiers.bootstrap", "polylogue.storage.sqlite.migration_runner"):
+            context.setattr(f"{owner}.ARCHIVE_DDL_BY_TIER", dict(ARCHIVE_BASELINE_DDL_BY_TIER))
+        initialize_active_archive_root(root)
+    # Restoring the runtime target models a different installed runtime;
+    # production's process-local unchanged-code certificate cannot span it.
+    invalidate_active_archive_bootstrap(root)
 
 
 def checkpoint_durable_tier(path: Path) -> None:
@@ -80,16 +127,6 @@ def refresh_archive_format_marker(archive_root: Path) -> None:
     assert marker.is_file(), f"fixture must carry an archive format marker: {marker}"
     marker.unlink()
     record_fresh_archive_format(archive_root)
-
-
-def refresh_fresh_bootstrap_marker(archive_root: Path) -> None:
-    """Rebind a fixture bootstrap receipt after deliberate durable-tier edits."""
-    from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-    marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    assert marker.is_file(), f"fixture must carry a fresh bootstrap marker: {marker}"
-    marker.unlink()
-    _record_fresh_durable_bootstrap(archive_root)
 
 
 def rebind_archive_format_fingerprints(root: Path) -> None:

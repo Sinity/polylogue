@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 from tests.infra.durable_tier_fixtures import (
     checkpoint_durable_tier,
+    initialize_runtime_source_fixture,
     rebind_archive_format_fingerprints,
     refresh_archive_format_marker,
     seed_durable_tier,
@@ -2372,9 +2373,12 @@ def test_backup_evidence_opens_stamped_durable_tier_versions(
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, ARCHIVE_VERSION_BY_TIER
 
     expected = ARCHIVE_VERSION_BY_TIER[tier]
-    assert expected == ARCHIVE_FORMAT_FLOOR_VERSION == 1
+    assert expected >= ARCHIVE_FORMAT_FLOOR_VERSION == 1
     path = tmp_path / f"{tier.value}.db"
-    initialize_archive_database(path, tier)
+    if tier is ArchiveTier.SOURCE:
+        initialize_runtime_source_fixture(path)
+    else:
+        initialize_archive_database(path, tier)
 
     with backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk") as conn:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == expected

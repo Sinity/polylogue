@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -93,5 +94,6 @@ def test_source_tier_acquisition_index_access_raises(stale_index_root: Path) -> 
 def test_source_tier_acquisition_refuses_stale_durable_tier(workspace_env: dict[str, Path]) -> None:
     root = workspace_env["archive_root"]
     _set_user_version(root / "source.db", archive_tier_spec(ArchiveTier.SOURCE).version + 1)
-    with pytest.raises(RuntimeError, match="durable tier source.db"):
+    with pytest.raises(SchemaSkew) as refusal:
         ArchiveStore.open_source_tier_acquisition(root)
+    assert refusal.value.tier == "source"

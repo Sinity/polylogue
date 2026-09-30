@@ -1,0 +1,139 @@
+"""Synthetic archive population owns destination trains and exact retained evidence."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import closing
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from polylogue.core.enums import Origin, Provider
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite import durable_change_train, migration_runner
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from tests.infra.archive_clone import FixtureArchiveCloneError
+from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+
+
+def _populated_template(root: Path) -> str:
+    initialize_active_archive_root(root)
+    payload = b'{"synthetic_record":"retained"}\n'
+    BlobStore(root / "blob").write_from_bytes(payload)
+    with closing(sqlite3.connect(root / "source.db")) as conn:
+        return write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            capture_mode=Provider.CODEX,
+            source_path="/synthetic/exact",
+            native_id="native\x00suffix",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=2,
+        )
+
+
+def test_populated_template_clone_keeps_rows_blobs_and_original_provenance(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    raw_id = _populated_template(source)
+    original_train = source / ".maintenance-state/durable-change-trains/source-002.json"
+    original_bytes = original_train.read_bytes()
+    finalize_archive_template(source)
+    source_blobs = {
+        str(path.relative_to(source)): path.read_bytes() for path in (source / "blob").rglob("*") if path.is_file()
+    }
+    clone_archive_template(source, destination)
+    with (
+        closing(sqlite3.connect(source / "source.db")) as original,
+        closing(sqlite3.connect(destination / "source.db")) as clone,
+    ):
+        assert migration_runner._durable_literal_rows_digest(original) == migration_runner._durable_literal_rows_digest(
+            clone
+        )
+        assert clone.execute("SELECT raw_id, native_id FROM raw_sessions").fetchall() == [(raw_id, "native\x00suffix")]
+    assert original_train.read_bytes() == original_bytes
+    assert (destination / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() != original_bytes
+    provenance = next((destination / ".fixture-archive-provenance").glob("*/source.json"))
+    assert json.loads(provenance.read_text())["owning_artifact"] is None
+    assert (provenance.parent / "original-history/source-002.json").read_bytes() == original_bytes
+    assert {
+        str(path.relative_to(destination)): path.read_bytes()
+        for path in (destination / "blob").rglob("*")
+        if path.is_file()
+    } == source_blobs
+    with ArchiveStore(destination):
+        pass
+    second = tmp_path / "second"
+    finalize_archive_template(destination)
+    clone_archive_template(destination, second)
+    with ArchiveStore(second):
+        pass
+
+
+def test_clone_validates_source_release_before_any_source_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    _populated_template(source)
+    finalize_archive_template(source)
+    verified = False
+    verify = durable_change_train._verify_released_train_live_tier
+    connect = sqlite3.connect
+    backed_up: list[str] = []
+
+    def verified_release(*args: Any, **kwargs: Any) -> object:
+        nonlocal verified
+        result = verify(*args, **kwargs)
+        if args[0].execute("PRAGMA database_list").fetchone()[2] == str(source / "source.db"):
+            verified = True
+        return result
+
+    class ObservedConnection(sqlite3.Connection):
+        def backup(self, target: sqlite3.Connection, **kwargs: Any) -> None:
+            path = self.execute("PRAGMA database_list").fetchone()[2]
+            if path == str(source / "source.db"):
+                assert verified
+                backed_up.append(path)
+            super().backup(target, **kwargs)
+
+    def tracked_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        return connect(*args, **(kwargs | {"factory": ObservedConnection}))
+
+    monkeypatch.setattr(durable_change_train, "_verify_released_train_live_tier", verified_release)
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    clone_archive_template(source, tmp_path / "destination")
+    assert backed_up == [str(source / "source.db")]
+
+
+@pytest.mark.parametrize("kind", ("schema", "pending"))
+def test_clone_refuses_unreleased_or_custom_archive_without_population(tmp_path: Path, kind: str) -> None:
+    source = tmp_path / "source"
+    _populated_template(source)
+    if kind == "schema":
+        with closing(sqlite3.connect(source / "source.db")) as conn:
+            conn.execute("CREATE TABLE custom_unproved (value TEXT)")
+            conn.commit()
+    else:
+        path = source / ".maintenance-state/durable-change-trains/source-002.json"
+        train = durable_change_train.load_durable_change_train_manifest(path)
+        assert train.proof is not None
+        pending = replace(
+            train,
+            state=migration_runner.DurableChangeTrainState.PROVEN,
+            released_at_ms=None,
+            release_evidence_ref=None,
+            proof_refs=train.proof.proof_refs,
+        )
+        path.write_text(json.dumps(migration_runner.durable_change_train_to_payload(pending)))
+    finalize_archive_template(source)
+    destination = tmp_path / "destination"
+    with pytest.raises(FixtureArchiveCloneError) as refusal:
+        clone_archive_template(source, destination)
+    assert refusal.value.code == ("unsupported_source_schema" if kind == "schema" else "unreleased_source_history")
+    assert list(destination.iterdir()) == []

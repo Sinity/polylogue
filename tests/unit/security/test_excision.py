@@ -59,6 +59,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 
@@ -77,7 +78,7 @@ def _seed_session(
 
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     source_conn = sqlite3.connect(source_db)

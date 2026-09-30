@@ -40,6 +40,7 @@ from polylogue.storage.derived.raw import RawObservationScope
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
@@ -186,7 +187,10 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
-        initialize_archive_database(tmp_path / filename, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / filename)
+        else:
+            initialize_archive_database(tmp_path / filename, tier)
     inspect_raw_authority_frontier(
         Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
     )
@@ -242,7 +246,10 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
         ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
-        initialize_archive_database(tmp_path / filename, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / filename)
+        else:
+            initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
@@ -283,7 +290,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
 
 
 def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None:
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
 
     with (
@@ -306,7 +313,10 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
         ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
-        initialize_archive_database(tmp_path / filename, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / filename)
+        else:
+            initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 

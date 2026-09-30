@@ -35,6 +35,7 @@ from polylogue.security.lifecycle import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 @pytest.fixture
@@ -237,7 +238,7 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
     def test_confirmed_request_actually_excises_the_local_replica(self, tmp_path: Path, user_db: Path) -> None:
         source_db = tmp_path / "source.db"
         index_db = tmp_path / "index.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         initialize_archive_database(index_db, ArchiveTier.INDEX)
 
         source_conn = sqlite3.connect(source_db)

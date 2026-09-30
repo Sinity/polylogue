@@ -668,6 +668,14 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     # tests/unit/storage/test_durable_change_train.py::
     # test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe.
     assert clone.root.joinpath(marker_relative).read_bytes() == base_marker
+    provenance = next((clone.root / ".fixture-archive-provenance").glob("*/source.json"))
+    original = json.loads(provenance.read_text())
+    assert original["source_manifest_id"] == artifact.manifest.manifest_id
+    assert original["owning_artifact"] == str(artifact.root)
+    assert not provenance.parent.joinpath("original-history").exists()
+    source_train = artifact.root / ".maintenance-state/durable-change-trains/source-002.json"
+    clone_train = clone.root / ".maintenance-state/durable-change-trains/source-002.json"
+    assert source_train.read_bytes() != clone_train.read_bytes()
     assert not artifact.root.joinpath("private-mutation.txt").exists()
 
     clone.root.joinpath(marker_relative).write_bytes(base_marker)
@@ -675,7 +683,7 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
         assert reopened.count_sessions() == 64
 
 
-def test_seeded_archive_copy_fallback_rebinds_durable_bootstrap(
+def test_seeded_archive_copy_fallback_populates_destination_owned_train(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

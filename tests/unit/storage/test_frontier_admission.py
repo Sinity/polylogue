@@ -19,6 +19,7 @@ from polylogue.storage import frontier_existence
 from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids, raw_frontier_blocked_selected_paths
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_ingest_cursor
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _raw(root: Path, raw_id: str, *, path: Path | None = None, logical_key: str | None = None) -> None:
@@ -190,10 +191,8 @@ def test_replaced_source_and_promoted_index_recheck_all_references(tmp_path: Pat
     for suffix in ("-wal", "-shm"):
         (tmp_path / f"source.db{suffix}").unlink(missing_ok=True)
     replacement = tmp_path / "source-replacement.db"
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    initialize_archive_database(replacement, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(replacement)
     replacement.rename(original)
     assert "missing" in str(frontier_existence.raw_existence_block_reason(tmp_path))
 

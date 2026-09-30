@@ -24,10 +24,14 @@ class RawFailureEvidenceKind(StrEnum):
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
+    TERMINAL_MISSING_SOURCE_COORDINATES = "terminal_missing_source_coordinates"
 
     @property
     def support_status(self) -> ArtifactSupportStatus:
-        if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
+        if self in {
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+            RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES,
+        }:
             return ArtifactSupportStatus.UNKNOWN
         if self in {
             RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
@@ -176,6 +180,7 @@ RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value,
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+        RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value,
     }
 )
 RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(

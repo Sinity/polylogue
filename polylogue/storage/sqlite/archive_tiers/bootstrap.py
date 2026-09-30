@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from polylogue.storage.archive_tuple_location import InactiveTierDestination
 
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import (
+    ARCHIVE_BASELINE_DDL_BY_TIER,
+    ARCHIVE_BASELINE_VERSION_BY_TIER,
+    ARCHIVE_DDL_BY_TIER,
+    ARCHIVE_VERSION_BY_TIER,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -47,6 +52,14 @@ class ArchiveTierSpec:
     @property
     def ddl(self) -> str:
         return ARCHIVE_DDL_BY_TIER[self.tier]
+
+    @property
+    def baseline_version(self) -> int:
+        return ARCHIVE_BASELINE_VERSION_BY_TIER[self.tier]
+
+    @property
+    def baseline_ddl(self) -> str:
+        return ARCHIVE_BASELINE_DDL_BY_TIER[self.tier]
 
 
 ARCHIVE_TIER_SPECS: dict[ArchiveTier, ArchiveTierSpec] = {
@@ -243,7 +256,7 @@ def _tier_prototype_key(
     page size outright. Without it a caller that asked for 8192 would get a
     4096-page database back from the cache and never be told.
     """
-    ddl_digest = hashlib.sha256(archive_tier_spec(tier).ddl.encode()).hexdigest()
+    ddl_digest = hashlib.sha256(archive_tier_spec(tier).baseline_ddl.encode()).hexdigest()
     return tier.value, required_version, ddl_digest, connection_page_size(conn)
 
 
@@ -357,12 +370,6 @@ def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> N
     conn.commit()
 
 
-def initialize_fresh_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> None:
-    """Materialise an empty tier, reusing this process's prototype when faithful."""
-    del required_version  # The spec's version is authoritative; kept for callers.
-    initialize_archive_tier(conn, tier)
-
-
 def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
     """Materialise a tier on an open connection.
 
@@ -390,6 +397,15 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     # Foreign-key enforcement is connection state, not schema: every branch
     # below must leave it enabled.
     conn.execute("PRAGMA foreign_keys = ON")
+    if tier in DURABLE_MIGRATION_TIERS:
+        stored_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if stored_version > spec.baseline_version:
+            if stored_version != spec.version:
+                from polylogue.core.errors import SchemaSkew
+
+                raise SchemaSkew(tier=tier.value, expected=spec.version, found=stored_version)
+            converge_same_version_tier(conn, tier)
+            return
     if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
         object_count = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
         if object_count or int(conn.execute("PRAGMA user_version").fetchone()[0]) != 0:
@@ -398,17 +414,17 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     if tier in _PROTOTYPE_CACHEABLE_TIERS:
         object_count = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
         if object_count == 0:
-            if _restore_tier_prototype(conn, tier, spec.version):
+            if _restore_tier_prototype(conn, tier, spec.baseline_version):
                 conn.execute("PRAGMA foreign_keys = ON")
                 if tier is ArchiveTier.INDEX:
                     from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
                     ensure_runtime_indexes_sync(conn)
-                _apply_archive_tier_convergence(conn, tier, spec)
+                _apply_archive_tier_convergence(conn, tier, spec, version=spec.baseline_version)
                 _record_tier_init(tier, "prototype_hit")
                 return
             _initialize_archive_tier_ddl(conn, tier)
-            _record_tier_prototype(conn, tier, spec.version)
+            _record_tier_prototype(conn, tier, spec.baseline_version)
             _record_tier_init(tier, "ddl_fresh")
             return
         _initialize_archive_tier_ddl(conn, tier)
@@ -437,20 +453,22 @@ def _initialize_archive_tier_ddl(conn: sqlite3.Connection, tier: ArchiveTier) ->
     # transaction stays open through the convergence steps, whose final
     # commit publishes schema, stamp and version together, so an interrupted
     # initialization leaves an empty file rather than a partial schema.
-    conn.executescript(f"BEGIN;\n{spec.ddl}\n;")
+    conn.executescript(f"BEGIN;\n{spec.baseline_ddl}\n;")
     if tier is ArchiveTier.INDEX:
         from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
         # The manifest assertion refuses an index tier without its runtime
         # indexes; they belong to the same schema transaction.
         ensure_runtime_indexes_sync(conn)
-    _apply_archive_tier_convergence(conn, tier, spec)
+    _apply_archive_tier_convergence(conn, tier, spec, version=spec.baseline_version)
 
 
 def _apply_archive_tier_convergence(
     conn: sqlite3.Connection,
     tier: ArchiveTier,
     spec: ArchiveTierSpec,
+    *,
+    version: int | None = None,
 ) -> None:
     """Replay same-version convergence after either DDL or page-copy restore.
 
@@ -478,8 +496,9 @@ def _apply_archive_tier_convergence(
     # ``CREATE TABLE IF NOT EXISTS`` statements -- accounts for 0.33ms of that.
     # The DDL was never the cost; the header write was (polylogue-c1jgh).
     #
-    if int(conn.execute("PRAGMA user_version").fetchone()[0]) != spec.version:
-        conn.execute(f"PRAGMA user_version = {spec.version}")
+    target_version = spec.version if version is None else version
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) != target_version:
+        conn.execute(f"PRAGMA user_version = {target_version}")
     conn.commit()
 
 
@@ -515,6 +534,8 @@ def initialize_archive_database(
         validate_inactive_destination,
     )
 
+    spec = archive_tier_spec(tier)
+    required_version = spec.version if expected_version is None else expected_version
     if is_archive_tuple_candidate_path(path):
         if not isinstance(inactive_destination, InactiveTierDestination):
             raise ArchiveTupleError("inactive archive tuple tier initialization requires a typed inactive_destination")
@@ -543,6 +564,15 @@ def initialize_archive_database(
             and (path.is_symlink() or not path.is_file() or metadata.st_nlink != 1)
         ):
             raise RuntimeError(f"durable tier is not a safe fresh file path; refusing initialization: {path}")
+        if metadata is None and tier in DURABLE_MIGRATION_TIERS and required_version != spec.baseline_version:
+            from polylogue.core.errors import SchemaSkew
+
+            raise SchemaSkew(
+                tier=tier.value,
+                expected=required_version,
+                found=0,
+                remedy="initialize the canonical archive root to construct its baseline and admit declared trains",
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path)
         if page_size is not None:
@@ -561,7 +591,6 @@ def initialize_archive_database(
         conn = sqlite3.connect(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        required_version = archive_tier_spec(tier).version if expected_version is None else expected_version
         # Both derived tiers refuse a stale identity before issuing DDL.
         # The daemon replaces disposable ops state at its startup seam.
         if current_version == required_version:
@@ -569,10 +598,13 @@ def initialize_archive_database(
             return
         if current_version != 0:
             if current_version < required_version and tier in DURABLE_MIGRATION_TIERS:
-                raise RuntimeError(
-                    f"{path.name} schema version {current_version} is older than the current {tier.value} tier "
-                    f"version {required_version}; run an explicit durable-tier migration with a verified backup "
-                    "manifest"
+                from polylogue.core.errors import SchemaSkew
+
+                raise SchemaSkew(
+                    tier=tier.value,
+                    expected=required_version,
+                    found=current_version,
+                    remedy="admit the declared durable train through the canonical archive owner",
                 )
             if current_version > required_version and tier in DURABLE_MIGRATION_TIERS:
                 # Durable state ahead of the runtime is a stale runtime, never
@@ -591,6 +623,15 @@ def initialize_archive_database(
                 f"{path} schema version {current_version} is not the current {tier.value} tier version "
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
+        if tier in DURABLE_MIGRATION_TIERS and required_version != spec.baseline_version:
+            from polylogue.core.errors import SchemaSkew
+
+            raise SchemaSkew(
+                tier=tier.value,
+                expected=required_version,
+                found=current_version,
+                remedy="initialize the canonical archive root before runtime tier opens",
+            )
         if tier is ArchiveTier.SOURCE:
             # Database mode belongs to fresh source-tier initialization, not
             # each later writer open: the latter may run while a publication
@@ -598,7 +639,7 @@ def initialize_archive_database(
             from polylogue.storage.sqlite.connection_profile import initialize_source_tier_database_mode
 
             initialize_source_tier_database_mode(conn)
-        initialize_fresh_archive_tier(conn, tier, required_version)
+        initialize_archive_tier(conn, tier)
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
@@ -634,6 +675,7 @@ def _initialize_active_archive_root(root: Path) -> None:
         _record_fresh_durable_bootstrap,
         _record_fresh_durable_bootstrap_intent,
         _validate_fresh_durable_bootstrap_intent,
+        execute_durable_change_train,
     )
 
     # Ownership pins an existing directory descriptor. Fresh test and demo
@@ -755,14 +797,60 @@ def _initialize_active_archive_root(root: Path) -> None:
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
         ):
             raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
-        if not recovering_fresh_durable_bootstrap and not format_marker.exists():
+        if not recovering_fresh_durable_bootstrap:
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         location = ArchiveLocation.resolve(root)
+
+        def advance_declared_trains() -> None:
+            from polylogue.storage.sqlite.migration_runner import durable_migration_claims
+
+            for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+                path = root / archive_tier_spec(tier).filename
+                if not path.exists():
+                    continue
+                while True:
+                    assert_owned_root()
+                    with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:
+                        current = int(probe.execute("PRAGMA user_version").fetchone()[0])
+                    target = archive_tier_spec(tier).version
+                    if current >= target:
+                        break
+                    claim = next(
+                        (claim for claim in durable_migration_claims(tier) if claim.target_version == current + 1), None
+                    )
+                    if claim is None or claim.requires_backup:
+                        from polylogue.core.errors import SchemaSkew
+
+                        raise SchemaSkew(
+                            tier=tier.value,
+                            expected=target,
+                            found=current,
+                            remedy="daemon must admit the declared train with its required verified backup",
+                        )
+                    execute_durable_change_train(
+                        root,
+                        tier,
+                        backup_manifest=None,
+                        daemon_stopped_evidence_ref="proof:bootstrap-before-runtime-open",
+                        single_writer_evidence_ref="proof:bootstrap-owned-archive",
+                        release_archive_ownership=lambda: None,
+                    )
+                    with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:
+                        advanced = int(probe.execute("PRAGMA user_version").fetchone()[0])
+                    if advanced != current + 1:
+                        raise RuntimeError("declared bootstrap train did not advance exactly one version")
+
+        if not recovering_fresh_durable_bootstrap:
+            advance_declared_trains()
         for spec in ARCHIVE_TIER_SPECS.values():
             assert_owned_root()
             tier_path = location.active_index_path if spec.tier is ArchiveTier.INDEX else root / spec.filename
-            initialize_archive_database(tier_path, spec.tier)
+            initialize_archive_database(
+                tier_path,
+                spec.tier,
+                expected_version=spec.baseline_version if recovering_fresh_durable_bootstrap else spec.version,
+            )
         # Mutation composition performs source/audit reconciliation immediately
         # before it consumes authority. Ordinary archive opens stay read-only
         # with respect to continuity, including their steady-state path.
@@ -776,6 +864,7 @@ def _initialize_active_archive_root(root: Path) -> None:
             else:
                 record_fresh_archive_format(root)
             _record_fresh_durable_bootstrap(root)
+            advance_declared_trains()
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the
@@ -925,14 +1014,8 @@ def initialize_active_archive_root(root: Path) -> None:
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
     """Reconcile persisted durable trains without executing migration SQL."""
-    from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
     from polylogue.storage.sqlite.durable_change_train import reconcile_durable_change_train_startup
 
-    # This lineage starts at the canonical floor. It has no predecessor train
-    # to reconcile during ordinary bootstrap; explicit future upgrades keep
-    # using the migration engine.
-    if archive_format_marker_path(root).is_file():
-        return ()
     return reconcile_durable_change_train_startup(root)
 
 
@@ -947,19 +1030,26 @@ def open_initialized_tier_connection(
 ) -> sqlite3.Connection:
     """Open a tier database that may not exist yet, materialise it, and validate.
 
-    A tier this route is about to create carries no schema version, so the
-    open-time version check is deferred until ``initialize_archive_tier`` has
-    stamped it. Materialisation rewrites ``user_version`` to the current spec,
-    so the stored version is read and admitted BEFORE that happens: a tier
-    already carrying some other version is refused here rather than being
-    restamped into apparent currency and validated against the value this
-    route just wrote.
+    Runtime creation is possible only when the immutable baseline equals the
+    runtime target. Durable numbered trains belong to canonical root bootstrap;
+    this connection owner never creates a baseline and calls it current.
     """
     from polylogue.storage.sqlite.connection_profile import (
         assert_tier_schema_supported,
         open_connection,
         open_daemon_connection,
     )
+
+    spec = archive_tier_spec(tier)
+    if tier in DURABLE_MIGRATION_TIERS and spec.version != spec.baseline_version and not Path(path).exists():
+        from polylogue.core.errors import SchemaSkew
+
+        raise SchemaSkew(
+            tier=tier.value,
+            expected=spec.version,
+            found=0,
+            remedy="initialize the canonical archive root before runtime tier opens",
+        )
 
     if daemon:
         conn = open_daemon_connection(
@@ -975,6 +1065,15 @@ def open_initialized_tier_connection(
     try:
         stored_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version
+        if stored_version == 0 and tier in DURABLE_MIGRATION_TIERS and required_version != spec.baseline_version:
+            from polylogue.core.errors import SchemaSkew
+
+            raise SchemaSkew(
+                tier=tier.value,
+                expected=required_version,
+                found=0,
+                remedy="initialize the canonical archive root before runtime tier opens",
+            )
         if stored_version not in (0, required_version):
             from polylogue.core.errors import SchemaSkew
 

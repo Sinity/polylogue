@@ -79,7 +79,7 @@ if TYPE_CHECKING:
 # Part of the artifact key, so a change to the manifest's shape or to what
 # sealing guarantees gives published artifacts a distinct identity instead of
 # leaving two code versions to overwrite each other's tree at one key.
-_ARTIFACT_PROTOCOL_VERSION = 5
+_ARTIFACT_PROTOCOL_VERSION = 6
 _SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
@@ -717,26 +717,12 @@ def _describe_file_set_mismatch(
     return " ".join((summarize("missing", missing), summarize("extra", extra), summarize("changed", changed)))
 
 
-_DURABLE_BOOTSTRAP_RELATIVE = ".maintenance-state/durable-change-trains/.bootstrap"
-
-
-def rebind_durable_identity(destination: Path) -> None:
-    """Re-record the durable-change-train bootstrap marker for a cloned tree.
-
-    The committed marker no longer names the archive root path or the durable
-    inodes (polylogue-ifb4l), so a faithful clone of an archive carries a
-    marker its own content already corroborates and this rewrite reproduces the
-    same bytes. It is retained because it is the one route that re-establishes
-    the marker for a tree assembled by something other than bootstrap, and it
-    keeps clone equivalence independent of how the marker was produced.
-    """
-    marker = destination / _DURABLE_BOOTSTRAP_RELATIVE
-    if not _is_regular(marker):
-        return
-    from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-    _safe_unlink(marker)
-    _record_fresh_durable_bootstrap(destination)
+def _assert_authenticated_source_files(root: Path, files: tuple[tuple[str, int, str], ...]) -> None:
+    """Keep source snapshots and their retained provenance bound to the manifest."""
+    expected = {path: (size, digest) for path, size, digest in files}
+    actual = {path: (size, digest) for path, size, digest in _manifest_file_entries(_archive_files(root))}
+    if actual != expected:
+        raise ValueError("fixture source changed during authenticated population")
 
 
 def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
@@ -786,7 +772,31 @@ def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination:
         if not path.is_symlink():
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
     destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
-    rebind_durable_identity(destination)
+    from tests.infra.archive_clone import populate_authenticated_archive_clone
+
+    try:
+        proof = populate_authenticated_archive_clone(
+            artifact.root,
+            destination,
+            source_manifest_id=artifact.manifest_id,
+            source_files=source_files,
+            retained_artifact_reference=False,
+            validate_source_files=lambda: _assert_authenticated_source_files(artifact.root, source_files),
+        )
+        changed = proof.replaced_paths if proof is not None else frozenset()
+        actual = {
+            str(path.relative_to(destination)): (_safe_stat(path).st_size, _sha256(path))
+            for path in _pinned_paths(destination)
+            if _is_regular(path)
+            and not _is_reserved_root_file(path, destination)
+            and str(path.relative_to(destination)) not in changed
+        }
+        if actual != {path: value for path, value in expected.items() if path not in changed}:
+            _remove_tree(destination)
+            raise ValueError("immutable fixture population changed an unowned file")
+    except BaseException:
+        _remove_tree(destination)
+        raise
     if _safe_exists(destination / "manifest.json"):
         _safe_unlink(destination / "manifest.json")
     return SeededArchiveClone(destination, artifact.manifest_id, method)
@@ -3437,19 +3447,30 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
                 artifact,
                 destination,
                 disk_manifest,
-                ignored_relatives=frozenset({_DURABLE_BOOTSTRAP_RELATIVE}),
             )
             for path in _pinned_paths(destination):
                 _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
             _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-            rebind_durable_identity(destination)
+            from tests.infra.archive_clone import populate_authenticated_archive_clone
+
+            proof = populate_authenticated_archive_clone(
+                artifact.root,
+                destination,
+                source_manifest_id=disk_manifest.manifest_id,
+                source_files=_manifest_file_entries(disk_manifest.files),
+                retained_artifact_reference=True,
+                validate_source_files=lambda: _assert_authenticated_source_files(
+                    artifact.root, _manifest_file_entries(disk_manifest.files)
+                ),
+            )
+            changed = proof.replaced_paths if proof is not None else frozenset()
             integrity_fd = _open_pinned_dir(destination)
             fcntl.flock(integrity_fd, fcntl.LOCK_SH)
             _authenticate_clone_copy(
                 artifact,
                 destination,
                 disk_manifest,
-                ignored_relatives=frozenset({_DURABLE_BOOTSTRAP_RELATIVE}),
+                ignored_relatives=changed,
             )
         except BaseException:
             if integrity_fd >= 0:
@@ -3483,7 +3504,6 @@ __all__ = [
     "acquire_query_only_seeded_archive",
     "build_immutable_tree",
     "clone_immutable_tree",
-    "rebind_durable_identity",
     "seal_fixture_tree",
     "SeededArchiveClone",
     "SeededArchiveKey",

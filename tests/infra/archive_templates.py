@@ -3,17 +3,13 @@
 A template is an :class:`~tests.infra.workload_artifacts.ImmutableTreeArtifact`
 whose builder ran outside the artifact cache: the consuming law owns the tree's
 location and lifetime, and everything after construction -- tier validation,
-sealing, authenticated detached cloning, durable-identity rebinding -- is the
+sealing, authenticated detached cloning, destination-owned train admission -- is the
 one publication route in :mod:`tests.infra.workload_artifacts`.
 """
 
 from __future__ import annotations
 
-import fcntl
-import os
 import shutil
-import sqlite3
-import threading
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -21,7 +17,6 @@ from uuid import uuid4
 from tests.infra.workload_artifacts import (
     ImmutableTreeArtifact,
     clone_immutable_tree,
-    rebind_durable_identity,
     seal_fixture_tree,
 )
 
@@ -47,8 +42,8 @@ def clone_archive_template(template: Path, destination: Path) -> str:
     Workspace fixtures create sibling directories (a render root, an inbox)
     under the archive root before seeding it, so the clone lands beside the
     destination and its entries are moved in: names the template supplies are
-    replaced, names it does not are left alone. The durable identity names the
-    tree's own path, so it is rebound once the tree reaches that path.
+    replaced, names it does not are left alone. Synthetic durable data is
+    populated into fresh destination-owned inodes before publication.
     """
     artifact = ImmutableTreeArtifact.adopt(template, key=_template_key(template))
     destination.mkdir(parents=True, exist_ok=True)
@@ -62,133 +57,34 @@ def clone_archive_template(template: Path, destination: Path) -> str:
             elif target.is_dir():
                 shutil.rmtree(target)
             entry.replace(target)
-        rebind_durable_identity(destination)
     finally:
         shutil.rmtree(staged, ignore_errors=True)
     return method
 
 
-#: Name of the sealed template under a run root. Kept beside
-#: ``.empty-archive-template`` and deliberately distinct from it: that one
-#: carries a completed raw-authority census, which a plain bootstrap does not,
-#: so the two are not interchangeable.
-_BOOTSTRAP_TEMPLATE_NAME = ".bootstrap-archive-template"
-
-_BOOTSTRAP_TEMPLATE_ROOT: Path | None = None
-_BOOTSTRAP_TEMPLATE_LOCK = threading.Lock()
-_BOOTSTRAP_TEMPLATE: Path | None = None
-
-
-def register_bootstrap_template_root(run_root: Path | None) -> Path | None:
-    """Name the run root whose sealed bootstrap template clones are taken from.
-
-    Returns the root it replaced, so a caller that redirects the process for
-    one test restores the session's own root instead of leaving every later
-    archive on the production route. Without a registered root
-    :func:`bootstrap_archive_root` has nowhere to cache a template and every
-    caller takes the production bootstrap, which is correct but pays full DDL
-    write cost per archive.
-    """
-    global _BOOTSTRAP_TEMPLATE_ROOT, _BOOTSTRAP_TEMPLATE
-    previous = _BOOTSTRAP_TEMPLATE_ROOT
-    _BOOTSTRAP_TEMPLATE_ROOT = None if run_root is None else Path(run_root)
-    _BOOTSTRAP_TEMPLATE = None
-    return previous
-
-
-def build_bootstrap_archive_template(run_root: Path) -> Path:
-    """Seal one plain empty archive per run root, built by the production route.
-
-    The template is what ``initialize_active_archive_root`` produces on an
-    empty directory and nothing more, so a clone of it is that function's
-    result with its path-bound durable identity rebound.
-    """
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    template = run_root / _BOOTSTRAP_TEMPLATE_NAME
-    ready = run_root / f"{_BOOTSTRAP_TEMPLATE_NAME}.ready"
-    lock_path = run_root / f"{_BOOTSTRAP_TEMPLATE_NAME}.lock"
-
-    run_root.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-        if ready.exists() and template.is_dir():
-            return template
-        building = run_root / f"{_BOOTSTRAP_TEMPLATE_NAME}.building-{os.getpid()}"
-        shutil.rmtree(building, ignore_errors=True)
-        try:
-            initialize_active_archive_root(building)
-            finalize_archive_template(building)
-            building.replace(template)
-            ready.touch()
-        finally:
-            shutil.rmtree(building, ignore_errors=True)
-    return template
-
-
-def _bootstrap_template() -> Path | None:
-    global _BOOTSTRAP_TEMPLATE
-    if _BOOTSTRAP_TEMPLATE is not None:
-        return _BOOTSTRAP_TEMPLATE
-    run_root = _BOOTSTRAP_TEMPLATE_ROOT
-    if run_root is None:
-        return None
-    with _BOOTSTRAP_TEMPLATE_LOCK:
-        if _BOOTSTRAP_TEMPLATE is None:
-            _BOOTSTRAP_TEMPLATE = build_bootstrap_archive_template(run_root)
-    return _BOOTSTRAP_TEMPLATE
-
-
-def _is_pristine_destination(root: Path) -> bool:
-    """True when nothing under ``root`` could be lost or reinterpreted by a clone."""
-    if root.is_symlink():
-        return False
-    if not root.exists():
-        return True
-    if not root.is_dir():
-        return False
-    # Closed explicitly: an unclosed scandir holds a directory descriptor until
-    # collection, and this runs once per archive root the suite builds.
-    with os.scandir(root) as entries:
-        return next(entries, None) is None
-
-
 def bootstrap_archive_root(root: Path) -> Path:
-    """Materialise an empty archive root, by reflink clone where that is faithful.
-
-    A page-copy prototype still writes every tier's pages. Measured over 20
-    roots with the per-tier prototype cache warm, ``initialize_active_archive_root``
-    costs 5.88 MB of write bytes per root and 6 tier initializations; cloning
-    the sealed template costs 0.51 MB and none. Cloning is only equivalent for
-    a destination with nothing in it -- an archive the caller has already
-    seeded, or one carrying durable-train state, must take the production route
-    so that route's own reconciliation decides its outcome.
-    """
+    """Construct each empty fixture through the canonical baseline and train owner."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    template = _bootstrap_template() if _is_pristine_destination(root) else None
-    if template is None:
-        initialize_active_archive_root(root)
-        return root
-    clone_archive_template(template, root)
-    # Sealing a template checkpoints WAL and switches every tier to DELETE
-    # mode. A fresh production bootstrap intentionally initializes source.db
-    # in WAL mode, so restore that one shared mode after cloning the pristine
-    # bootstrap template.
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.connection_profile import initialize_source_tier_database_mode
+    initialize_active_archive_root(root)
+    return root
 
-    source_path = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
-    with sqlite3.connect(source_path) as conn:
-        initialize_source_tier_database_mode(conn)
+
+def bootstrap_ready_archive_root(root: Path) -> Path:
+    """Construct an empty fixture and complete its real raw-authority census."""
+    from polylogue.config import Config
+    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+
+    bootstrap_archive_root(root)
+    inspect_raw_authority_frontier(
+        Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
+    )
     return root
 
 
 __all__ = [
     "bootstrap_archive_root",
-    "build_bootstrap_archive_template",
+    "bootstrap_ready_archive_root",
     "clone_archive_template",
     "finalize_archive_template",
-    "register_bootstrap_template_root",
 ]

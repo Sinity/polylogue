@@ -139,10 +139,30 @@ class DurableForwardVersionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class _ReleasedSchemaEvidence:
+    """Live released admission deliberately excludes mutable row inventories."""
+
+    user_version: int
+    quick_check: tuple[str, ...]
+    schema_inventory_sha256: str
+    archive_identity_digest: str
+
+
+def _capture_released_schema_evidence(conn: sqlite3.Connection, tier: ArchiveTier) -> _ReleasedSchemaEvidence:
+    inventory = _migration_runner.capture_durable_schema_inventory(conn)
+    return _ReleasedSchemaEvidence(
+        user_version=int(conn.execute("PRAGMA user_version").fetchone()[0] or 0),
+        quick_check=tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check")),
+        schema_inventory_sha256=inventory.sha256,
+        archive_identity_digest=_migration_runner._durable_archive_identity_digest(conn, tier),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class _DurableForwardVersionEvidence:
     """Cached live evidence reused by one no-op maintenance execution."""
 
-    actual: DurableDatabaseEvidence
+    actual: _ReleasedSchemaEvidence
     integrity_check: tuple[str, ...]
     live_inventory: _migration_runner.DurableSchemaInventory
     expected_live_schema_inventory_sha256: str
@@ -379,7 +399,7 @@ def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     intent distinguishes that recoverable state from an established archive
     whose durable train evidence has been lost.
     """
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER
 
     archive_root = archive_root.resolve()
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
@@ -392,7 +412,7 @@ def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     if pending_path.is_file():
         _validate_fresh_durable_bootstrap_intent(archive_root)
         return
-    versions = {tier.value: ARCHIVE_VERSION_BY_TIER[tier] for tier in DURABLE_MIGRATION_ADOPTION_FLOORS}
+    versions = {tier.value: ARCHIVE_BASELINE_VERSION_BY_TIER[tier] for tier in DURABLE_MIGRATION_ADOPTION_FLOORS}
     payload: dict[str, object] = {
         "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
         "state": "pending",
@@ -405,7 +425,7 @@ def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
 
 def _validate_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     """Validate the authenticated intent for a recoverable fresh bootstrap."""
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER
 
     archive_root = archive_root.resolve()
     marker_path = (
@@ -430,7 +450,7 @@ def _validate_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     if not isinstance(raw_versions, dict):
         raise DurableChangeTrainError(f"fresh durable bootstrap intent versions are invalid: {marker_path}")
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
-        if raw_versions.get(tier.value) != ARCHIVE_VERSION_BY_TIER[tier]:
+        if raw_versions.get(tier.value) != ARCHIVE_BASELINE_VERSION_BY_TIER[tier]:
             raise DurableChangeTrainError(f"fresh durable bootstrap intent target version is stale: {marker_path}")
 
 
@@ -1843,7 +1863,7 @@ def _verify_released_train_live_tier(
     train: DurableChangeTrain,
     *,
     current_target_version: int | None = None,
-    actual_evidence: DurableDatabaseEvidence | None = None,
+    actual_evidence: _ReleasedSchemaEvidence | None = None,
     integrity_check: tuple[str, ...] | None = None,
     live_inventory: _migration_runner.DurableSchemaInventory | None = None,
     expected_live_schema_inventory_sha256: str | None = None,
@@ -1851,15 +1871,14 @@ def _verify_released_train_live_tier(
     """Verify a released train remains represented after later trains advance it."""
     if train.apply_evidence is None:
         raise DurableChangeTrainError(f"{train.state.value} train lacks post-apply continuity evidence")
-    actual = actual_evidence or capture_durable_database_evidence(conn, train.tier)
+    actual = actual_evidence or _capture_released_schema_evidence(conn, train.tier)
     if actual.user_version < train.target_version:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier continuity proof failed: live version regressed below released train "
             "target; refusing startup initialization"
         )
-    if actual.user_version == train.target_version:
-        _verify_persisted_live_tier_continuity(conn, train, actual=actual)
-        return None
+    if train.state is not DurableChangeTrainState.RELEASED:
+        raise DurableChangeTrainError("historical admission requires a released train")
     historical = _historical_schema_evidence(train)
     expected_identity = train.apply_evidence.post.archive_identity_digest
     if actual.archive_identity_digest != expected_identity:
@@ -1881,7 +1900,14 @@ def _verify_released_train_live_tier(
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier schema inventory changed during forward admission"
         )
-    if expected_live_schema_inventory_sha256 is None:
+    if actual.user_version == train.target_version:
+        # A released migration proves immutable schema history, not a freeze
+        # of the rows subsequently acquired under the ordinary writer owner.
+        # APPLIED/PROVEN recovery retains the exact post-content proof above.
+        expected_live_schema_inventory_sha256 = _migration_runner._durable_migration_replay_step(
+            historical, train.target_version
+        ).after_schema_inventory_sha256
+    elif expected_live_schema_inventory_sha256 is None:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier v{actual.user_version} lacks persisted replay evidence for its live schema"
         )
@@ -1900,6 +1926,8 @@ def _verify_released_train_live_tier(
             f"{train.tier.value} durable tier version {actual.user_version} is newer than current target "
             f"v{runtime_target}; historical train v{train.target_version} cannot admit it"
         )
+    if actual.user_version == train.target_version:
+        return None
     return DurableForwardVersionReceipt(
         tier=train.tier,
         historical_train_id=train.train_id,
@@ -1940,7 +1968,7 @@ def _forward_version_receipt_for_current_tier(
     if not historical:
         return None
     if evidence is None:
-        actual = capture_durable_database_evidence(conn, tier)
+        actual = _capture_released_schema_evidence(conn, tier)
         evidence = _DurableForwardVersionEvidence(
             actual=actual,
             integrity_check=tuple(str(row[0]) for row in conn.execute("PRAGMA integrity_check")),
@@ -2404,7 +2432,7 @@ def _reconcile_durable_change_train_startup_locked(
     """Reconcile persisted trains while the caller holds archive ownership."""
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     reconciled: list[Path] = []
-    live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
+    live_evidence_by_tier: dict[ArchiveTier, _ReleasedSchemaEvidence] = {}
     live_integrity_by_tier: dict[ArchiveTier, tuple[str, ...]] = {}
     live_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     expected_live_schema_inventory_by_tier: dict[ArchiveTier, str] = {}
@@ -2529,7 +2557,7 @@ def _reconcile_durable_change_train_startup_locked(
         with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
             actual = live_evidence_by_tier.get(train.tier)
             if actual is None:
-                actual = capture_durable_database_evidence(live, train.tier)
+                actual = _capture_released_schema_evidence(live, train.tier)
                 live_evidence_by_tier[train.tier] = actual
             if (
                 actual.user_version > DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier]

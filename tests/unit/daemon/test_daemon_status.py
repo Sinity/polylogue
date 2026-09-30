@@ -67,6 +67,7 @@ def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest
     assert _daemon_status_fingerprint(index) != before
 
 
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -2113,7 +2114,10 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
         ArchiveTier.OPS,
         ArchiveTier.AUDIT,
     ):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
@@ -2220,7 +2224,7 @@ def test_zero_head_unavailable_ops_semantics_and_no_direct_status_route(tmp_path
     from polylogue.config import Config
     from polylogue.daemon.status import RawMaterializationReadiness, _raw_frontier_integrity_info
 
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     readiness = RawMaterializationReadiness(available=True)
 

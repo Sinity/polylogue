@@ -762,9 +762,8 @@ def _clear_polylogue_env(
 def workspace_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    empty_archive_template: Path,
 ) -> Iterator[dict[str, Path]]:
-    from tests.infra.archive_templates import clone_archive_template
+    from tests.infra.archive_templates import bootstrap_ready_archive_root
 
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
@@ -779,7 +778,7 @@ def workspace_env(
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    clone_archive_template(empty_archive_template, archive_root)
+    bootstrap_ready_archive_root(archive_root)
 
     try:
         yield {
@@ -847,7 +846,6 @@ def storage_repository(workspace_env: dict[str, Path]) -> SessionRepository:
 def cli_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    empty_archive_template: Path,
 ) -> Iterator[dict[str, Path]]:
     """
     Isolated CLI workspace with archive roots and database.
@@ -861,7 +859,7 @@ def cli_workspace(
     Returns:
         dict with paths: archive_root, data_root, inbox_dir, db_path
     """
-    from tests.infra.archive_templates import clone_archive_template
+    from tests.infra.archive_templates import bootstrap_ready_archive_root
 
     # Create directory structure
     data_dir = tmp_path / "data"
@@ -884,7 +882,7 @@ def cli_workspace(
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    clone_archive_template(empty_archive_template, archive_root)
+    bootstrap_ready_archive_root(archive_root)
 
     try:
         yield {
@@ -898,51 +896,6 @@ def cli_workspace(
     finally:
         gc.collect()
         shutil.rmtree(archive_root, ignore_errors=True)
-
-
-def build_empty_archive_template(run_root: Path) -> Path:
-    """Build the census-complete empty archive once per run root, under a lock.
-
-    A complete five-tier layout alone is no longer sufficient to claim raw
-    materialization readiness: the raw-authority frontier must have a
-    completed census too.  The shared template represents a usable empty
-    archive, so establish that real durable state through the production
-    census route before sharing clones with CLI and insight tests.
-    """
-    import fcntl
-
-    from polylogue.config import Config
-    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    template = run_root / ".empty-archive-template"
-    ready = run_root / ".empty-archive-template.ready"
-    lock_path = run_root / ".empty-archive-template.lock"
-
-    with lock_path.open("a+") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-        if ready.exists() and template.is_dir():
-            return template
-
-        building = run_root / f".empty-archive-template.building-{os.getpid()}"
-        shutil.rmtree(building, ignore_errors=True)
-        try:
-            with ArchiveStore(building):
-                pass
-            inspect_raw_authority_frontier(
-                Config(
-                    archive_root=building,
-                    render_root=building / "render",
-                    sources=[],
-                    db_path=building / "index.db",
-                )
-            )
-            building.replace(template)
-            ready.touch()
-        finally:
-            shutil.rmtree(building, ignore_errors=True)
-
-    return template
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -968,10 +921,6 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         return
     run_root = Path(basetemp).resolve()
     run_root.mkdir(parents=True, exist_ok=True)
-    from tests.infra.archive_templates import build_bootstrap_archive_template
-
-    build_empty_archive_template(run_root)
-    build_bootstrap_archive_template(run_root)
     from tests.infra.shared_session_archives import warm_shared_session_archives
 
     outcome = warm_shared_session_archives()
@@ -984,40 +933,6 @@ def worker_id(request: pytest.FixtureRequest) -> str:
     """Expose xdist's worker identity while keeping serial focused runs plugin-free."""
     worker_input = getattr(request.config, "workerinput", {})
     return str(worker_input.get("workerid", "master"))
-
-
-@pytest.fixture(scope="session")
-def empty_archive_template(
-    tmp_path_factory: pytest.TempPathFactory,
-    worker_id: str,
-) -> Path:
-    """The run's shared empty archive; built here only when no controller warmed it."""
-    return build_empty_archive_template(_run_root(tmp_path_factory, worker_id))
-
-
-def _run_root(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
-    """The directory shared by every worker of this run."""
-    worker_base = tmp_path_factory.getbasetemp()
-    return worker_base.parent if worker_id != "master" else worker_base
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _bootstrap_archive_template_root(
-    tmp_path_factory: pytest.TempPathFactory,
-    worker_id: str,
-) -> Iterator[None]:
-    """Point ``bootstrap_archive_root`` at this run's shared template.
-
-    A worker that never registers still bootstraps correctly -- it just pays
-    full DDL write cost per archive instead of a reflink clone.
-    """
-    from tests.infra.archive_templates import register_bootstrap_template_root
-
-    register_bootstrap_template_root(_run_root(tmp_path_factory, worker_id))
-    try:
-        yield
-    finally:
-        register_bootstrap_template_root(None)
 
 
 @pytest.fixture

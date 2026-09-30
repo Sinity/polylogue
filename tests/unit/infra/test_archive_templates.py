@@ -7,7 +7,6 @@ import sqlite3
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -41,22 +40,11 @@ def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
 def test_clone_reproduces_the_durable_bootstrap_marker_and_both_roots_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A faithful clone carries the template's own bootstrap marker, byte for byte.
+    """A clone retains baseline birth proof and executes its own migration train.
 
-    PR #5070 (polylogue-ifb4l) rebound the marker to the archive's durable
-    *content*, dropping the root path and the source/user inodes it used to
-    seal. ``clone_archive_template`` still calls ``rebind_durable_identity``,
-    but that rewrite is now idempotent for a faithful clone: same content,
-    same marker. The transplant property the old location seal was protecting
-    is covered by
-    ``test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe``
-    in ``tests/unit/storage/test_durable_change_train.py``.
-
-    Anti-vacuity: re-seal anything location-dependent in
-    ``_record_fresh_durable_bootstrap`` -- the configured root, or the
-    ``dev:``/``ino:`` pair -- and the clone's marker diverges from the
-    template's, which is exactly the regression that made a plain ``mv`` of an
-    archive root refuse to open.
+    The baseline marker remains byte-identical. Source002 history instead
+    binds the newly constructed destination inode; copying the source train
+    would make the destination fail ordinary released-state admission.
     """
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -76,6 +64,11 @@ def test_clone_reproduces_the_durable_bootstrap_marker_and_both_roots_open(
     with ArchiveStore(clone):
         pass
     assert template.joinpath(marker).read_bytes() == source_identity
+    original = template / ".maintenance-state/durable-change-trains/source-002.json"
+    regenerated = clone / ".maintenance-state/durable-change-trains/source-002.json"
+    assert original.read_bytes() != regenerated.read_bytes()
+    provenance = next((clone / ".fixture-archive-provenance").glob("*/original-history/source-002.json"))
+    assert provenance.read_bytes() == original.read_bytes()
 
 
 def _leave_crash_recovered_wal(database: Path) -> None:
@@ -224,30 +217,8 @@ def test_clone_refuses_a_template_that_changed_after_it_was_read(
     assert list(destination.parent.glob(".clone.*")) == []
 
 
-@pytest.fixture
-def bootstrap_template_root(tmp_path: Path) -> Iterator[Path]:
-    """Redirect bootstrap cloning at a private run root for one test.
-
-    The session registers its own root for every worker; a test that left the
-    process pointing at ``None`` would silently put every later archive in that
-    worker back on the production route.
-    """
-    from tests.infra.archive_templates import register_bootstrap_template_root
-
-    run_root = tmp_path / "run"
-    previous = register_bootstrap_template_root(run_root)
-    try:
-        yield run_root
-    finally:
-        register_bootstrap_template_root(previous)
-
-
 def _archive_state(root: Path) -> dict[str, object]:
-    """Every tier's schema, version and rows, minus what is bound to the path.
-
-    The durable bootstrap marker names the tree it belongs to, so it is compared
-    for presence rather than content; :func:`clone_archive_template` rebinds it.
-    """
+    """Compare tier schemas and rows while each root retains its own train history."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
     state: dict[str, object] = {}
@@ -264,9 +235,8 @@ def _archive_state(root: Path) -> dict[str, object]:
                     continue
                 with contextlib.suppress(sqlite3.DatabaseError):
                     state[f"{spec.filename}:{name}:rows"] = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-    # The direct bootstrap can leave empty WAL/SHM coordination files while
-    # the sealed clone has none. They carry no persistent archive inventory;
-    # table rows above already compare any WAL-visible data.
+    # SQLite coordination files carry no persistent archive inventory;
+    # table rows above compare any WAL-visible data.
     sqlite_sidecars = {
         f"{spec.filename}{suffix}" for spec in ARCHIVE_TIER_SPECS.values() for suffix in ("-wal", "-shm")
     }
@@ -279,13 +249,8 @@ def _archive_state(root: Path) -> dict[str, object]:
     return state
 
 
-def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, bootstrap_template_root: Path) -> None:
-    """A cloned root is what the production bootstrap builds, or the clone is a lie.
-
-    Anti-vacuity: seeding the template through any route that adds state the
-    production bootstrap does not create -- a completed raw-authority census,
-    an extra ops row -- makes the two states diverge and this red.
-    """
+def test_fixture_bootstrap_executes_the_canonical_baseline_and_train(tmp_path: Path) -> None:
+    """Each destination must carry its own actually executed train history."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -294,7 +259,6 @@ def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, boo
 
     cloned = bootstrap_archive_root(tmp_path / "cloned")
 
-    assert (bootstrap_template_root / ".bootstrap-archive-template").is_dir()
     assert _archive_state(cloned) == _archive_state(produced)
     with sqlite3.connect(cloned / "source.db") as conn:
         assert conn.execute("PRAGMA journal_mode=DELETE").fetchone() == ("delete",)
@@ -305,14 +269,11 @@ def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, boo
     assert _archive_state(cloned) != _archive_state(produced)
 
 
-def test_bootstrap_falls_back_to_the_production_route_for_a_seeded_root(
-    tmp_path: Path,
-    bootstrap_template_root: Path,
-) -> None:
+def test_fixture_bootstrap_preserves_an_existing_seeded_root(tmp_path: Path) -> None:
     """A destination that already holds state must not be replaced by a clone.
 
     Anti-vacuity: cloning over it would drop the planted row, so the read below
-    fails the moment the pristine-destination guard stops deciding the route.
+    fails if fixture construction replaces an already populated destination.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.archive_templates import bootstrap_archive_root
@@ -329,15 +290,9 @@ def test_bootstrap_falls_back_to_the_production_route_for_a_seeded_root(
         assert conn.execute("SELECT value FROM planted").fetchall() == [("kept",)]
 
 
-def test_bootstrap_without_a_registered_run_root_uses_the_production_route(tmp_path: Path) -> None:
-    """No template location means no clone, never a half-built archive."""
-    from tests.infra.archive_templates import bootstrap_archive_root, register_bootstrap_template_root
+def test_fixture_bootstrap_creates_no_copied_template_history(tmp_path: Path) -> None:
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    previous = register_bootstrap_template_root(None)
-    try:
-        root = bootstrap_archive_root(tmp_path / "plain")
-    finally:
-        register_bootstrap_template_root(previous)
-
+    root = bootstrap_archive_root(tmp_path / "plain")
     assert (root / "index.db").is_file()
     assert not list(tmp_path.glob(".bootstrap-archive-template*"))

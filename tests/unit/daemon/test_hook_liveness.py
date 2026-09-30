@@ -14,6 +14,7 @@ from polylogue.daemon.metrics import format_metrics
 from polylogue.hooks import hook_status, plan_hook_change, resolve_events
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 NOW_MS = 2_000_000_000_000
 
@@ -26,7 +27,7 @@ def hook_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude"))
     monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
     archive = tmp_path / "archive"
-    initialize_archive_database(archive / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(archive / "source.db")
     initialize_archive_database(archive / "index.db", ArchiveTier.INDEX)
     plan_hook_change(
         "install",

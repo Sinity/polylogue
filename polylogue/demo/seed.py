@@ -45,6 +45,8 @@ from polylogue.storage.embeddings.identity import (
 from polylogue.storage.embeddings.materialization import archive_embeddable_messages_relation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
+    DURABLE_MIGRATION_TIERS,
+    initialize_active_archive_root,
     initialize_archive_database,
     invalidate_active_archive_bootstrap,
 )
@@ -389,31 +391,19 @@ def _refresh_demo_ownership_session_ids(root: Path) -> None:
     manifest_path.write_text(json.dumps(updated, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _self_heal_stale_demo_archive_tiers(archive_root: Path) -> tuple[str, ...]:
-    """Move aside and rebuild any demo archive tier whose schema predates the current code.
+def _reconverge_stale_demo_generated_tiers(archive_root: Path) -> tuple[str, ...]:
+    """Recreate mismatched generated tiers in a proven synthetic demo root.
 
-    Only ever called after :func:`_archive_root_is_demo_owned` has confirmed
-    ``archive_root`` is a disposable demo archive this exact command
-    regenerates every run (never the live/production archive). ``index.db``
-    and friends are declared *rebuildable* tiers (see ``AGENTS.md``'s "Storage
-    tiers"), and a demo archive's content is entirely synthetic fixture
-    data with no durability requirement at all, so a stale on-disk schema
-    version here is safe to move aside and rebuild automatically -- unlike
-    the live archive, where the same version drift requires an explicit,
-    consented durable-tier migration or ``polylogue ops reset --index``.
-
-    Without this, a demo archive seeded by an older Polylogue version (or by
-    a fresher-schema worktree feeding an older-schema one, and vice versa)
-    fails hard with an unhelpful, unnamed-path error on every subsequent
-    ``demo seed`` against the same root (polylogue-3ycw) even though nothing
-    of value would be lost by rebuilding it.
-
-    Returns the tier filenames that were actually moved aside and rebuilt.
+    The caller holds the demo archive owner and proves every retained row is
+    demo-owned. Durable tiers advance through the canonical numbered train
+    owner; a durable skew never authorizes moving those files aside here.
     """
 
     healed: list[str] = []
     stale_suffix = f".stale-{int(time.time())}"
     for spec in ARCHIVE_TIER_SPECS.values():
+        if spec.tier in DURABLE_MIGRATION_TIERS:
+            continue
         db_path = archive_root / spec.filename
         if not db_path.exists():
             continue
@@ -428,6 +418,7 @@ def _self_heal_stale_demo_archive_tiers(archive_root: Path) -> tuple[str, ...]:
                     sidecar.rename(sidecar.with_name(sidecar.name + stale_suffix))
             initialize_archive_database(db_path, spec.tier)
             healed.append(spec.filename)
+    initialize_active_archive_root(archive_root)
     return tuple(healed)
 
 
@@ -1699,21 +1690,15 @@ async def _seed_demo_archive_owned(
     permits seeding real content into an unowned archive.
     """
 
-    # polylogue-neeq4 follow-up: demo seeding is the one route that re-opens
-    # an archive root whose tier schema versions may have moved since this
-    # process last validated them -- self-healing stale tiers is its job, and
-    # a reseed in the same process is an ordinary operator sequence. The
-    # bootstrap memo keys on file identity and marker presence, which an
-    # in-place ``PRAGMA user_version`` change does not move, so without this
-    # the second seed skips revalidation and the staleness surfaces later as
-    # a SchemaSkewError instead of entering this demo-owned rebuild path.
+    # A reseed must revalidate in-place version changes before generated-tier
+    # reconvergence or a durable numbered train advances the owned archive.
     _guard_demo_seed_target(archive_root, explicit_root=explicit_root, force=force)
     invalidate_active_archive_bootstrap(archive_root)
     _record_demo_ownership_if_undetermined(archive_root)
 
     healed_tiers: tuple[str, ...] = ()
     if _archive_root_is_demo_owned(archive_root):
-        healed_tiers = _self_heal_stale_demo_archive_tiers(archive_root)
+        healed_tiers = _reconverge_stale_demo_generated_tiers(archive_root)
 
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):

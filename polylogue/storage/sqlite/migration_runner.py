@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import stat
+import struct
 import time
 import types
 import uuid
@@ -38,6 +39,7 @@ _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _ADDITIVE_NO_BACKUP_MARKER = "-- migration-safety: additive-no-backup"
+_INDEX_REPLACEMENT_MARKER = "-- migration-safety: row-preserving-index-replacement"
 _SQL_TRANSACTION_CONTROL_RE = re.compile(r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b", re.IGNORECASE)
 DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v2"
 DURABLE_MIGRATION_COLLISION_REPORT_FORMAT: Final = "polylogue.durable-migration-collisions.v1"
@@ -238,10 +240,172 @@ def _requires_migration_backup(path: Path, sql: str) -> bool:
     proven rather than asserted.
     """
     first_nonblank = next((line.strip() for line in sql.splitlines() if line.strip()), "")
+    if first_nonblank == _INDEX_REPLACEMENT_MARKER:
+        _index_replacement_pairs(path, sql)
+        return False
     if first_nonblank != _ADDITIVE_NO_BACKUP_MARKER:
         return True
     _assert_additive_migration_sql(path, sql)
     return False
+
+
+def _index_replacement_pairs(path: Path, sql: str) -> tuple[str, ...]:
+    """Admit only complete same-name index replacement pairs, not their effect."""
+    statements = iter(_iter_migration_statements(sql))
+    names: list[str] = []
+    identifier = r"[A-Za-z_][A-Za-z_0-9]*"
+    for drop in statements:
+        match = re.fullmatch(rf"DROP\s+INDEX\s+({identifier})\s*;", drop, re.IGNORECASE)
+        create = next(statements, None)
+        replacement = re.fullmatch(
+            rf"CREATE\s+(?:UNIQUE\s+)?INDEX\s+({identifier})\s+ON\s+{identifier}\s*\(.+\)\s+WHERE\s+.+;",
+            create or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+        if match is None or replacement is None or match[1] != replacement[1] or match[1] in names:
+            raise MigrationError(f"{path.name} has an invalid row-preserving index replacement pair")
+        names.append(match[1])
+    if not names:
+        raise MigrationError(f"{path.name} has no row-preserving index replacement pairs")
+    return tuple(names)
+
+
+def _index_partition(conn: sqlite3.Connection, name: str) -> tuple[tuple[object, ...], str, str, frozenset[str]]:
+    """Read SQLite's actual index keys and one literal membership predicate."""
+    row = conn.execute("SELECT tbl_name, sql FROM sqlite_schema WHERE type='index' AND name=?", (name,)).fetchone()
+    if row is None:
+        raise MigrationError(f"row-preserving index replacement lacks {name}")
+    table, sql = str(row[0]), str(row[1])
+    flags = next(
+        (entry for entry in conn.execute("SELECT * FROM pragma_index_list(?)", (table,)) if entry[1] == name), None
+    )
+    keys = tuple(tuple(entry) for entry in conn.execute("SELECT * FROM pragma_index_xinfo(?)", (name,)) if entry[5])
+    if flags is None or not flags[4] or any(entry[1] < 0 for entry in keys):
+        raise MigrationError("row-preserving replacement requires a partial index with literal column keys")
+    predicate = re.search(
+        r"\bWHERE\s+([A-Za-z_][A-Za-z_0-9]*)\s+(NOT\s+)?IN\s*\((.*)\)\s*;?\s*$",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if predicate is None:
+        raise MigrationError("row-preserving replacement requires literal IN or NOT IN membership")
+    literals = predicate[3]
+    pieces = re.findall(r"'(?:[^']|'')*'", literals)
+    if not pieces or re.sub(r"'(?:[^']|'')*'", "", literals).strip().replace(",", "").strip():
+        raise MigrationError("row-preserving replacement membership must contain only literal text")
+    # SQLite decodes the declared literals; there is no external SQL here.
+    values = tuple(conn.execute("SELECT " + ",".join(pieces)).fetchone())
+    if len(set(values)) != len(values):
+        raise MigrationError("row-preserving replacement repeats a membership literal")
+    return (
+        (table, bool(flags[2]), bool(flags[4]), keys),
+        predicate[1],
+        "NOT IN" if predicate[2] else "IN",
+        frozenset(values),
+    )
+
+
+def _execute_proved_migration_sql(conn: sqlite3.Connection, step: MigrationStep) -> None:
+    first = next((line.strip() for line in step.sql.splitlines() if line.strip()), "")
+    if first != _INDEX_REPLACEMENT_MARKER:
+        _execute_migration_sql(conn, step.sql)
+        return
+    if not conn.in_transaction:
+        raise MigrationError("row-preserving index replacement requires an owned transaction")
+    names = _index_replacement_pairs(Path(step.name), step.sql)
+    row_counts = _durable_table_counts(conn)
+    row_digest = _durable_literal_rows_digest(conn)
+    before = {name: _index_partition(conn, name) for name in names}
+    _execute_migration_sql(conn, step.sql)
+    partitions: dict[tuple[str, str], dict[str, tuple[frozenset[str], frozenset[str]]]] = {}
+    for name in names:
+        old = before[name]
+        new = _index_partition(conn, name)
+        if old[:3] != new[:3] or not old[3] < new[3]:
+            raise MigrationError("row-preserving replacement changed keys, flags, predicate form or existing members")
+        group = partitions.setdefault((str(new[0][0]), new[1]), {})
+        if new[2] in group:
+            raise MigrationError("row-preserving replacement repeats a partition")
+        group[new[2]] = old[3], new[3]
+    for group in partitions.values():
+        if set(group) != {"IN", "NOT IN"} or group["IN"] != group["NOT IN"]:
+            raise MigrationError("row-preserving replacement does not preserve complementary membership partitions")
+    if _durable_table_counts(conn) != row_counts or _durable_literal_rows_digest(conn) != row_digest:
+        raise MigrationError("row-preserving index replacement changed durable rows or primary keys")
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise MigrationError("row-preserving index replacement violates foreign keys")
+    if tuple(str(row[0]) for row in conn.execute("PRAGMA integrity_check")) != ("ok",):
+        raise MigrationError("row-preserving index replacement failed integrity_check")
+
+
+def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
+    """Bind exact retained values, including primary keys, independently of DDL."""
+    digest = hashlib.sha256()
+
+    def frame(value: bytes) -> None:
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+
+    tables = conn.execute(
+        "SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table' ORDER BY name COLLATE BINARY"
+    )
+    for table, without_rowid in tables:
+        name = str(table)
+        if name == "sqlite_schema":
+            continue
+        columns = tuple(conn.execute("SELECT name, pk FROM pragma_table_xinfo(?) ORDER BY cid", (name,)))
+        selected = [str(column[0]) for column in columns]
+        frame(b"table")
+        frame(name.encode("utf-8"))
+        if without_rowid:
+            order = [str(column[0]) for column in sorted(columns, key=lambda row: int(row[1])) if column[1]]
+            if not order:
+                raise MigrationError("row-preserving proof lacks a WITHOUT ROWID primary key")
+        else:
+            alias = next(
+                (
+                    alias
+                    for alias in ("rowid", "_rowid_", "oid")
+                    if alias not in {column.lower() for column in selected}
+                ),
+                None,
+            )
+            if alias is None:
+                raise MigrationError("row-preserving proof cannot address the table's actual rowid")
+            selected.insert(0, alias)
+            order = [alias]
+        frame(len(selected).to_bytes(8, "big"))
+        for column in selected:
+            frame(b"column")
+            frame(column.encode("utf-8"))
+        projection: list[str] = []
+        for column in selected:
+            quoted = _quote_sqlite_identifier(column)
+            projection.extend(
+                (
+                    f"typeof({quoted})",
+                    f"CASE WHEN typeof({quoted})='text' THEN CAST({quoted} AS BLOB) ELSE {quoted} END",
+                )
+            )
+        ordering = ",".join(f"{_quote_sqlite_identifier(column)} COLLATE BINARY" for column in order)
+        for row in conn.execute(
+            f"SELECT {','.join(projection)} FROM {_quote_sqlite_identifier(name)} ORDER BY {ordering}"
+        ):
+            frame(b"row")
+            for offset in range(0, len(row), 2):
+                storage_class, value = str(row[offset]), row[offset + 1]
+                frame(storage_class.encode("ascii"))
+                if storage_class == "null":
+                    encoded = b""
+                elif storage_class == "integer":
+                    encoded = int(value).to_bytes(8, "big", signed=True)
+                elif storage_class == "real":
+                    encoded = struct.pack(">d", float(value))
+                else:
+                    encoded = bytes(value)
+                frame(encoded)
+        frame(b"end-table")
+    return digest.hexdigest()
 
 
 def migration_sort_key(name: str) -> tuple[int, str]:
@@ -1140,7 +1304,7 @@ def migrate_archive_tier(
                     or replay_step.before_schema_inventory_sha256 != before_inventory.sha256
                 ):
                     raise MigrationError(f"{tier.value} migration {step.name} does not match its rehearsed input")
-            _execute_migration_sql(conn, step.sql)
+            _execute_proved_migration_sql(conn, step)
             conn.execute(f"PRAGMA user_version = {step.version}")
             if not conn.in_transaction:
                 raise MigrationError("durable migration SQL escaped the existing transaction")
@@ -1178,7 +1342,7 @@ def migrate_archive_tier(
                 )
             if schema_replay_proof is None or not schema_replay_proof.matches:
                 raise MigrationError(f"{tier.value} migration lacks a matching complete schema replay to canonical DDL")
-    except Exception:
+    except BaseException:
         if conn.in_transaction:
             conn.rollback()
         if foreign_keys_were_on:
@@ -1859,7 +2023,7 @@ def rehearse_durable_migration_chain(
         for step in migrations:
             before = capture_durable_schema_inventory(replica)
             replica.execute("BEGIN IMMEDIATE")
-            _execute_migration_sql(replica, step.sql)
+            _execute_proved_migration_sql(replica, step)
             if not replica.in_transaction:
                 raise MigrationError("schema-only rehearsal SQL escaped the existing transaction")
             replica.execute(f"PRAGMA user_version = {step.version}")
@@ -1950,6 +2114,15 @@ def _durable_table_counts(conn: sqlite3.Connection) -> tuple[tuple[str, int], ..
     return tuple(counts)
 
 
+def _durable_archive_identity_digest(conn: sqlite3.Connection, tier: ArchiveTier) -> str:
+    """Bind evidence to its actual tier inode, independently of optional tiers."""
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    live_path = _connection_main_path(conn)
+    identity = ArchiveIdentity.resolve(live_path.parent).tier(tier.value).stable_id
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
 def capture_durable_database_evidence(
     conn: sqlite3.Connection,
     tier: ArchiveTier,
@@ -1957,19 +2130,8 @@ def capture_durable_database_evidence(
     """Capture the pre/post/restart evidence used by the train state machine."""
     quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
     inventory = capture_durable_schema_inventory(conn)
-    live_path = _connection_main_path(conn)
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
-    # Durable migration evidence must survive replacement of rebuildable
-    # generations and creation of another durable tier. Bind a train to the
-    # file it actually migrates, not to the whole durable pair: a source train
-    # must remain valid when a previously absent user.db is initialized later.
-    tier_identity = ArchiveIdentity.resolve(live_path.parent).tier(tier.value).stable_id
-    archive_identity_digest = hashlib.sha256(tier_identity.encode("utf-8")).hexdigest()
-    content_hasher = hashlib.sha256()
-    for statement in conn.iterdump():
-        content_hasher.update(statement.encode("utf-8"))
-        content_hasher.update(b"\n")
+    archive_identity_digest = _durable_archive_identity_digest(conn, tier)
+    content_sha256 = _durable_literal_rows_digest(conn)
     return DurableDatabaseEvidence(
         tier=tier,
         user_version=int(conn.execute("PRAGMA user_version").fetchone()[0] or 0),
@@ -1977,7 +2139,7 @@ def capture_durable_database_evidence(
         schema_inventory_sha256=inventory.sha256,
         row_counts=_durable_table_counts(conn),
         archive_identity_digest=archive_identity_digest,
-        content_sha256=content_hasher.hexdigest(),
+        content_sha256=content_sha256,
         observed_at_ms=_durable_now_ms(),
     )
 
@@ -1995,6 +2157,7 @@ def _assert_durable_database_continuity(
         or actual.quick_check != ("ok",)
         or actual.user_version != expected.user_version
         or not identity_continuous
+        or actual.schema_inventory_sha256 != expected.schema_inventory_sha256
         or actual.content_sha256 != expected.content_sha256
     ):
         raise DurableChangeTrainError(f"{label} durable tier identity/content continuity proof failed")

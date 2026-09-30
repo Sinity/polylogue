@@ -30,6 +30,34 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
+## Baseline construction and durable trains
+
+The immutable fresh archive baseline creates all six tiers at version 1.
+`initialize_active_archive_root` records that baseline's pending intent,
+format marker and bootstrap receipt before advancing durable tiers through
+their declared numbered trains. Source runtime version 2 replaces the two
+raw-artifact partition indexes through `002_raw_artifact_failure_identity.sql`;
+it retains every row and lets two missing-coordinate refusals at the same
+source coordinate remain attached to their distinct raw acquisitions.
+The index replacement claim is checked against SQLite's actual keys,
+collations, order, uniqueness and complementary literal predicates in both
+rehearsal and live execution; exact row values, primary keys, foreign keys
+and integrity must survive the owned transaction. Other non-additive changes
+still require verified backup authority (`storage/sqlite/migration_runner.py`).
+Writable canonical bootstrap admits installed trains before runtime version
+validation. Read-only and acquisition-only opens refuse a baseline Source
+tier without applying migrations. A crash after baseline publication resumes
+the same persisted train rather than restamping the baseline as current
+(`storage/sqlite/archive_tiers/bootstrap.py`;
+`storage/sqlite/durable_change_train.py`).
+Released train admission checks the physical archive identity, installed and
+historical schema bindings, version, `quick_check` and `integrity_check`; it
+does not count or hash mutable rows on ordinary restart. Interrupted APPLIED
+or PROVEN recovery still requires exact typed row and schema equality with
+the recorded post-apply evidence. Row proofs encode SQLite storage classes
+and literal values, including embedded NUL bytes, in deterministic primary
+key or actual rowid order (`storage/sqlite/migration_runner.py`).
+
 ## Identity and generated columns
 
 - `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`SESSIONS_SPEC` in `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:805-813`).

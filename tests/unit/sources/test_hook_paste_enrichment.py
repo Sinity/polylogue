@@ -13,13 +13,14 @@ from polylogue.sources.live import hook_paste_enrichment
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _HOOK_TIME_MS = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
 
 
 def _source_tier(archive_root: Path) -> Path:
     source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     return source_db
 
 

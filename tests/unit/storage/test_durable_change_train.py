@@ -19,7 +19,11 @@ import pytest
 
 import polylogue.storage.sqlite.durable_change_train as durable_change_train_module
 from polylogue.storage.sqlite import migration_runner
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import (
+    ARCHIVE_BASELINE_DDL_BY_TIER,
+    ARCHIVE_DDL_BY_TIER,
+    ARCHIVE_VERSION_BY_TIER,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
@@ -487,12 +491,15 @@ def _install_synthetic_migration(
     ddl[tier] = canonical
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    canonical_package = migration_runner._migration_package
     monkeypatch.setattr(
-        migration_runner, "_migration_package", lambda observed_tier: f"{package_name}.{observed_tier.value}"
+        migration_runner,
+        "_migration_package",
+        lambda observed: f"{package_name}.{tier.value}" if observed is tier else canonical_package(observed),
     )
     monkeypatch.setattr(
         "polylogue.storage.sqlite.durable_change_train._migration_package",
-        lambda observed_tier: f"{package_name}.{observed_tier.value}",
+        lambda observed: f"{package_name}.{tier.value}" if observed is tier else canonical_package(observed),
     )
     return canonical
 
@@ -555,7 +562,7 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
         tmp_path,
         monkeypatch,
         ArchiveTier.SOURCE,
-        canonical_base=ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE],
+        canonical_base=ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE],
     )
     with sqlite3.connect(db_path) as live:
         replay = rehearse_durable_migration_chain(
@@ -851,7 +858,7 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
     ddl = dict(ARCHIVE_DDL_BY_TIER)
-    ddl[ArchiveTier.SOURCE] = ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE] + "\n" + sql
+    ddl[ArchiveTier.SOURCE] = ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE] + "\n" + sql
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
@@ -985,7 +992,7 @@ def test_maintenance_route_rehearses_an_intermediate_sidecar_to_the_shipped_targ
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
     ddl = dict(ARCHIVE_DDL_BY_TIER)
-    ddl[ArchiveTier.SOURCE] = "\n".join((ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE], migrations[0][2]))
+    ddl[ArchiveTier.SOURCE] = "\n".join((ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE], migrations[0][2]))
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
@@ -1215,7 +1222,7 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", fake_load)
     monkeypatch.setattr(durable_change_train_module, "_persist_train_transition", fake_persist)
     monkeypatch.setattr(durable_change_train_module, "reconcile_interrupted_durable_change_train", fake_recover)
-    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", fake_capture)
+    monkeypatch.setattr(durable_change_train_module, "_capture_released_schema_evidence", fake_capture)
     monkeypatch.setattr(durable_change_train_module, "_historical_schema_evidence", lambda _train: None)
     monkeypatch.setattr(
         durable_change_train_module,
@@ -1270,7 +1277,7 @@ def test_startup_checks_chain_when_only_current_train_remains(
     monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", lambda _path: current)
     monkeypatch.setattr(
         durable_change_train_module,
-        "capture_durable_database_evidence",
+        "_capture_released_schema_evidence",
         lambda _connection, _tier: SimpleNamespace(user_version=_NEXT_SOURCE_SLOT + 1),
     )
     monkeypatch.setattr(
@@ -1803,7 +1810,7 @@ def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 
     source_path = tmp_path / "source.db"
-    initialize_archive_database(source_path, ArchiveTier.SOURCE)
+    initialize_archive_database(source_path, ArchiveTier.SOURCE, expected_version=1)
     with sqlite3.connect(source_path) as conn:
         before = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
 

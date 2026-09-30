@@ -963,9 +963,13 @@ class ArchiveStore:
                 with closing(open_readonly_connection(path, timeout=read_timeout, validate_schema=False)) as vconn:
                     current = int(vconn.execute("PRAGMA user_version").fetchone()[0])
                 if current != spec.version:
-                    raise RuntimeError(
-                        f"source-tier acquisition refused: durable tier {spec.filename} "
-                        f"user_version {current} != expected {spec.version}"
+                    from polylogue.core.errors import SchemaSkew
+
+                    raise SchemaSkew(
+                        tier=tier.value,
+                        expected=spec.version,
+                        found=current,
+                        remedy="daemon must admit the declared durable train before acquisition",
                     )
             self._conn = cast(sqlite3.Connection, _SourceTierOnlyIndexConnection())
             self._user_tier_attached = False

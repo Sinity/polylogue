@@ -32,9 +32,8 @@ import pytest
 
 import polylogue.storage.sqlite.archive_tiers.write as write_mod
 from polylogue.core.enums import Origin
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import _sidecar_paths_dispatch_tool_ids
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _ORIGIN = Origin.CLAUDE_CODE_SESSION.value
 
@@ -51,7 +50,7 @@ class _FakeBlobStore:
 
 def _source_conn(tmp_path: Path) -> sqlite3.Connection:
     db_path = tmp_path / "source.db"
-    initialize_archive_database(db_path, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(db_path)
     return sqlite3.connect(db_path)
 
 
