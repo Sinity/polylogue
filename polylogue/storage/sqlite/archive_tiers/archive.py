@@ -338,6 +338,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_source_tier_write_connection,
     write_connection_pragma_statements,
 )
+from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.query_watch import (
@@ -719,7 +720,7 @@ class ArchiveStore:
         owned_inactive_generation: tuple[str, str] | None = None,
         source_tier_acquisition: bool = False,
         frozen_index_path: Path | None = None,
-        opened_index_fd: int | None = None,
+        opened_index_identity: SQLiteFileIdentity | None = None,
         validate_index_layout: bool = True,
         defer_secondary_indexes: bool = False,
         active_cold_build: bool = False,
@@ -731,7 +732,7 @@ class ArchiveStore:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
         if frozen_index_path is not None and not read_only:
             raise ValueError("a pinned index path is valid only for read-only archive access")
-        if opened_index_fd is not None and not read_only:
+        if opened_index_identity is not None and not read_only:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
         if defer_secondary_indexes and (read_only or owned_inactive_generation is None):
             raise ValueError("secondary-index deferral requires an owned inactive writable generation")
@@ -744,7 +745,7 @@ class ArchiveStore:
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_index_path = frozen_index_path
-        self._opened_index_fd = opened_index_fd
+        self._opened_index_identity = opened_index_identity
         self._pinned_read = frozen_index_path is not None
         # An offline rebuild candidate must never mutate the live archive it
         # reads through: it holds no writer lease, so the daemon could be
@@ -856,7 +857,7 @@ class ArchiveStore:
                 initialize=initialize and not source_tier_acquisition and owned_inactive_generation is None,
                 read_only=read_only,
                 read_timeout=read_timeout,
-                opened_index_fd=opened_index_fd,
+                opened_index_identity=opened_index_identity,
                 # polylogue-623q: only ever True for a write connection against
                 # an OWNED INACTIVE generation -- never read until promoted,
                 # discarded wholesale on any failure -- so it is safe to open
@@ -909,7 +910,7 @@ class ArchiveStore:
         bulk_build_profile: bool = False,
         active_cold_build: bool = False,
         skip_runtime_index_ensure: bool = False,
-        opened_index_fd: int | None = None,
+        opened_index_identity: SQLiteFileIdentity | None = None,
         validate_index_layout: bool = True,
     ) -> None:
         self.archive_root = archive_root
@@ -929,7 +930,7 @@ class ArchiveStore:
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
         self._read_only = read_only
-        if opened_index_fd is not None and not read_only:
+        if opened_index_identity is not None and not read_only:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
         # Attribute type declarations shared by every open mode (the
         # source-tier acquisition branch below returns early, so inference
@@ -994,7 +995,7 @@ class ArchiveStore:
                 self._conn = open_readonly_connection(
                     self.index_db_path,
                     timeout=read_timeout,
-                    opened_main_fd=opened_index_fd,
+                    opened_main_identity=opened_index_identity,
                     validate_schema=False,
                 )
             except sqlite3.OperationalError as exc:
@@ -1178,7 +1179,7 @@ class ArchiveStore:
         read_only: bool = True,
         read_timeout: float = 5.0,
         index_path: Path | None = None,
-        opened_main_fd: int | None = None,
+        opened_main_identity: SQLiteFileIdentity | None = None,
         validate_index_layout: bool = True,
     ) -> ArchiveStore:
         """Open archive tier files.
@@ -1204,7 +1205,7 @@ class ArchiveStore:
             read_only=read_only,
             read_timeout=read_timeout,
             frozen_index_path=index_path,
-            opened_index_fd=opened_main_fd,
+            opened_index_identity=opened_main_identity,
             validate_index_layout=validate_index_layout,
         )
 

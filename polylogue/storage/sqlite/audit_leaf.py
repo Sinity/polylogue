@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, open_readonly_connection
-from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity, open_sqlite_identity
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
@@ -42,8 +42,8 @@ class VerifiedAuditLeaf:
     """Keep one archive directory descriptor and verify its ``audit.db`` leaf.
 
     A writer holds an inode-keyed lock in the verified directory while SQLite
-    opens a child path proven to resolve back to that directory. O_PATH pins
-    the main leaf and sidecars without releasing SQLite's locks on close. They
+    opens a child path proven to resolve back to that directory. Identity custody
+    pins the main leaf and sidecars without releasing SQLite's locks on close. They
     are checked before and after opening, so a
     replacement or redirected sidecar is rejected before a caller receives a
     connection.
@@ -54,7 +54,7 @@ class VerifiedAuditLeaf:
         self._filename = filename
         self._lock_writer = lock_writer
         self._directory_fd: int | None = None
-        self._leaf_fd: int | None = None
+        self._leaf_fd: SQLiteFileIdentity | None = None
         self._directory_identity: _AuditLeafIdentity | None = None
         self._identity: _AuditLeafIdentity | None = None
         self._anchored_path: Path | None = None
@@ -62,7 +62,7 @@ class VerifiedAuditLeaf:
         self._writer_lock_fd: int | None = None
         self._writer_lock_filename: str | None = None
         self._writer_lock_identity: _AuditLeafIdentity | None = None
-        self._sidecar_fds: dict[str, int] = {}
+        self._sidecar_fds: dict[str, SQLiteFileIdentity] = {}
         self._sidecar_identities: dict[str, _AuditLeafIdentity] = {}
         self._first_transaction_guard_armed = False
 
@@ -76,7 +76,7 @@ class VerifiedAuditLeaf:
             self._directory_identity = _AuditLeafIdentity(directory_metadata.st_dev, directory_metadata.st_ino)
             expected = self._validate(self._lstat_leaf_metadata())
             self._leaf_fd = self._open_leaf()
-            metadata = os.fstat(self._leaf_fd)
+            metadata = self._leaf_fd.stat()
             self._identity = self._validate(metadata)
             if self._identity != expected:
                 raise AuditLeafError(f"audit tier leaf changed while opening: {self._archive_root / self._filename}")
@@ -151,7 +151,7 @@ class VerifiedAuditLeaf:
         errors: list[OSError] = []
         for descriptor in sidecar_fds.values():
             try:
-                os.close(descriptor)
+                descriptor.close()
             except OSError as exc:
                 errors.append(exc)
         if writer_lock_fd is not None:
@@ -166,7 +166,7 @@ class VerifiedAuditLeaf:
                 errors.append(exc)
         if leaf_fd is not None:
             try:
-                os.close(leaf_fd)
+                leaf_fd.close()
             except OSError as exc:
                 errors.append(exc)
         if directory_fd is not None:
@@ -228,17 +228,17 @@ class VerifiedAuditLeaf:
         if current != self._writer_lock_identity or pinned != self._writer_lock_identity:
             raise AuditLeafError("audit writer lock changed during SQLite access")
 
-    def _open_leaf(self) -> int:
+    def _open_leaf(self) -> SQLiteFileIdentity:
         if self._directory_fd is None:
             raise RuntimeError("audit leaf descriptor is closed")
-        return open_sqlite_identity_descriptor(self._filename, dir_fd=self._directory_fd)
+        return open_sqlite_identity(self._filename, dir_fd=self._directory_fd)
 
     def _open_leaf_metadata(self) -> os.stat_result:
         descriptor = self._open_leaf()
         try:
-            return os.fstat(descriptor)
+            return descriptor.stat()
         finally:
-            os.close(descriptor)
+            descriptor.close()
 
     def _lstat_leaf_metadata(self) -> os.stat_result:
         if self._directory_fd is None:
@@ -307,11 +307,11 @@ class VerifiedAuditLeaf:
                 )
             except FileNotFoundError:
                 continue
-            descriptor = open_sqlite_identity_descriptor(filename, dir_fd=self._directory_fd)
+            descriptor = open_sqlite_identity(filename, dir_fd=self._directory_fd)
             try:
-                actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
+                actual = self._validate(descriptor.stat(), description="audit tier sidecar", filename=filename)
             finally:
-                os.close(descriptor)
+                descriptor.close()
             if actual != expected:
                 raise AuditLeafError(f"audit tier sidecar changed while opening: {self._archive_root / filename}")
         self._assert_pinned_sidecars()
@@ -386,7 +386,7 @@ class VerifiedAuditLeaf:
                     description="audit tier sidecar",
                     filename=filename,
                 )
-                descriptor = open_sqlite_identity_descriptor(filename, dir_fd=self._directory_fd)
+                descriptor = open_sqlite_identity(filename, dir_fd=self._directory_fd)
             except FileNotFoundError as exc:
                 if suffix == "-shm":
                     # Derived wal-index, not authority: absent is a legitimate
@@ -396,12 +396,12 @@ class VerifiedAuditLeaf:
                     f"audit tier did not create required WAL sidecar: {self._archive_root / filename}"
                 ) from exc
             try:
-                actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
+                actual = self._validate(descriptor.stat(), description="audit tier sidecar", filename=filename)
             except BaseException:
-                os.close(descriptor)
+                descriptor.close()
                 raise
             if actual != expected:
-                os.close(descriptor)
+                descriptor.close()
                 raise AuditLeafError(f"audit tier sidecar changed while pinning: {self._archive_root / filename}")
             self._sidecar_fds[filename] = descriptor
             self._sidecar_identities[filename] = actual
@@ -417,7 +417,7 @@ class VerifiedAuditLeaf:
                     filename=filename,
                 )
                 pinned = self._validate(
-                    os.fstat(self._sidecar_fds[filename]), description="audit tier sidecar", filename=filename
+                    self._sidecar_fds[filename].stat(), description="audit tier sidecar", filename=filename
                 )
             except FileNotFoundError as exc:
                 if allow_absent:

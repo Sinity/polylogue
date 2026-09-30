@@ -30,7 +30,7 @@ from polylogue.storage.archive_identity import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import DEFAULT_ARCHIVE_PAGE_SIZE, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import descriptor_alias_path, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 #: Durable and disposable archive members an index generation reaches by
@@ -1528,35 +1528,31 @@ class IndexGenerationStore:
 def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     """Open source.db through an already-open descriptor.
 
-    The source snapshot is an authority boundary: opening by pathname and
-    checking its inode afterwards still permits replacement in between those
-    operations. Linux's proc fd view lets SQLite bind its main database to the
-    descriptor we opened (and therefore to that inode), while retaining
-    SQLite's normal read-only behavior. Keep the descriptor alive through
-    connection close so SQLite cannot outlive the identity it was admitted
-    against.
+    Identity custody retains the selected inode and parent directory through
+    connection close. The canonical reader admits a verified descriptor alias
+    or native directory child and checks its identity around SQLite open.
+    Ordinary inode descriptors never live in the SQLite-owning process.
     """
     path = archive_root / "source.db"
     target, expected_identity, is_directory = _stable_link_target(path, label="source snapshot")
     if is_directory:
         raise RuntimeError(f"source snapshot is not a regular file: {path}")
-    from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+    from polylogue.storage.sqlite.file_identity import open_sqlite_identity
 
-    fd = open_sqlite_identity_descriptor(target)
+    fd = open_sqlite_identity(target)
     try:
-        opened = os.fstat(fd)
+        opened = fd.stat()
         if (opened.st_dev, opened.st_ino) != expected_identity:
             raise RuntimeError(f"source snapshot changed during descriptor admission: {path}")
         _require_path_identity(path, expected_identity, label="source snapshot")
-        alias = descriptor_alias_path(fd)
-        if alias is None:
-            raise RuntimeError(f"no validated descriptor alias for source snapshot: {path}")
         with closing(
-            open_readonly_connection(path, opened_main_fd=fd, timeout_class="background-read", validate_schema=False)
+            open_readonly_connection(
+                path, opened_main_identity=fd, timeout_class="background-read", validate_schema=False
+            )
         ) as conn:
             yield conn
     finally:
-        os.close(fd)
+        fd.close()
 
 
 def source_revision_snapshot(archive_root: Path) -> str:
@@ -1693,8 +1689,8 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
     tier: it rewrites the database file from the WAL and empties the WAL. It
     is also the one writable open in this module that the connection-level
     guard structurally cannot see. The open goes through
-    ``/proc/self/fd/N`` -- deliberately, so the checked descriptor cannot be
-    swapped between validation and ``sqlite3.connect`` -- and
+    a pinned, identity-verified path. Linux aliases can have descriptor numbers,
+    and
     ``guarded_archive_tier_path`` decides tier membership from the *file
     name*, which for that alias is a descriptor number and never ``index.db``.
 
@@ -1704,34 +1700,32 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
     assertion, and every caller already knows which archive it is promoting
     into (polylogue-8qm4k AC1).
     """
-    from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+    from polylogue.storage.sqlite.file_identity import open_sqlite_identity
     from polylogue.storage.sqlite.write_lease import require_write_lease
 
     require_write_lease(f"index generation {label} WAL checkpoint({path})", archive_root=archive_root)
-    fd = -1
-    reopened_fd = -1
+    fd = None
+    reopened_fd = None
     try:
         open_path = path.resolve(strict=True)
-        fd = open_sqlite_identity_descriptor(open_path)
-        before = os.fstat(fd)
-        reopened_fd = open_sqlite_identity_descriptor(open_path)
-        after = os.fstat(reopened_fd)
+        fd = open_sqlite_identity(open_path)
+        before = fd.stat()
+        reopened_fd = open_sqlite_identity(open_path)
+        after = reopened_fd.stat()
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise RuntimeError(f"{label} changed during descriptor validation: {path}")
-        os.close(reopened_fd)
-        reopened_fd = -1
-        alias = descriptor_alias_path(fd)
-        if alias is None:
-            raise RuntimeError(f"no validated descriptor alias for {label}: {path}")
-        with closing(sqlite3.connect(str(alias))) as conn:
+        reopened_fd.close()
+        reopened_fd = None
+        with closing(sqlite3.connect(str(fd.sqlite_path()))) as conn:
+            fd.assert_unchanged()
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     except OSError as exc:
         raise RuntimeError(f"cannot securely open {label}: {path}") from exc
     finally:
-        if reopened_fd >= 0:
-            os.close(reopened_fd)
-        if fd >= 0:
-            os.close(fd)
+        if reopened_fd is not None:
+            reopened_fd.close()
+        if fd is not None:
+            fd.close()
     if int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
 

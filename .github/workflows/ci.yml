@@ -49,6 +49,32 @@ jobs:
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
 
+  sqlite-identity-macos:
+    # Darwin must preserve live SQLite locks without Linux O_PATH or /proc.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.14"
+      - run: uv sync --extra dev --group audit --frozen
+      - name: Verify native SQLite identity, physical copy, and kernel locks
+        run: >-
+          uv run devtools test --runner isolated --on-default-branch -q -n 0
+          tests/unit/storage/test_sqlite_inode_locks.py
+          tests/unit/storage/test_connection_profile.py::test_open_readonly_connection_uses_descriptor_bound_database
+          tests/unit/storage/test_connection_profile.py::test_open_readonly_connection_refuses_without_descriptor_bound_path
+          tests/unit/storage/test_connection_profile.py::test_open_readonly_connection_rejects_immutable_with_descriptor
+        env:
+          POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
+      - name: Retain exact Darwin verification receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sqlite-identity-macos-receipt
+          path: .cache/verify/runs/
+          if-no-files-found: warn
+
   interactive-pty:
     # PTY tests need a controlling terminal and must not share xdist workers.
     timeout-minutes: 15

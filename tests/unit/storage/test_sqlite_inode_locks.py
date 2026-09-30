@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -30,11 +31,19 @@ from polylogue.storage.sqlite.audit_leaf import (
     open_verified_sqlite_read_connection,
     open_verified_sqlite_write_connection,
 )
+from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity
 from polylogue.storage.sqlite.migration_runner import _validate_live_source_fingerprint
 from tests.infra import workload_artifacts
 from tests.infra.sqlite_lock_probe import sqlite_lock_state
 
 pytestmark = pytest.mark.uses_real_clock
+
+
+@pytest.fixture(params=["linux_identity", "portable_custody"], autouse=True)
+def identity_platform(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing O_PATH exercises custody throughout every production sibling."""
+    if request.param == "portable_custody":
+        monkeypatch.delattr(os, "O_PATH", raising=False)
 
 
 def _database(path: Path) -> None:
@@ -265,7 +274,9 @@ def test_snapshot_file_set_hashing_preserves_live_index_locks(tmp_path: Path) ->
     _database(path)
     with _live_reader(path):
         with open_index_file_set(path) as files:
-            result = snapshot_index_file_set(path, opened_main_fd=files.main_fd, opened_sidecar_fds=files.sidecar_fds)
+            result = snapshot_index_file_set(
+                path, opened_main_identity=files.main_identity, opened_sidecar_identities=files.sidecar_identities
+            )
             assert result["observation_complete"]
             _assert_protected(path)
         _assert_protected(path)
@@ -283,7 +294,7 @@ def test_fixture_inode_hashing_and_copy_preserve_live_source_locks(tmp_path: Pat
             digest = workload_artifacts._sha256_fd(descriptor)
             _assert_protected(path)
         finally:
-            os.close(descriptor)
+            workload_artifacts._close_file(descriptor)
         _assert_protected(path)
         sidecar = Path(str(path) + "-shm")
         descriptor = workload_artifacts._open_file_fd(sidecar)
@@ -291,7 +302,7 @@ def test_fixture_inode_hashing_and_copy_preserve_live_source_locks(tmp_path: Pat
             assert workload_artifacts._sha256_fd(descriptor)
             _assert_protected(path)
         finally:
-            os.close(descriptor)
+            workload_artifacts._close_file(descriptor)
         directory = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
         try:
             for leaf in (path, sidecar):
@@ -308,8 +319,10 @@ def test_sqlite_descriptor_boundary_refuses_lock_releasing_file_handles(tmp_path
     path = tmp_path / "source.db"
     _database(path)
     with path.open("rb") as descriptor:
-        with pytest.raises(ValueError, match="O_PATH identity descriptor"):
-            connection_profile.open_readonly_connection(path, opened_main_fd=descriptor.fileno(), validate_schema=False)
+        with pytest.raises(ValueError, match="SQLiteFileIdentity"):
+            connection_profile.open_readonly_connection(
+                path, opened_main_identity=descriptor.fileno(), validate_schema=False
+            )
 
 
 def test_schema_census_hash_preserves_an_existing_tier_readers_locks(tmp_path: Path) -> None:
@@ -320,3 +333,127 @@ def test_schema_census_hash_preserves_an_existing_tier_readers_locks(tmp_path: P
         census = capture_schema_census(tmp_path, observed_at_ns=0, count_rows=False)
         _assert_protected(path)
     assert next(tier for tier in census.tiers if tier.tier.value == "source").file_sha256 == expected
+
+
+def test_custody_keeps_selected_inode_pinned_and_refuses_replacement(tmp_path: Path) -> None:
+    """Child custody survives rename; opening a replacement cannot reuse its identity."""
+    path = tmp_path / "source.db"
+    _database(path)
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    identity = SQLiteFileIdentity(path, use_custodian=True)
+    try:
+        selected = identity.stat()
+        path.rename(tmp_path / "displaced.db")
+        _database(path)
+        assert identity.stat().st_ino == selected.st_ino
+        assert identity.physical_read(copy_to=None, copy_exclusive=False, copy_directory_fd=None)["sha256"] == expected
+        with pytest.raises(OSError) as error:
+            connection_profile.open_readonly_connection(path, opened_main_identity=identity, validate_schema=False)
+        assert error.value.errno == errno.ESTALE
+        assert identity._custodian is not None
+        child = identity._custodian.child
+        assert child.poll() is None
+    finally:
+        identity.close()
+    assert child.returncode is not None
+
+
+def test_custody_follows_pinned_directory_rename(tmp_path: Path) -> None:
+    directory = tmp_path / "selected"
+    directory.mkdir()
+    path = directory / "source.db"
+    _database(path)
+    with SQLiteFileIdentity(path, use_custodian=True) as identity:
+        directory.rename(tmp_path / "renamed")
+        with closing(
+            connection_profile.open_readonly_connection(path, opened_main_identity=identity, validate_schema=False)
+        ) as reader:
+            assert reader.execute("SELECT raw_id FROM raw_sessions").fetchone() == ("neutral",)
+
+
+def test_custody_rechecks_identity_after_sqlite_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "source.db"
+    _database(path)
+    original = connection_profile.connect_measured
+    connections = []
+
+    def substitute_after_open(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = original(*args, **kwargs)
+        connections.append(connection)
+        path.rename(tmp_path / "displaced.db")
+        _database(path)
+        return connection
+
+    with SQLiteFileIdentity(path, use_custodian=True) as identity:
+        monkeypatch.setattr(connection_profile, "connect_measured", substitute_after_open)
+        with pytest.raises(OSError) as error:
+            connection_profile.open_readonly_connection(path, opened_main_identity=identity, validate_schema=False)
+        assert error.value.errno == errno.ESTALE
+        with pytest.raises(sqlite3.ProgrammingError):
+            connections[0].execute("SELECT 1")
+
+
+def test_custody_cancelled_copy_reaps_owner_and_preserves_parent_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "source.db"
+    destination = tmp_path / "partial.db"
+    _database(path)
+    original_read = os.read
+    cancelled = threading.Event()
+
+    def cancel_at_progress(descriptor: int, size: int) -> bytes:
+        chunk = original_read(descriptor, size)
+        if b'"progress_bytes"' in chunk:
+            cancelled.set()
+        return chunk
+
+    with _live_reader(path), SQLiteFileIdentity(path, use_custodian=True) as identity:
+        assert identity._custodian is not None
+        child = identity._custodian.child
+        token = compute_cancel.set(cancelled)
+        monkeypatch.setattr(os, "read", cancel_at_progress)
+        try:
+            with pytest.raises(OSError) as error:
+                lock_isolated_file_read.read_sqlite_file_in_lock_isolated_process(
+                    path, opened_identity=identity, copy_to=destination
+                )
+            assert error.value.errno == errno.ECANCELED
+        finally:
+            compute_cancel.reset(token)
+        assert child.returncode is not None
+        _assert_protected(path)
+    # The owning operation, rather than the physical reader, removes partial output.
+    destination.unlink(missing_ok=True)
+    assert not destination.exists()
+
+
+def test_physical_copy_preserves_metadata_and_supported_attributes(tmp_path: Path) -> None:
+    """Native macOS flags and Linux xattrs survive the same production copy."""
+    path = tmp_path / "source.db"
+    destination = tmp_path / "snapshot.db"
+    _database(path)
+    path.chmod(0o640)
+    os.utime(path, ns=(1_600_000_000_123_456_789, 1_600_000_001_987_654_321))
+    attributes = hasattr(os, "setxattr")
+    if attributes:
+        try:
+            os.setxattr(path, "user.polylogue-neutral", b"synthetic metadata")
+        except OSError as exc:
+            if exc.errno != errno.ENOTSUP:
+                raise
+            attributes = False
+    if hasattr(os, "chflags"):
+        os.chflags(path, stat.UF_NODUMP)
+    before = path.stat()
+    with _live_reader(path):
+        result = lock_isolated_file_read.read_sqlite_file_in_lock_isolated_process(path, copy_to=destination)
+        _assert_protected(path)
+    after = destination.stat()
+    assert after.st_mode == before.st_mode
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert after.st_size == result.size_bytes
+    if attributes:
+        assert os.getxattr(destination, "user.polylogue-neutral") == b"synthetic metadata"
+    if hasattr(before, "st_flags"):
+        assert after.st_flags == before.st_flags

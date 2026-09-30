@@ -62,7 +62,7 @@ from polylogue.storage.blob_publication import abandon_blob_publication_receipts
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, schema_identity
-from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity, open_sqlite_identity
 from polylogue.storage.sqlite.lock_isolated_file_read import read_sqlite_file_in_lock_isolated_process
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
 from tests.infra.workload_declarations import (
@@ -532,16 +532,16 @@ class SeededArchiveQueryLease:
         if not read_only:
             raise RuntimeError("query-only capability refuses write-capable connections")
         self._assert_current()
-        index_fd = -1
+        index_fd = None
         try:
-            index_fd = _open_file_fd(self.path)
+            index_fd = open_sqlite_identity(self.path)
             self._assert_current()
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-            return ArchiveStore.open_existing(self.root, read_only=True, opened_main_fd=index_fd)
+            return ArchiveStore.open_existing(self.root, read_only=True, opened_main_identity=index_fd)
         finally:
-            if index_fd >= 0:
-                os.close(index_fd)
+            if index_fd is not None:
+                _close_file(index_fd)
 
     def close(self) -> None:
         """Finalize the capability and refuse later opens."""
@@ -1178,9 +1178,9 @@ def _configured_archive_root(root: Path) -> Iterator[None]:
             os.environ["POLYLOGUE_ARCHIVE_ROOT"] = previous
 
 
-def _sha256_fd(fd: int) -> str:
-    if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_PATH:
-        return read_sqlite_file_in_lock_isolated_process(Path("/proc/self/fd") / str(fd), opened_identity_fd=fd).sha256
+def _sha256_fd(fd: int | SQLiteFileIdentity) -> str:
+    if isinstance(fd, SQLiteFileIdentity):
+        return read_sqlite_file_in_lock_isolated_process(Path(fd.name), opened_identity=fd).sha256
     digest = hashlib.sha256()
     os.lseek(fd, 0, os.SEEK_SET)
     while True:
@@ -1190,14 +1190,25 @@ def _sha256_fd(fd: int) -> str:
         digest.update(chunk)
 
 
-def _open_file_fd(path: Path) -> int:
+def _open_file_fd(path: Path) -> int | SQLiteFileIdentity:
     if path.name in _ARCHIVE_SQLITE_FILE_NAMES:
         parent, leaf = _open_pinned_parent(path)
         try:
-            return open_sqlite_identity_descriptor(leaf, dir_fd=parent)
+            return open_sqlite_identity(leaf, dir_fd=parent)
         finally:
             os.close(parent)
     return _open_no_follow(path, os.O_RDONLY | os.O_NONBLOCK)
+
+
+def _file_stat(file: int | SQLiteFileIdentity) -> os.stat_result:
+    return file.stat() if isinstance(file, SQLiteFileIdentity) else os.fstat(file)
+
+
+def _close_file(file: int | SQLiteFileIdentity) -> None:
+    if isinstance(file, SQLiteFileIdentity):
+        file.close()
+    else:
+        os.close(file)
 
 
 def _sha256(path: Path) -> str:
@@ -1205,7 +1216,7 @@ def _sha256(path: Path) -> str:
     try:
         return _sha256_fd(fd)
     finally:
-        os.close(fd)
+        _close_file(fd)
 
 
 def _is_reserved_root_file(path: Path, root: Path) -> bool:
@@ -1316,11 +1327,11 @@ def _safe_stat(path: Path) -> os.stat_result:
 def _chmod_at(directory_fd: int, leaf: str, mode: int) -> None:
     """Change mode through an O_NOFOLLOW descriptor, never a symlink target."""
     if leaf in _ARCHIVE_SQLITE_FILE_NAMES:
-        descriptor = open_sqlite_identity_descriptor(leaf, dir_fd=directory_fd)
+        descriptor = open_sqlite_identity(leaf, dir_fd=directory_fd)
         try:
-            os.chmod(Path("/proc/self/fd") / str(descriptor), mode)
+            descriptor.chmod(mode)
         finally:
-            os.close(descriptor)
+            descriptor.close()
         return
     fd = os.open(leaf, os.O_RDONLY | os.O_NONBLOCK | _O_NOFOLLOW, dir_fd=directory_fd)
     try:
@@ -1508,18 +1519,19 @@ def _measure_rows(root: Path) -> dict[str, int]:
         return {}
     counts: dict[str, int] = {}
     try:
-        db_fd = _open_no_follow(index_path, os.O_RDONLY)
+        db_fd = open_sqlite_identity(index_path)
     except OSError:
         return {}
     try:
-        connection = sqlite3.connect(f"file:/proc/self/fd/{db_fd}?mode=ro", uri=True)
+        connection = sqlite3.connect(f"{db_fd.sqlite_path().as_uri()}?mode=ro", uri=True)
         with contextlib.closing(connection) as conn:
+            db_fd.assert_unchanged()
             for table in _MEASURED_ROW_TABLES:
                 counts[table] = int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
     except sqlite3.Error:
         return {}
     finally:
-        os.close(db_fd)
+        db_fd.close()
     return counts
 
 
@@ -1707,12 +1719,13 @@ def _sqlite_integrity(root: Path) -> None:
     for name in _ARCHIVE_DB_NAMES:
         path = root / name
         try:
-            db_fd = _open_no_follow(path, os.O_RDONLY)
+            db_fd = open_sqlite_identity(path)
         except FileNotFoundError:
             continue
         try:
-            connection = sqlite3.connect(f"file:/proc/self/fd/{db_fd}?mode={'ro' if read_only else 'rw'}", uri=True)
+            connection = sqlite3.connect(f"{db_fd.sqlite_path().as_uri()}?mode={'ro' if read_only else 'rw'}", uri=True)
             with contextlib.closing(connection) as conn, conn:
+                db_fd.assert_unchanged()
                 quick = conn.execute("PRAGMA quick_check").fetchone()
                 foreign = conn.execute("PRAGMA foreign_key_check").fetchall()
                 if quick != ("ok",) or foreign:
@@ -1726,7 +1739,7 @@ def _sqlite_integrity(root: Path) -> None:
                 raise RuntimeError(f"invalid seeded archive tier {name}") from exc
             raise
         finally:
-            os.close(db_fd)
+            db_fd.close()
         checked.append(name)
     for name in checked:
         for suffix in ("-wal", "-shm"):
@@ -3251,17 +3264,17 @@ def _copy_tree(source: Path, destination: Path) -> None:
                             os.close(child_dst)
                     elif stat.S_ISREG(info.st_mode):
                         if entry.name in _ARCHIVE_SQLITE_FILE_NAMES:
-                            in_fd = open_sqlite_identity_descriptor(entry.name, dir_fd=src)
+                            in_fd = open_sqlite_identity(entry.name, dir_fd=src)
                             try:
                                 read_sqlite_file_in_lock_isolated_process(
                                     Path(entry.name),
-                                    opened_identity_fd=in_fd,
+                                    opened_identity=in_fd,
                                     copy_to=Path(entry.name),
                                     copy_directory_fd=dst,
                                     copy_exclusive=True,
                                 )
                             finally:
-                                os.close(in_fd)
+                                in_fd.close()
                             continue
                         in_fd = os.open(entry.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=src)
                         out_fd = -1
@@ -3320,13 +3333,13 @@ def _authenticate_clone_copy(
         raise ValueError("clone contains unexpected or missing files")
 
     def authenticate_pair(relative: str, size: int, digest: str) -> None:
-        source_fd = -1
-        clone_fd = -1
+        source_fd = None
+        clone_fd = None
         try:
             source_fd = _open_file_fd(source.root / relative)
             clone_fd = _open_file_fd(destination / relative)
-            source_stat = os.fstat(source_fd)
-            clone_stat = os.fstat(clone_fd)
+            source_stat = _file_stat(source_fd)
+            clone_stat = _file_stat(clone_fd)
             if not stat.S_ISREG(clone_stat.st_mode) or clone_stat.st_size != size:
                 raise ValueError(f"clone file metadata mismatch: {relative}")
             if (source_stat.st_dev, source_stat.st_ino) == (clone_stat.st_dev, clone_stat.st_ino):
@@ -3334,10 +3347,10 @@ def _authenticate_clone_copy(
             if _sha256_fd(clone_fd) != digest:
                 raise ValueError(f"clone file content mismatch: {relative}")
         finally:
-            if source_fd >= 0:
-                os.close(source_fd)
-            if clone_fd >= 0:
-                os.close(clone_fd)
+            if source_fd is not None:
+                _close_file(source_fd)
+            if clone_fd is not None:
+                _close_file(clone_fd)
 
     for relative, size, digest in expected:
         authenticate_pair(relative, size, digest)
@@ -3345,8 +3358,8 @@ def _authenticate_clone_copy(
     source_manifest_fd = -1
     clone_manifest_fd = -1
     try:
-        source_manifest_fd = _open_file_fd(source.root / "manifest.json")
-        clone_manifest_fd = _open_file_fd(destination / "manifest.json")
+        source_manifest_fd = _open_no_follow(source.root / "manifest.json", os.O_RDONLY | os.O_NONBLOCK)
+        clone_manifest_fd = _open_no_follow(destination / "manifest.json", os.O_RDONLY | os.O_NONBLOCK)
         source_manifest_stat = os.fstat(source_manifest_fd)
         clone_manifest_stat = os.fstat(clone_manifest_fd)
         if (source_manifest_stat.st_dev, source_manifest_stat.st_ino) == (

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import stat
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -13,7 +12,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any
 
-from polylogue.storage.sqlite.file_identity import open_sqlite_identity_descriptor
+from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity, open_sqlite_identity
 from polylogue.storage.sqlite.lock_isolated_file_read import read_sqlite_file_in_lock_isolated_process
 
 
@@ -29,9 +28,9 @@ class IndexSnapshotUnsafeSidecarError(RuntimeError):
 class OpenedIndexFileSet:
     """Descriptors retained while SQLite and evidence observe one index."""
 
-    main_fd: int
-    sidecar_fds: dict[str, int]
-    _descriptors: list[int] = field(repr=False)
+    main_identity: SQLiteFileIdentity
+    sidecar_identities: dict[str, SQLiteFileIdentity]
+    _identities: list[SQLiteFileIdentity] = field(repr=False)
 
     def capture_sidecars(self, index_db: Path) -> None:
         """Retain every safe sidecar currently visible after SQLite opens."""
@@ -41,8 +40,8 @@ class OpenedIndexFileSet:
                 path_metadata = path.stat(follow_symlinks=False)
             except FileNotFoundError:
                 continue
-            if suffix in self.sidecar_fds:
-                handle_metadata = os.fstat(self.sidecar_fds[suffix])
+            if suffix in self.sidecar_identities:
+                handle_metadata = self.sidecar_identities[suffix].stat()
                 if (path_metadata.st_dev, path_metadata.st_ino) != (
                     handle_metadata.st_dev,
                     handle_metadata.st_ino,
@@ -50,14 +49,14 @@ class OpenedIndexFileSet:
                     raise IndexSnapshotUnsafeSidecarError(f"selected index sidecar was replaced: {path}")
                 continue
             descriptor = _open_regular_index_file(path, sidecar=True)
-            self._descriptors.append(descriptor)
-            self.sidecar_fds[suffix] = descriptor
+            self._identities.append(descriptor)
+            self.sidecar_identities[suffix] = descriptor
 
 
-def _open_regular_index_file(path: Path, *, sidecar: bool, missing_ok: bool = False) -> int:
+def _open_regular_index_file(path: Path, *, sidecar: bool, missing_ok: bool = False) -> SQLiteFileIdentity:
     """Open one selected index object without blocking on non-regular files."""
     try:
-        descriptor = open_sqlite_identity_descriptor(path)
+        descriptor = open_sqlite_identity(path)
     except FileNotFoundError:
         if missing_ok:
             raise
@@ -69,43 +68,41 @@ def _open_regular_index_file(path: Path, *, sidecar: bool, missing_ok: bool = Fa
         label = "selected index sidecar" if sidecar else "selected index"
         raise error(f"cannot open {label} safely: {path}") from exc
     try:
-        metadata = os.fstat(descriptor)
+        metadata = descriptor.stat()
         if not stat.S_ISREG(metadata.st_mode):
             error = IndexSnapshotUnsafeSidecarError if sidecar else IndexSnapshotRaceError
             label = "selected index sidecar" if sidecar else "selected index"
             raise error(f"{label} is not a regular file: {path}")
         return descriptor
     except BaseException:
-        os.close(descriptor)
+        descriptor.close()
         raise
 
 
 @contextmanager
 def open_index_file_set(index_db: Path) -> Iterator[OpenedIndexFileSet]:
     """Open the selected database and existing sidecars without following links."""
-    descriptors: list[int] = []
+    descriptors: list[SQLiteFileIdentity] = []
     try:
-        main_fd = _open_regular_index_file(index_db, sidecar=False)
-        descriptors.append(main_fd)
-        file_set = OpenedIndexFileSet(main_fd=main_fd, sidecar_fds={}, _descriptors=descriptors)
+        main_identity = _open_regular_index_file(index_db, sidecar=False)
+        descriptors.append(main_identity)
+        file_set = OpenedIndexFileSet(main_identity=main_identity, sidecar_identities={}, _identities=descriptors)
         file_set.capture_sidecars(index_db)
         yield file_set
     finally:
         for descriptor in reversed(descriptors):
-            os.close(descriptor)
+            descriptor.close()
 
 
 @contextmanager
-def open_index_file_handle(index_db: Path) -> Iterator[int]:
+def open_index_file_handle(index_db: Path) -> Iterator[SQLiteFileIdentity]:
     """Keep the selected main database inode open for evidence snapshots."""
     with open_index_file_set(index_db) as file_set:
-        yield file_set.main_fd
+        yield file_set.main_identity
 
 
-def _file_sha256_descriptor(descriptor: int) -> str:
-    return read_sqlite_file_in_lock_isolated_process(
-        Path("/proc/self/fd") / str(descriptor), opened_identity_fd=descriptor
-    ).sha256
+def _file_sha256_descriptor(descriptor: SQLiteFileIdentity) -> str:
+    return read_sqlite_file_in_lock_isolated_process(Path(descriptor.name), opened_identity=descriptor).sha256
 
 
 def data_version(conn: Connection) -> int:
@@ -144,8 +141,8 @@ def snapshot_identity(
 def snapshot_index_file_set(
     index_db: Path,
     *,
-    opened_main_fd: int | None = None,
-    opened_sidecar_fds: Mapping[str, int] | None = None,
+    opened_main_identity: SQLiteFileIdentity | None = None,
+    opened_sidecar_identities: Mapping[str, SQLiteFileIdentity] | None = None,
 ) -> dict[str, Any]:
     """Capture one selected index and its SQLite sidecars under one contract.
 
@@ -158,7 +155,7 @@ def snapshot_index_file_set(
     complete = True
     for path in paths:
         suffix = "" if path == index_db else path.name.removeprefix(index_db.name)
-        if path != index_db and opened_sidecar_fds is not None and suffix not in opened_sidecar_fds:
+        if path != index_db and opened_sidecar_identities is not None and suffix not in opened_sidecar_identities:
             try:
                 sidecar_metadata = path.stat(follow_symlinks=False)
             except FileNotFoundError:
@@ -168,10 +165,10 @@ def snapshot_index_file_set(
                 raise IndexSnapshotUnsafeSidecarError(f"selected index sidecar is not a regular file: {path}")
             late_sidecar_fd = _open_regular_index_file(path, sidecar=True)
             try:
-                late_sidecar_metadata = os.fstat(late_sidecar_fd)
+                late_sidecar_metadata = late_sidecar_fd.stat()
                 late_sidecar_digest = _file_sha256_descriptor(late_sidecar_fd)
             finally:
-                os.close(late_sidecar_fd)
+                late_sidecar_fd.close()
             complete = False
             files.append(
                 {
@@ -185,9 +182,9 @@ def snapshot_index_file_set(
                 }
             )
             continue
-        opened_fd = opened_main_fd if path == index_db else (opened_sidecar_fds or {}).get(suffix)
+        opened_fd = opened_main_identity if path == index_db else (opened_sidecar_identities or {}).get(suffix)
         if opened_fd is not None:
-            handle_metadata = os.fstat(opened_fd)
+            handle_metadata = opened_fd.stat()
             try:
                 path_metadata_before = path.stat(follow_symlinks=False)
             except FileNotFoundError:
@@ -221,7 +218,7 @@ def snapshot_index_file_set(
                     error = IndexSnapshotRaceError if path == index_db else IndexSnapshotUnsafeSidecarError
                     raise error(f"{label} was replaced during snapshot observation: {path}")
                 path_present = True
-            handle_after = os.fstat(opened_fd)
+            handle_after = opened_fd.stat()
             unchanged = (handle_metadata.st_size, handle_metadata.st_mtime_ns) == (
                 handle_after.st_size,
                 handle_after.st_mtime_ns,
@@ -247,7 +244,7 @@ def snapshot_index_file_set(
             files.append({"path": str(path), "present": False})
             continue
         try:
-            metadata_before = os.fstat(safe_fd)
+            metadata_before = safe_fd.stat()
             path_metadata_before = path.stat(follow_symlinks=False)
             if (path_metadata_before.st_dev, path_metadata_before.st_ino) != (
                 metadata_before.st_dev,
@@ -262,7 +259,7 @@ def snapshot_index_file_set(
             files.append({"path": str(path), "present": False, "changed_during_observation": True})
             continue
         finally:
-            os.close(safe_fd)
+            safe_fd.close()
         unchanged = (
             metadata_before.st_dev,
             metadata_before.st_ino,

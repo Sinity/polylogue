@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import parse_qs, quote, urlsplit
 
 from polylogue.storage.io_phase_metrics import connect_measured
-from polylogue.storage.sqlite.file_identity import require_sqlite_identity_descriptor
+from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity, require_sqlite_identity
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 if TYPE_CHECKING:
@@ -1114,30 +1114,6 @@ def open_daemon_connection(
     return conn
 
 
-def descriptor_alias_path(opened_fd: int) -> Path | None:
-    """Return a validated portable pathname alias for an opened descriptor."""
-
-    descriptor_metadata = os.fstat(opened_fd)
-    for directory in ("/dev/fd", "/proc/self/fd"):
-        candidate = Path(directory) / str(opened_fd)
-        try:
-            alias_metadata = os.stat(candidate)
-        except OSError:
-            continue
-        if (alias_metadata.st_dev, alias_metadata.st_ino) == (
-            descriptor_metadata.st_dev,
-            descriptor_metadata.st_ino,
-        ):
-            return candidate
-    return None
-
-
-def _descriptor_database_uri(opened_main_fd: int, suffix: str) -> str | None:
-    """Return a validated descriptor URI on platforms that expose one."""
-    alias = descriptor_alias_path(opened_main_fd)
-    return None if alias is None else f"file:{alias}{suffix}"
-
-
 class LiveGenerationImmutableError(ValueError):
     """An ``immutable=1`` open was asked of a file that still carries live state.
 
@@ -1187,7 +1163,7 @@ def open_readonly_connection(
     *,
     timeout: float | None = None,
     immutable: bool = False,
-    opened_main_fd: int | None = None,
+    opened_main_identity: SQLiteFileIdentity | None = None,
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
     profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
@@ -1211,10 +1187,10 @@ def open_readonly_connection(
     helper does not perform it, since the check is specific to how the caller
     obtained the snapshot.
 
-    When ``opened_main_fd`` is supplied, it must be an O_PATH identity descriptor
-    from ``open_sqlite_identity_descriptor``. The reader is bound to that opened
-    inode through a validated ``/dev/fd`` or ``/proc/self/fd`` alias. A caller
-    that needs descriptor binding fails closed when neither alias is available.
+    ``opened_main_identity`` retains a canonical inode and directory pin. Linux
+    uses a validated descriptor alias; portable custody uses the verified native
+    directory child. The selected entry is checked before and after opening;
+    replacement fails before the caller receives a connection.
 
     ``validate_schema=False`` is reserved for diagnostic readers that need to
     inspect a tier before reporting its schema mismatch. It does not change the
@@ -1237,7 +1213,7 @@ def open_readonly_connection(
             )
         profile = SEALED_READ_CONNECTION_PROFILE
     immutable = immutable or profile.immutable
-    if immutable and opened_main_fd is None:
+    if immutable and opened_main_identity is None:
         _refuse_immutable_over_live_state(path)
     # ``None`` selects the profile's lock wait. An explicit value is the
     # caller's bound and replaces the profile's busy_timeout as well: the
@@ -1245,23 +1221,22 @@ def open_readonly_connection(
     explicit_timeout = timeout is not None
     timeout = profile.timeout_seconds if timeout is None else timeout
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
-    if opened_main_fd is not None and immutable:
+    if opened_main_identity is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
-    if opened_main_fd is not None:
-        require_sqlite_identity_descriptor(opened_main_fd)
-    opened_fd = opened_main_fd
+    if opened_main_identity is not None:
+        require_sqlite_identity(opened_main_identity)
+    opened_fd = opened_main_identity
     if opened_fd is None:
         # Percent-encode the path: an unescaped '?' or '#' in a filename would
         # otherwise be parsed as the URI's own query or fragment delimiter and
         # silently open a different file, or none.
         database_uri = f"file:{quote(str(path))}{suffix}"
     else:
-        descriptor_uri = _descriptor_database_uri(opened_fd, suffix)
-        if descriptor_uri is None:
-            raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
-        database_uri = descriptor_uri
+        database_uri = f"{opened_fd.sqlite_path().as_uri()}{suffix}"
     conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
     try:
+        if opened_main_identity is not None:
+            opened_main_identity.assert_unchanged()
         if validate_schema:
             _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
         for stmt in profile.pragma_statements:
@@ -1498,7 +1473,7 @@ def open_profiled_connection(
     profile: SQLiteConnectionProfile,
     timeout: float | None = None,
     immutable: bool = False,
-    opened_main_fd: int | None = None,
+    opened_main_identity: SQLiteFileIdentity | None = None,
     tier: ArchiveTier | None = None,
 ) -> sqlite3.Connection:
     """Open a connection from an explicit named profile.
@@ -1514,11 +1489,11 @@ def open_profiled_connection(
             path,
             timeout=profile.timeout_seconds if timeout is None else timeout,
             immutable=immutable,
-            opened_main_fd=opened_main_fd,
+            opened_main_identity=opened_main_identity,
             tier=tier,
             profile=profile,
         )
-    if immutable or opened_main_fd is not None:
+    if immutable or opened_main_identity is not None:
         raise ValueError("writer profiles cannot use immutable or descriptor-bound reads")
     return open_connection(
         path,
@@ -2110,7 +2085,6 @@ __all__ = [
     "pinning_read_frames",
     "read_frame",
     "connection_context",
-    "descriptor_alias_path",
     "open_sealed_staging_connection",
     "one_shot_diagnostic_read",
     "log_mapped_bytes_budget_check",

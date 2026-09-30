@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import sqlite3
 from pathlib import Path
@@ -16,6 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity
 from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 from tests.infra.frozen_clock import FrozenClock
 
@@ -606,8 +608,8 @@ def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash
     def commit_before_first_file_hash(
         index_db: Path,
         *,
-        opened_main_fd: int | None = None,
-        opened_sidecar_fds: dict[str, int] | None = None,
+        opened_main_identity: SQLiteFileIdentity | None = None,
+        opened_sidecar_identities: dict[str, SQLiteFileIdentity] | None = None,
     ) -> dict[str, object]:
         nonlocal snapshot_calls
         if snapshot_calls == 0:
@@ -616,8 +618,8 @@ def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash
         snapshot_calls += 1
         return original_snapshot_identity(
             index_db,
-            opened_main_fd=opened_main_fd,
-            opened_sidecar_fds=opened_sidecar_fds,
+            opened_main_identity=opened_main_identity,
+            opened_sidecar_identities=opened_sidecar_identities,
         )
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", commit_before_first_file_hash)
@@ -647,8 +649,8 @@ def test_lineage_validation_rejects_unlinked_selected_index_as_incomplete(
     def unlink_before_observation(
         index_db: Path,
         *,
-        opened_main_fd: int | None = None,
-        opened_sidecar_fds: dict[str, int] | None = None,
+        opened_main_identity: SQLiteFileIdentity | None = None,
+        opened_sidecar_identities: dict[str, SQLiteFileIdentity] | None = None,
     ) -> dict[str, object]:
         nonlocal unlinked
         if not unlinked:
@@ -656,8 +658,8 @@ def test_lineage_validation_rejects_unlinked_selected_index_as_incomplete(
             unlinked = True
         return original_snapshot_identity(
             index_db,
-            opened_main_fd=opened_main_fd,
-            opened_sidecar_fds=opened_sidecar_fds,
+            opened_main_identity=opened_main_identity,
+            opened_sidecar_identities=opened_sidecar_identities,
         )
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", unlink_before_observation)
@@ -684,9 +686,11 @@ def test_lineage_validation_rejects_selected_index_replacement_after_reader_open
     real_open = open_readonly_connection
     opened_readers = 0
 
-    def replace_after_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
+    def replace_after_reader_open(
+        path: Path, *, opened_main_identity: SQLiteFileIdentity | None = None
+    ) -> sqlite3.Connection:
         nonlocal opened_readers
-        connection = real_open(path, opened_main_fd=opened_main_fd)
+        connection = real_open(path, opened_main_identity=opened_main_identity)
         opened_readers += 1
         if opened_readers == 2:
             replacement_db = _make_index_db(replacement_root)
@@ -700,10 +704,10 @@ def test_lineage_validation_rejects_selected_index_replacement_after_reader_open
         lineage_validation.build_report(_args(archive_root))
 
 
-def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement_and_restoration(
+def test_lineage_validation_refuses_path_replacement_before_reader_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The production reader must use the inode opened before the pathname mutation."""
+    """A temporary replacement cannot produce a successful evidence report."""
     archive_root = tmp_path / "archive"
     selected_db = _make_index_db(archive_root)
     replacement_root = tmp_path / "replacement"
@@ -711,7 +715,9 @@ def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement
     real_open = open_readonly_connection
     swapped = False
 
-    def replace_before_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
+    def replace_before_reader_open(
+        path: Path, *, opened_main_identity: SQLiteFileIdentity | None = None
+    ) -> sqlite3.Connection:
         nonlocal swapped
         if not swapped:
             replacement_db = _make_index_db(replacement_root)
@@ -724,19 +730,22 @@ def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement
                 replacement.commit()
             selected_db.rename(original_path)
             replacement_db.rename(selected_db)
-            connection = real_open(path, opened_main_fd=opened_main_fd)
-            selected_db.rename(replacement_db)
-            original_path.rename(selected_db)
             swapped = True
-            return connection
-        return real_open(path, opened_main_fd=opened_main_fd)
+            try:
+                return real_open(path, opened_main_identity=opened_main_identity)
+            finally:
+                selected_db.rename(replacement_db)
+                original_path.rename(selected_db)
+        return real_open(path, opened_main_identity=opened_main_identity)
 
     monkeypatch.setattr(lineage_validation, "open_readonly_connection", replace_before_reader_open)
-    report = lineage_validation.build_report(_args(archive_root))
-
+    out_dir = tmp_path / "refused-evidence"
+    args = _args(archive_root, out_dir=out_dir)
+    with pytest.raises(OSError) as error:
+        lineage_validation.build_report(args)
+    assert error.value.errno == errno.ESTALE
     assert swapped is True
-    assert report["counts"]["physical_sessions"] == 3
-    assert report["snapshot_identity"]["stable"] is True
+    assert not out_dir.exists()
 
 
 def test_lineage_validation_captures_reader_created_sqlite_sidecars(
@@ -752,8 +761,8 @@ def test_lineage_validation_captures_reader_created_sqlite_sidecars(
     def create_sidecars_before_after_snapshot(
         path: Path,
         *,
-        opened_main_fd: int | None = None,
-        opened_sidecar_fds: dict[str, int] | None = None,
+        opened_main_identity: SQLiteFileIdentity | None = None,
+        opened_sidecar_identities: dict[str, SQLiteFileIdentity] | None = None,
     ) -> dict[str, object]:
         nonlocal snapshot_calls
         snapshot_calls += 1
@@ -762,8 +771,8 @@ def test_lineage_validation_captures_reader_created_sqlite_sidecars(
                 Path(f"{path}{suffix}").write_bytes(b"created after reader open")
         return real_snapshot(
             path,
-            opened_main_fd=opened_main_fd,
-            opened_sidecar_fds=opened_sidecar_fds,
+            opened_main_identity=opened_main_identity,
+            opened_sidecar_identities=opened_sidecar_identities,
         )
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", create_sidecars_before_after_snapshot)
