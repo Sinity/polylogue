@@ -37,6 +37,12 @@ class RetryableSessionError(SessionError):
     code = "retryable"
 
 
+class SourceObservationChangedError(SessionError):
+    """The requested observation is no longer available; do not concatenate pages."""
+
+    code = "source_changed"
+
+
 class StaleContinuationError(SessionError):
     """A continuation that cannot resume its original scope; restart the search."""
 
@@ -48,9 +54,9 @@ DEFAULT_SCAN_BYTES = 8 * 1_024 * 1_024
 MAX_CURSOR_BYTES = 8_192
 # Per-page gap entries are bounded; the remainder is summarized in one line.
 MAX_GAP_ENTRIES = 16
-# v1 bound its scope to a digest of the whole enumerated population, so any
-# unrelated append invalidated it. v2 names a retained population snapshot.
-SNAPSHOT_CURSOR_VERSION = 2
+# v3 retains the greedy non-overlap position across every scan partition.
+# Earlier tokens cannot recover that position and must restart the search.
+SNAPSHOT_CURSOR_VERSION = 3
 # Open failures that describe the selected path itself. Anything else (for
 # example EMFILE, ENFILE, ENOMEM, EIO) is systemic and must stay retryable.
 _FILE_SPECIFIC_OPEN_ERRORS = frozenset(
@@ -123,7 +129,7 @@ class OpaqueSessionCursor:
         return state
 
     def decode_snapshot(self, value: Any, scope: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        """Return (snapshot handle, state) for a v2 token bound to exactly ``scope``."""
+        """Return (snapshot handle, state) for a current token bound to exactly ``scope``."""
         body = self._body(value)
         if body.get("v") == 1:
             raise StaleContinuationError("session continuation predates retained search snapshots; restart the search")
@@ -274,15 +280,52 @@ class SessionLogService:
             "truncated": len(rows) > limit,
         }
 
-    def read(self, reference: str, offset: int = 0, max_bytes: int = 64_000) -> dict[str, Any]:
+    def read(
+        self,
+        reference: str,
+        offset: int = 0,
+        max_bytes: int = 64_000,
+        *,
+        expected_observation: str | None = None,
+    ) -> dict[str, Any]:
+        """Read live bytes, or require the observation returned by an earlier page.
+
+        The witness binds the configured source, canonical reference and opened
+        file's stat identity, including ctime to detect rewrites restoring mtime.
+        It is not a content hash or a retained copy. Unbound reads remain useful
+        for live tailing; bound reads refuse any intervening mutation.
+        """
         source, path = self._path_from_reference(reference)
         if offset < 0:
             raise SessionError("offset must not be negative")
         if max_bytes < 1:
             raise SessionError("max_bytes must be positive")
-        with path.open("rb") as handle:
-            handle.seek(offset)
-            data = handle.read(max_bytes + 1)
+        if expected_observation is not None and (
+            len(expected_observation) != 64
+            or any(character not in "0123456789abcdef" for character in expected_observation)
+        ):
+            raise SessionError("expected_observation must be a hexadecimal observation witness")
+        canonical_reference = self._reference(source, path)
+
+        def observation(info: os.stat_result) -> str:
+            identity = (str(source.root), canonical_reference, *_identity(info), info.st_ctime_ns)
+            return hashlib.sha256(OpaqueSessionCursor._canonical(identity)).hexdigest()
+
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(descriptor, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise SessionError("reference does not identify a session JSONL file")
+                witness = observation(before)
+                if expected_observation is not None and not hmac.compare_digest(expected_observation, witness):
+                    raise SourceObservationChangedError("session source changed after the requested observation")
+                handle.seek(offset)
+                data = handle.read(max_bytes + 1)
+                if observation(os.fstat(handle.fileno())) != witness:
+                    raise SourceObservationChangedError("session source changed during read")
+        except OSError as exc:
+            raise RetryableSessionError("session source could not be read; retry the same request") from exc
         truncated = len(data) > max_bytes
         data = data[:max_bytes]
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -292,7 +335,10 @@ class SessionLogService:
             raise SessionError("max_bytes is too small to decode the next UTF-8 sequence; retry with at least 4")
         return {
             "provider": source.provider,
-            "reference": self._reference(source, path),
+            "reference": canonical_reference,
+            "observation": witness,
+            "consistency": "bound" if expected_observation is not None else "live",
+            "mtime_ns": before.st_mtime_ns,
             "offset": offset,
             "bytes": consumed,
             "next_offset": offset + consumed if truncated else None,
@@ -332,22 +378,28 @@ class SessionLogService:
             state["line_start"] = state["offset"] - len(data) + last_newline + 1
 
     @staticmethod
-    def _line_for_match(state: dict[str, int], combined: bytes, match_index: int, replay: int) -> tuple[int, int]:
-        """Return line number and byte start without retaining an entire line."""
-        before = combined[:match_index]
-        line = state["line"] - combined[:replay].count(b"\n") + before.count(b"\n")
-        newline = before.rfind(b"\n")
-        if newline >= 0:
-            return line, state["offset"] - replay + newline + 1
-        return line, state["line_start"]
+    def _line_for_match(state: dict[str, int], combined: bytes, match_index: int, replay: int) -> int:
+        """Count newlines relative to the scan frontier, including replayed bytes."""
+        return state["line"] - combined[:replay].count(b"\n") + combined[:match_index].count(b"\n")
 
     @staticmethod
-    def _snippet(handle: BinaryIO, line_start: int, match_offset: int, query_bytes: int) -> tuple[int, str]:
-        start = max(line_start, match_offset - 200)
-        # Keep the query intact even when the caller supplied a long literal.
+    def _snippet(handle: BinaryIO, match_offset: int, query_bytes: int) -> tuple[int, str]:
+        # Derive context from the match, never the scanner's later line start.
+        # Only the preceding 200 bytes can enter the snippet, even on long lines.
+        start = max(0, match_offset - 200)
         handle.seek(start)
-        data = handle.read(max(2_000, match_offset - start + query_bytes))
-        return start, data.decode("utf-8", errors="replace").rstrip("\r\n")[:2_000]
+        prefix = handle.read(match_offset - start)
+        cut = prefix.rfind(b"\n") + 1
+        while cut < len(prefix) and 0x80 <= prefix[cut] < 0xC0:
+            cut += 1
+        start += cut
+        handle.seek(start)
+        match_end = match_offset - start + query_bytes
+        data = handle.read(max(2_000, match_end))
+        # Trim display-only trailing newlines, but never bytes in the match.
+        kept = max(match_end, len(data.rstrip(b"\r\n")))
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        return start, decoder.decode(data[:kept], final=True)
 
     def _scan_literal(
         self,
@@ -423,7 +475,9 @@ class SessionLogService:
                 rows_before = len(rows)
                 combined = tail + data
                 combined_start = state["offset"] - len(tail)
-                index = 0
+                # Resume greedy, non-overlapping matching at the last accepted
+                # end, not at an arbitrary replay-tail alignment.
+                index = max(0, state.get("after", 0) - combined_start)
                 found = False
                 block_state = state
                 # End of the last match accepted from this block. A full page
@@ -449,14 +503,16 @@ class SessionLogService:
                         if not one_per_file and "after" in page_full_state:
                             page_full_state["after"] = max(state.get("after", 0), accepted_end)
                         break
-                    line, line_start = self._line_for_match(state, combined, index, len(tail))
-                    offset, text = self._snippet(handle, line_start, absolute, len(query_bytes))
+                    line = self._line_for_match(state, combined, index, len(tail))
+                    offset, text = self._snippet(handle, absolute, len(query_bytes))
                     rows.append(
                         {
                             "reference": reference,
                             "line": line,
                             "offset": offset,
-                            "text": text[: min(2_000, max(128, self.max_result_bytes // 4))],
+                            "text": text,
+                            "match_offset": absolute,
+                            "match_end": end,
                             "source_observation": _identity(observed),
                         }
                     )
@@ -482,10 +538,8 @@ class SessionLogService:
                 state = next_file(state)
                 continue
             self._advance_line(state, data)
-            if state.get("after", 0) and state["offset"] >= state["after"]:
-                # Only once the scan has passed every returned match; a short
-                # resumed budget may stop inside the block.
-                state["after"] = 0
+            if "after" in state:
+                state["after"] = max(state["after"], accepted_end)
             if state["offset"] >= observed.st_size:
                 state = next_file(state)
         final_state = page_full_state if page_full_state is not None else state

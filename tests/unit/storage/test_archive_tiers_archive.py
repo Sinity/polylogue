@@ -740,7 +740,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
     assert rows_by_command["absent-linkage"].output_text is None
 
 
-def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pairing(
+def test_session_action_occurrences_keep_parallel_repeated_ids_ambiguous_when_paged(
     tmp_path: Path,
 ) -> None:
     session = ParsedSession(
@@ -806,12 +806,16 @@ def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pai
         first_page = facade.query_session_action_occurrences([session_id], limit=1, offset=0)
         second_page = facade.query_session_action_occurrences([session_id], limit=1, offset=1)
 
-    assert [(row.tool_command, row.output_text) for row in all_rows] == [
-        ("first", "result-one"),
-        ("second", "result-two"),
+    assert [(row.tool_command, row.result_state, row.tool_result_block_id, row.output_text) for row in all_rows] == [
+        ("first", ActionResultState.OUTCOME_UNKNOWN, None, None),
+        ("second", ActionResultState.OUTCOME_UNKNOWN, None, None),
     ]
-    assert [(row.tool_command, row.output_text) for row in first_page] == [("first", "result-one")]
-    assert [(row.tool_command, row.output_text) for row in second_page] == [("second", "result-two")]
+    assert [(row.tool_command, row.result_state) for row in first_page] == [
+        ("first", ActionResultState.OUTCOME_UNKNOWN)
+    ]
+    assert [(row.tool_command, row.result_state) for row in second_page] == [
+        ("second", ActionResultState.OUTCOME_UNKNOWN)
+    ]
 
 
 def test_exact_session_action_count_bounds_pairing_before_global_ranking(
@@ -1028,11 +1032,20 @@ def test_bounded_action_relation_plans_session_index_not_archive_wide_tool_scan(
         plan_rows = facade._conn.execute(f"EXPLAIN QUERY PLAN {aggregate_sql}").fetchall()
         plan_details = [str(row["detail"]) for row in plan_rows]
 
-    session_scoped_block_scans = [detail for detail in plan_details if ("SEARCH u " in detail or "SEARCH r " in detail)]
-    assert session_scoped_block_scans, plan_details
-    for detail in session_scoped_block_scans:
-        assert "idx_blocks_session_position" in detail, plan_details
-        assert "idx_blocks_type_tool" not in detail, plan_details
+    session_scoped_block_scans = [
+        detail
+        for detail in plan_details
+        if detail.startswith(
+            ("SEARCH u USING INDEX idx_blocks_session_position", "SEARCH r USING INDEX idx_blocks_session_position")
+        )
+    ]
+    assert any(
+        detail.startswith("SEARCH u USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
+    ), plan_details
+    assert any(
+        detail.startswith("SEARCH r USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
+    ), plan_details
+    assert not any("idx_blocks_type_tool" in detail for detail in plan_details), plan_details
 
 
 def test_c03_exact_session_actions_uses_real_provider_pipeline_and_planted_facts(tmp_path: Path) -> None:

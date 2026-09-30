@@ -596,10 +596,7 @@ def test_action_pairs_does_not_materialize_text_copies(tmp_path: Path) -> None:
 
 
 def test_actions_view_pairs_reemitted_tool_id_by_transcript_rank_not_cross_product(tmp_path: Path) -> None:
-    """xnkf: a provider can re-emit the same tool_id on distinct messages (verified
-    live, not a variant). A plain equality join on tool_id fans out N uses x M
-    results into N*M rows for one logical action stream; the view must instead
-    pair the Nth use (by transcript position) with the Nth result."""
+    """A balanced sequential reuse yields one action per invocation, not N*M."""
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
 
@@ -671,12 +668,7 @@ def test_actions_view_pairs_reemitted_tool_id_by_transcript_rank_not_cross_produ
 
 
 def test_actions_view_ranks_variant_messages_deterministically(tmp_path: Path) -> None:
-    """CodeRabbit (#2597): two messages sharing the same `position` (variant
-    siblings, disambiguated only by variant_index) must not tie in the rank
-    ORDER BY -- a tie would let SQLite assign use_rank/result_rank
-    independently across the two CTEs and cross-pair the wrong use with the
-    wrong result, re-introducing the exact fanout/mismatch class this view
-    fix targets. variant_index must break the tie."""
+    """Same-message pairs in variants do not depend on insertion order."""
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
 

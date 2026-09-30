@@ -105,3 +105,24 @@ startup, exclusive archive ownership and a write lease allow replacement of a
 stale disposable ops file before persistent tier handles open. Index
 reconvergence keeps its declared reset/rebuild route; purchased embeddings and
 durable tiers are never replaced by ops startup.
+
+## Tool-result association
+
+`storage/sqlite/action_pairs.py` owns associations for both materialized and
+canonical action reads and observed `tool_finished` events. An orphan result
+before the first use of an ID cannot certify that use. A clean alternating
+stream supports sequential ID reuse without a many-to-many join. A missing
+middle result, duplicate receipt, or overlapping same-ID invocation makes
+that invocation and the remaining same-ID suffix unresolved: the action has
+`result_state=outcome_unknown`, `outcome_unknown_reason=ambiguous_tool_id_reuse`,
+and no attributed result block, output, error flag or exit code. A clean final
+use with no result stays `no_result`.
+
+Session IDs isolate fork-local tool IDs. Variant creation order is not a
+causal branch identity: when a same-ID stream involves variants, only an
+otherwise unambiguous result in the same message is attributed; cross-message
+associations remain unknown rather than treating equal variant indexes as a
+branch path. These are evidence refusals, not loss of the underlying blocks.
+Reingesting complete evidence recomputes the relation at its ordinary write
+boundary. The decision does not depend on row insertion order or on whether
+a reader uses the materialized or directly computed relation.
