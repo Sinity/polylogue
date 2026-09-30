@@ -520,6 +520,10 @@ def iter_daemon_events(
         conn.close()
 
 
+CAPTURE_HISTORY_PAGE_ROWS = 100
+"""Maximum reports in one page; continuations preserve the complete history."""
+
+
 class CaptureHealthPage(TypedDict):
     events: list[dict[str, object]]
     next_cursor: str | None
@@ -529,7 +533,7 @@ class CaptureHistoryCursorError(ValueError):
     """A malformed continuation or a snapshot lost with the disposable ops tier."""
 
 
-def capture_health_page(*, page_size: int = 100, cursor: str | None = None) -> CaptureHealthPage:
+def capture_health_page(*, page_size: int = CAPTURE_HISTORY_PAGE_ROWS, cursor: str | None = None) -> CaptureHealthPage:
     """Read one newest-first keyset page from an immutable history snapshot.
 
     The anchor's random report key distinguishes a replaced ops tier even when
@@ -581,7 +585,7 @@ def capture_health_page(*, page_size: int = 100, cursor: str | None = None) -> C
                 raise CaptureHistoryCursorError("history_cursor_reset")
             rows = conn.execute(
                 "SELECT id, ts_ms, operation_id, payload_json FROM capture_health_history WHERE id <= ? ORDER BY id DESC LIMIT ?",
-                (anchor if before is None else min(anchor, before - 1), min(page_size, 2**63 - 1)),
+                (anchor if before is None else min(anchor, before - 1), min(page_size, CAPTURE_HISTORY_PAGE_ROWS)),
             )
             events = [
                 {
@@ -1241,6 +1245,7 @@ __all__ = [
     "current_epoch_ms",
     "iter_daemon_events",
     "capture_health_page",
+    "CAPTURE_HISTORY_PAGE_ROWS",
     "CaptureHistoryCursorError",
     "CaptureHistoryStorageError",
     "query_events_since",

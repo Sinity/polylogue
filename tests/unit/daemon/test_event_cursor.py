@@ -388,3 +388,67 @@ def test_health_page_handles_sqlite_integer_domain_edges(ledger: Path) -> None:
     with pytest.raises(events_mod.CaptureHistoryCursorError) as refused:
         events_mod.capture_health_page(cursor=cursor)
     assert str(refused.value) == "invalid_history_cursor"
+
+
+def test_oversized_health_page_request_preserves_full_traversal(ledger: Path) -> None:
+    ids = [events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND) for _ in range(205)]
+    page = events_mod.capture_health_page(page_size=2**100)
+    assert len(page["events"]) == 100
+    seen = [row["id"] for row in page["events"]]
+    while page["next_cursor"] is not None:
+        page = events_mod.capture_health_page(page_size=2**100, cursor=page["next_cursor"])
+        assert len(page["events"]) <= 100
+        seen.extend(row["id"] for row in page["events"])
+    assert seen == list(reversed(ids))
+
+
+@pytest.mark.parametrize("failure", ["storage", "reset", "cancel"])
+def test_capture_history_json_later_failure_publishes_nothing_and_cleans_scratch(
+    ledger: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    import os
+    import stat
+    from typing import IO
+
+    from click.testing import CliRunner
+
+    from polylogue.daemon import browser_capture as command_mod
+
+    for _ in range(205):
+        events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    opened: list[IO[str]] = []
+    original_temporary_file = command_mod.tempfile.TemporaryFile
+
+    def private_file(*args: object, **kwargs: object) -> IO[str]:
+        handle = original_temporary_file(mode="w+", encoding="utf-8", dir=tmp_path)
+        assert stat.S_IMODE(os.fstat(handle.fileno()).st_mode) == 0o600
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(command_mod.tempfile, "TemporaryFile", private_file)
+    original_open = events_mod.open_readonly_connection
+    reads = 0
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    def failing_later_read(path: str | Path, *, tier: ArchiveTier | None = None) -> sqlite3.Connection:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            if failure == "storage":
+                raise sqlite3.OperationalError("synthetic later read lock")
+            if failure == "cancel":
+                raise KeyboardInterrupt
+            ledger.unlink()
+            for suffix in ("-wal", "-shm"):
+                ledger.with_name(ledger.name + suffix).unlink(missing_ok=True)
+            events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+        return original_open(path, tier=tier)
+
+    monkeypatch.setattr(events_mod, "open_readonly_connection", failing_later_read)
+    result = CliRunner().invoke(command_mod.capture_health_command, ["--limit", "-1", "--format", "json"])
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert reads == 2
+    assert len(opened) == 1 and opened[0].closed
+    if failure != "cancel":
+        assert ("capture_history_unavailable" if failure == "storage" else "history_cursor_reset") in result.stderr

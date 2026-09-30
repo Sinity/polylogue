@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import shutil
+import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import get_args
 
@@ -179,7 +182,12 @@ def native_host_install(
 def capture_health_command(limit: int, output_format: str | None, cursor: str | None) -> None:
     """Stream extension-reported capture-health history from the ops tier."""
     from polylogue.core.errors import SchemaSkew
-    from polylogue.daemon.events import CaptureHistoryCursorError, CaptureHistoryStorageError, capture_health_page
+    from polylogue.daemon.events import (
+        CAPTURE_HISTORY_PAGE_ROWS,
+        CaptureHistoryCursorError,
+        CaptureHistoryStorageError,
+        capture_health_page,
+    )
 
     if limit < -1:
         raise click.BadParameter("Use a nonnegative count or -1.", param_hint="--limit")
@@ -193,39 +201,59 @@ def capture_health_command(limit: int, output_format: str | None, cursor: str | 
     remaining = limit
     emitted = 0
     first = True
-    # Validate the first continuation before writing any JSON to stdout.
+    # A JSON document becomes public only after every requested page succeeds.
+    # TemporaryFile is private, disk-backed and removed on every exit, including
+    # interruption; plain text keeps its declared streaming output.
     try:
-        page = capture_health_page(page_size=100 if remaining == -1 else max(1, min(100, remaining)), cursor=cursor)
-        if output_format == "json":
-            click.echo('{"events":[', nl=False)
-        while remaining != 0:
-            for event in page["events"]:
-                if output_format == "json":
-                    click.echo(("" if first else ",") + dumps(event), nl=False)
-                else:
-                    raw_payload = event["payload"]
-                    payload = raw_payload if isinstance(raw_payload, dict) else {}
-                    click.echo(
-                        f"{event['ts']}  {payload.get('event', '?')}  provider={payload.get('provider') or '-'}  session={payload.get('provider_session_id') or '-'}"
-                    )
-                first = False
-                emitted += 1
-                if remaining > 0:
-                    remaining -= 1
-            cursor = page["next_cursor"]
-            if cursor is None or remaining == 0:
-                break
-            page = capture_health_page(page_size=100 if remaining == -1 else min(100, remaining), cursor=cursor)
-        if output_format == "json":
-            click.echo('],"next_cursor":' + dumps(cursor) + "}")
-        elif emitted == 0:
-            click.echo("No capture-health events recorded.")
+        with (
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") if output_format == "json" else nullcontext(None)
+        ) as staged:
+            page = capture_health_page(
+                page_size=CAPTURE_HISTORY_PAGE_ROWS
+                if remaining == -1
+                else max(1, min(CAPTURE_HISTORY_PAGE_ROWS, remaining)),
+                cursor=cursor,
+            )
+            if staged is not None:
+                staged.write('{"events":[')
+            while remaining != 0:
+                for event in page["events"]:
+                    if staged is not None:
+                        staged.write(("" if first else ",") + dumps(event))
+                    else:
+                        raw_payload = event["payload"]
+                        payload = raw_payload if isinstance(raw_payload, dict) else {}
+                        click.echo(
+                            f"{event['ts']}  {payload.get('event', '?')}  provider={payload.get('provider') or '-'}  session={payload.get('provider_session_id') or '-'}"
+                        )
+                    first = False
+                    emitted += 1
+                    if remaining > 0:
+                        remaining -= 1
+                cursor = page["next_cursor"]
+                if cursor is None or remaining == 0:
+                    break
+                page = capture_health_page(
+                    page_size=CAPTURE_HISTORY_PAGE_ROWS
+                    if remaining == -1
+                    else min(CAPTURE_HISTORY_PAGE_ROWS, remaining),
+                    cursor=cursor,
+                )
+            if staged is not None:
+                staged.write('],"next_cursor":' + dumps(cursor) + "}\n")
+                staged.seek(0)
+                shutil.copyfileobj(staged, click.get_text_stream("stdout"))
+            elif emitted == 0:
+                click.echo("No capture-health events recorded.")
+
     except CaptureHistoryCursorError as exc:
         raise click.ClickException(str(exc)) from exc
     except SchemaSkew as exc:
         raise click.ClickException("schema_skew") from exc
     except CaptureHistoryStorageError as exc:
         raise click.ClickException(exc.code) from exc
+    except OSError as exc:
+        raise click.ClickException("capture_history_output_failed") from exc
 
 
 @browser_capture_command.command("action")

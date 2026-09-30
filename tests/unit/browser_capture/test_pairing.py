@@ -484,3 +484,31 @@ def test_capture_history_http_classifies_storage_refusal_and_fault(
         status, failed = request()
         assert status == (HTTPStatus.INTERNAL_SERVER_ERROR if permanent else HTTPStatus.SERVICE_UNAVAILABLE)
         assert failed["error"] == ("capture_history_storage_failed" if permanent else "capture_history_unavailable")
+
+
+def test_capture_history_http_oversized_page_keeps_continuation(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    from polylogue.daemon import events as events_mod
+
+    ids = [events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND) for _ in range(205)]
+    token = load_or_mint_receiver_token()
+    with _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
+        from urllib.parse import quote
+
+        seen: list[int] = []
+        cursor = None
+        while True:
+            conn = HTTPConnection(host, port)
+            path = "/v1/capture-health?page_size=9223372036854775807"
+            if cursor is not None:
+                path += "&cursor=" + quote(cursor)
+            conn.request("GET", path, headers={"Origin": _EXTENSION_ORIGIN, "Authorization": f"Bearer {token}"})
+            response = conn.getresponse()
+            assert response.status == HTTPStatus.OK
+            page = json.loads(response.read())
+            conn.close()
+            assert 0 < len(page["events"]) <= 100
+            seen.extend(row["id"] for row in page["events"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+    assert seen == list(reversed(ids))
