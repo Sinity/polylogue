@@ -7,7 +7,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -449,7 +449,7 @@ def iter_daemon_events(
     kind: str | None = None,
     limit: int = 100,
     offset: int = 0,
-) -> Iterator[dict[str, object]]:
+) -> Generator[dict[str, object], None, None]:
     """Stream recent resume events; close the iterator if stopping before exhaustion.
 
     Negative SQL limits preserve full-history traversal without materialization.

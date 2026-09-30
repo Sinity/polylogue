@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import sqlite3
 from pathlib import Path
 from typing import get_args
 
@@ -178,6 +179,7 @@ def native_host_install(
 @click.option("--cursor", default=None, help="Continue a capture-health history snapshot.")
 def capture_health_command(limit: int, output_format: str | None, cursor: str | None) -> None:
     """Stream extension-reported capture-health history from the ops tier."""
+    from polylogue.core.errors import SchemaSkew
     from polylogue.daemon.events import CaptureHistoryCursorError, capture_health_page
 
     if limit < -1:
@@ -221,6 +223,10 @@ def capture_health_command(limit: int, output_format: str | None, cursor: str | 
             click.echo("No capture-health events recorded.")
     except CaptureHistoryCursorError as exc:
         raise click.ClickException(str(exc)) from exc
+    except SchemaSkew as exc:
+        raise click.ClickException("schema_skew") from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise click.ClickException("capture_history_unavailable") from exc
 
 
 @browser_capture_command.command("action")

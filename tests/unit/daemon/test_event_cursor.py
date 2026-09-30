@@ -347,9 +347,25 @@ def test_health_history_insert_failure_rolls_back_resume_frame(ledger: Path) -> 
 def test_negative_event_limit_is_a_stream(ledger: Path) -> None:
     """Full ledger traversal stays an iterator rather than a lifetime-sized list."""
     from collections.abc import Iterator
+    from contextlib import closing
 
     _seed(ledger, ["record"] * 205)
-    with events_mod.closing(events_mod.iter_daemon_events(limit=-1)) as events:
+    with closing(events_mod.iter_daemon_events(limit=-1)) as events:
         assert isinstance(events, Iterator)
         assert next(events)["id"] == 205
         assert sum(1 for _ in events) == 204
+
+
+def test_capture_history_cli_refuses_foreign_identity_without_writes(ledger: Path) -> None:
+    from click.testing import CliRunner
+
+    from polylogue.daemon.browser_capture import capture_health_command
+
+    events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    with sqlite3.connect(ledger) as conn:
+        conn.execute("UPDATE schema_identity SET identity = 'foreign' WHERE tier = 'ops'")
+    before = ledger.read_bytes()
+    result = CliRunner().invoke(capture_health_command, ["--format", "json"], catch_exceptions=False)
+    assert result.exit_code == 1
+    assert "schema_skew" in result.output
+    assert ledger.read_bytes() == before

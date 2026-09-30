@@ -600,10 +600,8 @@ def initialize_archive_database(
             initialize_source_tier_database_mode(conn)
         initialize_fresh_archive_tier(conn, tier, required_version)
         if tier is ArchiveTier.INDEX:
-            from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
-            ensure_runtime_indexes_sync(conn)
             assert_schema_manifest(conn, tier)
     finally:
         conn.close()

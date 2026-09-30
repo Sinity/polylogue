@@ -245,7 +245,7 @@ class TestEventLedgerReadIsolation:
         assert events_mod.get_latest_event_id() == 0
         assert events_mod.get_daemon_event_counts() == {}
         assert events_mod.get_last_ingestion_batch() is None
-        assert events_mod.get_recent_operations() == []
+        assert list(events_mod.get_recent_operations()) == []
         assert not events_path.parent.exists()
 
     def test_read_helpers_leave_schema_less_ops_file_unchanged(

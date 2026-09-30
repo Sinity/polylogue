@@ -20,7 +20,7 @@ from http import HTTPStatus
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from click.testing import CliRunner
@@ -398,17 +398,19 @@ def test_capture_history_http_pages_and_report_id_after_another_emitter(
 
     original_emit = events_mod.emit_daemon_event
 
-    def racing_emit(kind: str, **kwargs: object) -> int:
+    def racing_emit(kind: str, **kwargs: Any) -> int:
         report_id = original_emit(kind, **kwargs)
         original_emit("another-emitter")
         return report_id
 
     monkeypatch.setattr(events_mod, "emit_daemon_event", racing_emit)
+    registry = events_mod.EventSubscriberRegistry()
+    monkeypatch.setattr(events_mod, "EVENT_SUBSCRIBERS", registry)
     token = load_or_mint_receiver_token()
     headers = {"Origin": _EXTENSION_ORIGIN, "Content-Type": "application/json", "Authorization": f"Bearer {token}"}
-    with _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
+    with registry.owning(), _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
 
-        def request(method: str, path: str, body: dict[str, str] | None = None) -> tuple[int, dict[str, object]]:
+        def request(method: str, path: str, body: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
             conn = HTTPConnection(host, port)
             conn.request(method, path, body=json.dumps(body) if body is not None else None, headers=headers)
             response = conn.getresponse()
@@ -434,3 +436,44 @@ def test_capture_history_http_pages_and_report_id_after_another_emitter(
         for invalid in ("limit=1", "page_size=0", "cursor=broken", "page_size=1&page_size=2"):
             status, refused = request("GET", "/v1/capture-health?" + invalid)
             assert status == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_capture_history_http_classifies_storage_refusal_and_fault(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    import sqlite3
+
+    from polylogue.daemon import events as events_mod
+
+    events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    with sqlite3.connect(workspace_env["archive_root"] / "ops.db") as conn:
+        conn.execute("UPDATE schema_identity SET identity = 'foreign' WHERE tier = 'ops'")
+    token = load_or_mint_receiver_token()
+    headers = {"Origin": _EXTENSION_ORIGIN, "Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    with _running_receiver(tmp_path / "spool", auth_token=token) as (host, port):
+
+        def request() -> tuple[int, dict[str, Any]]:
+            conn = HTTPConnection(host, port)
+            conn.request(
+                method,
+                "/v1/capture-health",
+                body=json.dumps({"event": "capture_gap"}) if method == "POST" else None,
+                headers=headers,
+            )
+            response = conn.getresponse()
+            document = json.loads(response.read())
+            conn.close()
+            return response.status, document
+
+        status, refused = request()
+        assert status == HTTPStatus.CONFLICT
+        assert refused["error"] == "schema_skew"
+
+        def fail_storage(*args: object, **kwargs: object) -> None:
+            raise sqlite3.OperationalError("synthetic read lock")
+
+        monkeypatch.setattr(events_mod, "capture_health_page" if method == "GET" else "emit_daemon_event", fail_storage)
+        status, failed = request()
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert failed["error"] == "capture_history_unavailable"

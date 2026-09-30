@@ -364,7 +364,7 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "bearer_if_configured",
         "optional positive page_size and opaque cursor query parameters",
         "{ok: true, events: [...], next_cursor: string | null} | BrowserCaptureErrorPayload",
-        "Newest-first snapshot pages. New reports stay outside a continued snapshot; an ops reset refuses its cursor with history_cursor_reset.",
+        "Newest-first snapshot pages. Appends stay outside a continued snapshot; ops reset refuses history_cursor_reset. Schema skew returns 409 schema_skew; storage faults return retryable 503 capture_history_unavailable.",
     ),
 )
 

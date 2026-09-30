@@ -100,7 +100,10 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 Existing index and ops tiers are admitted by their derived schema identity
 before initialization issues any DDL. A mismatch raises typed `SchemaSkew`;
-initialization never patches or restamps an existing derived tier. At daemon
+initialization never patches or restamps a foreign derived identity. An
+admitted INDEX tier installs only canonical runtime performance indexes before
+manifest validation, following its writable sync and async policy; read-only
+opens still refuse a missing manifest index without writing. At daemon
 startup, exclusive archive ownership and a write lease allow replacement of a
 stale disposable ops file before persistent tier handles open. Index
 reconvergence keeps its declared reset/rebuild route; purchased embeddings and

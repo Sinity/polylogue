@@ -1223,21 +1223,29 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_health_event")
             return
+        from polylogue.core.errors import SchemaSkew
         from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, emit_daemon_event
 
-        event_id = emit_daemon_event(
-            CAPTURE_HEALTH_EVENT_KIND,
-            operation_id=request.extension_instance_id,
-            payload={
-                "event": request.event,
-                "provider": request.provider,
-                "provider_session_id": request.provider_session_id,
-                "visible_count": request.visible_count,
-                "captured_count": request.captured_count,
-                "reason": request.reason,
-                "detail": request.detail,
-            },
-        )
+        try:
+            event_id = emit_daemon_event(
+                CAPTURE_HEALTH_EVENT_KIND,
+                operation_id=request.extension_instance_id,
+                payload={
+                    "event": request.event,
+                    "provider": request.provider,
+                    "provider_session_id": request.provider_session_id,
+                    "visible_count": request.visible_count,
+                    "captured_count": request.captured_count,
+                    "reason": request.reason,
+                    "detail": request.detail,
+                },
+            )
+        except SchemaSkew:
+            self._safe_error(HTTPStatus.CONFLICT, "schema_skew")
+            return
+        except (sqlite3.Error, OSError):
+            self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "capture_history_unavailable")
+            return
         logger.debug(
             "browser_capture.capture_health_reported",
             request_id=self._request_id(),
@@ -1251,6 +1259,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         )
 
     def _capture_health_list(self) -> None:
+        from polylogue.core.errors import SchemaSkew
         from polylogue.daemon.events import CaptureHistoryCursorError, capture_health_page
 
         params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
@@ -1269,6 +1278,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(
                 HTTPStatus.CONFLICT if reason == "history_cursor_reset" else HTTPStatus.BAD_REQUEST, reason
             )
+            return
+        except SchemaSkew:
+            self._safe_error(HTTPStatus.CONFLICT, "schema_skew")
+            return
+        except (sqlite3.Error, OSError):
+            self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "capture_history_unavailable")
             return
         self._send_json(HTTPStatus.OK, {"ok": True, **page})
 
