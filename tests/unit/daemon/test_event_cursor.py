@@ -408,6 +408,7 @@ def test_capture_history_json_later_failure_publishes_nothing_and_cleans_scratch
 ) -> None:
     import os
     import stat
+    import tempfile
     from typing import IO
 
     from click.testing import CliRunner
@@ -417,7 +418,7 @@ def test_capture_history_json_later_failure_publishes_nothing_and_cleans_scratch
     for _ in range(205):
         events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
     opened: list[IO[str]] = []
-    original_temporary_file = command_mod.tempfile.TemporaryFile
+    original_temporary_file = tempfile.TemporaryFile
 
     def private_file(*args: object, **kwargs: object) -> IO[str]:
         handle = original_temporary_file(mode="w+", encoding="utf-8", dir=tmp_path)
@@ -425,8 +426,10 @@ def test_capture_history_json_later_failure_publishes_nothing_and_cleans_scratch
         opened.append(handle)
         return handle
 
-    monkeypatch.setattr(command_mod.tempfile, "TemporaryFile", private_file)
-    original_open = events_mod.open_readonly_connection
+    monkeypatch.setattr(tempfile, "TemporaryFile", private_file)
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    original_open = open_readonly_connection
     reads = 0
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 

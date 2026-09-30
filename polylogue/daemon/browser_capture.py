@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 import shutil
+import sys
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path
@@ -242,7 +243,7 @@ def capture_health_command(limit: int, output_format: str | None, cursor: str | 
             if staged is not None:
                 staged.write('],"next_cursor":' + dumps(cursor) + "}\n")
                 staged.seek(0)
-                shutil.copyfileobj(staged, click.get_text_stream("stdout"))
+                shutil.copyfileobj(staged, sys.stdout)
             elif emitted == 0:
                 click.echo("No capture-health events recorded.")
 
