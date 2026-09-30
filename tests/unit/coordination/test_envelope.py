@@ -156,12 +156,12 @@ def _seed_coordination_archive(index: Path) -> None:
             """
             INSERT INTO blocks
                 (block_id, session_id, block_type, message_id, position, tool_id, tool_name,
-                 tool_result_exit_code, search_text)
+                 tool_outcome, tool_result_exit_code, search_text)
             VALUES
                 ('codex-session:thread-1::m1::0', 'codex-session:thread-1', 'tool_use', 'm1', 0,
-                 'tool-2', 'pytest', NULL, 'run pytest'),
+                 'tool-2', 'pytest', NULL, NULL, 'run pytest'),
                 ('codex-session:thread-1::m1::1', 'codex-session:thread-1', 'tool_result', 'm1', 1,
-                 'tool-2', NULL, 0, 'passed')
+                 'tool-2', NULL, 'ok', 0, 'passed')
             """
         )
         conn.commit()
@@ -522,8 +522,7 @@ def test_coordination_envelope_composes_archive_evidence(
     assert exchange.child_session_id == "codex-session:child-42"
     assert exchange.provenance.source == "archive-subagent-exchange"
     assert len(payload.proof_refs) == 1
-    # 'ok'/'failed'/'unknown' derived from tool_result_exit_code, not the
-    # pre-dab writer's freeform 'status' string.
+    # 'ok'/'failed'/'unknown' is derived from the structural tool_outcome.
     assert payload.proof_refs[0].status == "ok"
     assert payload.proof_refs[0].provenance.source == "archive-proof-outcome"
     assert len(payload.context_flow_refs) == 1

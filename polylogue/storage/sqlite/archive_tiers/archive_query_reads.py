@@ -855,20 +855,23 @@ action_followup_text AS (
         ), '') AS followup_text,
         EXISTS (
             SELECT 1
-            FROM blocks tool_block
+            FROM blocks tool_block INDEXED BY idx_blocks_session_position
             WHERE tool_block.message_id = afb.followup_message_id
+              AND tool_block.session_id = afb.session_id
               AND tool_block.block_type = 'tool_use'
         ) AS followup_has_tool_use,
         COALESCE((
             SELECT SUM(LENGTH(COALESCE(text_block.search_text, '')))
-            FROM blocks text_block
+            FROM blocks text_block INDEXED BY idx_blocks_session_position
             WHERE text_block.message_id = afb.followup_message_id
+              AND text_block.session_id = afb.session_id
               AND text_block.block_type = 'text'
               AND text_block.position < COALESCE(
                   (
                       SELECT MIN(first_tool.position)
-                      FROM blocks first_tool
+                      FROM blocks first_tool INDEXED BY idx_blocks_session_position
                       WHERE first_tool.message_id = afb.followup_message_id
+                        AND first_tool.session_id = afb.session_id
                         AND first_tool.block_type = 'tool_use'
                   ),
                   9223372036854775807

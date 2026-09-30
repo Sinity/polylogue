@@ -9,7 +9,7 @@ repository for an expected value.
 from __future__ import annotations
 
 import json
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -117,7 +117,7 @@ class PlantedCodexSession:
 
 @dataclass(frozen=True)
 class ExpectedActionFact:
-    """The intended ordinal pairing of one planted use with its result."""
+    """One planted use and only the result that causal ordering supports."""
 
     session_id: str
     command: str
@@ -159,18 +159,32 @@ class QueryCardinalityManifest:
         return tuple(paths)
 
     def all_actions(self) -> tuple[ExpectedActionFact, ...]:
-        """Pair the nth call/result sharing an ID, directly from planted facts."""
+        """Pair only a single balanced use/result or a clean alternating reuse."""
         actions: list[ExpectedActionFact] = []
         for session in self.sessions:
-            result_groups: dict[str, list[PlantedCodexResult]] = defaultdict(list)
+            result_groups: dict[str, list[PlantedCodexResult]] = {}
             for planted_result in session.results:
-                result_groups[planted_result.call_id].append(planted_result)
-            call_ranks: Counter[str] = Counter()
+                result_groups.setdefault(planted_result.call_id, []).append(planted_result)
+            call_groups: dict[str, list[PlantedCodexCall]] = {}
             for call in session.calls:
-                call_rank = call_ranks[call.call_id]
-                call_ranks[call.call_id] += 1
-                matching_results = result_groups.get(call.call_id, [])
-                paired_result = matching_results[call_rank] if call_rank < len(matching_results) else None
+                call_groups.setdefault(call.call_id, []).append(call)
+            paired: dict[str, PlantedCodexResult | None] = {}
+            ambiguous_ids: set[str] = set()
+            for tool_id, calls in call_groups.items():
+                matching_results = result_groups.get(tool_id, [])
+                if len(calls) == 1:
+                    paired[calls[0].command] = matching_results[0] if len(matching_results) == 1 else None
+                    if len(matching_results) > 1:
+                        ambiguous_ids.add(tool_id)
+                elif len(matching_results) == len(calls) and len(matching_results) > 0:
+                    # This oracle's source records all calls before all results,
+                    # so repeated IDs have no causal association between uses
+                    # and receipts even when their counts happen to match.
+                    ambiguous_ids.add(tool_id)
+                else:
+                    ambiguous_ids.add(tool_id)
+            for call in session.calls:
+                paired_result = None if call.call_id in ambiguous_ids else paired.get(call.command)
                 actions.append(
                     ExpectedActionFact(
                         session_id=session.canonical_session_id,
