@@ -1676,7 +1676,7 @@ def test_held_launch_reaps_child_if_sampler_construction_fails(tmp_path: Path, m
         return process
 
     monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
-    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (pytest_slot.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (worker_memory.ChargeProfile(1, 1, 1), 1))
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
