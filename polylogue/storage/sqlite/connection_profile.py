@@ -1027,8 +1027,9 @@ def assert_tier_schema_supported(
     derived identity is what the stamp is for and is checked here rather than
     on every ordinary open.
     """
-    # Its callers inspect a tier over a read-only handle or one they just
-    # stamped; neither is a writer admitting SQL against a bare file.
+    # Read-only inspection can admit an uninitialized file. Owned Index
+    # writers call this after canonical initialization and before writer
+    # pragmas or DDL; the identity check below admits their actual handle.
     _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
     _assert_derived_identity_supported(conn, tier if tier is not None else _archive_tier_for_path(path))
 
