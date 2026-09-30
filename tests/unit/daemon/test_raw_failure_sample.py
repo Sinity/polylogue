@@ -27,7 +27,11 @@ from polylogue.daemon.status import (
 )
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    upsert_raw_artifact,
+    write_source_raw_session,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -1003,9 +1007,18 @@ class TestRawFailureInfoProducesTypedSamples:
         initialize_archive_database(source_db, ArchiveTier.SOURCE)
         kind = RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
         with sqlite3.connect(source_db) as conn:
+            raw_id = write_source_raw_session(
+                conn,
+                origin="codex-session",
+                capture_mode="codex",
+                source_path="/data/append.jsonl",
+                source_index=-1,
+                payload=b'{"type":"event_msg"}\n',
+                acquired_at_ms=1,
+            )
             upsert_raw_artifact(
                 conn,
-                "append-without-coordinates",
+                raw_id,
                 ArchiveSourceArtifact(
                     artifact_id="missing-coordinates",
                     origin="codex-session",
