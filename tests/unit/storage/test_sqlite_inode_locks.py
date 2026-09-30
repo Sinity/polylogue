@@ -458,7 +458,7 @@ def test_physical_copy_preserves_metadata_and_supported_attributes(tmp_path: Pat
         assert os.getxattr(destination, "user.polylogue-neutral") == b"synthetic metadata"
     flags = getattr(before, "st_flags", None)
     if flags is not None:
-        assert after.st_flags == flags
+        assert getattr(after, "st_flags", None) == flags
 
 
 def test_sqlite_open_refuses_native_directory_substitution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -501,7 +501,7 @@ def test_checkpoint_refuses_disappeared_native_tier_without_creating_one(
     def remove_directory_before_open(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         directory.rename(tmp_path / "pinned-archive")
         directory.mkdir()
-        return original(*args, **kwargs)
+        return cast(sqlite3.Connection, original(*args, **kwargs))
 
     with _live_reader(path):
         monkeypatch.setattr(sqlite3, "connect", remove_directory_before_open)

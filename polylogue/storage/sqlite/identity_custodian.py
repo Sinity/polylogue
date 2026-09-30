@@ -10,14 +10,14 @@ import stat
 import sys
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def _stat_payload(descriptor: int) -> dict[str, Any]:
     metadata = os.fstat(descriptor)
     # The stdlib reduction separates positional fields from named extras.
     # Sending all st_* names duplicates positional fields in Python 3.14.
-    fields, extra = metadata.__reduce__()[1]
+    fields, extra = cast(tuple[tuple[int, ...], dict[str, Any]], metadata.__reduce__()[1])
     return {"fields": list(fields), "extra": extra}
 
 
