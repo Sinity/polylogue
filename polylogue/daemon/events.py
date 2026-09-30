@@ -580,8 +580,8 @@ def capture_health_page(*, page_size: int = 100, cursor: str | None = None) -> C
             ):
                 raise CaptureHistoryCursorError("history_cursor_reset")
             rows = conn.execute(
-                "SELECT id, ts_ms, operation_id, payload_json FROM capture_health_history WHERE id <= ? AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?",
-                (anchor, before, before, min(page_size, 2**63 - 1)),
+                "SELECT id, ts_ms, operation_id, payload_json FROM capture_health_history WHERE id <= ? ORDER BY id DESC LIMIT ?",
+                (anchor if before is None else min(anchor, before - 1), min(page_size, 2**63 - 1)),
             )
             events = [
                 {
@@ -603,8 +603,10 @@ def capture_health_page(*, page_size: int = 100, cursor: str | None = None) -> C
                     next_cursor = base64.urlsafe_b64encode(json.dumps([anchor, report_key, last_id]).encode()).decode()
             return {"events": events, "next_cursor": next_cursor}
         finally:
-            conn.rollback()
-            conn.close()
+            try:
+                conn.rollback()
+            finally:
+                conn.close()
 
 
 class EventCursorStatus(str, Enum):
