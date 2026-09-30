@@ -8,6 +8,7 @@ import json
 import os
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 from contextlib import ExitStack
@@ -100,12 +101,19 @@ def _open_copy_destination(directory: int, name: str, *, exclusive: bool) -> int
     """Admit only the named regular copy leaf in the caller's pinned directory."""
     if not name or Path(name).name != name or name in (".", ".."):
         raise OSError(errno.EINVAL, "invalid SQLite copy destination leaf")
-    return os.open(
+    descriptor = os.open(
         name,
-        os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC) | os.O_NOFOLLOW,
+        os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC) | os.O_NOFOLLOW | os.O_NONBLOCK,
         0o600,
         dir_fd=directory,
     )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(errno.EINVAL, "SQLite copy destination requires a regular file")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _read_in_child(
