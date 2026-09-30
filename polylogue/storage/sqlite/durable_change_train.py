@@ -1760,7 +1760,7 @@ def _historical_schema_evidence(train: DurableChangeTrain) -> DurableMigrationRe
         raise DurableChangeTrainError(
             "released train lacks exact historical schema evidence for forward-version admission"
         )
-    step = historical.steps[train.target_version - historical.from_version - 1]
+    step = _migration_runner._durable_migration_replay_step(historical, train.target_version)
     if (
         historical.tier is not train.tier
         or historical.from_version > train.current_version
@@ -1892,9 +1892,9 @@ def _verify_released_train_live_tier(
         historical_target_version=train.target_version,
         current_target_version=runtime_target,
         observed_live_version=actual.user_version,
-        historical_schema_inventory_sha256=historical.steps[
-            train.target_version - historical.from_version - 1
-        ].after_schema_inventory_sha256,
+        historical_schema_inventory_sha256=_migration_runner._durable_migration_replay_step(
+            historical, train.target_version
+        ).after_schema_inventory_sha256,
         archive_identity_digest=actual.archive_identity_digest,
     )
 
@@ -2080,7 +2080,7 @@ def _prove_and_release_persisted_train(
             if actual_parity is None:
                 raise DurableChangeTrainError("applied train lost its persisted schema replay proof")
             validate_durable_migration_replay_proof(actual_parity, recompute_installed_bindings=True)
-            replay_step = actual_parity.steps[train.target_version - actual_parity.from_version - 1]
+            replay_step = _migration_runner._durable_migration_replay_step(actual_parity, train.target_version)
             if replay_step.after_schema_inventory_sha256 != capture_durable_schema_inventory(live).sha256:
                 raise DurableChangeTrainError("recovered live schema differs from the persisted replay step output")
             runtime_results = (

@@ -116,6 +116,34 @@ def test_recovery_rejects_changed_installed_sql_for_a_persisted_step(
         migration_runner.validate_durable_migration_replay_proof(proof, recompute_installed_bindings=True)
 
 
+@pytest.mark.parametrize("source_drift", ("extra_table", "changed_definition"))
+def test_schema_rehearsal_refuses_source_shapes_outside_canonical_ddl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_drift: str,
+) -> None:
+    _install_chain(tmp_path, monkeypatch)
+    with closing(sqlite3.connect(":memory:")) as live:
+        if source_drift == "changed_definition":
+            live.execute("CREATE TABLE base_items (id TEXT PRIMARY KEY) STRICT")
+        else:
+            live.execute("CREATE TABLE base_items (id INTEGER PRIMARY KEY) STRICT")
+            live.execute("CREATE TABLE undeclared_source (id INTEGER PRIMARY KEY) STRICT")
+        live.execute("PRAGMA user_version = 1")
+        live.commit()
+        proof = rehearse_durable_migration_chain(
+            live,
+            ArchiveTier.SOURCE,
+            target_version=3,
+            evidence_ref=f"proof:source-drift:{source_drift}",
+        )
+
+    assert proof.matches is False
+    assert proof.terminal_schema_inventory_sha256 != proof.canonical_schema_inventory_sha256
+    with pytest.raises(DurableChangeTrainError, match="terminal schema does not match its canonical DDL identity"):
+        migration_runner.validate_durable_migration_replay_proof(proof)
+
+
 def test_a_released_historical_prefix_remains_valid_under_a_later_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

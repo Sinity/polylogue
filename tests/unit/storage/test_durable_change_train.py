@@ -75,6 +75,9 @@ CREATE TABLE durable_items (
     payload TEXT NOT NULL
 ) STRICT;
 """
+_DATA_DEPENDENT_FAILURE_SQL = """-- migration-safety: additive-no-backup
+CREATE UNIQUE INDEX base_items_payload_unique ON base_items(payload);
+"""
 
 
 @contextmanager
@@ -97,6 +100,19 @@ def _create_current_database(path: Path) -> None:
         conn.execute("INSERT INTO base_items VALUES ('base-1', 'preserve-me')")
         conn.execute(f"PRAGMA user_version = {_CURRENT_VERSION}")
         conn.commit()
+
+
+@contextmanager
+def _pinned_runtime_target(tier: ArchiveTier, target: int) -> Iterator[None]:
+    """Give isolated lifecycle fixtures the package target they declare."""
+    previous = migration_runner.ARCHIVE_VERSION_BY_TIER
+    versions = dict(previous)
+    versions[tier] = target
+    migration_runner.ARCHIVE_VERSION_BY_TIER = versions
+    try:
+        yield
+    finally:
+        migration_runner.ARCHIVE_VERSION_BY_TIER = previous
 
 
 def test_explicit_migration_refuses_an_unmarked_historical_v1_before_writes(tmp_path: Path) -> None:
@@ -208,7 +224,8 @@ def _parity(
     matches: bool | None = None,
     claim: DurableMigrationClaim | None = None,
 ) -> DurableMigrationReplayProof:
-    if include_durable_items:
+    canonical_target = max(migration_runner.ARCHIVE_VERSION_BY_TIER[tier], _TARGET_VERSION)
+    if include_durable_items and canonical_target == migration_runner.ARCHIVE_VERSION_BY_TIER[tier]:
         with sqlite3.connect(":memory:") as source:
             source.executescript(_BASE_ITEMS_DDL)
             source.execute(f"PRAGMA user_version = {_CURRENT_VERSION}")
@@ -225,7 +242,6 @@ def _parity(
             except (MigrationError, DurableChangeTrainError, sqlite3.Error):
                 pass
     claim = claim or _claim(tier)
-    canonical_target = migration_runner.ARCHIVE_VERSION_BY_TIER[tier]
     before = hashlib.sha256(f"fixture:{tier.value}:v{_CURRENT_VERSION}".encode()).hexdigest()
     steps: list[DurableMigrationReplayStep] = []
     for version in range(_CURRENT_VERSION + 1, canonical_target + 1):
@@ -309,21 +325,56 @@ def _admitted(
     parity: DurableMigrationReplayProof | None = None,
 ) -> DurableChangeTrain:
     migration = claim or _claim(tier)
-    return admit_durable_change_train(
-        _declared(
-            tier,
-            claim=migration,
-            rider=rider,
-            owner_ref=owner_ref,
-            backup_plan_ref=backup_plan_ref,
+    replay = parity if parity is not None else _parity(tier, claim=migration)
+    with _pinned_runtime_target(tier, replay.target_version):
+        return _admit_for_test(
+            _declared(
+                tier,
+                claim=migration,
+                rider=rider,
+                owner_ref=owner_ref,
+                backup_plan_ref=backup_plan_ref,
+            ),
+            observed_current_version=_CURRENT_VERSION,
+            schema_replay_proof=replay,
+            admission_evidence_ref=f"proof:admit:{tier.value}",
+            active_trains=active_trains,
+            migration_claims=(migration,),
+            canonical_target_version=_TARGET_VERSION,
+            admitted_at_ms=2,
+        )
+
+
+def _admit_for_test(train: DurableChangeTrain, **kwargs: object) -> DurableChangeTrain:
+    replay = kwargs.get("schema_replay_proof")
+    if not isinstance(replay, DurableMigrationReplayProof):
+        raise AssertionError("synthetic train admission requires its replay proof")
+    with _pinned_runtime_target(train.tier, replay.target_version):
+        return admit_durable_change_train(train, **kwargs)  # type: ignore[arg-type]
+
+
+def _unrelated_replay(proof: DurableMigrationReplayProof) -> DurableMigrationReplayProof:
+    shifted = replace(proof.steps[-1], version=4)
+    unrelated = replace(
+        proof,
+        from_version=3,
+        target_version=4,
+        steps=(shifted,),
+        canonical_version=4,
+        chain_sha256="",
+    )
+    return replace(
+        unrelated,
+        chain_sha256=migration_runner._migration_replay_chain_digest(
+            tier=unrelated.tier,
+            from_version=unrelated.from_version,
+            target_version=unrelated.target_version,
+            original_schema_inventory_sha256=unrelated.original_schema_inventory_sha256,
+            steps=unrelated.steps,
+            terminal_schema_inventory_sha256=unrelated.terminal_schema_inventory_sha256,
+            canonical_version=unrelated.canonical_version,
+            canonical_schema_inventory_sha256=unrelated.canonical_schema_inventory_sha256,
         ),
-        observed_current_version=_CURRENT_VERSION,
-        schema_replay_proof=parity if parity is not None else _parity(tier, claim=migration),
-        admission_evidence_ref=f"proof:admit:{tier.value}",
-        active_trains=active_trains,
-        migration_claims=(migration,),
-        canonical_target_version=_TARGET_VERSION,
-        admitted_at_ms=2,
     )
 
 
@@ -615,12 +666,21 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
     train = persist_and_reload(train, previous_revision)
     with sqlite3.connect(db_path) as restarted:
         actual_parity = train.schema_replay_proof
+        assert actual_parity is not None
         runtime_results = _runtime_results()
         restart = capture_durable_restart_convergence(
             restarted,
             train,
             runtime_consumers=runtime_results,
             evidence_ref="proof:runtime-restart",
+        )
+    unrelated = _unrelated_replay(actual_parity)
+    with pytest.raises(DurableChangeTrainError, match="schema replay does not bind numbered migration"):
+        prove_durable_change_train(
+            train,
+            schema_replay_proof=unrelated,
+            runtime_consumers=runtime_results,
+            restart_convergence=restart,
         )
     previous_revision = train.revision
     train = prove_durable_change_train(
@@ -633,6 +693,12 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
     previous_revision = train.revision
     train = release_durable_change_train(train, evidence_ref="proof:train-release")
     train = persist_and_reload(train, previous_revision)
+
+    assert train.proof is not None
+    invalid_proof = replace(train.proof, schema_replay_proof=unrelated)
+    invalid_train = replace(train, proof=invalid_proof)
+    with pytest.raises(DurableChangeTrainError, match="schema replay does not bind numbered migration"):
+        write_durable_change_train_manifest(manifest, invalid_train, expected_revision=train.revision)
 
     assert train.state is DurableChangeTrainState.RELEASED
     assert train.revision == 7
@@ -956,7 +1022,7 @@ def test_maintenance_route_rehearses_an_intermediate_sidecar_to_the_shipped_targ
         encoding="utf-8",
     )
     try:
-        with pytest.raises(DurableChangeTrainError, match="installed migration SQL and versions"):
+        with pytest.raises(DurableChangeTrainError, match="sidecar SQL SHA-256 mismatch"):
             reconcile_durable_change_train_startup(tmp_path)
     finally:
         step_2_path.write_text(original_step_2, encoding="utf-8")
@@ -1106,6 +1172,7 @@ def test_startup_recovers_later_train_before_released_chain_validation(
             target_version=later_slot,
             train_id=f"train:source:v{later_slot}",
             revision=0,
+            schema_replay_proof=None,
         ),
     )
     states = {first_path: released, later_path: backup_authorized}
@@ -1940,7 +2007,7 @@ def test_canonical_inventory_preserves_trigger_literal_whitespace() -> None:
 def test_admission_rejects_stale_current_and_target_versions() -> None:
     train = _declared(ArchiveTier.SOURCE)
     with pytest.raises(DurableChangeTrainError, match="stale durable train current"):
-        admit_durable_change_train(
+        _admit_for_test(
             train,
             observed_current_version=0,
             schema_replay_proof=_parity(ArchiveTier.SOURCE),
@@ -1949,7 +2016,7 @@ def test_admission_rejects_stale_current_and_target_versions() -> None:
             canonical_target_version=_TARGET_VERSION,
         )
     with pytest.raises(DurableChangeTrainError, match="stale durable train target"):
-        admit_durable_change_train(
+        _admit_for_test(
             train,
             observed_current_version=_CURRENT_VERSION,
             schema_replay_proof=_parity(ArchiveTier.SOURCE),
@@ -2011,7 +2078,7 @@ def test_slot_collision_names_both_owners_and_blocks(tmp_path: Path) -> None:
     )
     parity = _parity(ArchiveTier.SOURCE, claim=first)
     with pytest.raises(DurableChangeTrainError, match="collision.*rebase/renumber") as exc_info:
-        admit_durable_change_train(
+        _admit_for_test(
             train,
             observed_current_version=slot - 1,
             schema_replay_proof=parity,
@@ -2027,7 +2094,7 @@ def test_duplicate_train_ownership_and_late_rider_are_rejected() -> None:
     admitted = _admitted(ArchiveTier.SOURCE)
     duplicate = replace(_declared(ArchiveTier.SOURCE), train_id="train:source:v2:duplicate")
     with pytest.raises(DurableChangeTrainError, match="contention key already owned"):
-        admit_durable_change_train(
+        _admit_for_test(
             duplicate,
             observed_current_version=_CURRENT_VERSION,
             schema_replay_proof=_parity(ArchiveTier.SOURCE),
@@ -2068,7 +2135,7 @@ def test_schema_replay_proof_mismatch_blocks_admission() -> None:
     assert mismatch.matches is False
     train = _declared(ArchiveTier.SOURCE)
     with pytest.raises(DurableChangeTrainError, match="schema replay"):
-        admit_durable_change_train(
+        _admit_for_test(
             train,
             observed_current_version=_CURRENT_VERSION,
             schema_replay_proof=mismatch,
@@ -2184,20 +2251,17 @@ def test_failed_transaction_exposes_exact_retry_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Two conflicting CREATEs: the second raises "table durable_items already
-    # exists" mid-apply, which is the transaction failure these tests exercise.
-    # An `INSERT` here would make the file's own statement set contradict its
-    # `additive-no-backup` header, which the runner now refuses at discovery.
-    failing_sql = """-- migration-safety: additive-no-backup
-CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
-CREATE TABLE durable_items (item_id TEXT PRIMARY KEY) STRICT;
-"""
+    # Schema-only rehearsal accepts the index, but two existing values violate
+    # it on the live archive. That exercises data-dependent transaction failure.
+    failing_sql = _DATA_DEPENDENT_FAILURE_SQL
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     claim = _claim(ArchiveTier.SOURCE, failing_sql)
-    train = _admitted(ArchiveTier.SOURCE, claim=claim)
     _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE, sql=failing_sql)
+    train = _admitted(ArchiveTier.SOURCE, claim=claim)
     with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT INTO base_items VALUES ('base-2', 'preserve-me')")
+        conn.commit()
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
         with pytest.raises(DurableChangeTrainApplyError) as exc_info:
             apply_durable_change_train(conn, train)
@@ -2439,19 +2503,16 @@ def test_startup_recovers_persisted_rollback_failure_to_admitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Two conflicting CREATEs: the second raises "table durable_items already
-    # exists" mid-apply, which is the transaction failure these tests exercise.
-    # An `INSERT` here would make the file's own statement set contradict its
-    # `additive-no-backup` header, which the runner now refuses at discovery.
-    failing_sql = """-- migration-safety: additive-no-backup
-CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
-CREATE TABLE durable_items (item_id TEXT PRIMARY KEY) STRICT;
-"""
+    # Schema-only rehearsal accepts the index, but two existing values violate
+    # it on the live archive. That exercises data-dependent transaction failure.
+    failing_sql = _DATA_DEPENDENT_FAILURE_SQL
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE, sql=failing_sql)
     train = _admitted(ArchiveTier.SOURCE, claim=_claim(ArchiveTier.SOURCE, failing_sql))
     with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT INTO base_items VALUES ('base-2', 'preserve-me')")
+        conn.commit()
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
         with pytest.raises(DurableChangeTrainApplyError) as exc_info:
             apply_durable_change_train(conn, train)
@@ -2474,20 +2535,20 @@ def test_startup_blocks_persisted_rollback_failure_after_replacement(
     monkeypatch: pytest.MonkeyPatch,
     replacement: str,
 ) -> None:
-    # Two conflicting CREATEs: the second raises "table durable_items already
-    # exists" mid-apply, which is the transaction failure these tests exercise.
-    # An `INSERT` here would make the file's own statement set contradict its
-    # `additive-no-backup` header, which the runner now refuses at discovery.
-    failing_sql = """-- migration-safety: additive-no-backup
-CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
-CREATE TABLE durable_items (item_id TEXT PRIMARY KEY) STRICT;
-"""
+    # Schema-only rehearsal accepts the index, but two existing values violate
+    # it on the live archive. That exercises data-dependent transaction failure.
+    failing_sql = _DATA_DEPENDENT_FAILURE_SQL
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE, sql=failing_sql)
-    train = _admitted(ArchiveTier.SOURCE, claim=_claim(ArchiveTier.SOURCE, failing_sql))
     with sqlite3.connect(db_path) as conn:
-        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        conn.execute("INSERT INTO base_items VALUES ('base-2', 'preserve-me')")
+        conn.commit()
+        train = _reserve_and_authorize(
+            conn,
+            _admitted(ArchiveTier.SOURCE, claim=_claim(ArchiveTier.SOURCE, failing_sql)),
+            archive_root=tmp_path,
+        )
         with pytest.raises(DurableChangeTrainApplyError) as exc_info:
             apply_durable_change_train(conn, train)
         failed = exc_info.value.failed_train

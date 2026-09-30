@@ -1131,7 +1131,7 @@ def migrate_archive_tier(
                 )
             replay_step = None
             if schema_replay_proof is not None:
-                replay_step = schema_replay_proof.steps[step.version - schema_replay_proof.from_version - 1]
+                replay_step = _durable_migration_replay_step(schema_replay_proof, step.version)
                 before_inventory = capture_durable_schema_inventory(conn)
                 if (
                     replay_step.version != step.version
@@ -1803,6 +1803,23 @@ def validate_durable_migration_replay_proof(
                 raise DurableChangeTrainError("schema replay no longer binds the current canonical DDL identity")
 
 
+def _durable_migration_replay_step(
+    proof: DurableMigrationReplayProof,
+    version: int,
+) -> DurableMigrationReplayStep:
+    """Select a persisted witness step without leaking malformed-index errors."""
+    index = version - proof.from_version - 1
+    if (
+        version <= proof.from_version
+        or version > proof.target_version
+        or index < 0
+        or index >= len(proof.steps)
+        or proof.steps[index].version != version
+    ):
+        raise DurableChangeTrainError(f"schema replay does not bind numbered migration v{version}")
+    return proof.steps[index]
+
+
 def rehearse_durable_migration_chain(
     source: sqlite3.Connection,
     tier: ArchiveTier,
@@ -2287,11 +2304,10 @@ def admit_durable_change_train(
         raise DurableChangeTrainError("durable train migration requires backup authority but declares no backup plan")
     _validate_riders(train)
     validate_durable_migration_replay_proof(schema_replay_proof)
-    replay_step = (
-        schema_replay_proof.steps[train.target_version - schema_replay_proof.from_version - 1]
-        if schema_replay_proof.from_version < train.target_version <= schema_replay_proof.target_version
-        else None
-    )
+    try:
+        replay_step = _durable_migration_replay_step(schema_replay_proof, train.target_version)
+    except DurableChangeTrainError:
+        replay_step = None
     if (
         schema_replay_proof.tier is not train.tier
         or schema_replay_proof.from_version > train.current_version
@@ -2855,7 +2871,7 @@ def prove_durable_change_train(
     if train.schema_replay_proof is None or train.pre_apply_evidence is None:
         raise DurableChangeTrainError("admission schema replay proof is missing")
     validate_durable_migration_replay_proof(schema_replay_proof)
-    replay_step = schema_replay_proof.steps[train.target_version - schema_replay_proof.from_version - 1]
+    replay_step = _durable_migration_replay_step(schema_replay_proof, train.target_version)
     if (
         not schema_replay_proof.matches
         or schema_replay_proof != train.schema_replay_proof
@@ -2983,7 +2999,7 @@ def _validate_admission_evidence(train: DurableChangeTrain) -> None:
         or train.target_version > replay.target_version
     ):
         raise DurableChangeTrainError("schema replay does not bind the train's origin and current canonical target")
-    step = replay.steps[train.target_version - replay.from_version - 1]
+    step = _durable_migration_replay_step(replay, train.target_version)
     if (
         step.version != train.target_version
         or step.name != Path(train.migration.path).name
@@ -3179,7 +3195,7 @@ def _validate_train_proof(train: DurableChangeTrain) -> None:
         raise DurableChangeTrainError(f"{train.state.value} manifest lacks proof evidence")
     replay = proof.schema_replay_proof
     validate_durable_migration_replay_proof(replay)
-    step = replay.steps[train.target_version - replay.from_version - 1]
+    step = _durable_migration_replay_step(replay, train.target_version)
     if (
         replay != admitted_parity
         or replay.tier is not train.tier
