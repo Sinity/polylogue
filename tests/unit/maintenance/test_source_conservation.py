@@ -16,6 +16,7 @@ import sqlite3
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1421,7 +1422,7 @@ def test_unreadable_member_inventory_is_retryable_and_not_loss(
         conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
     original = os.open
 
-    def denied(path: Path, *args: object, **kwargs: object):
+    def denied(path: Path, *args: Any, **kwargs: Any) -> int:
         if path == bundle:
             raise PermissionError("synthetic denied inventory")
         return original(path, *args, **kwargs)
@@ -1465,7 +1466,11 @@ def test_conservation_rechecks_cached_inventory_after_container_replacement(
     original = source_conservation._source_presence
     replaced = False
 
-    def replace_after_first_probe(root: Path, source_path: str, inventories):
+    def replace_after_first_probe(
+        root: Path,
+        source_path: str,
+        inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+    ) -> bool | None:
         nonlocal replaced
         present = original(root, source_path, inventories)
         if not replaced:
@@ -1496,7 +1501,7 @@ def test_conservation_refuses_inventory_replaced_while_descriptor_is_open(
         )
     original = zipfile.ZipFile.infolist
 
-    def replace_after_namelist(archive: zipfile.ZipFile):
+    def replace_after_namelist(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
         names = original(archive)
         replacement.replace(bundle)
         return names

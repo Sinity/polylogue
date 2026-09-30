@@ -593,10 +593,10 @@ def _observe_root(binding: SourceCutBinding, anchor: int, root_info: os.stat_res
         except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
     result: list[CutItem] = []
-    for coordinate, path, info in _walk_files(root, anchor, root_info):
+    for coordinate, path, member_info in _walk_files(root, anchor, root_info):
         content_sha256, captured_size, identity = _snapshot_regular_file(
             path,
-            info,
+            member_info,
             anchor=anchor,
             coordinate=coordinate if binding.root_identity.kind == "directory" else "",
         )

@@ -19,7 +19,7 @@ from polylogue.maintenance.source_manifest_continuity import (
     SourceRole,
     build_source_frontier,
 )
-from polylogue.sources import source_snapshot, sqlite_export
+from polylogue.sources import source_snapshot, sqlite_export, sqlite_snapshot
 from polylogue.sources.source_snapshot import (
     CandidateCohortError,
     SnapshotMode,
@@ -506,7 +506,9 @@ def test_handoff_observes_only_the_producer_bound_active_generation(
     (spool / "event.json").write_text("event", encoding="utf-8")
     original_copy = source_snapshot._copy_candidates
 
-    def copy_with_arrival(binding, baseline, destination):
+    def copy_with_arrival(
+        binding: source_snapshot.SourceCutBinding, baseline: tuple[source_snapshot.CutItem, ...], destination: Path
+    ) -> tuple[source_snapshot.CutItem, ...]:
         copied = original_copy(binding, baseline, destination)
         if replace_active:
             spool.rename(tmp_path / "displaced-active")
@@ -771,7 +773,16 @@ def test_cut_refuses_equal_byte_substitution_before_copy_even_if_restored(
     held = tmp_path / "original.jsonl"
     original = source_snapshot._copy_file
 
-    def substituted_copy(source, destination, policy, *, expected, captured_size, anchor, coordinate):
+    def substituted_copy(
+        source: Path,
+        destination: Path,
+        policy: SourceCutPolicy,
+        *,
+        expected: tuple[int, int],
+        captured_size: int | None,
+        anchor: int,
+        coordinate: str,
+    ) -> None:
         member.rename(held)
         if replacement == "symlink":
             member.symlink_to(external)
@@ -811,7 +822,7 @@ def test_sqlite_frontier_refuses_persistent_symlink_substitution_during_logical_
         with sqlite3.connect(path) as conn:
             conn.execute("CREATE TABLE state (value TEXT)")
             conn.execute("INSERT INTO state VALUES (?)", (value,))
-    original = source_snapshot.sqlite_member_revision
+    original = sqlite_snapshot.sqlite_member_revision
 
     def substitute(path: Path) -> str:
         database.rename(tmp_path / "original.sqlite")
@@ -860,7 +871,7 @@ def test_substituted_declared_parent_alias_cannot_publish_external_members(
     root = alias / "sessions"
     original = source_snapshot._snapshot_regular_file
 
-    def substitute(path, expected, *, anchor, coordinate):
+    def substitute(path: Path, expected: os.stat_result, *, anchor: int, coordinate: str) -> tuple[str, int, str]:
         alias.unlink()
         alias.symlink_to(external, target_is_directory=True)
         return original(path, expected, anchor=anchor, coordinate=coordinate)
