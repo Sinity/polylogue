@@ -843,9 +843,8 @@ def record_embedding_failure(
         elif stale_attempt:
             lifecycle = "superseded"
         elif unscoped_projection:
-            # Databases/callers predating the derivation ledger keep their
-            # established failure lifecycle. This branch cannot clobber a
-            # newer generation because no generation exists for the session.
+            # An unscoped receipt preserves failure lifecycle while no keyed
+            # generation exists for this session.
             conn.execute(
                 """
                 INSERT INTO embedding_status (

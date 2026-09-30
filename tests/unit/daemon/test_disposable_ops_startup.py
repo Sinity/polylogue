@@ -13,7 +13,12 @@ from polylogue.core.write_lease import write_lease
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.events import emit_daemon_event, query_events_since
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.stale_ops import make_ops_event_schema_stale
+from tests.infra.stale_ops import (
+    custody_file_inventory,
+    durable_sql_inventory,
+    make_ops_event_schema_stale,
+    seed_custody_files,
+)
 
 
 def test_production_startup_reconverges_stale_ops_then_restart_keeps_event_identity(
@@ -29,7 +34,16 @@ def test_production_startup_reconverges_stale_ops_then_restart_keeps_event_ident
     initialize_active_archive_root(root)
     make_ops_event_schema_stale(root / "ops.db")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    protected = {p.name: hashlib.sha256(p.read_bytes()).digest() for p in root.glob("*.db") if p.name != "ops.db"}
+    custody = seed_custody_files(root)
+    durable = durable_sql_inventory(root)
+    identities = {p.name: (p.stat().st_dev, p.stat().st_ino) for p in root.glob("*.db") if p.name != "ops.db"}
+    # Existing staged-reset audit inspection selects WAL mode on its first
+    # open. Only that physical journal header may change; durable SQL may not.
+    protected = {
+        p.name: hashlib.sha256(p.read_bytes()).digest()
+        for p in root.glob("*.db")
+        if p.name not in {"ops.db", "audit.db"}
+    }
 
     class StartupCheckpointError(Exception):
         pass
@@ -59,8 +73,15 @@ def test_production_startup_reconverges_stale_ops_then_restart_keeps_event_ident
         events = query_events_since(0, kinds=("synthetic_startup",)).events
         assert len(events) == 1
         assert {
-            p.name: hashlib.sha256(p.read_bytes()).digest() for p in root.glob("*.db") if p.name != "ops.db"
+            p.name: hashlib.sha256(p.read_bytes()).digest()
+            for p in root.glob("*.db")
+            if p.name not in {"ops.db", "audit.db"}
         } == protected
+        assert durable_sql_inventory(root) == durable
+        assert {
+            p.name: (p.stat().st_dev, p.stat().st_ino) for p in root.glob("*.db") if p.name != "ops.db"
+        } == identities
+        assert custody_file_inventory(root) == custody
 
 
 @pytest.mark.parametrize(
@@ -109,3 +130,27 @@ def test_ops_reconvergence_refuses_outside_closed_owned_startup(tmp_path: Path) 
     finally:
         owner.release()
     assert (tmp_path / "ops.db").read_bytes() == before
+
+
+def test_owned_ops_reconvergence_preserves_every_unrelated_tier_byte(tmp_path: Path) -> None:
+    """The replacement itself cannot change even an unrelated journal header."""
+    from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+    from polylogue.operations.mutation_replay import reconverge_disposable_ops_on_startup
+    from polylogue.operations.reset_safety import archive_tiers_closed
+
+    initialize_active_archive_root(tmp_path)
+    make_ops_event_schema_stale(tmp_path / "ops.db")
+    custody = seed_custody_files(tmp_path)
+    protected = {
+        p.name: (p.stat().st_dev, p.stat().st_ino, p.read_bytes()) for p in tmp_path.glob("*.db") if p.name != "ops.db"
+    }
+    owner = acquire_durable_archive_ownership(tmp_path, owner_id="synthetic-startup")
+    try:
+        with write_lease("daemon.startup.test", archive_root=tmp_path), archive_tiers_closed(tmp_path):
+            assert reconverge_disposable_ops_on_startup(tmp_path, archive_owner=owner)
+    finally:
+        owner.release()
+    assert {
+        p.name: (p.stat().st_dev, p.stat().st_ino, p.read_bytes()) for p in tmp_path.glob("*.db") if p.name != "ops.db"
+    } == protected
+    assert custody_file_inventory(tmp_path) == custody

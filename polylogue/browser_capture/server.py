@@ -92,11 +92,8 @@ from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
 
-# polylogue.daemon.events (which owns CAPTURE_HEALTH_EVENT_KIND) is imported
-# lazily inside the capture-health route handlers below, not at module scope:
-# polylogue.daemon's package __init__ imports polylogue.daemon.cli, which
-# imports this module for BrowserCaptureHTTPServer/make_server -- a
-# module-level import here would be a circular import at package-init time.
+# Import the daemon event ledger inside capture-health route handlers so HTTP
+# server bootstrap does not load its storage dependencies before a health request.
 
 logger = get_logger(__name__)
 
