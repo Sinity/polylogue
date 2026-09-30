@@ -11,7 +11,12 @@ from typing import Any
 
 import pytest
 
-from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
+from polylogue.maintenance.source_manifest_continuity import (
+    FrontierState,
+    SourceDeclaration,
+    SourceRole,
+    build_source_frontier,
+)
 from polylogue.sources import source_snapshot, sqlite_export
 from polylogue.sources.source_snapshot import (
     CandidateCohortError,
@@ -106,12 +111,13 @@ def test_member_hash_uses_one_descriptor_and_captured_append_length(
     original = b"first\n"
     member.write_bytes(original)
     real_fstat = os.fstat
+    member_inode = member.stat().st_ino
     captured = False
 
     def append_after_capture(fd: int) -> Any:
         nonlocal captured
         info = real_fstat(fd)
-        if not captured:
+        if not captured and info.st_ino == member_inode:
             captured = True
             with member.open("ab") as output:
                 output.write(b"later\n")
@@ -660,3 +666,60 @@ def test_archive_cut_reacquires_member_bytes_and_detects_member_mutation(tmp_pat
         archive.writestr("nested/two.json", "two")
     with pytest.raises(SourceMutationError):
         reacquire_candidate(result)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="Permission test requires an unprivileged reader")
+def test_frontier_refuses_whole_root_when_hidden_directory_is_unreadable(tmp_path: Path) -> None:
+    """Mutation: rglob silently skips denied directories and publishes partial PRESENT."""
+    root = tmp_path / "declared"
+    hidden = root / "hidden"
+    hidden.mkdir(parents=True)
+    (root / "public.json").write_bytes(b"{}")
+    (hidden / "session.jsonl").write_bytes(b"private\n")
+    hidden.chmod(0)
+    try:
+        frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.DIRECTORY, root, True)])
+    finally:
+        hidden.chmod(0o700)
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+    assert frontier.blockers
+    frontier.verify_integrity()
+
+
+@pytest.mark.parametrize("replacement", ["symlink", "regular", "parent-symlink"])
+def test_frontier_refuses_member_substitution_between_enumeration_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    """Mutation: path-open follows an external symlink or assigns a new inode to the old coordinate."""
+    root = tmp_path / "declared"
+    directory = root / "nested"
+    directory.mkdir(parents=True)
+    member = directory / "session.jsonl"
+    member.write_bytes(b"declared\n")
+    external = tmp_path / "external"
+    external.mkdir()
+    target = external / member.name
+    target.write_bytes(b"unrelated\n")
+    original = source_snapshot._snapshot_regular_file
+
+    def substitute(path: Path, expected: os.stat_result) -> tuple[str, int, str]:
+        if replacement == "parent-symlink":
+            member.unlink()
+            directory.rmdir()
+            directory.symlink_to(external, target_is_directory=True)
+        else:
+            member.rename(directory / "previous")
+            if replacement == "symlink":
+                member.symlink_to(target)
+            else:
+                member.write_bytes(b"replacement\n")
+        return original(path, expected)
+
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", substitute)
+    frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+    frontier.verify_integrity()

@@ -26,6 +26,7 @@ current-producer failure and never deleted here.
 from __future__ import annotations
 
 import sqlite3
+import stat
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -39,7 +40,7 @@ from polylogue.archive.revision_authority import (
     raw_receipt_order_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.raw_coordinates import zip_member_coordinate
+from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
@@ -60,6 +61,7 @@ ARTIFACT_IDENTITY_SUFFIXES: tuple[tuple[str, str], ...] = (
 
 _TERM_SOURCE_MISSING = "source_missing"
 _TERM_SOURCE_LOST = "source_lost"
+_TERM_SOURCE_UNAVAILABLE = "source_unavailable"
 _TERM_MATERIALIZED = "materialized"
 _TERM_REVISION_SUPERSEDED = "revision_superseded"
 _TERM_BYTE_DUPLICATE = "byte_duplicate_superseded"
@@ -103,6 +105,7 @@ _RULES: dict[str, str] = {
     _TERM_SOURCE_LOST: (
         "acquired source file no longer exists on disk and no raw payload blob is retained; the bytes are gone"
     ),
+    _TERM_SOURCE_UNAVAILABLE: "source file or member inventory is unreadable; retention is unmeasured and retryable",
     _TERM_MATERIALIZED: "index session carries this raw_id, or the agent work event's session is indexed",
     _TERM_REVISION_SUPERSEDED: "another revision of the same logical source is materialized",
     _TERM_BYTE_DUPLICATE: "content-bound byte-duplicate supersession receipt names a materialized twin",
@@ -163,6 +166,7 @@ _RULES: dict[str, str] = {
 _BLOCKING: frozenset[str] = frozenset(
     {
         _TERM_SOURCE_LOST,
+        _TERM_SOURCE_UNAVAILABLE,
         _TERM_UNCLASSIFIED_SHAPE,
         _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
@@ -372,65 +376,52 @@ def fragment_identity_shape(native_id: str) -> str | None:
     return None
 
 
-_ARCHIVE_MEMBER_SEPARATOR = "!"
+def _source_presence(
+    archive_root: Path,
+    source_path: str,
+    inventories: dict[Path, frozenset[str] | bool | None],
+) -> bool | None:
+    """Present, proven absent, or unavailable source evidence for this audit.
 
-# Keyed by (container, mtime_ns, size) so a rewritten archive is never answered
-# from a stale namelist.
-_MEMBER_NAMELIST_CACHE: dict[tuple[str, int, int, int, int], frozenset[str] | None] = {}
-
-
-def _member_names(container: Path) -> frozenset[str] | None:
-    """Return the archive's member names, or ``None`` when it is not a readable zip."""
+    A non-ZIP container proves no members remain. A permission or I/O fault
+    cannot prove loss. Inventories are scoped to one audit, never cached across
+    retries of an unreadable source.
+    """
+    direct = Path(source_path)
+    if not direct.is_absolute():
+        direct = archive_root / direct
     try:
-        stat = container.stat()
+        info = direct.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        pass
     except OSError:
         return None
-    key = (str(container), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns)
-    if key not in _MEMBER_NAMELIST_CACHE:
+    else:
+        return stat.S_ISREG(info.st_mode)
+    container_text, separator, member = str(direct).partition("!")
+    if not separator or not member:
+        # The shared lexical splitter also identifies removed or non-ZIP
+        # containers. Its live parser alone would erase unreadable evidence.
         try:
-            with zipfile.ZipFile(container) as archive:
-                _MEMBER_NAMELIST_CACHE[key] = frozenset(archive.namelist())
-        except (OSError, zipfile.BadZipFile):
-            _MEMBER_NAMELIST_CACHE[key] = None
-    return _MEMBER_NAMELIST_CACHE[key]
-
-
-def _source_exists(archive_root: Path, source_path: str) -> bool:
-    """Does the acquired source still exist on disk?
-
-    A raw acquired from inside an export bundle records an ``archive!member``
-    coordinate (``sources/source_snapshot.py`` builds it) or, from the ZIP
-    readers, an ``archive:member`` coordinate.  Probing that string
-    as a filesystem path can never succeed, so the coordinate is resolved to its
-    container and the member is required to be present in it -- container
-    existence alone would conserve a member the archive no longer holds.  A container that is not a readable zip cannot be
-    inspected here; its existence is the strongest evidence this check owns.
-    """
-
-    def _resolve(candidate: str) -> Path:
-        path = Path(candidate)
-        return path if path.is_absolute() else archive_root / path
-
-    direct = _resolve(source_path)
-    if direct.exists():
-        return True
-    container_text, separator, member = source_path.partition(_ARCHIVE_MEMBER_SEPARATOR)
-    if separator and member:
-        container = _resolve(container_text)
-        if not container.is_file():
+            coordinate = split_zip_member_text(str(direct))
+        except OSError:
+            return None
+        if coordinate is None:
             return False
-        names = _member_names(container)
-        return True if names is None else member in names
-    # ZIP acquisition records ``<container>:<member>`` (``decoder_zip`` and the
-    # import route), not the snapshot's ``!`` form. The shared parser tries each
-    # colon and accepts only a prefix that is a real ZIP, so a loose file whose
-    # name contains a colon is never mistaken for a member.
-    coordinate = zip_member_coordinate(str(direct))
-    if coordinate is None:
-        return False
-    container, member = coordinate
-    names = _member_names(container)
-    return True if names is None else member in names
+        container_text, member = coordinate
+    container = Path(container_text)
+    if container not in inventories:
+        try:
+            with container.open("rb") as stream, zipfile.ZipFile(stream) as archive:
+                inventories[container] = frozenset(info.filename for info in archive.infolist() if not info.is_dir())
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError, zipfile.BadZipFile):
+            inventories[container] = False
+        except OSError:
+            inventories[container] = None
+    names = inventories[container]
+    if names is None:
+        return None
+    return member in names if isinstance(names, frozenset) else False
 
 
 def typed_raw_cte(conn: sqlite3.Connection, *, name: str) -> str:
@@ -626,16 +617,18 @@ def audit_source_conservation(
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
-    missing_paths: dict[str, bool] = {}
+    source_presence: dict[str, bool | None] = {}
+    inventories: dict[Path, frozenset[str] | bool | None] = {}
     for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, blob_hash, term in typed_rows:
         # A work event is authored by the archive itself; its retained raw is
         # the source, so there is no acquired file to probe.
         if probe_filesystem and not is_work_event_raw_id(str(raw_id)):
-            present = missing_paths.get(source_path)
+            if source_path not in source_presence:
+                source_presence[source_path] = _source_presence(archive_root, str(source_path), inventories)
+            present = source_presence[source_path]
             if present is None:
-                present = _source_exists(archive_root, str(source_path))
-                missing_paths[source_path] = present
-            if not present:
+                term = _TERM_SOURCE_UNAVAILABLE
+            elif not present:
                 retained = bool(bytes_retained)
                 # blob_hash comes from the census query itself: no per-row read.
                 if blob_hash is not None:
@@ -1049,6 +1042,7 @@ def audit_source_conservation(
     forward_order = (
         _TERM_SOURCE_MISSING,
         _TERM_SOURCE_LOST,
+        _TERM_SOURCE_UNAVAILABLE,
         _TERM_MATERIALIZED,
         _TERM_REVISION_SUPERSEDED,
         _TERM_BYTE_DUPLICATE,

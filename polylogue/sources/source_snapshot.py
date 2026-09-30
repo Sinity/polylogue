@@ -24,8 +24,8 @@ import sqlite3
 import stat
 import tempfile
 import zipfile
-from collections.abc import Iterable, Mapping
-from contextlib import ExitStack
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -351,31 +351,52 @@ def _sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _snapshot_regular_file(path: Path) -> tuple[str, int, str]:
-    """Hash one descriptor's captured prefix and return its matching identity.
-
-    A concurrent append after ``fstat`` must not pair an old size with a digest
-    read through EOF. Reading exactly the captured size gives one coherent
-    append-log prefix, even if the path grows while the descriptor is read.
-    If the file changed while it was read (its ctime moved), the prefix is
-    hashed again: an append leaves it identical, while an in-place rewrite does
-    not and is refused rather than published as one observation.
-    """
+@contextmanager
+def _open_source_file(
+    path: Path, expected: os.stat_result, *, directory: bool = False
+) -> Iterator[tuple[int, os.stat_result]]:
+    """Open a member through directories that cannot follow substituted symlinks."""
+    parent: int | None = None
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY)
+        absolute = path.absolute()
+        parent = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        for component in absolute.parts[1:-1]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        if directory:
+            flags |= os.O_DIRECTORY
+        descriptor = os.open(absolute.name or ".", flags, dir_fd=parent)
         info = os.fstat(descriptor)
+        valid_kind = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        if not valid_kind or (info.st_dev, info.st_ino) != (expected.st_dev, expected.st_ino):
+            raise SourceMutationError(f"source member identity changed: {path}")
+        yield descriptor, info
+    except OSError as exc:
+        raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent is not None:
+            os.close(parent)
+
+
+def _snapshot_regular_file(path: Path, expected: os.stat_result) -> tuple[str, int, str]:
+    """Hash one descriptor's captured prefix and return its matching identity.
+
+    Enumeration binds the inode; opening refuses symlink substitution. An
+    append after fstat keeps the original prefix's size, hash and identity.
+    A changed prefix or truncation refuses the whole observation.
+    """
+    with _open_source_file(path, expected) as (descriptor, info):
         first = _hash_prefix(descriptor, info.st_size, path)
         after = os.fstat(descriptor)
         truncated = after.st_size < info.st_size
         changed = after.st_ctime_ns != info.st_ctime_ns
         if truncated or (changed and _hash_prefix(descriptor, info.st_size, path) != first):
             raise SourceSnapshotError(f"source member was rewritten while reading: {path}")
-    except OSError as exc:
-        raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
     return first, info.st_size, _identity(info)
 
 
@@ -412,29 +433,34 @@ def _identity(info: os.stat_result) -> str:
     return f"dev:{info.st_dev}:ino:{info.st_ino}:ctime:{info.st_ctime_ns}"
 
 
-def _walk_files(root: Path) -> tuple[tuple[str, Path, os.stat_result], ...]:
-    if root.is_file():
-        try:
-            info = root.stat()
-        except OSError as exc:
-            raise SourceSnapshotError(f"source member disappeared: {root}") from exc
-        return ((root.name, root, info),)
-    result: list[tuple[str, Path, os.stat_result]] = []
+def _walk_files(root: Path) -> Iterator[tuple[str, Path, os.stat_result]]:
+    """Enumerate every member, propagating scan and stat faults to the root owner."""
     try:
-        paths = sorted(root.rglob("*"))
+        root_info = root.lstat()
+        if stat.S_ISREG(root_info.st_mode):
+            yield root.name, root, root_info
+            return
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise SourceSnapshotError(f"source root is not a directory: {root}")
+        directories = [(root, root_info)]
+        while directories:
+            directory, expected = directories.pop()
+            with (
+                _open_source_file(directory, expected, directory=True) as (descriptor, _info),
+                os.scandir(descriptor) as entries,
+            ):
+                children = sorted(entries, key=lambda entry: entry.name)
+                for entry in children:
+                    path = directory / entry.name
+                    info = entry.stat(follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        directories.append((path, info))
+                    elif stat.S_ISREG(info.st_mode):
+                        yield path.relative_to(root).as_posix(), path, info
+                    else:
+                        raise SourceSnapshotError(f"source member is not a regular file: {path}")
     except OSError as exc:
-        raise SourceSnapshotError(f"source root is unreadable: {root}") from exc
-    for path in paths:
-        try:
-            info = path.lstat()
-        except OSError as exc:
-            raise SourceSnapshotError(f"source member disappeared: {path}") from exc
-        if stat.S_ISDIR(info.st_mode):
-            continue
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise SourceSnapshotError(f"source member is not a regular file: {path}")
-        result.append((path.relative_to(root).as_posix(), path, info))
-    return tuple(result)
+        raise SourceSnapshotError(f"source root inventory failed: {root}") from exc
 
 
 def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
@@ -443,21 +469,37 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
     if mode is SnapshotMode.ARCHIVE_MEMBER:
         if not root.is_file():
             raise SourceSnapshotError("archive-member sources must name an archive file")
-        archive_identity = _root_identity(root)
+        archive_info = root.lstat()
         try:
-            with zipfile.ZipFile(root) as archive:
-                return tuple(
-                    CutItem(
-                        binding.source.source_id,
-                        f"{root.name}!{info.filename}",
-                        f"{archive_identity.device}:{archive_identity.inode}:{archive_identity.ctime_ns}:{info.header_offset}",
-                        hashlib.sha256(archive.read(info)).hexdigest(),
-                        info.file_size,
+            with (
+                _open_source_file(root, archive_info) as (descriptor, archive_info),
+                os.fdopen(os.dup(descriptor), "rb") as stream,
+                zipfile.ZipFile(stream) as archive,
+            ):
+                items = []
+                for info in sorted(archive.infolist(), key=lambda item: item.filename):
+                    if info.is_dir():
+                        continue
+                    digest = hashlib.sha256()
+                    size = 0
+                    with archive.open(info) as member:
+                        while chunk := member.read(1024 * 1024):
+                            digest.update(chunk)
+                            size += len(chunk)
+                    items.append(
+                        CutItem(
+                            binding.source.source_id,
+                            f"{root.name}!{info.filename}",
+                            f"{archive_info.st_dev}:{archive_info.st_ino}:{archive_info.st_ctime_ns}:{info.header_offset}",
+                            digest.hexdigest(),
+                            size,
+                        )
                     )
-                    for info in sorted(archive.infolist(), key=lambda item: item.filename)
-                    if not info.is_dir()
-                )
-        except (OSError, zipfile.BadZipFile, KeyError) as exc:
+                after = os.fstat(descriptor)
+                if (after.st_size, after.st_ctime_ns) != (archive_info.st_size, archive_info.st_ctime_ns):
+                    raise SourceMutationError(f"archive changed during inventory: {root}")
+                return tuple(items)
+        except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
     result: list[CutItem] = []
     for coordinate, path, info in _walk_files(root):
@@ -467,11 +509,11 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
             # and page layout are transport observations, not source meaning.
             content_sha256 = identity
         else:
-            content_sha256, captured_size, identity = _snapshot_regular_file(path)
+            content_sha256, captured_size, identity = _snapshot_regular_file(path, info)
             result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size))
             continue
         result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, info.st_size))
-    return tuple(result)
+    return tuple(sorted(result, key=lambda item: item.coordinate))
 
 
 def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...]:
