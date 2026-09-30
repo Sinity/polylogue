@@ -858,14 +858,13 @@ def test_sqlite_observation_preserves_another_connections_process_locks(tmp_path
             [
                 sys.executable,
                 "-c",
-                "import sqlite3, sys; conn = sqlite3.connect(sys.argv[1], timeout=0); conn.execute(\"UPDATE state SET value = 'foreign'\"); conn.commit()",
+                "import sqlite3\nimport sys\nconn = sqlite3.connect(sys.argv[1], timeout=0)\ntry:\n    conn.execute(\"UPDATE state SET value = 'foreign'\")\n    conn.commit()\nexcept sqlite3.OperationalError as exc:\n    if exc.sqlite_errorcode == sqlite3.SQLITE_BUSY:\n        sys.exit(42)\n    raise\n",
                 str(database),
             ],
             capture_output=True,
             text=True,
         )
-        assert writer.returncode != 0
-        assert "database is locked" in writer.stderr
+        assert writer.returncode == 42
         assert reader.execute("SELECT value FROM state").fetchone() == ("declared",)
     finally:
         reader.rollback()
