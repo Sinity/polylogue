@@ -49,12 +49,13 @@ def test_clone_preserves_original_proof_and_both_owned_roots_open(
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "configured")
     with ArchiveStore(template):
         pass
+    finalize_archive_template(template)
     source_identity = template.joinpath(marker).read_bytes()
 
     clone_archive_template(template, clone)
 
     assert clone.joinpath(marker).read_bytes() != source_identity
-    with ArchiveStore(template):
+    with ArchiveStore.open_existing(template, read_only=True):
         pass
     with ArchiveStore(clone):
         pass

@@ -413,6 +413,7 @@ def initialize_runtime_tier_probe(
             temporary = sqlite3.connect(path)
             try:
                 initialize_runtime_tier_probe(temporary, tier, probe_path=path)
+                admitted_version = int(temporary.execute("PRAGMA user_version").fetchone()[0])
                 evidence = (capture_durable_schema_inventory(temporary).sha256, _durable_literal_rows_digest(temporary))
                 temporary.backup(conn)
                 if (capture_durable_schema_inventory(conn).sha256, _durable_literal_rows_digest(conn)) != evidence:
@@ -420,7 +421,7 @@ def initialize_runtime_tier_probe(
             finally:
                 temporary.close()
         conn.execute("PRAGMA foreign_keys = ON")
-        if int(conn.execute("PRAGMA user_version").fetchone()[0]) != archive_tier_spec(tier).version:
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) != admitted_version:
             raise RuntimeError("runtime tier probe backup did not retain its admitted version")
         return
     initialize_archive_tier(conn, tier)
@@ -721,10 +722,10 @@ def _initialize_active_archive_root(root: Path) -> None:
         record_fresh_archive_format,
     )
     from polylogue.storage.sqlite.durable_change_train import (
-        _durable_train_manifest_paths,
         _record_fresh_durable_bootstrap,
         _record_fresh_durable_bootstrap_intent,
         _validate_fresh_durable_bootstrap_intent,
+        durable_train_manifest_paths,
         execute_durable_change_train,
     )
 
@@ -767,7 +768,7 @@ def _initialize_active_archive_root(root: Path) -> None:
             (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
         )
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
-        has_durable_train_state = bool(_durable_train_manifest_paths(manifest_root))
+        has_durable_train_state = bool(durable_train_manifest_paths(manifest_root))
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()

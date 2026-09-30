@@ -66,6 +66,13 @@ the recorded post-apply evidence. Row proofs encode SQLite storage classes
 and literal values, including embedded NUL bytes, in deterministic primary
 key or actual rowid order (`storage/sqlite/migration_runner.py`).
 
+Archive backups retain original numbered Source, User and Audit train manifests
+only for the durable tiers included in the backup profile. The shared
+`durable_train_manifest_paths` enumerator selects numbered history; process
+lock files are not durable history. Copied receipts retain their original
+physical bindings and bytes. They do not authorize a relocated backup inode
+as the original live archive (`operations/archive_backup.py`).
+
 ## Identity and generated columns
 
 - `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`SESSIONS_SPEC` in `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:805-813`).

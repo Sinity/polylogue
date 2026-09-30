@@ -553,8 +553,10 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         ".maintenance-state",
         ".maintenance-state/durable-change-trains",
         ".maintenance-state/durable-change-trains/source-002.json",
-        ".maintenance-state/durable-change-trains/.source-002.json.lock",
     }
+    train_path = Path(".maintenance-state/durable-change-trains/source-002.json")
+    assert (backup_root / train_path).read_bytes() == (archive_root / train_path).read_bytes()
+    assert not (backup_root / train_path.with_suffix(".json.lock")).exists()
     assert artifact_inventory["user.db"]["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
     assert "verification-receipt.json" not in artifact_inventory
     assert {artifact["path"] for artifact in receipt["tier_artifacts"]} == {
@@ -1622,6 +1624,11 @@ def test_backup_archive_user_overlays_profile_copies_only_user_tier(
     assert not (backup_root / "ops.db").exists()
     assert not (backup_root / "blob").exists()
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    assert not (backup_root / ".maintenance-state/durable-change-trains/source-002.json").exists()
+    assert all(
+        not name.startswith(".maintenance-state/durable-change-trains/source-")
+        for name in manifest["archive_authority_files"]
+    )
     assert manifest["profile"] == "user_overlays"
     assert manifest["included_tiers"] == _tier_files(ArchiveTier.USER, ArchiveTier.AUDIT)
     assert manifest["omitted_tiers"] == _tier_files(

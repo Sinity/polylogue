@@ -65,7 +65,7 @@ def populate_authenticated_archive_clone(
     if any(relative.endswith((".db-wal", ".db-shm", ".db-journal")) for relative, _, _ in source_files):
         raise FixtureArchiveCloneError("unsealed_source_sqlite_sidecars")
     assert_archive_format_lineage(source)
-    history_paths = durable_change_train._durable_train_manifest_paths(source / _HISTORY)
+    history_paths = durable_change_train.durable_train_manifest_paths(source / _HISTORY)
     trains = tuple(durable_change_train.load_durable_change_train_manifest(path) for path in history_paths)
     if any(train.state is not DurableChangeTrainState.RELEASED for train in trains):
         raise FixtureArchiveCloneError("unreleased_source_history")
@@ -154,6 +154,10 @@ def populate_authenticated_archive_clone(
                 path.with_name(path.name + suffix).unlink(missing_ok=True)
         invalidate_active_archive_bootstrap(destination)
         initialize_active_archive_root(destination)
+        # Canonical ownership admission rewrites this exact lock's owner
+        # record for the destination. Other locks and fixture files retain
+        # their authenticated original bytes.
+        replaced.add(".archive-ownership.lock")
         for tier, source_conn in sources.items():
             path = destination / ARCHIVE_TIER_SPECS[tier].filename
             identity = (path.stat().st_dev, path.stat().st_ino)

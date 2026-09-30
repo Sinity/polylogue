@@ -20,7 +20,7 @@ import stat
 import tempfile
 import time
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager, closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,6 +89,28 @@ _ARCHIVE_AUTHORITY_FILES = (
     ".maintenance-state/durable-change-trains/.bootstrap",
     ".maintenance-state/durable-change-trains/.bootstrap.pending",
 )
+
+
+def _archive_authority_file_names(root: Path, included_tiers: Iterable[str]) -> tuple[str, ...]:
+    """Name original birth and numbered history evidence in this snapshot.
+
+    These copied receipts retain their original physical archive bindings;
+    they are not executable authority for the backup's new SQLite inodes.
+    Lock files are current process custody, not durable train evidence.
+    """
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.durable_change_train import durable_train_manifest_paths
+
+    manifest_root = root / ".maintenance-state" / "durable-change-trains"
+    included = set(included_tiers)
+    return _ARCHIVE_AUTHORITY_FILES + tuple(
+        str(path.relative_to(root))
+        for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
+        if tier.value in included
+        for path in durable_train_manifest_paths(manifest_root, tier)
+    )
+
+
 _SNAPSHOT_LOCK_ATTEMPTS = 5
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _RECOVERY_PROOF_KINDS = frozenset(
@@ -1422,11 +1444,11 @@ def _backup_archive(
             blob_count = 0
             blob_size = 0
 
-    # The format marker and fresh-bootstrap receipts are archive authority,
-    # not rebuildable cache.  Preserve them whenever present so a restored
-    # durable subset can pass the same lineage admission as the live root.
+    # Preserve original birth and numbered history proof for the included
+    # durable tiers. Relocated receipts retain their original bindings:
+    # copying them never admits a different inode as the live archive.
     archive_authority_files: list[str] = []
-    for relative_name in _ARCHIVE_AUTHORITY_FILES:
+    for relative_name in _archive_authority_file_names(root, included_tiers):
         source = root / relative_name
         if not (source.exists() or source.is_symlink()):
             continue
@@ -1592,8 +1614,9 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             _reject_sqlite_sidecars(tier_path)
             tier_integrity[name.removesuffix(".db")] = _sqlite_integrity_ok(tier_path)
         authority_files = manifest.get("archive_authority_files", [])
+        allowed_authority_files = _archive_authority_file_names(restored, (Path(name).stem for name in included_tiers))
         if not isinstance(authority_files, list) or any(
-            not isinstance(item, str) or item not in _ARCHIVE_AUTHORITY_FILES for item in authority_files
+            not isinstance(item, str) or item not in allowed_authority_files for item in authority_files
         ):
             raise RuntimeError("backup manifest has invalid archive authority file declarations")
         for relative_name in authority_files:

@@ -82,7 +82,7 @@ _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
 
 
-def _durable_train_manifest_paths(manifest_root: Path, tier: ArchiveTier | None = None) -> tuple[Path, ...]:
+def durable_train_manifest_paths(manifest_root: Path, tier: ArchiveTier | None = None) -> tuple[Path, ...]:
     """Return only positively typed durable-train entries.
 
     Durable train authority is identified by its tier and numeric train slot.
@@ -375,7 +375,7 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or _durable_train_manifest_paths(marker_root):
+    if marker_path.exists() or durable_train_manifest_paths(marker_root):
         raise DurableChangeTrainError(f"cannot record fresh durable bootstrap over existing train state: {marker_root}")
     if pending_path.is_file():
         _validate_fresh_durable_bootstrap_intent(archive_root)
@@ -407,7 +407,7 @@ def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or _durable_train_manifest_paths(marker_root):
+    if marker_path.exists() or durable_train_manifest_paths(marker_root):
         raise DurableChangeTrainError(
             f"cannot record fresh durable bootstrap intent over existing train state: {marker_root}"
         )
@@ -2010,7 +2010,7 @@ def _released_train_manifests_by_target(
     manifests_by_target: dict[int, DurableChangeTrain] = {}
     if not manifest_root.is_dir():
         return manifests_by_target
-    for path in _durable_train_manifest_paths(manifest_root, tier):
+    for path in durable_train_manifest_paths(manifest_root, tier):
         train = load_durable_change_train_manifest(path)
         if train.target_version in manifests_by_target:
             raise DurableChangeTrainError(
@@ -2448,7 +2448,7 @@ def _reconcile_durable_change_train_startup_locked(
     expected_live_schema_inventory_by_tier: dict[ArchiveTier, str] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     validated_tiers: set[ArchiveTier] = set()
-    manifest_paths = _durable_train_manifest_paths(manifest_root)
+    manifest_paths = durable_train_manifest_paths(manifest_root)
     # Before the bootstrap marker is corroborated: a newer release's marker
     # records versions whose schema this runtime cannot reconstruct, so the
     # ownership proof would refuse it as foreign instead of naming the skew.
@@ -2538,7 +2538,7 @@ def _reconcile_durable_change_train_startup_locked(
         if current_version <= adoption_floor:
             continue
         manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
-        tier_manifest_paths = _durable_train_manifest_paths(manifest_root, tier)
+        tier_manifest_paths = durable_train_manifest_paths(manifest_root, tier)
         bootstrap_version = fresh_bootstrap_versions.get(tier)
         if bootstrap_version is not None and current_version < bootstrap_version:
             raise DurableChangeTrainError(
@@ -2625,6 +2625,7 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
+    "durable_train_manifest_paths",
     "DURABLE_CHANGE_TRAIN_FORMAT",
     "DURABLE_MIGRATION_ADOPTION_FLOORS",
     "DurableChangeTrainManifest",

@@ -1031,6 +1031,12 @@ class ArchiveStore:
                 # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
                 else connect_measured(self.index_db_path, uri=True)
             )
+            from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
+
+            # Bootstrap may reuse a file-stat certificate while another
+            # connection has committed an identity change in WAL. Admit the
+            # actual writer handle before pragmas, attachments or index DDL.
+            assert_tier_schema_supported(self._conn, self.index_db_path, ArchiveTier.INDEX)
             write_profile = BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             if active_cold_build and not bulk_build_profile:
                 _assert_active_cold_build_index_only(
@@ -5803,11 +5809,14 @@ class ArchiveStore:
         if not resolved_session_ids:
             return 0
         conn = connect_measured(self.index_db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
         deleted = 0
         deleted_session_ids: list[str] = []
         try:
+            from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
+
+            assert_tier_schema_supported(conn, self.index_db_path, ArchiveTier.INDEX)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
             # This recovery path uses executescript(), which commits implicitly.
             # Restore missing triggers before the delete transaction so a later
             # trigger-install failure cannot commit the destructive work early.
