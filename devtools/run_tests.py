@@ -39,6 +39,8 @@ import sys
 import time
 from collections.abc import Mapping
 from dataclasses import replace
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, cast
 
@@ -590,7 +592,8 @@ def reusable_green_receipt(
         for order, entry, payload in loaded:
             fingerprint = payload.get("environment_fingerprint") or {}
             same_inputs = (
-                payload.get("argv") == selection
+                fingerprint.get("checkout_root") == str(root.absolute())
+                and payload.get("argv") == selection
                 and payload.get("execution_environment_key") == environment_key
                 and payload.get("git_worktree_content_sha256") == content_sha256
                 and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
@@ -1194,6 +1197,38 @@ def absent_selection_paths(selection: list[str], *, root: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     invocation_directory = Path.cwd()
     selection = list(sys.argv[1:] if argv is None else argv)
+    # Click's pass-through command deliberately leaves native options alone.
+    # Unlike argparse-backed commands, this runner has no parser to consume
+    # pytest's meta-options, so they would otherwise look like a selection and
+    # enter pool sizing (where an empty/unknown target can resemble the corpus).
+    # Handle every pytest help/version spelling before selection parsing or
+    # admission; these commands never collect tests or acquire the shared slot.
+    if any(argument in {"-h", "--help"} for argument in selection):
+        sys.stdout.write(
+            "Usage: devtools test [OPTIONS] <test selection> [pytest options]\n"
+            "\n"
+            "Run a focused pytest selection through the managed host pool.\n"
+            "\n"
+            "Examples:\n"
+            "  devtools test tests/unit/storage/test_example.py\n"
+            "  devtools test -k expression\n"
+            "  devtools test tests/unit/storage -x\n"
+            "\n"
+            "Options:\n"
+            "  --runner managed|isolated   Select the managed runner (default) or an isolated run.\n"
+            "  --rerun                     Run even when an exact passing receipt exists.\n"
+            "  --outliers N                Inspect timing outliers from completed full runs.\n"
+            "  -h, --help                  Show this help without starting pytest.\n"
+            "  -V, --version               Show the installed pytest version.\n"
+        )
+        return 0
+    if any(argument in {"-V", "--version"} for argument in selection):
+        try:
+            pytest_version = package_version("pytest")
+        except PackageNotFoundError:
+            pytest_version = "unavailable"
+        sys.stdout.write(f"pytest {pytest_version}\n")
+        return 0
     try:
         outlier_count, selection = _parse_outliers(selection)
         runner, selection = _parse_runner(selection)
