@@ -232,18 +232,27 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
         error = error or close_error
         cancellation = cancellation or close_cancellation
     actual_closed = conn._connection is None
-    if actual_closed and conn._running:
-        stopped = conn.stop()
-        if stopped is not None:
-            stop_error, stop_cancellation = await _settled_connection_operation(stopped)
+    if actual_closed and conn._thread.is_alive():
+        try:
+            stopped = conn.stop()
+            stop_error = None
+            if stopped is not None:
+                stop_error, stop_cancellation = await _settled_connection_operation(stopped)
+                error = error or stop_error
+                cancellation = cancellation or stop_cancellation
+            if stop_error is None:
+                # aiosqlite schedules the stop future before breaking its worker
+                # loop. After that sentinel succeeds the worker needs no further
+                # event-loop response; join proves its actual exit.
+                conn._thread.join()
+        except BaseException as stop_error:
             error = error or stop_error
-            cancellation = cancellation or stop_cancellation
     return _ConnectionCloseResult(actual_closed, error, cancellation)
 
 
 async def _close_backend_connection(conn: aiosqlite.Connection, *, rollback: bool = False) -> None:
     result = await _settle_connection_close(conn, rollback=rollback)
-    if result.actual_closed:
+    if result.actual_closed and not conn._thread.is_alive():
         with _BACKEND_CONNECTIONS_LOCK:
             owner = _BACKEND_CONNECTIONS.pop(id(conn), None)
         if owner is not None:

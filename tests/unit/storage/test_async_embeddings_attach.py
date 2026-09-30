@@ -218,7 +218,7 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
         finally:
             refuse_close = False
             await backend.close()
-        assert all(conn._connection is None for conn in handles)
+        assert all(conn._connection is None and not conn._thread.is_alive() for conn in handles)
         assert not any(entry.backend is backend for entry in async_sqlite._BACKEND_CONNECTIONS.values())
 
     asyncio.run(exercise())
@@ -283,6 +283,7 @@ def test_close_settlement_still_closes_raw_handle_after_rollback_failure(
             await async_sqlite._close_backend_connection(conn, rollback=True)
         assert caught.value is failure
         assert conn._connection is None and not conn._running
+        assert not conn._thread.is_alive()
         assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
         await backend.close()
 
@@ -326,7 +327,39 @@ def test_cancelled_close_waiter_drains_actual_worker_before_retiring_handle(
             with pytest.raises(asyncio.CancelledError):
                 await closing
         assert conn._connection is None and not conn._running
+        assert not conn._thread.is_alive()
         assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
         await backend.close()
+
+    asyncio.run(exercise())
+
+
+def test_failed_worker_stop_retains_owner_until_actual_thread_exit(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite import async_sqlite
+
+    async def exercise() -> None:
+        backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
+        conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        stop = conn.stop
+        failure = OSError("synthetic worker stop refusal")
+
+        def refuse_stop() -> None:
+            raise failure
+
+        monkeypatch.setattr(conn, "stop", refuse_stop)
+        try:
+            with pytest.raises(OSError) as caught:
+                await async_sqlite._close_backend_connection(conn)
+            assert caught.value is failure
+            assert conn._connection is None
+            assert conn._thread.is_alive()
+            assert id(conn) in async_sqlite._BACKEND_CONNECTIONS
+        finally:
+            monkeypatch.setattr(conn, "stop", stop)
+            await backend.close()
+        assert not conn._thread.is_alive()
+        assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
 
     asyncio.run(exercise())
