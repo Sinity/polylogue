@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.archive_clone import FixtureArchiveCloneError
 from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
+from tests.infra.workload_artifacts import ImmutableTreeArtifact
 
 
 def _populated_template(root: Path) -> str:
@@ -60,9 +61,12 @@ def test_populated_template_clone_keeps_rows_blobs_and_original_provenance(tmp_p
         assert clone.execute("SELECT raw_id, native_id FROM raw_sessions").fetchall() == [(raw_id, "native\x00suffix")]
     assert original_train.read_bytes() == original_bytes
     assert (destination / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() != original_bytes
-    source_namespace = hashlib.sha256(_template_key(source).encode()).hexdigest()
+    source_manifest_id = ImmutableTreeArtifact.adopt(source, key=_template_key(source)).manifest_id
+    source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
     provenance = destination / ".fixture-archive-provenance" / source_namespace / "source.json"
-    assert json.loads(provenance.read_text())["owning_artifact"] is None
+    provenance_record = json.loads(provenance.read_text())
+    assert provenance_record["source_manifest_id"] == source_manifest_id
+    assert provenance_record["owning_artifact"] is None
     assert (provenance.parent / "original-history/source-002.json").read_bytes() == original_bytes
     assert {
         str(path.relative_to(destination)): path.read_bytes()

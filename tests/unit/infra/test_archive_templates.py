@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import sqlite3
 import stat
 import subprocess
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
+from tests.infra.workload_artifacts import ImmutableTreeArtifact
 
 
 def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
@@ -64,9 +66,13 @@ def test_clone_preserves_original_proof_and_both_owned_roots_open(
     original = template / ".maintenance-state/durable-change-trains/source-002.json"
     regenerated = clone / ".maintenance-state/durable-change-trains/source-002.json"
     assert original.read_bytes() != regenerated.read_bytes()
-    source_namespace = hashlib.sha256(_template_key(template).encode()).hexdigest()
+    source_manifest_id = ImmutableTreeArtifact.adopt(template, key=_template_key(template)).manifest_id
+    source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
     provenance = clone / ".fixture-archive-provenance" / source_namespace / "original-history/source-002.json"
     assert provenance.read_bytes() == original.read_bytes()
+    provenance_record = json.loads((provenance.parent.parent / "source.json").read_text())
+    assert provenance_record["source_manifest_id"] == source_manifest_id
+    assert provenance_record["owning_artifact"] is None
 
 
 def _leave_crash_recovered_wal(database: Path) -> None:
