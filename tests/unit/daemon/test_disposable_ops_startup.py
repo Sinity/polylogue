@@ -169,12 +169,19 @@ def test_ops_disposal_fault_preserves_primary_and_refuses_bootstrap(
     wal = tmp_path / "ops.db-wal"
     wal.write_bytes(b"synthetic old sidecar")
     unlink = Path.unlink
+    exists = Path.exists
+
+    def masked_existence(path: Path) -> bool:
+        # Python 3.14 reports permission-denied stat as absence. Reverting to
+        # an existence probe would skip this member and swallow the fault.
+        return False if path == tmp_path / failed_member else exists(path)
 
     def fail_member(path: Path, missing_ok: bool = False) -> None:
         if path == tmp_path / failed_member:
             raise PermissionError("synthetic disposal fault")
         unlink(path, missing_ok=missing_ok)
 
+    monkeypatch.setattr(Path, "exists", masked_existence)
     monkeypatch.setattr(Path, "unlink", fail_member)
     with archive_tiers_closed(tmp_path), pytest.raises(PermissionError):
         discard_closed_derived_tier(tmp_path, primary)
