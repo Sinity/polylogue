@@ -463,14 +463,29 @@ def test_physical_copy_preserves_metadata_and_supported_attributes(tmp_path: Pat
 
 
 @pytest.mark.parametrize("copy", [False, True])
-def test_physical_read_metadata_precedes_streaming(tmp_path: Path, copy: bool) -> None:
+def test_physical_read_metadata_precedes_streaming(tmp_path: Path, copy: bool, monkeypatch: pytest.MonkeyPatch) -> None:
     """A post-read stat disagrees with the copied and reported original atime."""
     path = tmp_path / "source.db"
     destination = tmp_path / "snapshot.db"
     _database(path)
+    original = subprocess.Popen
+    children = []
+
+    def observable_custodian_read(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        command = list(args[0])
+        custodian = command[1:3] == ["-m", "polylogue.storage.sqlite.identity_custodian"]
+        if custodian:
+            command[2] = "tests.infra.sqlite_atime_reader"
+            args = (command, *args[1:])
+        child = cast("subprocess.Popen[bytes]", original(*args, **kwargs))
+        if custodian:
+            children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", observable_custodian_read)
     with _live_reader(path):
-        # Set this after SQLite's own initial read, so the physical reader is
-        # the operation that advances access time on a relatime filesystem.
+        # Set this after SQLite's initial read. The child advances atime on
+        # its first streamed read even when the host filesystem is noatime.
         os.utime(path, ns=(1_600_000_000_123_456_789, 1_600_000_001_987_654_321))
         before = path.stat()
         result = lock_isolated_file_read.read_sqlite_file_in_lock_isolated_process(
@@ -481,8 +496,8 @@ def test_physical_read_metadata_precedes_streaming(tmp_path: Path, copy: bool) -
         assert result.metadata.st_mtime_ns == before.st_mtime_ns
         if copy:
             assert destination.stat().st_atime_ns == before.st_atime_ns
-        if sys.platform == "linux":
-            assert path.stat().st_atime_ns > before.st_atime_ns
+        assert path.stat().st_atime_ns > before.st_atime_ns
+        assert children
 
 
 def test_sqlite_open_refuses_native_directory_substitution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
