@@ -477,7 +477,7 @@ class TestSimilarEndpoint:
         assert payload["reason"] is None
 
     def test_unresolvable_embedding_hits_report_inconsistent_not_ready(
-        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
     ) -> None:
         """Neighbors that match no indexed message are a broken join, not "nothing similar".
 
@@ -490,18 +490,22 @@ class TestSimilarEndpoint:
         _enable_embeddings(monkeypatch)
         seed_session_id, _embeddings_db, _mapping = _seed_ready_similarity_archive()
 
-        # This assertion covers the pre-split compatibility projection: unlike the
-        # managed active-index projection, it can retain a stale reference after
-        # the corresponding index row is deleted.
         from polylogue.storage import search_providers
+        from polylogue.storage.embeddings.identity import EmbeddingRecipe
+        from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
 
-        legacy_provider = SqliteVecProvider(
-            voyage_key="test-key",
-            db_path=_embeddings_db,
-            model="voyage-4-lite",
+        # Pin the vector projection before the index replacement, so a stale
+        # operation snapshot still returns neighbors that the new index lacks.
+        with sqlite3.connect(_index_db()) as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+        snapshot = open_vector_read_snapshot(
+            embeddings_path=_embeddings_db,
+            index_path=_index_db(),
+            recipe=EmbeddingRecipe.current(model="voyage-4-lite", dimensions=EMBEDDING_DIMENSION),
         )
-        monkeypatch.setattr(search_providers, "create_vector_provider", lambda *args, **kwargs: legacy_provider)
-
+        request.addfinalizer(snapshot.close)
+        provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=snapshot)
+        monkeypatch.setattr(search_providers, "create_vector_provider", lambda *args, **kwargs: provider)
         # Break the join the way a reindex would: keep the vectors, drop the rows
         # they point at.
         with sqlite3.connect(archive_root() / "index.db") as conn:
@@ -620,3 +624,21 @@ def test_unreadable_retained_vectors_never_certify_absence(
         }[failure]
     )
     assert payload["results"] == []
+
+
+@pytest.mark.contract
+def test_http_daemon_binds_vector_snapshot_without_acquisition_credentials(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring the HTTP server's key gate removes the machine read binding."""
+    from polylogue.config import PolylogueConfig
+    from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+
+    config = PolylogueConfig(_data={"embedding_enabled": True, "archive_root": str(archive_root())})
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: config)
+    with DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=archive_root()) as server:
+        factory = server.operation_runtime._read_dependencies_factory
+        assert factory is not None
+        binding = factory().vector_binding
+        assert binding is not None
+        assert binding.voyage_key is None

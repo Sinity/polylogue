@@ -25,6 +25,10 @@ class SqliteVecError(DatabaseError):
     """Raised when sqlite-vec operations fail."""
 
 
+class SqliteVecUnavailableError(SqliteVecError):
+    """The local vector runtime could not load its extension."""
+
+
 def _serialize_f32(vector: list[float]) -> bytes:
     """Serialize float vector to binary format for sqlite-vec."""
     return struct.pack(f"<{len(vector)}f", *vector)
@@ -35,6 +39,7 @@ __all__ = [
     "DEFAULT_DIMENSION",
     "DEFAULT_MODEL",
     "SqliteVecError",
+    "SqliteVecUnavailableError",
     "VOYAGE_API_URL",
     "_serialize_f32",
     "logger",

@@ -17,7 +17,7 @@ from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
     register_embedding_identity_sql,
 )
-from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
+from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, SqliteVecUnavailableError, logger
 from polylogue.storage.sqlite.connection_profile import (
     attach_readonly_database,
     open_connection,
@@ -127,7 +127,7 @@ def open_vector_read_snapshot(
         with _vector_projection_errors():
             loaded, error = try_load_sqlite_vec(conn)
             if not loaded:
-                raise SqliteVecError(f"sqlite-vec extension failed to load: {error or 'unknown error'}")
+                raise SqliteVecUnavailableError(f"sqlite-vec extension failed to load: {error or 'unknown error'}")
             register_embedding_identity_sql(conn, recipe=recipe)
             # Each persistent database has its own read-only URI.
             attach_readonly_database(conn, index_path, alias="archive_index")
@@ -167,14 +167,11 @@ class SqliteVecRuntimeMixin:
         _vec_available: bool | None
         _tables_ensured: bool
         archive_root: Path | None
-        _legacy_compatibility: bool
         _admitted_db_identity: tuple[int, int] | None
         _snapshot_connection: sqlite3.Connection | None
 
     def _assert_lifecycle_binding(self) -> None:
         if self._snapshot_connection is not None:
-            return
-        if getattr(self, "_legacy_compatibility", False):
             return
         if self.archive_root is None:
             raise SqliteVecError("managed vector provider requires an archive root")
@@ -202,9 +199,6 @@ class SqliteVecRuntimeMixin:
         if self._snapshot_connection is not None:
             yield
             return
-        if getattr(self, "_legacy_compatibility", False):
-            yield
-            return
         self._assert_lifecycle_binding()
         try:
             yield
@@ -220,24 +214,7 @@ class SqliteVecRuntimeMixin:
         conn = open_connection(db, archive_root=db.parent)
         conn.row_factory = sqlite3.Row
 
-        if getattr(self, "_legacy_compatibility", False):
-            try:
-                conn.executescript(
-                    """
-                    CREATE TEMP TABLE current_embedding_messages (
-                        message_id TEXT PRIMARY KEY,
-                        session_id TEXT NOT NULL,
-                        origin TEXT NOT NULL,
-                        vector_derivation_hash BLOB NOT NULL
-                    );
-                    INSERT INTO current_embedding_messages
-                    SELECT message_id, session_id, origin, vector_derivation_hash
-                    FROM message_embedding_refs;
-                    """
-                )
-            except sqlite3.Error:
-                conn.execute("DROP TABLE IF EXISTS temp.current_embedding_messages")
-        elif self.archive_root is not None:
+        if self.archive_root is not None:
             index_path = resolve_active_index_path(self.archive_root).resolve(strict=False)
             if index_path != self.db_path.resolve(strict=False):
                 # ATTACH creates the file when it does not exist, so a missing
@@ -273,8 +250,10 @@ class SqliteVecRuntimeMixin:
             if not loaded:
                 conn.close()
                 if error is None:
-                    raise SqliteVecError("sqlite-vec extension failed to load on connection: unknown error")
-                raise SqliteVecError(f"sqlite-vec extension failed to load on connection: {error}") from error
+                    raise SqliteVecUnavailableError("sqlite-vec extension failed to load on connection: unknown error")
+                raise SqliteVecUnavailableError(
+                    f"sqlite-vec extension failed to load on connection: {error}"
+                ) from error
 
         return conn
 
@@ -282,8 +261,6 @@ class SqliteVecRuntimeMixin:
         """Read retained vectors without acquiring a writable tier handle."""
         if self._snapshot_connection is not None:
             return self._snapshot_connection
-        if getattr(self, "_legacy_compatibility", False):
-            return self._get_connection()
         self._assert_lifecycle_binding()
         assert self.archive_root is not None
         return open_vector_read_snapshot(
@@ -304,14 +281,11 @@ class SqliteVecRuntimeMixin:
             conn = self._get_connection()
             self._release_connection(conn)
         if not self._vec_available:
-            raise SqliteVecError("sqlite-vec extension not available. Install with: pip install sqlite-vec")
+            raise SqliteVecUnavailableError("sqlite-vec extension not available. Install with: pip install sqlite-vec")
 
     def _ensure_tables(self) -> None:
         """Create required tables under lifecycle admission for managed tiers."""
         if self._snapshot_connection is not None:
-            return
-        if getattr(self, "_legacy_compatibility", False) or self.db_path.name != "embeddings.db":
-            self._ensure_tables_unlocked()
             return
         self._ensure_tables_unlocked()
 

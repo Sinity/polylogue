@@ -56,7 +56,12 @@ def make_message(
 
 @pytest.fixture
 def mock_provider(tmp_path: Path) -> MutableSqliteVecProvider:
-    provider = MutableSqliteVecProvider(voyage_key="test-voyage-key", db_path=tmp_path / "test.db", model="voyage-4")
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(tmp_path, [])
+    provider = MutableSqliteVecProvider(
+        voyage_key="test-voyage-key", db_path=tmp_path / "embeddings.db", model="voyage-4", archive_root=tmp_path
+    )
     provider.dimension = 1024
     provider._vec_available = None
     provider._tables_ensured = True
@@ -370,7 +375,7 @@ def test_upsert_noop_contract(
 @pytest.mark.parametrize(
     ("source_name", "expected_provider"),
     [("claude-ai", "claude-ai"), (None, "test-provider")],
-    ids=["provider-row", "missing-provider-row-uses-message-origin"],
+    ids=["explicit-origin", "message-origin"],
 )
 def test_upsert_persistence_contract(
     tmp_path: Path,
@@ -388,8 +393,12 @@ def test_upsert_persistence_contract(
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from tests.infra.vector_archive import seed_vector_archive
 
-    provider = MutableSqliteVecProvider(voyage_key="test-voyage-key", db_path=tmp_path / "test.db", model="voyage-4")
+    seed_vector_archive(tmp_path, [])
+    provider = MutableSqliteVecProvider(
+        voyage_key="test-voyage-key", db_path=tmp_path / "embeddings.db", model="voyage-4", archive_root=tmp_path
+    )
     provider.dimension = 1024
     provider._vec_available = None
     provider._tables_ensured = False
@@ -401,9 +410,6 @@ def test_upsert_persistence_contract(
         if "vec0" in str(exc) or "sqlite-vec" in str(exc):
             pytest.skip("sqlite-vec extension is unavailable")
         raise
-    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT)")
-    if source_name is not None:
-        conn.execute("INSERT INTO sessions (session_id, origin) VALUES (?, ?)", ("conv-1", source_name))
     conn.commit()
     conn.close()
 
@@ -421,7 +427,7 @@ def test_upsert_persistence_contract(
 
     provider._get_embeddings = capture_embeddings
 
-    provider.upsert("conv-1", messages)
+    provider.upsert("conv-1", messages, origin=source_name)
 
     assert embeddings_called_with == [
         "This is a long embeddable message.",

@@ -51,6 +51,7 @@ from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transie
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecUnavailableError
 
 # Hard server-side cap on requested result count. A pathological client
 # asking for ``limit=10**6`` still receives at most this many rows.
@@ -163,7 +164,7 @@ def _build_archive_similar_payload(
                 status, reason = "unavailable", "sqlite_contention"
             elif is_corrupt_sqlite_database(exc) or is_corrupt_sqlite_database(cause):
                 status, reason = "unavailable", "embeddings_db_unreadable"
-            elif "extension" in str(exc).lower():
+            elif isinstance(exc, SqliteVecUnavailableError):
                 status, reason = "unavailable", "sqlite_vec_not_loaded"
             else:
                 status, reason = "unavailable", "embedding_read_failed"
