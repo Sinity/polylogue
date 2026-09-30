@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -1140,9 +1141,10 @@ class TestRawFailureSampleRedactionPattern:
         """Relative paths like src/file.py should not be redacted."""
         sample = RawFailureSample(
             failure_kind="parse_error",
+            relative_path_spans=((16, 27),),
             redacted_error="Missing module: src/file.py not found",
         )
-        # Relative paths should not match the absolute-path pattern
+        # The diagnostic producer declares this exact span as relative.
         assert "src/file.py" in sample.redacted_error
 
     def test_urls_not_redacted(self) -> None:
@@ -1165,3 +1167,150 @@ class TestRawFailureSampleRedactionPattern:
         """provider_hint should be None when not provided, not empty string."""
         sample = RawFailureSample(failure_kind="unknown")
         assert sample.provider_hint is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/opt/synthetic space/leaf.json",
+        "/opt/例/leaf.json",
+        "prefix/opt/private/leaf.json",
+        "/opt/private/O'Reilly.json",
+        '/opt/private/O"Reilly.json',
+        "/opt/private/https://host.example/secret",
+        "/opt/private space https://host.example/secret",
+    ],
+)
+@pytest.mark.parametrize("quoted", [False, True])
+def test_status_failure_producers_conceal_complete_path_tails(tmp_path: Path, path: str, quoted: bool) -> None:
+    """Restoring either old matcher exposes a path fragment on its production route."""
+    from polylogue.operations.status_workload import raw_failure_status_from_connection
+
+    url = "https://api.example.test/保留?q=%2Fdata"
+    delimiter = '"' if "'" in path else "'"
+    diagnostic = (
+        f"URL {url}: parse: {delimiter}{path}{delimiter}; endpoint {url}" if quoted else f"URL {url}: parse: {path}"
+    )
+    _seed_archive_raw_session(
+        tmp_path,
+        raw_id="raw-private",
+        origin="codex-session",
+        native_id="native-private",
+        source_path="relative/session.json",
+        parse_error=diagnostic,
+    )
+    direct = raw_failure_info_for_root(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
+        pinned = raw_failure_status_from_connection(connection, schema="main")
+    constructed = RawFailureSample(failure_kind="parse_error", redacted_error=diagnostic)
+    outputs = [
+        constructed.model_dump()["redacted_error"],
+        cast(list[RawFailureSample], direct["samples"])[0].model_dump()["redacted_error"],
+        cast(list[dict[str, object]], pinned["raw_failure_samples"])[0]["redacted_error"],
+    ]
+    for output in outputs:
+        assert isinstance(output, str)
+        assert "[redacted]" in output
+        assert output.count(url) == (2 if quoted else 1)
+        assert all(
+            fragment not in output
+            for fragment in (
+                "synthetic space",
+                "例",
+                "private",
+                "leaf.json",
+                "/opt",
+                "Reilly",
+                "host.example",
+                "secret",
+            )
+        )
+
+
+def test_ambiguous_relative_prose_requires_a_producer_declaration() -> None:
+    diagnostic = "Missing module: src/file.py not found"
+    ambiguous = RawFailureSample(failure_kind="parse_error", redacted_error=diagnostic)
+    declared = RawFailureSample(
+        failure_kind="parse_error",
+        relative_path_spans=((16, 27),),
+        redacted_error=diagnostic,
+    )
+    assert "file.py" not in ambiguous.redacted_error
+    assert declared.redacted_error == diagnostic
+    assert "relative_path_spans" not in declared.model_dump()
+
+
+@pytest.mark.parametrize("span", [(-1, 4), (0, 100), (0, 5)])
+def test_relative_declarations_reject_invalid_or_absolute_spans(span: tuple[int, int]) -> None:
+    with pytest.raises(ValidationError):
+        RawFailureSample(failure_kind="parse_error", relative_path_spans=(span,), redacted_error="/root/file")
+
+
+@pytest.mark.parametrize(
+    "url", ["https://api.example.test/例?q=%2Fdata", "https://api.example.test/v1/data?next=%2Ftwo"]
+)
+def test_status_errors_preserve_parsed_urls_alongside_private_paths(url: str) -> None:
+    sample = RawFailureSample(
+        failure_kind="parse_error", redacted_error=f"URL {url} failed: '/opt/private space/例.json'"
+    )
+    assert url in sample.redacted_error
+    assert "private space" not in sample.redacted_error
+    assert "例.json" not in sample.redacted_error
+
+
+@pytest.mark.parametrize("spans", [((0, 3), (2, 5)), ((0, 3), (0, 3)), ((0, 3), (3, 100))])
+def test_relative_declarations_refuse_overlaps_and_out_of_range_spans(spans: tuple[tuple[int, int], ...]) -> None:
+    with pytest.raises(ValidationError):
+        RawFailureSample(failure_kind="parse_error", relative_path_spans=spans, redacted_error="src/file.py")
+
+
+@pytest.mark.parametrize("path", ["https://api.example.test/path", "src/'file", "src/\nfile"])
+def test_relative_declarations_refuse_urls_and_quote_crossing(path: str) -> None:
+    with pytest.raises(ValidationError):
+        RawFailureSample(failure_kind="parse_error", relative_path_spans=((0, len(path)),), redacted_error=path)
+
+
+def test_typed_status_projection_retains_declared_relative_diagnostic() -> None:
+    sample = RawFailureSample(
+        failure_kind="parse_error",
+        relative_path_spans=((16, 27),),
+        redacted_error="Missing module: src/file.py not found",
+    )
+    status = DaemonStatus(raw_failure_samples=[sample])
+    assert status.model_dump()["raw_failure_samples"][0]["redacted_error"] == sample.redacted_error
+
+
+@pytest.mark.parametrize("span", [(5, 9), (0, 3)])
+def test_relative_declarations_refuse_path_component_spans(span: tuple[int, int]) -> None:
+    with pytest.raises(ValidationError):
+        RawFailureSample(failure_kind="parse_error", relative_path_spans=(span,), redacted_error="root/file")
+
+
+def test_relative_declarations_require_a_present_diagnostic() -> None:
+    with pytest.raises(ValidationError):
+        RawFailureSample(failure_kind="parse_error", relative_path_spans=((0, 3),))
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        'cannot read "/opt/private/O\'Reilly.json"',
+        "cannot read '/opt/private/O\"Reilly.json'",
+        "cannot read '/opt/private/https://host.example/secret'",
+        'cannot read "/opt/private/https://host.example/O\'Reilly.json"',
+        "cannot read '/opt/private space https://host.example/secret'",
+        "cannot read /opt/private/https://host.example/secret",
+    ],
+)
+def test_local_path_tails_do_not_gain_url_or_alternate_quote_exemptions(diagnostic: str) -> None:
+    sample = RawFailureSample(failure_kind="parse_error", redacted_error=diagnostic)
+    assert all(
+        fragment not in sample.redacted_error for fragment in ("Reilly", "host.example", "secret", "/opt", "private")
+    )
+    assert "[redacted]" in sample.redacted_error
+
+
+@pytest.mark.parametrize("spans", [((True, 3),), (("0", 3),), ((0, 3.0),)])
+def test_relative_declarations_require_exact_integer_bounds(spans: object) -> None:
+    with pytest.raises(ValidationError):
+        RawFailureSample(failure_kind="parse_error", relative_path_spans=cast(Any, spans), redacted_error="src/file.py")

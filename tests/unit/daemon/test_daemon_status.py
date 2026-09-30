@@ -3473,7 +3473,11 @@ def _daemon_payload_for_verdict_variant(variant: str, *, collecting_status_snaps
         else []
     )
     snapshot = {
-        "state": "stale" if variant == "stale_snapshot" else "fresh",
+        "state": "stale"
+        if variant == "stale_snapshot"
+        else "unavailable"
+        if variant == "unavailable_snapshot"
+        else "fresh",
         "age_s": 1.0,
         "captured_at": "2026-01-01T00:00:00+00:00",
         "frame": "f",
@@ -3517,6 +3521,7 @@ def test_status_refresh_verdict_ignores_previous_stale_frame() -> None:
         ("clean", True),
         ("halted_unit", False),
         ("stale_snapshot", False),
+        ("unavailable_snapshot", False),
         ("lifecycle_degraded", False),
         ("lifecycle_unavailable", False),
         ("frontier_violated", False),
@@ -3546,6 +3551,7 @@ def test_daemon_status_payload_verdict_keeps_every_refutation(variant: str, expe
         ("clean", True),
         ("halted_unit", False),
         ("stale_snapshot", False),
+        ("unavailable_snapshot", False),
         ("failed_service", False),
     ],
 )
@@ -3831,3 +3837,121 @@ def test_an_uncollected_quick_check_renders_explicitly_unavailable() -> None:
 
     assert payload[STATUS_RESULT_KEY] == "unavailable"
     assert payload[AGE_KEY] is None
+
+
+@pytest.mark.parametrize("collecting", [False, True])
+def test_unavailable_acquired_frame_refutes_both_status_producers(
+    monkeypatch: pytest.MonkeyPatch, collecting: bool
+) -> None:
+    """Dropping unavailable from the shared verdict or refresh overlay turns this red."""
+    from polylogue.daemon import status_snapshot
+    from polylogue.operations.daemon_status import produce_operation_status
+
+    snapshot = status_snapshot.StatusSnapshot(
+        payload={},
+        captured_monotonic=0.0,
+        captured_at="2026-01-01T00:00:00+00:00",
+        frame="observed-frame",
+        rich_observed=True,
+    )
+    monkeypatch.setattr(status_snapshot, "_SNAPSHOT", snapshot)
+    # Production frame acquisition returns unavailable when the current frame cannot be read.
+    monkeypatch.setattr(status_snapshot, "_status_frame", lambda: None)
+    acquired = status_snapshot.snapshot_state_for_metrics()
+    assert acquired["state"] == "unavailable"
+    status = status_module.DaemonStatus(
+        daemon_liveness=True,
+        raw_failure_lifecycle_available=True,
+        raw_failure_lifecycle_state="healthy",
+        raw_frontier_integrity=_proven_healthy_frontier(),
+        component_readiness=_verdict_clean_component_readiness(),
+    )
+    with (
+        patch("polylogue.daemon.status.build_daemon_status", return_value=status),
+        patch("polylogue.daemon.status.halted_unit_status", return_value=[]),
+        patch("polylogue.daemon.status.supervised_service_snapshot", return_value=({}, [])),
+        patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
+        patch("polylogue.operations.daemon_status.produce_direct_status", return_value=_clean_pinned_status_payload()),
+    ):
+        daemon = daemon_status_payload(sources=(), include_archive_debt=False, collecting_status_snapshot=collecting)
+        operation = produce_operation_status(
+            archive=cast(Any, _PinnedArchiveStub()),
+            now_ms=1_700_000_000_000,
+            runtime_status=daemon,
+        )
+    assert daemon["ok"] is False
+    assert operation["ok"] is False
+    assert cast(dict[str, object], daemon["status_snapshot"])["state"] == "unavailable"
+
+
+def test_unobserved_optional_snapshot_does_not_refute_status() -> None:
+    from polylogue.operations.daemon_status import overall_status_ok
+
+    pinned = _clean_pinned_status_payload()
+    assert (
+        overall_status_ok(
+            component_readiness=cast(Any, pinned["component_readiness"]),
+            raw_failures=pinned,
+            raw_frontier_integrity=cast(Any, pinned["raw_frontier_integrity"]),
+            tier_count_unavailable=None,
+            halted_units=None,
+            failed_services=None,
+            status_snapshot=None,
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize("diagnostic", ["failure: /opt/private space/例.json", "failure: prefix/opt/private/leaf.json"])
+def test_status_diagnostic_models_redact_without_changing_declared_paths(diagnostic: str) -> None:
+    from polylogue.daemon.convergence_debt_status import ConvergenceDebtItem, ConvergenceDebtSummary
+    from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptState
+    from polylogue.daemon.status_snapshot import StatusSnapshot
+
+    path = "relative/session.json"
+    attempt = LiveIngestAttemptState(
+        attempt_id="attempt",
+        started_at="",
+        updated_at="",
+        status="failed",
+        phase="parse",
+        error=diagnostic,
+        current_path=path,
+    )
+    debt = ConvergenceDebtSummary(
+        recent=[
+            ConvergenceDebtItem(
+                stage="parse",
+                subject_type="raw",
+                subject_id="raw-1",
+                status="failed",
+                last_failed_at="",
+                last_error=diagnostic,
+            )
+        ],
+        error=diagnostic,
+    )
+    snapshot = StatusSnapshot(
+        payload={}, captured_monotonic=0.0, captured_at="", refresh_error=diagnostic, frame_error=diagnostic
+    )
+    alert = HealthAlert(
+        check_name="parse",
+        tier=HealthTier.FAST,
+        severity=HealthSeverity.ERROR,
+        message=diagnostic,
+        checked_at="",
+    )
+    errors = [
+        attempt.model_dump()["error"],
+        debt.model_dump()["error"],
+        debt.model_dump()["recent"][0]["last_error"],
+        snapshot.refresh_error,
+        snapshot.frame_error,
+        alert.model_dump()["message"],
+    ]
+    assert attempt.model_dump()["current_path"] == path
+    assert attempt.status == "failed"
+    for error in errors:
+        assert isinstance(error, str)
+        assert "[redacted]" in error
+        assert all(fragment not in error for fragment in ("private", "例.json", "leaf.json"))

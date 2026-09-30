@@ -31,9 +31,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.config import PolylogueConfig
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.paths import archive_root
@@ -76,6 +77,11 @@ class HealthAlert(BaseModel):
     message: str
     checked_at: str
     consecutive_failures: int = 0
+
+    @field_validator("message")
+    @classmethod
+    def _redact_diagnostic(cls, value: str) -> str:
+        return redact_status_error(value)
 
 
 class DaemonHealth(BaseModel):

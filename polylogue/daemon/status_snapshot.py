@@ -20,6 +20,7 @@ from polylogue.core.evidence_value import (
 )
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.refs import ObjectRef
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.discovery_progress import overlay_active_discovery
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.operations.quick_check import observe_quick_check, unmeasured_quick_check
@@ -64,6 +65,12 @@ class StatusSnapshot:
     frame: str | None = None
     frame_error: str | None = None
     rich_observed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.refresh_error is not None:
+            object.__setattr__(self, "refresh_error", redact_status_error(self.refresh_error))
+        if self.frame_error is not None:
+            object.__setattr__(self, "frame_error", redact_status_error(self.frame_error))
 
     def with_metadata(self) -> JSONDocument:
         age_s = max(0.0, time.monotonic() - self.captured_monotonic)
@@ -285,7 +292,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         try:
             fts_payload = fts_readiness_info(dbf)
         except Exception as exc:
-            refresh_error = refresh_error or str(exc)
+            refresh_error = refresh_error or redact_status_error(str(exc))
     now = datetime.now(UTC).isoformat()
     runtime = _runtime_component_state()
     browser_capture = dict(browser_capture_status_public_payload())
@@ -524,7 +531,7 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                 else:
                     payload = _minimal_status_payload()
         except Exception as exc:
-            refresh_error = str(exc) or type(exc).__name__
+            refresh_error = redact_status_error(str(exc)) or type(exc).__name__
             payload = _minimal_status_payload(refresh_error=refresh_error)
         end_frame = _status_frame()
         with _SNAPSHOT_LOCK:
