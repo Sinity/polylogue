@@ -22,7 +22,7 @@ def main() -> None:
             advanced = True
         return chunk
 
-    identity_custodian.os.read = read_and_advance_atime
+    os.read = read_and_advance_atime
     identity_custodian.main()
 
 
