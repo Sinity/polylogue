@@ -1222,6 +1222,9 @@ def open_readonly_connection(
     ``check_same_thread=False`` is reserved for a cached handle whose caller
     already serializes access and may close it from a different thread.
     """
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(path)
     if profile.role != "read" or not profile.query_only:
         raise ValueError("open_readonly_connection requires a query-only read profile")
     if timeout_class not in READ_PROFILES:
@@ -1355,6 +1358,9 @@ def attach_readonly_database(
     it for the single ATTACH statement. ``query_only`` remains enabled, and
     the attached URI is always opened read-only.
     """
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(path)
     if conn.execute("PRAGMA query_only").fetchone()[0] != 1:
         raise ValueError("read-only attachment requires a query-only connection")
     if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
@@ -1377,6 +1383,9 @@ def attach_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -
     :func:`attach_readonly_database` and is opened read-only. Any other
     connection attaches the file directly.
     """
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(path)
     if conn.execute("PRAGMA query_only").fetchone()[0] == 1:
         attach_readonly_database(conn, path, alias=alias)
         return

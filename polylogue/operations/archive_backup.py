@@ -286,7 +286,7 @@ def _backup_artifact_inventory(
 
 
 def _canonical_json_sha256(payload: object) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -1383,6 +1383,241 @@ async def execute_backup_operation(
     )
 
 
+class ArchiveRestoreRefusalError(ValueError):
+    """A backup cannot authorize the requested fresh operational destination."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def restore_verified_backup(*, backup_dir: Path, destination: Path) -> dict[str, object]:
+    """Restore a closed authenticated package into new destination-owned inodes.
+
+    Original receipts remain immutable detached provenance. Ordinary startup
+    never interprets them as authority for a transplanted SQLite file.
+    """
+    from polylogue.storage.backup_attestation import verify_verification_receipt
+    from polylogue.storage.sqlite.archive_population import populate_authenticated_archive
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import _validate_closed_backup_package
+
+    backup_dir = backup_dir.resolve(strict=True)
+    destination = destination.absolute()
+    _require_real_backup_directory(backup_dir, label="backup root")
+    if destination.exists() or destination.is_symlink():
+        raise ArchiveRestoreRefusalError("restore_destination_exists")
+    manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
+    receipt = json.loads((backup_dir / _VERIFICATION_RECEIPT_FILE).read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or not isinstance(receipt, dict):
+        raise ArchiveRestoreRefusalError("restore_invalid_package")
+    if manifest.get("mode") != "archive_file_set" or receipt.get("format") != VERIFICATION_RECEIPT_FORMAT:
+        raise ArchiveRestoreRefusalError("restore_unsupported_package")
+    included_values = manifest.get("included_tiers")
+    if not isinstance(included_values, list) or not all(isinstance(value, str) for value in included_values):
+        raise ArchiveRestoreRefusalError("restore_invalid_package")
+    included = set(included_values)
+    if not included.issubset({f"{tier.value}.db" for tier in ArchiveTier}):
+        raise ArchiveRestoreRefusalError("restore_unsupported_package")
+    debt = manifest.get("blob_reference_debt")
+    missing_blobs = debt.get("missing_referenced_blobs", 0) if isinstance(debt, dict) else 0
+    if type(missing_blobs) is not int or missing_blobs < 0:
+        raise ArchiveRestoreRefusalError("restore_invalid_package")
+    if not {"source.db", "user.db", "audit.db"}.issubset(included):
+        # Overlay and diagnostics packages retain their evidence contract;
+        # they cannot supply a complete source/audit continuity authority.
+        raise ArchiveRestoreRefusalError("restore_partial_durable_core")
+
+    def validate() -> dict[str, dict[str, object]]:
+        artifacts = _validate_closed_backup_package(
+            backup_dir, manifest, receipt, target_tier=None, live_tier_path=None
+        )
+        for tier in ("source", "user", "audit"):
+            fingerprint = artifacts[tier]["source_fingerprint"]
+            if not isinstance(fingerprint, dict) or not isinstance(fingerprint.get("path"), str):
+                raise ArchiveRestoreRefusalError("restore_missing_original_authority")
+            verify_verification_receipt(receipt, tier=tier, live_tier_path=Path(fingerprint["path"]))
+        return artifacts
+
+    def validate_source_files() -> None:
+        validate()
+
+    artifacts = validate()
+    original_identities: dict[ArchiveTier, str] = {}
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
+        fingerprint = artifacts[tier.value]["source_fingerprint"]
+        if (
+            not isinstance(fingerprint, dict)
+            or type(fingerprint.get("device")) is not int
+            or type(fingerprint.get("inode")) is not int
+        ):
+            raise ArchiveRestoreRefusalError("restore_missing_original_identity")
+        original_identities[tier] = hashlib.sha256(
+            f"dev:{fingerprint['device']}:ino:{fingerprint['inode']}".encode()
+        ).hexdigest()
+    source_files = tuple(
+        (str(item["path"]), int(item["size_bytes"]), str(item["sha256"]))
+        for item in receipt["artifact_inventory"]
+        if item.get("type") == "file"
+    )
+    source_manifest_id = str(receipt["manifest_sha256"])
+    from polylogue.storage.sqlite.population_admission import (
+        POPULATION_PENDING,
+        ArchivePopulationDestinationExistsError,
+        reserve_population_destination,
+    )
+
+    try:
+        with reserve_population_destination(destination, source_manifest_id=source_manifest_id) as admission:
+            destination = admission.root
+            entries = {path.name for path in destination.iterdir()}
+            if entries != {POPULATION_PENDING, "daemon.pid", ".archive-ownership.lock"}:
+                raise ArchiveRestoreRefusalError("restore_destination_reservation_conflict")
+            shutil.copytree(backup_dir, destination, dirs_exist_ok=True)
+            proof = populate_authenticated_archive(
+                backup_dir,
+                destination,
+                source_manifest_id=source_manifest_id,
+                source_files=source_files,
+                retained_artifact_reference=False,
+                validate_source_files=validate_source_files,
+                original_tier_identities=original_identities,
+            )
+            if proof is None:
+                raise ArchiveRestoreRefusalError("restore_missing_format_authority")
+            # Compare every unchanged package file, including all copied
+            # blob bytes, before retiring the pending admission fence.
+            for relative, size, digest in source_files:
+                if relative in proof.replaced_paths:
+                    continue
+                path = destination / relative
+                if (
+                    not path.is_file()
+                    or path.is_symlink()
+                    or path.stat().st_size != size
+                    or _sha256_file(path) != digest
+                ):
+                    raise ArchiveRestoreRefusalError("restore_destination_file_mismatch")
+            provenance = (
+                destination / ".archive-population-provenance" / hashlib.sha256(source_manifest_id.encode()).hexdigest()
+            )
+            original_package = provenance / "original-backup"
+            original_package.mkdir()
+            for name in (
+                "manifest.json",
+                _VERIFICATION_RECEIPT_FILE,
+                "blob-inventory.json",
+                _BLOB_REFERENCE_EVIDENCE_FILE,
+                "blob-reference-debt.json",
+                SOURCE_DECLARED_ABSENT_FILE,
+            ):
+                path = destination / name
+                if path.is_file():
+                    path.replace(original_package / name)
+            validate()
+            # The deep owner already evaluated the normal final startup
+            # predicate after exact row/schema population. This point
+            # additionally proves the final file/blob set and source
+            # package binding while the same owner still excludes writers.
+    except ArchivePopulationDestinationExistsError as exc:
+        raise ArchiveRestoreRefusalError("restore_destination_exists") from exc
+    return {
+        "destination": str(destination),
+        "source_manifest_id": source_manifest_id,
+        "restored_tiers": sorted(included - proof.new_derived_tiers),
+        "new_empty_derived_tiers": sorted(proof.new_derived_tiers),
+        "requires_convergence": sorted(proof.new_derived_tiers),
+        # The canonical constructor creates all six tiers. An empty purchased
+        # tier admits operations but does not recover omitted vectors.
+        "unrestored_purchased_tiers": sorted({"embeddings.db"} - included),
+        "unrestored_referenced_blobs": missing_blobs,
+        "operational_admission": (
+            "degraded" if "embeddings.db" not in included or missing_blobs or proof.new_derived_tiers else "ready"
+        ),
+        "original_history": ".archive-population-provenance",
+    }
+
+
+async def execute_restore_verified_backup_operation(
+    request: DaemonOperationRequest, context: OperationContext
+) -> DaemonOperationEnvelope:
+    """Accept an explicit restore and populate its separately owned fresh root."""
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+    from polylogue.operations.operation_context import observe_control_authority
+    from polylogue.storage.backup_attestation import BackupAttestationError
+    from polylogue.storage.sqlite.archive_population import ArchivePopulationError
+    from polylogue.storage.sqlite.migration_runner import MigrationError
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    request = validate_execution_request(request, context)
+    runtime = context.runtime
+    assert runtime is not None
+    snapshot = await runtime.compute_phase(lambda: observe_control_authority(context.archive_root))
+    _validate_identity(request, context, snapshot)
+    runtime.begin_unbound_write(request)
+    try:
+        detail = await runtime.compute_phase(
+            lambda: restore_verified_backup(
+                backup_dir=Path(str(request.payload["backup_dir"])),
+                destination=Path(str(request.payload["destination"])),
+            )
+        )
+    except (
+        ArchiveRestoreRefusalError,
+        ArchivePopulationError,
+        ArchivePopulationPendingError,
+        BackupAttestationError,
+        MigrationError,
+        OSError,
+        sqlite3.OperationalError,
+        json.JSONDecodeError,
+    ) as exc:
+        destination = Path(str(request.payload["destination"]))
+        cause: BaseException | None = exc
+        visited: set[int] = set()
+        retryable = False
+        while cause is not None and id(cause) not in visited:
+            visited.add(id(cause))
+            if isinstance(cause, OSError):
+                retryable = True
+                break
+            if isinstance(cause, sqlite3.OperationalError) and (getattr(cause, "sqlite_errorcode", 0) & 0xFF) in {
+                sqlite3.SQLITE_BUSY,
+                sqlite3.SQLITE_LOCKED,
+                sqlite3.SQLITE_READONLY,
+                sqlite3.SQLITE_IOERR,
+                sqlite3.SQLITE_FULL,
+                sqlite3.SQLITE_CANTOPEN,
+                sqlite3.SQLITE_PROTOCOL,
+                sqlite3.SQLITE_PERM,
+            }:
+                retryable = True
+                break
+            cause = cause.__cause__
+        error: dict[str, object] = {
+            "code": "restore_io_fault" if retryable else getattr(exc, "code", "restore_invalid_evidence"),
+            "retryable": retryable,
+        }
+        if (destination / POPULATION_PENDING).is_file():
+            error["retained_pending_destination"] = str(destination)
+        return operation_envelope(
+            request, context, snapshot=snapshot, outcome="failed" if retryable else "rejected", error=error
+        )
+    return operation_envelope(
+        request,
+        context,
+        snapshot=snapshot,
+        outcome="completed",
+        result={
+            "operation": request.operation,
+            "outcome": "completed",
+            "sequence": 1,
+            "effect": "committed",
+            "result": detail,
+        },
+    )
+
+
 def _backup_archive(
     *, output_dir: Path, started: float, profile: BackupProfile, archive_root_path: Path
 ) -> BackupResult:
@@ -1961,7 +2196,7 @@ def _write_successful_verification_receipt(backup_root: Path, verification: dict
                 authority_paths[str(artifact["tier"])] = Path(source_path).resolve(strict=False)
     receipt = sign_verification_receipt(receipt_body, authority_paths=authority_paths)
     receipt_path = backup_root / _VERIFICATION_RECEIPT_FILE
-    atomic_replace(receipt_path, json.dumps(receipt, indent=2, sort_keys=True).encode("utf-8"))
+    atomic_replace(receipt_path, json.dumps(receipt, indent=2, sort_keys=True).encode())
     return receipt_path
 
 
@@ -2008,5 +2243,6 @@ __all__ = [
     "BACKUP_PROFILES",
     "BackupProfile",
     "backup_archive",
+    "restore_verified_backup",
     "format_backup_result",
 ]

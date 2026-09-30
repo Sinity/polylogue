@@ -534,6 +534,17 @@ def maintenance_backup(
     raise RuntimeError("maintenance.backup requires snapshotless staged execution")
 
 
+def maintenance_restore_verified_backup(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Refuse generic dispatch: population owns a separate destination lease."""
+    del request, context, audit, snapshot
+    raise RuntimeError("maintenance.restore_verified_backup requires snapshotless staged execution")
+
+
 def maintenance_embedding_failure_resolve(
     request: DaemonOperationRequest,
     context: OperationContext,

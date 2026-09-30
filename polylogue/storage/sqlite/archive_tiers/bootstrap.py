@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from polylogue.storage.archive_tuple_location import InactiveTierDestination
+    from polylogue.storage.sqlite.population_admission import _PopulationAdmission
 
 from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_BASELINE_DDL_BY_TIER,
@@ -577,6 +578,9 @@ def initialize_archive_database(
     destination capability so a typo cannot silently open the active or a
     foreign generation.  Validation happens before ``sqlite3.connect``.
     """
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(path)
     from polylogue.storage.archive_identity import ArchiveLocation
     from polylogue.storage.archive_tuple_location import (
         ArchiveTupleError,
@@ -709,7 +713,7 @@ _LOST_AUDIT_TIER_REFUSAL = (
 )
 
 
-def _initialize_active_archive_root(root: Path) -> None:
+def _initialize_active_archive_root(root: Path, *, population_stage: _PopulationAdmission | None = None) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.storage.archive_identity import (
         ArchiveLocation,
@@ -728,6 +732,12 @@ def _initialize_active_archive_root(root: Path) -> None:
         durable_train_manifest_paths,
         execute_durable_change_train,
     )
+
+    if population_stage is not None:
+        from polylogue.storage.sqlite.population_admission import require_population_admission
+
+        if require_population_admission(root) is not population_stage or population_stage.durable_versions is None:
+            raise RuntimeError("population stage capability changed or lacks authenticated targets")
 
     # Ownership pins an existing directory descriptor. Fresh test and demo
     # archives legitimately arrive as a not-yet-created path, so create the
@@ -823,6 +833,8 @@ def _initialize_active_archive_root(root: Path) -> None:
         recovering_fresh_durable_bootstrap = fresh_durable_bootstrap or (
             has_pending_bootstrap and not has_bootstrap_marker
         )
+        if population_stage is not None and not fresh_durable_bootstrap:
+            raise RuntimeError("population stage requires a fresh destination durable core")
         if fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap_intent(root)
@@ -864,7 +876,11 @@ def _initialize_active_archive_root(root: Path) -> None:
                     assert_owned_root()
                     with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:
                         current = int(probe.execute("PRAGMA user_version").fetchone()[0])
-                    target = archive_tier_spec(tier).version
+                    target = (
+                        dict(population_stage.durable_versions)[tier.value]
+                        if population_stage is not None and population_stage.durable_versions is not None
+                        else archive_tier_spec(tier).version
+                    )
                     if current >= target:
                         break
                     claim = next(
@@ -1025,11 +1041,33 @@ def active_archive_bootstrap_validation_count() -> int:
     return _ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS
 
 
+def _initialize_population_archive_stage(root: Path) -> None:
+    """Construct baseline and declared package targets under exact pending custody.
+
+    The same constructor and train owner serve ordinary runtime initialization.
+    Population targets are authenticated and bound into the held capability;
+    this stage cannot create an independently usable partial runtime archive.
+    """
+    from polylogue.storage.sqlite.population_admission import require_population_admission
+
+    admission = require_population_admission(root)
+    if admission.durable_versions is None:
+        from polylogue.storage.sqlite.population_admission import ArchivePopulationPendingError
+
+        raise ArchivePopulationPendingError("population stage lacks authenticated durable targets")
+    with _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK:
+        invalidate_active_archive_bootstrap(root)
+        _initialize_active_archive_root(root, population_stage=admission)
+
+
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every active archive tier under one local bootstrap owner."""
 
     global _ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS
 
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(root)
     from polylogue.storage.archive_tuple_location import ArchiveTupleError, is_archive_tuple_candidate_path
     from polylogue.storage.sqlite.write_lease import require_write_lease
 

@@ -71,7 +71,20 @@ only for the durable tiers included in the backup profile. The shared
 `durable_train_manifest_paths` enumerator selects numbered history; process
 lock files are not durable history. Copied receipts retain their original
 physical bindings and bytes. They do not authorize a relocated backup inode
-as the original live archive (`operations/archive_backup.py`).
+as the original live archive (`operations/archive_backup.py`). Explicit
+`maintenance.restore_verified_backup` consumes an authenticated package through
+`storage/sqlite/archive_population.py`, creates fresh destination train authority,
+and preserves original receipts as detached provenance. Fixture clones use the
+same deep owner. Partial durable cores refuse operational restoration; omitted
+purchased Embeddings remain unrestored and produce degraded admission.
+
+Literal row evidence streams current durable ROWID table TEXT and BLOB cells
+through same-connection incremental handles, including primary keys and invalid
+UTF-8. Metadata projections fetch only storage classes and numeric scalars.
+Generic synthetic WITHOUT ROWID proofs keep keys in a private SQL ordinal
+locator and transfer bounded literal chunks; SQLite may still allocate one
+complete cell or sort full keys internally. No admitted durable archive uses
+that shape, and this is not a general native SQLite memory bound.
 
 ## Identity and generated columns
 

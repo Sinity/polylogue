@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -68,7 +69,7 @@ def test_clone_preserves_original_proof_and_both_owned_roots_open(
     assert original.read_bytes() != regenerated.read_bytes()
     source_manifest_id = ImmutableTreeArtifact.adopt(template, key=_template_key(template)).manifest_id
     source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
-    provenance = clone / ".fixture-archive-provenance" / source_namespace / "original-history/source-002.json"
+    provenance = clone / ".archive-population-provenance" / source_namespace / "original-history/source-002.json"
     assert provenance.read_bytes() == original.read_bytes()
     provenance_record = json.loads((provenance.parent.parent / "source.json").read_text())
     assert provenance_record["source_manifest_id"] == source_manifest_id
@@ -157,7 +158,10 @@ def test_clone_requests_reflink_before_copy_fallback(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(subprocess, "run", no_reflink)
     assert clone_archive_template(template, destination) == "copy"
 
-    assert [argv[:4] for argv in calls] == [["cp", "-a", "--reflink=always", str(template)]]
+    assert len(calls) == 1
+    assert calls[0][:3] == ["cp", "-a", "--reflink=always"]
+    assert str(template / "index.db") in calls[0][3:-1]
+    assert calls[0][-1] == str(destination)
     assert (destination / "index.db").read_bytes() == b"snapshot"
     assert (destination / "index.db").stat().st_mode & stat.S_IWUSR
 
@@ -208,8 +212,7 @@ def test_clone_refuses_a_template_that_changed_after_it_was_read(
     def divergent_copy(argv: list[str], **_kwargs: object) -> None:
         raise subprocess.CalledProcessError(1, argv)
 
-    def tampered_copy(source: Path, target: Path) -> None:
-        target.mkdir(parents=True)
+    def tampered_copy(source: Path, target: Path, **_kwargs: object) -> None:
         (target / "index.db").write_bytes(b"tampered")
 
     monkeypatch.setattr(subprocess, "run", divergent_copy)
@@ -217,8 +220,7 @@ def test_clone_refuses_a_template_that_changed_after_it_was_read(
 
     with pytest.raises(ValueError, match="authenticated file-set validation"):
         clone_archive_template(template, destination)
-    assert list(destination.iterdir()) == []
-    assert list(destination.parent.glob(".clone.*")) == []
+    assert not destination.exists()
 
 
 def _archive_state(root: Path) -> dict[str, object]:
@@ -300,3 +302,104 @@ def test_fixture_bootstrap_creates_no_copied_template_history(tmp_path: Path) ->
     root = bootstrap_archive_root(tmp_path / "plain")
     assert (root / "index.db").is_file()
     assert not list(tmp_path.glob(".bootstrap-archive-template*"))
+
+
+def test_clone_accepts_only_an_empty_destination_reservation(tmp_path: Path) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "payload").write_bytes(b"synthetic fixture")
+    destination = tmp_path / "empty"
+    destination.mkdir()
+    clone_archive_template(template, destination)
+    assert (destination / "payload").read_bytes() == b"synthetic fixture"
+
+    occupied = tmp_path / "occupied"
+    occupied.mkdir()
+    (occupied / "custody").write_bytes(b"unrelated evidence")
+    with pytest.raises(ValueError, match="not empty"):
+        clone_archive_template(template, occupied)
+    assert {path.name for path in occupied.iterdir()} == {"custody"}
+    assert (occupied / "custody").read_bytes() == b"unrelated evidence"
+    with pytest.raises(ValueError, match="same"):
+        clone_archive_template(template, template)
+    assert (template / "payload").read_bytes() == b"synthetic fixture"
+
+
+def test_clone_refuses_symlink_ancestor_before_touching_destination(tmp_path: Path) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "payload").write_bytes(b"synthetic fixture")
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "custody").write_bytes(b"unrelated evidence")
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError):
+        clone_archive_template(template, alias / "original")
+    assert (original / "custody").read_bytes() == b"unrelated evidence"
+
+
+def test_clone_exclusive_recreation_refuses_a_competing_creator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "payload").write_bytes(b"synthetic fixture")
+    destination = tmp_path / "empty"
+    destination.mkdir()
+    actual = Path.rmdir
+
+    def competing_creator(path: Path) -> None:
+        actual(path)
+        if path == destination:
+            path.mkdir()
+            (path / "custody").write_bytes(b"concurrent creator")
+
+    monkeypatch.setattr(Path, "rmdir", competing_creator)
+    with pytest.raises(FileExistsError):
+        clone_archive_template(template, destination)
+    assert {path.name for path in destination.iterdir()} == {"custody"}
+    assert (destination / "custody").read_bytes() == b"concurrent creator"
+
+
+def test_generic_clone_rejects_a_borrowed_manifest_before_making_it_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    import tests.infra.workload_artifacts as artifacts
+
+    tree = artifacts.build_immutable_tree(
+        cache_root=tmp_path / "cache",
+        key="literal-tree",
+        builder=lambda root: (root / "payload").write_bytes(b"synthetic fixture"),
+    )
+    source_manifest = tree.root / "manifest.json"
+    original_bytes = source_manifest.read_bytes()
+    original_mode = source_manifest.stat().st_mode
+    copy = artifacts._copy_tree
+
+    def borrowed_manifest(source: Path, target: Path, **kwargs: Any) -> None:
+        copy(source, target, **kwargs)
+        (target / "manifest.json").unlink()
+        os.link(source / "manifest.json", target / "manifest.json")
+
+    monkeypatch.setattr(artifacts, "_copy_tree", borrowed_manifest)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="inode was not detached"):
+        artifacts.clone_immutable_tree(tree, tmp_path / "clone")
+    assert source_manifest.read_bytes() == original_bytes
+    assert source_manifest.stat().st_mode == original_mode
+
+
+def test_empty_template_cannot_be_consumed_as_its_own_reservation(tmp_path: Path) -> None:
+    template = tmp_path / "empty-template"
+    template.mkdir()
+    with pytest.raises(ValueError, match="same"):
+        clone_archive_template(template, template)
+    assert template.is_dir()
+    assert list(template.iterdir()) == []

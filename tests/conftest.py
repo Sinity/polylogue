@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite import SQLiteBackend
     from tests.infra.storage_records import SessionBuilder
+    from tests.infra.workload_artifacts import ImmutableTreeArtifact
 
 
 #: Scratch archive root this process is pinned to, for teardown.
@@ -758,13 +759,20 @@ def _clear_polylogue_env(
     _clear_connection_cache()
 
 
+def _discard_completed_workspace_archive(archive_root: Path) -> None:
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING
+
+    marker = archive_root / POPULATION_PENDING
+    if marker.exists() or marker.is_symlink():
+        return
+    shutil.rmtree(archive_root, ignore_errors=True)
+
+
 @pytest.fixture
-def workspace_env(
+def workspace_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[dict[str, Path]]:
-    from tests.infra.archive_templates import bootstrap_ready_archive_root
-
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
@@ -777,8 +785,6 @@ def workspace_env(
     # Most tests using this fixture assert pipeline/query behavior, not schema
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
-
-    bootstrap_ready_archive_root(archive_root)
 
     try:
         yield {
@@ -793,19 +799,55 @@ def workspace_env(
         # cycles before unlinking the archive so tmpfs does not retain large
         # deleted-but-open fixture databases until the xdist worker exits.
         gc.collect()
-        shutil.rmtree(archive_root, ignore_errors=True)
+        _discard_completed_workspace_archive(archive_root)
+
+
+@pytest.fixture(scope="session")
+def ready_workspace_archive() -> ImmutableTreeArtifact:
+    """Share sealed inputs; every clone still receives fresh physical authority."""
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import durable_preparation_fingerprint
+    from tests.infra.archive_templates import bootstrap_ready_archive_root, finalize_archive_template
+    from tests.infra.workload_artifacts import build_immutable_tree
+
+    with closing(sqlite3.connect(":memory:")) as configuration:
+        key = durable_preparation_fingerprint(
+            configuration,
+            ArchiveTier.SOURCE,
+            consumer_paths=("tests/infra/archive_templates.py", "tests/infra/workload_artifacts.py"),
+        )
+
+    def build(root: Path) -> None:
+        from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+        bootstrap_ready_archive_root(root)
+        _clear_connection_cache()
+        finalize_archive_template(root)
+
+    return build_immutable_tree(cache_root=None, key="ready-workspace:" + key, builder=build)
+
+
+@pytest.fixture
+def workspace_env(workspace_paths: dict[str, Path], ready_workspace_archive: ImmutableTreeArtifact) -> dict[str, Path]:
+    from tests.infra.workload_artifacts import clone_immutable_tree
+
+    clone_immutable_tree(ready_workspace_archive, workspace_paths["archive_root"])
+    return workspace_paths
 
 
 @pytest.fixture
 def one_shot_workspace_env(
-    workspace_env: dict[str, Path],
+    workspace_paths: dict[str, Path],
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Path]:
     """Give a synthetic ingest test a fresh root it can claim before bootstrap."""
     archive_root = tmp_path_factory.mktemp("one-shot-archive")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    return {**workspace_env, "archive_root": archive_root}
+    return {**workspace_paths, "archive_root": archive_root}
 
 
 @pytest.fixture
@@ -846,6 +888,7 @@ def storage_repository(workspace_env: dict[str, Path]) -> SessionRepository:
 def cli_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    ready_workspace_archive: ImmutableTreeArtifact,
 ) -> Iterator[dict[str, Path]]:
     """
     Isolated CLI workspace with archive roots and database.
@@ -859,7 +902,7 @@ def cli_workspace(
     Returns:
         dict with paths: archive_root, data_root, inbox_dir, db_path
     """
-    from tests.infra.archive_templates import bootstrap_ready_archive_root
+    from tests.infra.workload_artifacts import clone_immutable_tree
 
     # Create directory structure
     data_dir = tmp_path / "data"
@@ -868,7 +911,7 @@ def cli_workspace(
     inbox_dir = tmp_path / "inbox"
     render_root = archive_root / "render"
 
-    for path in [data_dir, state_dir, archive_root, inbox_dir, render_root]:
+    for path in [data_dir, state_dir, inbox_dir]:
         path.mkdir(parents=True, exist_ok=True)
 
     # The archive is the index database under the archive root. Seeding helpers
@@ -882,7 +925,8 @@ def cli_workspace(
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    bootstrap_ready_archive_root(archive_root)
+    clone_immutable_tree(ready_workspace_archive, archive_root)
+    render_root.mkdir(exist_ok=True)
 
     try:
         yield {
@@ -895,7 +939,7 @@ def cli_workspace(
         }
     finally:
         gc.collect()
-        shutil.rmtree(archive_root, ignore_errors=True)
+        _discard_completed_workspace_archive(archive_root)
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:

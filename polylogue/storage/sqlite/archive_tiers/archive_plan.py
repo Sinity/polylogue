@@ -103,6 +103,9 @@ def assert_archive_format_lineage(
     """
     if not tiers <= _DURABLE_FORMAT_TIERS:
         raise RuntimeError(f"archive format lineage has no proof for tiers: {sorted(tiers - _DURABLE_FORMAT_TIERS)}")
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(archive_root)
     marker_path = archive_format_marker_path(archive_root)
     try:
         raw = json.loads(marker_path.read_text(encoding="utf-8"))

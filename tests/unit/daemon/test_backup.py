@@ -2528,3 +2528,426 @@ def test_embedded_backup_refused_beside_resident_daemon(
         process.wait(timeout=30)
         if process.stdout is not None:
             process.stdout.close()
+
+
+@pytest.mark.parametrize(
+    ("profile", "include_embeddings"),
+    (("full_evidence", True), ("rebuildable_cache_exclude", True), ("rebuildable_cache_exclude", False)),
+)
+def test_verified_backup_restore_owns_destination_train_and_preserves_original_evidence(
+    workspace_env: dict[str, Path], tmp_path: Path, profile: backup_mod.BackupProfile, include_embeddings: bool
+) -> None:
+    from polylogue.core.enums import Origin
+    from polylogue.storage.sqlite import migration_runner
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    original_root = workspace_env["archive_root"]
+    if not include_embeddings:
+        (original_root / "embeddings.db").unlink()
+    payload = b'{"synthetic_record":"restore-custody"}\n'
+    BlobStore(original_root / "blob").write_from_bytes(payload)
+    with closing(sqlite3.connect(original_root / "source.db")) as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            capture_mode=Provider.CODEX,
+            source_path="/synthetic/restore-custody",
+            source_index=0,
+            native_id=None,
+            payload=payload,
+            acquired_at_ms=2,
+        )
+    result = backup_archive(output_dir=tmp_path / "backups", profile=profile, verify=True)
+    assert result.ok and result.verified and result.output_path is not None
+    package = Path(result.output_path)
+    original_history = (package / ".maintenance-state/durable-change-trains/source-002.json").read_bytes()
+    receipt_bytes = (package / "verification-receipt.json").read_bytes()
+    destination = tmp_path / "restored"
+    detail = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    assert detail["operational_admission"] == ("ready" if profile == "full_evidence" else "degraded")
+    assert detail["unrestored_purchased_tiers"] == ([] if include_embeddings else ["embeddings.db"])
+    assert detail["restored_tiers"] == sorted(json.loads((package / "manifest.json").read_text())["included_tiers"])
+    assert (destination / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() != original_history
+    assert (package / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() == original_history
+    assert (package / "verification-receipt.json").read_bytes() == receipt_bytes
+    namespace = hashlib.sha256(str(detail["source_manifest_id"]).encode()).hexdigest()
+    provenance = destination / ".archive-population-provenance" / namespace
+    assert (provenance / "original-history/source-002.json").read_bytes() == original_history
+    assert (provenance / "original-backup/verification-receipt.json").read_bytes() == receipt_bytes
+    for tier in ("source", "user", "audit"):
+        with (
+            closing(sqlite3.connect(package / f"{tier}.db")) as source,
+            closing(sqlite3.connect(destination / f"{tier}.db")) as restored,
+        ):
+            assert migration_runner._durable_literal_rows_digest(
+                source
+            ) == migration_runner._durable_literal_rows_digest(restored)
+    with ArchiveStore(destination) as store:
+        assert store._source_conn is not None
+        assert [tuple(row) for row in store._source_conn.execute("SELECT raw_id,native_id FROM raw_sessions")] == [
+            (raw_id, None)
+        ]
+    assert (
+        destination / "blob" / hashlib.sha256(payload).hexdigest()[:2] / hashlib.sha256(payload).hexdigest()[2:]
+    ).read_bytes() == payload
+
+
+@pytest.mark.parametrize("profile", ("user_overlays", "diagnostics_bundle"))
+def test_verified_backup_restore_does_not_claim_partial_profiles_are_operational(
+    workspace_env: dict[str, Path], tmp_path: Path, profile: backup_mod.BackupProfile
+) -> None:
+    result = backup_archive(output_dir=tmp_path / "backups", profile=profile, verify=True)
+    assert result.ok and result.verified and result.output_path is not None
+    destination = tmp_path / "restored"
+    with pytest.raises(backup_mod.ArchiveRestoreRefusalError) as refusal:
+        backup_mod.restore_verified_backup(backup_dir=Path(result.output_path), destination=destination)
+    assert refusal.value.code == "restore_partial_durable_core"
+    assert not destination.exists()
+
+
+def test_verified_backup_restore_refuses_existing_destination_without_changing_evidence(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    result = backup_archive(
+        output_dir=tmp_path / "packages",
+        verify=True,
+        profile="full_evidence",
+        archive_root_path=workspace_env["archive_root"],
+    )
+    assert result.ok and result.output_path
+    backup = Path(result.output_path)
+    destination = tmp_path / "occupied"
+    destination.mkdir()
+    evidence = destination / "retained.txt"
+    evidence.write_bytes(b"retained")
+    receipt = (backup / "verification-receipt.json").read_bytes()
+    with pytest.raises(backup_mod.ArchiveRestoreRefusalError, match="restore_destination_exists"):
+        backup_mod.restore_verified_backup(backup_dir=backup, destination=destination)
+    assert evidence.read_bytes() == b"retained"
+    assert (backup / "verification-receipt.json").read_bytes() == receipt
+
+
+def test_verified_backup_restore_refuses_modified_signed_evidence_before_destination_creation(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    result = backup_archive(
+        output_dir=tmp_path / "packages",
+        verify=True,
+        profile="full_evidence",
+        archive_root_path=workspace_env["archive_root"],
+    )
+    assert result.ok and result.output_path
+    backup = Path(result.output_path)
+    receipt_path = backup / "verification-receipt.json"
+    payload = json.loads(receipt_path.read_text())
+    payload["manifest_sha256"] = "0" * 64
+    receipt_path.write_text(json.dumps(payload))
+    changed_receipt = receipt_path.read_bytes()
+    destination = tmp_path / "refused"
+    from polylogue.storage.sqlite.migration_runner import MigrationError
+
+    with pytest.raises(MigrationError):
+        backup_mod.restore_verified_backup(backup_dir=backup, destination=destination)
+    assert not destination.exists()
+    assert receipt_path.read_bytes() == changed_receipt
+
+
+def test_restore_pending_population_excludes_actual_readers_and_second_creator(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    from typing import Any
+
+    from polylogue.storage.sqlite import archive_population
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.audit_leaf import open_verified_sqlite_read_connection
+    from polylogue.storage.sqlite.connection_profile import attach_database, open_readonly_connection
+    from polylogue.storage.sqlite.population_admission import ArchivePopulationPendingError
+
+    package_result = backup_archive(
+        output_dir=tmp_path / "packages", verify=True, archive_root_path=workspace_env["archive_root"]
+    )
+    assert package_result.ok and package_result.output_path
+    package = Path(package_result.output_path)
+    destination = tmp_path / "new-root"
+    actual = archive_population.populate_authenticated_archive
+    observed: list[str] = []
+    failures: list[BaseException] = []
+
+    def populate(source: Path, target: Path, **kwargs: Any) -> Any:
+        proof = actual(source, target, **kwargs)
+
+        def reader() -> None:
+            try:
+                with pytest.raises(ArchivePopulationPendingError):
+                    with ArchiveStore.open_existing(target, read_only=True):
+                        pass
+                observed.append("archive")
+                with pytest.raises(ArchivePopulationPendingError):
+                    open_readonly_connection(target / "source.db")
+                observed.append("profile")
+                with pytest.raises(ArchivePopulationPendingError):
+                    with open_verified_sqlite_read_connection(target / "user.db"):
+                        pass
+                observed.append("verified-leaf")
+                with closing(sqlite3.connect(":memory:")) as query:
+                    with pytest.raises(ArchivePopulationPendingError):
+                        attach_database(query, target / "source.db", alias="source_tier")
+                observed.append("attached-query")
+                with pytest.raises(ArchivePopulationPendingError):
+                    initialize_active_archive_root(target)
+                observed.append("bootstrap")
+                with pytest.raises(backup_mod.ArchiveRestoreRefusalError) as refusal:
+                    backup_mod.restore_verified_backup(backup_dir=package, destination=target)
+                assert refusal.value.code == "restore_destination_exists"
+                observed.append("second-creator")
+            except BaseException as exc:
+                failures.append(exc)
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        thread.join()
+        if failures:
+            raise failures[0]
+        return proof
+
+    monkeypatch.setattr(archive_population, "populate_authenticated_archive", populate)
+    result = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    assert observed == ["archive", "profile", "verified-leaf", "attached-query", "bootstrap", "second-creator"]
+    assert result["operational_admission"] == "ready"
+    with ArchiveStore.open_existing(destination, read_only=True):
+        pass
+
+
+def test_failed_restore_retains_pending_evidence_and_refuses_restart(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import Any
+
+    from polylogue.storage.sqlite import archive_population
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    package_result = backup_archive(
+        output_dir=tmp_path / "packages", verify=True, archive_root_path=workspace_env["archive_root"]
+    )
+    assert package_result.ok and package_result.output_path
+    package = Path(package_result.output_path)
+    original_receipt = (package / "verification-receipt.json").read_bytes()
+    destination = tmp_path / "interrupted"
+    actual = archive_population.populate_authenticated_archive
+
+    def interrupt(source: Path, target: Path, **kwargs: Any) -> Any:
+        actual(source, target, **kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(archive_population, "populate_authenticated_archive", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    assert (destination / POPULATION_PENDING).is_file()
+    assert (destination / "source.db").is_file()
+    assert (package / "verification-receipt.json").read_bytes() == original_receipt
+    with pytest.raises(ArchivePopulationPendingError):
+        initialize_active_archive_root(destination)
+    with pytest.raises(ArchivePopulationPendingError):
+        with ArchiveStore.open_existing(destination, read_only=True):
+            pass
+
+
+def test_verified_source1_backup_restores_through_destination_owned_source002(
+    workspace_paths: dict[str, Path], tmp_path: Path
+) -> None:
+    import struct
+
+    from polylogue.core.enums import Origin
+    from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
+    from polylogue.storage.sqlite import migration_runner
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import _initialize_population_archive_stage
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from polylogue.storage.sqlite.population_admission import (
+        POPULATION_PENDING,
+        _bound_population_stage,
+        owned_population_admission,
+    )
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    original = workspace_paths["archive_root"]
+    original.mkdir(parents=True)
+    pending = original / POPULATION_PENDING
+    pending.write_text('{"fixture":"authenticated-current-format-baseline"}')
+    with scoped_offline_archive_writer(original, owner_id="fixture.source1") as owner:
+        with write_lease("fixture.source1", archive_root=original), owned_population_admission(original, owner):
+            with _bound_population_stage(original, {"source": 1, "user": 1, "audit": 1}):
+                _initialize_population_archive_stage(original)
+            with closing(sqlite3.connect(original / "source.db")) as conn:
+                assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+                payload = b'{"synthetic_record":"baseline-restore"}\n'
+                BlobStore(original / "blob").write_from_bytes(payload)
+                raw_id = write_source_raw_session(
+                    conn,
+                    origin=Origin.CODEX_SESSION,
+                    capture_mode=Provider.CODEX,
+                    source_path="/synthetic/baseline-restore",
+                    source_index=0,
+                    native_id=None,
+                    payload=payload,
+                    acquired_at_ms=2,
+                )
+                conn.commit()
+                before = migration_runner._durable_literal_rows_digest(conn)
+            for tier, statement in (
+                (
+                    "index",
+                    "INSERT INTO sessions(native_id,origin,title,content_hash) VALUES ('old-derived','codex-session','old title',zeroblob(32))",
+                ),
+                ("ops", "INSERT INTO ingest_cursor(source_path,record_count) VALUES ('/synthetic/old',1)"),
+            ):
+                with closing(sqlite3.connect(original / f"{tier}.db")) as conn:
+                    conn.execute(statement)
+                    assert (
+                        conn.execute("UPDATE schema_identity SET identity=? WHERE tier=?", ("0" * 64, tier)).rowcount
+                        == 1
+                    )
+                    assert (
+                        conn.execute("SELECT identity FROM schema_identity WHERE tier=?", (tier,)).fetchone()[0]
+                        == "0" * 64
+                    )
+                    conn.commit()
+            vector = struct.pack("<1024f", *([0.25] * 1024))
+            with closing(sqlite3.connect(original / "embeddings.db")) as conn:
+                loaded, error = try_load_sqlite_vec(conn)
+                assert loaded, error
+                conn.execute(
+                    "INSERT INTO message_embeddings(vector_derivation_hash,embedding,model) VALUES (?,?,?)",
+                    ("synthetic-purchased-vector", vector, "synthetic-model"),
+                )
+                conn.commit()
+            pending.unlink()
+    original_marker = (original / ".maintenance-state/durable-change-trains/.bootstrap").read_bytes()
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert result.ok and result.verified and result.output_path is not None
+    package = Path(result.output_path)
+    with closing(sqlite3.connect(package.joinpath("source.db").as_uri() + "?mode=ro&immutable=1", uri=True)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert migration_runner._durable_literal_rows_digest(conn) == before
+    destination = tmp_path / "restored-baseline"
+    detail = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    assert detail["operational_admission"] == "degraded"
+    assert detail["requires_convergence"] == ["index.db", "ops.db"]
+    assert "index.db" not in detail["restored_tiers"]
+    assert "ops.db" not in detail["restored_tiers"]
+    assert "embeddings.db" in detail["restored_tiers"]
+    assert (package / ".maintenance-state/durable-change-trains/.bootstrap").read_bytes() == original_marker
+    assert (destination / ".maintenance-state/durable-change-trains/source-002.json").is_file()
+    namespace = hashlib.sha256(str(detail["source_manifest_id"]).encode()).hexdigest()
+    assert (
+        destination / ".archive-population-provenance" / namespace / "original-history/.bootstrap"
+    ).read_bytes() == original_marker
+    for tier in ("index", "ops"):
+        assert (
+            destination / ".archive-population-provenance" / namespace / "original-derived" / f"{tier}.db"
+        ).read_bytes() == (package / f"{tier}.db").read_bytes()
+    with closing(sqlite3.connect(destination / "embeddings.db")) as conn:
+        loaded, error = try_load_sqlite_vec(conn)
+        assert loaded, error
+        row = conn.execute(
+            "SELECT embedding,model FROM message_embeddings WHERE vector_derivation_hash=?",
+            ("synthetic-purchased-vector",),
+        ).fetchone()
+        assert tuple(row) == (vector, "synthetic-model")
+    original_stat, destination_stat = (original / "source.db").stat(), (destination / "source.db").stat()
+    assert (original_stat.st_dev, original_stat.st_ino) != (destination_stat.st_dev, destination_stat.st_ino)
+    with closing(sqlite3.connect(destination / "source.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert migration_runner._durable_literal_rows_digest(conn) == before
+    # The ordinary startup owner validates the new physical receipt; no copied
+    # baseline history is admitted as destination authority.
+    initialize_active_archive_root(destination)
+    with closing(sqlite3.connect(destination / "index.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    with closing(sqlite3.connect(destination / "ops.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0] == 0
+    with ArchiveStore.open_existing(destination) as store:
+        assert store._source_conn is not None
+        assert tuple(store._source_conn.execute("SELECT raw_id,native_id FROM raw_sessions").fetchone()) == (
+            raw_id,
+            None,
+        )
+
+
+def test_pending_destination_refuses_archive_admission_before_any_tier_exists(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import _initialize_population_archive_stage
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    root = tmp_path / "reserved"
+    root.mkdir()
+    (root / POPULATION_PENDING).write_text('{"fixture":"unfinished"}')
+    for route in (
+        lambda: ArchiveStore.open_existing(root),
+        lambda: ArchiveStore(root, source_tier_acquisition=True),
+        lambda: open_readonly_connection(root / "source.db"),
+        lambda: initialize_active_archive_root(root),
+        lambda: _initialize_population_archive_stage(root),
+    ):
+        with pytest.raises(ArchivePopulationPendingError):
+            route()
+    assert {path.name for path in root.iterdir()} == {POPULATION_PENDING}
+
+
+@pytest.mark.parametrize("leaf_kind", ["symlink", "hardlink", "directory", "fifo", "ahead", "pre_reset"])
+def test_verified_restore_refuses_unsafe_derived_leaf_and_retains_pending_custody(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leaf_kind: str
+) -> None:
+    import os
+    from typing import Any
+
+    from polylogue.storage.sqlite import archive_population
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert result.ok and result.verified and result.output_path is not None
+    package = Path(result.output_path)
+    original_files = {
+        str(path.relative_to(package)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in package.rglob("*")
+        if path.is_file()
+    }
+    destination = tmp_path / "unsafe-restoration"
+    outsider = tmp_path / "unrelated-evidence"
+    outsider.write_bytes(b"unrelated immutable evidence")
+    populate = archive_population._populate_authenticated_archive
+
+    def replace_derived_leaf(source: Path, target: Path, **kwargs: Any) -> object:
+        leaf = target / "index.db"
+        if leaf_kind in {"ahead", "pre_reset"}:
+            with closing(sqlite3.connect(leaf)) as conn:
+                conn.execute(f"PRAGMA user_version={2 if leaf_kind == 'ahead' else 0}")
+            return populate(source, target, **kwargs)
+        leaf.unlink()
+        if leaf_kind == "symlink":
+            leaf.symlink_to(outsider)
+        elif leaf_kind == "hardlink":
+            os.link(outsider, leaf)
+        elif leaf_kind == "directory":
+            leaf.mkdir()
+        else:
+            os.mkfifo(leaf)
+        return populate(source, target, **kwargs)
+
+    monkeypatch.setattr(archive_population, "_populate_authenticated_archive", replace_derived_leaf)
+    with pytest.raises(archive_population.ArchivePopulationError) as exc:
+        backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    assert exc.value.code == (
+        "unsupported_derived_version" if leaf_kind in {"ahead", "pre_reset"} else "invalid_derived_leaf"
+    )
+    assert outsider.read_bytes() == b"unrelated immutable evidence"
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
+    assert {
+        str(path.relative_to(package)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in package.rglob("*")
+        if path.is_file()
+    } == original_files

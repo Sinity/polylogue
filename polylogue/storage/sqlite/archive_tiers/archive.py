@@ -724,6 +724,9 @@ class ArchiveStore:
         active_cold_build: bool = False,
         durable_writer: bool = False,
     ) -> None:
+        from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+        assert_population_admitted(archive_root)
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
         if source_tier_acquisition and read_only:
@@ -911,6 +914,9 @@ class ArchiveStore:
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
     ) -> None:
+        from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+        assert_population_admitted(archive_root)
         self.archive_root = archive_root
         from polylogue.storage.archive_identity import ArchiveIdentity
 

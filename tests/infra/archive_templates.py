@@ -9,10 +9,8 @@ one publication route in :mod:`tests.infra.workload_artifacts`.
 
 from __future__ import annotations
 
-import shutil
 from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
 
 from tests.infra.workload_artifacts import (
     ImmutableTreeArtifact,
@@ -37,29 +35,9 @@ def _template_key(template: Path) -> str:
 
 
 def clone_archive_template(template: Path, destination: Path) -> str:
-    """Clone a sealed template into a private writable archive; report the method.
-
-    Workspace fixtures create sibling directories (a render root, an inbox)
-    under the archive root before seeding it, so the clone lands beside the
-    destination and its entries are moved in: names the template supplies are
-    replaced, names it does not are left alone. Synthetic durable data is
-    populated into fresh destination-owned inodes before publication.
-    """
+    """Clone into the actual reserved destination through the shared owner."""
     artifact = ImmutableTreeArtifact.adopt(template, key=_template_key(template))
-    destination.mkdir(parents=True, exist_ok=True)
-    staged = destination.parent / f".{destination.name}.clone.{uuid4().hex}"
-    try:
-        method = clone_immutable_tree(artifact, staged).clone_method
-        for entry in sorted(staged.iterdir()):
-            target = destination / entry.name
-            if target.is_symlink() or target.is_file():
-                target.unlink()
-            elif target.is_dir():
-                shutil.rmtree(target)
-            entry.replace(target)
-    finally:
-        shutil.rmtree(staged, ignore_errors=True)
-    return method
+    return clone_immutable_tree(artifact, destination).clone_method
 
 
 def bootstrap_archive_root(root: Path) -> Path:

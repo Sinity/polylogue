@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from polylogue.storage.sqlite import migration_runner as _migration_runner
@@ -661,6 +662,10 @@ def _persist_train_transition(path: Path, train: DurableChangeTrain, *, expected
     return load_durable_change_train_manifest(path)
 
 
+_ISOLATED_RUNTIME_PROBE_CACHE: dict[tuple[str, Callable[..., object]], str] = {}
+_ISOLATED_RUNTIME_PROBE_CACHE_LOCK = Lock()
+
+
 def _runtime_consumer_results(
     train: DurableChangeTrain,
     archive_root: Path,
@@ -711,7 +716,20 @@ def _runtime_consumer_results(
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_raw_failure_lifecycle(cast(Callable[..., object], value), archive_root)
+                    with _open_existing_tier(archive_root / "source.db") as live:
+                        preparation_key = _migration_runner.durable_preparation_fingerprint(
+                            live, train.tier, consumer_paths=(module_ref,)
+                        )
+                    key = (preparation_key, cast(Callable[..., object], value))
+                    with _ISOLATED_RUNTIME_PROBE_CACHE_LOCK:
+                        cached_detail = _ISOLATED_RUNTIME_PROBE_CACHE.get(key)
+                    if cached_detail is None:
+                        cached_detail = _probe_raw_failure_lifecycle(cast(Callable[..., object], value), archive_root)
+                        with _ISOLATED_RUNTIME_PROBE_CACHE_LOCK:
+                            if len(_ISOLATED_RUNTIME_PROBE_CACHE) >= 64:
+                                _ISOLATED_RUNTIME_PROBE_CACHE.pop(next(iter(_ISOLATED_RUNTIME_PROBE_CACHE)))
+                            _ISOLATED_RUNTIME_PROBE_CACHE[key] = cached_detail
+                    detail = cached_detail
                 elif reference.endswith(":_record_zip_container_coordinate"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -1739,6 +1757,9 @@ def _open_existing_tier(tier_path: Path) -> Iterator[sqlite3.Connection]:
     reconciliation runs on every archive open, so a connection left to the
     collector here retains three descriptors per open.
     """
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(tier_path)
     try:
         metadata = tier_path.lstat()
     except FileNotFoundError as exc:

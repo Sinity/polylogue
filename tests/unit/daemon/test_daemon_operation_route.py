@@ -1996,3 +1996,73 @@ def test_shutdown_waits_for_a_cancelled_staged_operation_to_finish_its_cleanup(
             release.set()
             releaser.cancel()
             caller.join(timeout=10)
+
+
+def test_verified_backup_restore_crosses_the_real_machine_operation_route(tmp_path: Path) -> None:
+    """Dropping registry dispatch or fresh destination authority breaks this route."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING
+
+    destination = tmp_path / "restored"
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        backup = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
+            archive_root=str(stack.archive_root),
+        )
+        assert backup is not None and backup["outcome"] == "completed"
+        package = backup["result"]["result"]["output_path"]
+        restored = stack.client.operation(
+            "maintenance.restore_verified_backup",
+            {"backup_dir": package, "destination": str(destination)},
+            archive_root=str(stack.archive_root),
+        )
+    assert restored is not None and restored["outcome"] == "completed"
+    assert restored["result"]["result"]["operational_admission"] == "ready"
+    assert not (destination / POPULATION_PENDING).exists()
+    with ArchiveStore.open_existing(destination, read_only=True):
+        pass
+
+
+@pytest.mark.parametrize("fault_kind", ["permission", "wrapped_permission", "wrapped_busy"])
+def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_kind: str
+) -> None:
+    import sqlite3
+
+    from polylogue.storage.sqlite import archive_population
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.migration_runner import MigrationError
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    def fault(*_args: object, **_kwargs: object) -> object:
+        if fault_kind == "wrapped_busy":
+            error = sqlite3.OperationalError("synthetic reader contention")
+            error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise MigrationError("migration evidence unavailable") from error
+        error = PermissionError("synthetic evidence access fault")
+        if fault_kind == "wrapped_permission":
+            raise MigrationError("migration evidence unavailable") from error
+        raise error
+
+    destination = tmp_path / "pending-restoration"
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        backup = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
+            archive_root=str(stack.archive_root),
+        )
+        assert backup is not None and backup["outcome"] == "completed"
+        monkeypatch.setattr(archive_population, "_populate_authenticated_archive", fault)
+        restored = stack.client.operation(
+            "maintenance.restore_verified_backup",
+            {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
+            archive_root=str(stack.archive_root),
+        )
+    assert restored is not None and restored["outcome"] == "failed"
+    assert restored["error"]["code"] == "restore_io_fault"
+    assert restored["error"]["retryable"] is True
+    assert restored["error"]["retained_pending_destination"] == str(destination)
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)

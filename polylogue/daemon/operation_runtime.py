@@ -68,7 +68,13 @@ def _operation_int(value: object, *, field: str) -> int:
 #: acceptance boundary through ``audit_for_request`` or ``begin_unbound_write``,
 #: which refuse once the exchange is cancelled.
 _STAGED_OPERATIONS = frozenset(
-    {"ingest", "maintenance.insights.rebuild", "maintenance.embeddings.backfill", "maintenance.backup"}
+    {
+        "ingest",
+        "maintenance.insights.rebuild",
+        "maintenance.embeddings.backfill",
+        "maintenance.backup",
+        "maintenance.restore_verified_backup",
+    }
 )
 
 
@@ -745,7 +751,10 @@ class DaemonOperationRuntime:
                                 error={"code": "ingest_runtime_unavailable", "retryable": False},
                             ).to_dict()
                         from polylogue.daemon.embedding_owner import execute_embedding_backfill_operation
-                        from polylogue.operations.archive_backup import execute_backup_operation
+                        from polylogue.operations.archive_backup import (
+                            execute_backup_operation,
+                            execute_restore_verified_backup_operation,
+                        )
                         from polylogue.operations.daemon_ingest import execute_ingest_operation
                         from polylogue.operations.daemon_insights import execute_insights_rebuild_operation
 
@@ -754,6 +763,7 @@ class DaemonOperationRuntime:
                             "maintenance.insights.rebuild": execute_insights_rebuild_operation,
                             "maintenance.embeddings.backfill": execute_embedding_backfill_operation,
                             "maintenance.backup": execute_backup_operation,
+                            "maintenance.restore_verified_backup": execute_restore_verified_backup_operation,
                         }[request.operation]
 
                         staged_task = _StagedTask(self._owner_loop, lambda: staged(request, context))

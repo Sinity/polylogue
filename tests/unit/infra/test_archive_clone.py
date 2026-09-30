@@ -15,10 +15,10 @@ import pytest
 from polylogue.core.enums import Origin, Provider
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite import durable_change_train, migration_runner
+from polylogue.storage.sqlite.archive_population import ArchivePopulationError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-from tests.infra.archive_clone import FixtureArchiveCloneError
 from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
 from tests.infra.workload_artifacts import ImmutableTreeArtifact
 
@@ -63,7 +63,7 @@ def test_populated_template_clone_keeps_rows_blobs_and_original_provenance(tmp_p
     assert (destination / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() != original_bytes
     source_manifest_id = ImmutableTreeArtifact.adopt(source, key=_template_key(source)).manifest_id
     source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
-    provenance = destination / ".fixture-archive-provenance" / source_namespace / "source.json"
+    provenance = destination / ".archive-population-provenance" / source_namespace / "source.json"
     provenance_record = json.loads(provenance.read_text())
     assert provenance_record["source_manifest_id"] == source_manifest_id
     assert provenance_record["owning_artifact"] is None
@@ -139,7 +139,147 @@ def test_clone_refuses_unreleased_or_custom_archive_without_population(tmp_path:
         path.write_text(json.dumps(migration_runner.durable_change_train_to_payload(pending)))
     finalize_archive_template(source)
     destination = tmp_path / "destination"
-    with pytest.raises(FixtureArchiveCloneError) as refusal:
+    with pytest.raises(ArchivePopulationError) as refusal:
         clone_archive_template(source, destination)
     assert refusal.value.code == ("unsupported_source_schema" if kind == "schema" else "unreleased_source_history")
-    assert list(destination.iterdir()) == []
+    assert (destination / ".archive-population.pending").is_file()
+    from polylogue.storage.sqlite.population_admission import ArchivePopulationPendingError
+
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
+
+
+@pytest.mark.parametrize("interrupt", (False, True))
+def test_fixture_population_fences_concurrent_reader_and_retains_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupt: bool
+) -> None:
+    import threading
+
+    from polylogue.storage.sqlite import archive_population
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    source = tmp_path / "source"
+    _populated_template(source)
+    finalize_archive_template(source)
+    destination = tmp_path / "destination"
+    actual = archive_population._populate_authenticated_archive
+    targets: list[Path] = []
+    observed: list[str] = []
+    failures: list[BaseException] = []
+
+    def populate(original: Path, target: Path, **kwargs: Any) -> Any:
+        proof = actual(original, target, **kwargs)
+        assert target == destination
+        targets.append(target)
+
+        def reader() -> None:
+            try:
+                with pytest.raises(ArchivePopulationPendingError):
+                    ArchiveStore.open_existing(target)
+                observed.append("pending")
+            except BaseException as exc:
+                failures.append(exc)
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        thread.join()
+        if failures:
+            raise failures[0]
+        if interrupt:
+            raise KeyboardInterrupt
+        return proof
+
+    monkeypatch.setattr(archive_population, "_populate_authenticated_archive", populate)
+    if interrupt:
+        with pytest.raises(KeyboardInterrupt):
+            clone_archive_template(source, destination)
+        assert len(targets) == 1
+        assert (targets[0] / POPULATION_PENDING).is_file()
+        with pytest.raises(ArchivePopulationPendingError):
+            initialize_active_archive_root(targets[0])
+    else:
+        clone_archive_template(source, destination)
+        assert not (destination / POPULATION_PENDING).exists()
+        with ArchiveStore.open_existing(destination):
+            pass
+    assert observed == ["pending"]
+
+
+def test_workspace_fixture_teardown_retains_failed_population_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+    from tests import conftest
+
+    fixture = conftest.workspace_paths.__wrapped__(tmp_path, monkeypatch)
+    paths = next(fixture)
+    root = paths["archive_root"]
+    root.mkdir()
+    marker = root / POPULATION_PENDING
+    marker.write_text('{"fixture":"failed-population"}')
+    retained = root / "partial-evidence"
+    retained.write_bytes(b"retained synthetic evidence")
+    fixture.close()
+    assert marker.is_file()
+    assert retained.read_bytes() == b"retained synthetic evidence"
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(root)
+
+
+@pytest.mark.parametrize("interrupt", (False, True))
+def test_fixture_copy_fences_the_actual_destination_before_the_first_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupt: bool
+) -> None:
+    import subprocess
+    import threading
+
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    source = tmp_path / "source"
+    _populated_template(source)
+    finalize_archive_template(source)
+    destination = tmp_path / "destination"
+    actual = subprocess.run
+    observed: list[str] = []
+    failures: list[BaseException] = []
+
+    def copy(argv: list[str], **kwargs: Any) -> Any:
+        if argv[:3] == ["cp", "-a", "--reflink=always"]:
+            assert Path(argv[-1]) == destination
+            assert (destination / POPULATION_PENDING).is_file()
+            assert str(source / ".archive-ownership.lock") not in argv
+            assert str(source / "daemon.pid") not in argv
+
+            def reader() -> None:
+                try:
+                    with pytest.raises(ArchivePopulationPendingError):
+                        ArchiveStore.open_existing(destination)
+                    with pytest.raises(ArchivePopulationPendingError):
+                        initialize_active_archive_root(destination)
+                    observed.append("pending-before-copy")
+                except BaseException as exc:
+                    failures.append(exc)
+
+            thread = threading.Thread(target=reader)
+            thread.start()
+            thread.join()
+            if failures:
+                raise failures[0]
+            if interrupt:
+                raise KeyboardInterrupt
+        return actual(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", copy)
+    if interrupt:
+        with pytest.raises(KeyboardInterrupt):
+            clone_archive_template(source, destination)
+        assert (destination / POPULATION_PENDING).is_file()
+        with pytest.raises(ArchivePopulationPendingError):
+            ArchiveStore.open_existing(destination)
+    else:
+        clone_archive_template(source, destination)
+        assert not (destination / POPULATION_PENDING).exists()
+        with ArchiveStore.open_existing(destination):
+            pass
+    assert observed == ["pending-before-copy"]

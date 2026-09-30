@@ -221,6 +221,9 @@ class _MeasuredConnection(sqlite3.Connection):
 
 def connect_measured(database: str | Path, /, **kwargs: Any) -> sqlite3.Connection:
     """Time an actual returned SQLite handle without altering its PRAGMA policy."""
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(database)
     tier = tier_for_path(database)
     owned = _inside_writer_lease()
     started = time.perf_counter_ns()

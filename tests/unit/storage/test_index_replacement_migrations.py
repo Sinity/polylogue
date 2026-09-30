@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import tracemalloc
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -626,3 +627,157 @@ def test_memory_probe_cancel_reclaims_file_and_leaves_destination_empty(
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
         assert conn.execute("SELECT name FROM sqlite_schema").fetchall() == []
     assert directories and all(not path.exists() for path in directories)
+
+
+@pytest.mark.parametrize("storage_class", ("text", "blob"))
+def test_literal_row_proof_streams_large_cells_and_primary_keys_inside_write_transaction(storage_class: str) -> None:
+    """Whole-value projection exceeds this page-bound allocation proof."""
+    size = 8 * 1024 * 1024
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE large_cells (key TEXT PRIMARY KEY, value)")
+        expression = "CAST(zeroblob(? - 2) || X'80FF' AS TEXT)" if storage_class == "text" else "zeroblob(?)"
+        conn.execute(
+            f"INSERT INTO large_cells VALUES (CAST(zeroblob(? - 2) || X'80FF' AS TEXT), {expression})",
+            (size, size),
+        )
+        assert conn.in_transaction
+        tracemalloc.start()
+        try:
+            original = migration_runner._durable_literal_rows_digest(conn)
+            _retained, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < size // 4
+        # The original row is still uncommitted. A different connection or a
+        # stale on-disk snapshot cannot prove its last literal byte.
+        target_type = "TEXT" if storage_class == "text" else "BLOB"
+        conn.execute(
+            f"UPDATE large_cells SET value=CAST(substr(CAST(value AS BLOB), 1, ?) || X'01' AS {target_type})",
+            (size - 1,),
+        )
+        assert migration_runner._durable_literal_rows_digest(conn) != original
+
+
+def test_literal_row_proof_preserves_large_without_rowid_composite_keys() -> None:
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(
+            "CREATE TABLE large_keys (a TEXT COLLATE NOCASE, b INTEGER, value BLOB, PRIMARY KEY(a,b)) WITHOUT ROWID"
+        )
+        conn.execute("INSERT INTO large_keys VALUES (CAST(zeroblob(131070) || X'80FF' AS TEXT), 2, zeroblob(196608))")
+        original = migration_runner._durable_literal_rows_digest(conn)
+        conn.execute("UPDATE large_keys SET value=CAST(substr(value,1,196607) || X'01' AS BLOB)")
+        changed_payload = migration_runner._durable_literal_rows_digest(conn)
+        assert changed_payload != original
+        conn.execute("UPDATE large_keys SET a=CAST(zeroblob(131070) || X'81FF' AS TEXT)")
+        assert migration_runner._durable_literal_rows_digest(conn) != changed_payload
+
+
+def test_without_rowid_literal_proof_visits_each_large_key_once() -> None:
+    """Doubling history must not repeat an ordered skipped-prefix scan per cell."""
+    import sqlite3
+
+    def work(rows: int) -> tuple[str, int]:
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute("CREATE TABLE evidence (key TEXT PRIMARY KEY, payload BLOB) WITHOUT ROWID")
+            for number in range(rows):
+                conn.execute(
+                    "INSERT INTO evidence VALUES(CAST(? || CAST(zeroblob(131072) AS TEXT) AS TEXT), zeroblob(131073))",
+                    (f"{number:08d}",),
+                )
+            steps = 0
+
+            def count() -> int:
+                nonlocal steps
+                steps += 1
+                return 0
+
+            conn.set_progress_handler(count, 1)
+            try:
+                result = migration_runner._durable_literal_rows_digest(conn)
+            finally:
+                conn.set_progress_handler(None, 0)
+            assert conn.in_transaction
+            assert not tuple(conn.execute("SELECT name FROM sqlite_temp_schema WHERE type='table'"))
+            return result, steps
+
+    first, small_work = work(16)
+    second, large_work = work(32)
+    assert first != second
+    assert large_work < small_work * 3
+
+
+def test_schema_rehearsal_reuses_only_bound_pure_inputs_across_physical_archives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+    actual = migration_runner._schema_only_replica
+
+    def replica(source: sqlite3.Connection) -> sqlite3.Connection:
+        nonlocal calls
+        calls += 1
+        return actual(source)
+
+    monkeypatch.setattr(migration_runner, "_schema_only_replica", replica)
+    proofs = []
+    for number in (1, 2):
+        conn, _raw_ids = source_baseline(tmp_path / f"source-{number}.db")
+        try:
+            proofs.append(
+                migration_runner.rehearse_durable_migration_chain(
+                    conn,
+                    ArchiveTier.SOURCE,
+                    target_version=2,
+                    evidence_ref=f"proof:archive-{number}",
+                )
+            )
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        finally:
+            conn.close()
+    assert calls == 1
+    assert proofs[0].chain_sha256 == proofs[1].chain_sha256
+    assert proofs[0].evidence_ref != proofs[1].evidence_ref
+
+
+def test_source002_retains_large_marker_payloads_with_incremental_row_evidence(tmp_path: Path) -> None:
+    from polylogue.storage.accepted_marker_inputs import (
+        persist_pending_marker_input_sync,
+        prepare_accepted_marker_input,
+    )
+
+    path = tmp_path / "source.db"
+    conn, raw_ids = source_baseline(path)
+    size = 8 * 1024 * 1024
+    try:
+        pending = prepare_accepted_marker_input(raw_ids[0], [], request_facts={"synthetic_metadata": "x" * size})
+        accepted = prepare_accepted_marker_input(raw_ids[1], [], request_facts={"synthetic_metadata": "x" * size})
+        persist_pending_marker_input_sync(
+            conn,
+            pending,
+            expected_incarnation_id="00000000-0000-0000-0000-000000000001",
+        )
+        conn.execute("INSERT INTO accepted_marker_stream VALUES(1, ?)", ("synthetic-source-stream",))
+        conn.execute(
+            "INSERT INTO accepted_marker_inputs(identity, raw_id, payload, payload_sha256) VALUES(?, ?, ?, ?)",
+            (accepted.identity, accepted.raw_id, accepted.payload, accepted.payload_sha256),
+        )
+        lengths = (len(accepted.payload), len(pending.payload))
+        del accepted, pending
+        conn.commit()
+        before = migration_runner._durable_literal_rows_digest(conn)
+        tracemalloc.start()
+        try:
+            result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+            _retained, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert result.applied_versions == (2,)
+        assert peak < size // 4
+        assert migration_runner._durable_literal_rows_digest(conn) == before
+    finally:
+        conn.close()
+    with closing(sqlite3.connect(path)) as reopened:
+        assert reopened.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert reopened.execute("SELECT length(payload) FROM accepted_marker_inputs").fetchall() == [(lengths[0],)]
+        assert reopened.execute("SELECT length(payload) FROM pending_accepted_marker_inputs").fetchall() == [
+            (lengths[1],)
+        ]

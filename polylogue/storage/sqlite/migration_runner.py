@@ -20,6 +20,7 @@ from enum import StrEnum
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
+from threading import Lock
 from typing import Final, cast, get_args, get_origin, get_type_hints
 
 from polylogue.logging import WARNING, emit
@@ -346,19 +347,22 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
         digest.update(len(value).to_bytes(8, "big"))
         digest.update(value)
 
+    def metadata_text(value: object) -> str:
+        return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
     tables = conn.execute(
         "SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table' ORDER BY name COLLATE BINARY"
     )
     for table, without_rowid in tables:
-        name = str(table)
+        name = metadata_text(table)
         if name == "sqlite_schema":
             continue
         columns = tuple(conn.execute("SELECT name, pk FROM pragma_table_xinfo(?) ORDER BY cid", (name,)))
-        selected = [str(column[0]) for column in columns]
+        selected = [metadata_text(column[0]) for column in columns]
         frame(b"table")
         frame(name.encode("utf-8"))
         if without_rowid:
-            order = [str(column[0]) for column in sorted(columns, key=lambda row: int(row[1])) if column[1]]
+            order = [metadata_text(column[0]) for column in sorted(columns, key=lambda row: int(row[1])) if column[1]]
             if not order:
                 raise MigrationError("row-preserving proof lacks a WITHOUT ROWID primary key")
         else:
@@ -380,30 +384,92 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
             frame(column.encode("utf-8"))
         projection: list[str] = []
         for column in selected:
-            quoted = _quote_sqlite_identifier(column)
+            quoted = ("t." if without_rowid else "") + _quote_sqlite_identifier(column)
+            # typeof does not fetch overflow payloads. The CASE only reads
+            # the cell for fixed-width numeric storage classes.
             projection.extend(
                 (
                     f"typeof({quoted})",
-                    f"CASE WHEN typeof({quoted})='text' THEN CAST({quoted} AS BLOB) ELSE {quoted} END",
+                    f"CASE WHEN typeof({quoted}) IN ('integer','real') THEN {quoted} END",
                 )
             )
         ordering = ",".join(f"{_quote_sqlite_identifier(column)} COLLATE BINARY" for column in order)
-        for row in conn.execute(
-            f"SELECT {','.join(projection)} FROM {_quote_sqlite_identifier(name)} ORDER BY {ordering}"
-        ):
-            frame(b"row")
-            for offset in range(0, len(row), 2):
-                storage_class, value = str(row[offset]), row[offset + 1]
-                frame(storage_class.encode("ascii"))
-                if storage_class == "null":
-                    encoded = b""
-                elif storage_class == "integer":
-                    encoded = int(value).to_bytes(8, "big", signed=True)
-                elif storage_class == "real":
-                    encoded = struct.pack(">d", float(value))
-                else:
-                    encoded = bytes(value)
-                frame(encoded)
+        table_sql = _quote_sqlite_identifier(name)
+        locator = None
+        cell_sql = ""
+        bindings = ""
+        if without_rowid:
+            # Keep oversized primary keys inside SQLite. A single ordered
+            # traversal assigns ordinals; each later chunk uses one indexed
+            # locator and the table's own unique primary-key lookup. The
+            # private TEMP table never changes caller storage pragmas.
+            locator = _quote_sqlite_identifier("literal_locator_" + uuid.uuid4().hex)
+            key_names = [_quote_sqlite_identifier("key_" + str(index)) for index in range(len(order))]
+            conn.execute(f"CREATE TEMP TABLE {locator} (ordinal INTEGER PRIMARY KEY, {','.join(key_names)})")
+            try:
+                conn.execute(
+                    f"INSERT INTO {locator} SELECT row_number() OVER (ORDER BY {ordering}), "
+                    f"{','.join(_quote_sqlite_identifier(column) for column in order)} FROM {table_sql}"
+                )
+            except BaseException:
+                conn.execute(f"DROP TABLE temp.{locator}")
+                raise
+            bindings = " AND ".join(
+                f"t.{_quote_sqlite_identifier(column)} IS k.{key}" for column, key in zip(order, key_names, strict=True)
+            )
+            cell_sql = f"FROM temp.{locator} AS k JOIN {table_sql} AS t ON {bindings} WHERE k.ordinal=?"
+        descriptor_source = (
+            f"FROM temp.{locator} AS k JOIN {table_sql} AS t ON {bindings} ORDER BY k.ordinal"
+            if without_rowid
+            else f"FROM {table_sql} ORDER BY {ordering}"
+        )
+        descriptors = None
+        try:
+            descriptors = conn.execute(f"SELECT {','.join(projection)} {descriptor_source}")
+            for row_offset, row in enumerate(descriptors):
+                frame(b"row")
+                row_id = None if without_rowid else int(row[1])
+                for offset in range(0, len(row), 2):
+                    storage_class, value = metadata_text(row[offset]), row[offset + 1]
+                    frame(storage_class.encode("ascii"))
+                    if storage_class == "null":
+                        frame(b"")
+                    elif storage_class == "integer":
+                        frame(int(value).to_bytes(8, "big", signed=True))
+                    elif storage_class == "real":
+                        frame(struct.pack(">d", float(value)))
+                    elif row_id is not None:
+                        # Readonly incremental handles also accept TEXT and
+                        # indexed/primary-key columns, preserving literal
+                        # bytes without UTF-8 decoding or whole-cell copies.
+                        with conn.blobopen(name, selected[offset // 2], row_id, readonly=True) as blob:
+                            digest.update(len(blob).to_bytes(8, "big"))
+                            while chunk := blob.read(64 * 1024):
+                                digest.update(chunk)
+                    else:
+                        # Generic synthetic WITHOUT ROWID proofs have no
+                        # SQLite incremental-cell API. Keep Python transfers
+                        # bounded and literal; SQLite itself still allocates
+                        # one cell and may sort complete primary keys. No
+                        # currently admitted durable archive uses this shape.
+                        column_sql = "t." + _quote_sqlite_identifier(selected[offset // 2])
+                        size = int(
+                            conn.execute(
+                                f"SELECT length(CAST({column_sql} AS BLOB)) {cell_sql}", (row_offset + 1,)
+                            ).fetchone()[0]
+                        )
+                        digest.update(size.to_bytes(8, "big"))
+                        for byte_offset in range(0, size, 64 * 1024):
+                            chunk = conn.execute(
+                                f"SELECT substr(CAST({column_sql} AS BLOB), ?, ?) {cell_sql}",
+                                (byte_offset + 1, min(64 * 1024, size - byte_offset), row_offset + 1),
+                            ).fetchone()[0]
+                            digest.update(chunk)
+        finally:
+            if descriptors is not None:
+                descriptors.close()
+            if locator is not None:
+                conn.execute(f"DROP TABLE temp.{locator}")
         frame(b"end-table")
     return digest.hexdigest()
 
@@ -1957,12 +2023,9 @@ def validate_durable_migration_replay_proof(
         if proof.canonical_version > ARCHIVE_VERSION_BY_TIER[proof.tier]:
             raise DurableChangeTrainError("schema replay targets a version newer than the installed runtime")
         if proof.canonical_version == ARCHIVE_VERSION_BY_TIER[proof.tier]:
-            with closing(sqlite3.connect(":memory:")) as canonical:
-                canonical.execute("PRAGMA foreign_keys = ON")
-                canonical.executescript(ARCHIVE_DDL_BY_TIER[proof.tier])
-                canonical.execute(f"PRAGMA user_version = {proof.canonical_version}")
-                canonical.commit()
-                canonical_inventory = capture_durable_schema_inventory(canonical)
+            from polylogue.storage.sqlite.durable_change_train import _canonical_schema_inventory
+
+            canonical_inventory = _canonical_schema_inventory(proof.tier, proof.canonical_version)
             if canonical_inventory.sha256 != proof.canonical_schema_inventory_sha256:
                 raise DurableChangeTrainError("schema replay no longer binds the current canonical DDL identity")
 
@@ -1982,6 +2045,68 @@ def _durable_migration_replay_step(
     ):
         raise DurableChangeTrainError(f"schema replay does not bind numbered migration v{version}")
     return proof.steps[index]
+
+
+_SCHEMA_REHEARSAL_CACHE: dict[tuple[str, int, object, object, object], DurableMigrationReplayProof] = {}
+_SCHEMA_REHEARSAL_CACHE_LOCK = Lock()
+
+
+def durable_preparation_fingerprint(
+    conn: sqlite3.Connection,
+    tier: ArchiveTier,
+    *,
+    consumer_paths: tuple[str, ...] = (),
+) -> str:
+    """Bind reusable pure preparation, never a live physical receipt."""
+    from polylogue.sources.origin_specs import _fingerprint_sources
+    from polylogue.storage.sqlite.durable_change_train import (
+        durable_change_train_to_payload,
+        validate_durable_migration_sidecars,
+    )
+
+    migrations = _load_migrations(tier)
+    sidecars = validate_durable_migration_sidecars(tier, tuple((step.name, step.sql) for step in migrations))
+    declared_consumer_paths = tuple(
+        sorted(
+            {
+                consumer.production_ref.partition(":")[0]
+                for sidecar in sidecars
+                for rider in sidecar.train.riders
+                for consumer in rider.runtime_consumers
+                if consumer.production_ref.partition(":")[0].endswith(".py")
+            }
+        )
+    )
+    return _canonical_json_sha256(
+        {
+            "tier": tier.value,
+            "ddl": ARCHIVE_DDL_BY_TIER[tier],
+            "target": ARCHIVE_VERSION_BY_TIER[tier],
+            "migrations": [(step.version, step.name, step.sql, step.requires_backup) for step in migrations],
+            "claims": [durable_change_train_to_payload(sidecar.train) for sidecar in sidecars],
+            "source_schema": capture_durable_schema_inventory(conn).sha256,
+            "source_version": int(conn.execute("PRAGMA user_version").fetchone()[0]),
+            "sqlite": sqlite3.sqlite_version,
+            "compile_options": tuple(conn.execute("PRAGMA compile_options")),
+            "configuration": {
+                name: tuple(conn.execute(f"PRAGMA {name}"))
+                for name in (
+                    "encoding",
+                    "page_size",
+                    "foreign_keys",
+                    "recursive_triggers",
+                    "trusted_schema",
+                    "temp_store",
+                )
+            },
+            "implementation": _fingerprint_sources(
+                ("polylogue/storage/sqlite/migration_runner.py", "polylogue/storage/sqlite/durable_change_train.py")
+                + declared_consumer_paths
+                + consumer_paths,
+                namespace="durable-preparation",
+            ),
+        }
+    )
 
 
 def rehearse_durable_migration_chain(
@@ -2017,6 +2142,18 @@ def rehearse_durable_migration_chain(
     ):
         raise DurableChangeTrainError("schema replay does not have a complete durable train sidecar chain")
     source_inventory = capture_durable_schema_inventory(source)
+    cache_key = (
+        durable_preparation_fingerprint(source, tier),
+        target_version,
+        _schema_only_replica,
+        _execute_proved_migration_sql,
+        _execute_migration_sql,
+    )
+    with _SCHEMA_REHEARSAL_CACHE_LOCK:
+        cached = _SCHEMA_REHEARSAL_CACHE.get(cache_key)
+    if cached is not None:
+        validate_durable_migration_replay_proof(cached, recompute_installed_bindings=True)
+        return replace(cached, evidence_ref=evidence)
     replica = _schema_only_replica(source)
     replay_steps: list[DurableMigrationReplayStep] = []
     try:
@@ -2076,6 +2213,11 @@ def rehearse_durable_migration_chain(
             ),
         )
         validate_durable_migration_replay_proof(proof, recompute_installed_bindings=True)
+        if proof.matches:
+            with _SCHEMA_REHEARSAL_CACHE_LOCK:
+                if len(_SCHEMA_REHEARSAL_CACHE) >= 64:
+                    _SCHEMA_REHEARSAL_CACHE.pop(next(iter(_SCHEMA_REHEARSAL_CACHE)))
+                _SCHEMA_REHEARSAL_CACHE[cache_key] = proof
         return proof
     finally:
         replica.close()

@@ -510,6 +510,11 @@ class BackupRequest(_OperationPayload):
     )
 
 
+class RestoreVerifiedBackupRequest(_OperationPayload):
+    backup_dir: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+
+
 class SecretScanRequest(_OperationPayload):
     session_id: str | None = None
     scan_all: bool = False
@@ -2228,6 +2233,19 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=BackupRequest,
         result_model=MutationResult,
         handler="maintenance_backup",
+    ),
+    DaemonOperationSpec(
+        "maintenance.restore_verified_backup",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.restore_verified_backup",
+        deadline_s=300.0,
+        cancellable=False,
+        request_contract="maintenance.restore_verified_backup.request/v1",
+        result_contract="maintenance.restore_verified_backup.result/v1",
+        request_model=RestoreVerifiedBackupRequest,
+        result_model=MutationResult,
+        handler="maintenance_restore_verified_backup",
     ),
     DaemonOperationSpec(
         "maintenance.secret_scan",
