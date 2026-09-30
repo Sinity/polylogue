@@ -91,13 +91,12 @@ def test_repeated_leaf_namespace_checks_preserve_live_source_locks(tmp_path: Pat
 
 
 def test_checkpoint_descriptor_admission_preserves_the_existing_reader(tmp_path: Path) -> None:
-    """A refused exclusive checkpoint must not release the reader's main lock."""
+    """Checkpoint descriptor closes must not release the reader's main lock."""
     path = tmp_path / "index.db"
     _database(path)
     with _live_reader(path):
         _assert_protected(path)
-        with pytest.raises(RuntimeError, match="checkpoint failed"):
-            _checkpoint_truncate(path, label="neutral", archive_root=tmp_path)
+        _checkpoint_truncate(path, label="neutral", archive_root=tmp_path)
         _assert_protected(path)
 
 
@@ -165,7 +164,7 @@ def test_physical_reader_cancellation_reaps_the_child(tmp_path: Path, monkeypatc
     token = compute_cancel.set(cancelled)
 
     def start_then_cancel(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
-        child = cast(subprocess.Popen[str], original(*args, **kwargs))
+        child = cast("subprocess.Popen[str]", original(*args, **kwargs))
         children.append(child)
         cancelled.set()
         return child

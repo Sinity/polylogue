@@ -177,6 +177,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 media_type TEXT,
                 tool_outcome TEXT,
                 signature TEXT,
+                name TEXT,
                 semantic_extra_json TEXT,
                 content_hash BLOB
             );
