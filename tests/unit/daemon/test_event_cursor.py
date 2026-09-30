@@ -332,8 +332,10 @@ def test_health_history_insert_failure_rolls_back_resume_frame(ledger: Path) -> 
         conn.execute(
             "CREATE TRIGGER refuse_health_history BEFORE INSERT ON capture_health_history BEGIN SELECT RAISE(ABORT, 'synthetic_history_failure'); END"
         )
-    with pytest.raises(sqlite3.IntegrityError, match="synthetic_history_failure"):
+    with pytest.raises(events_mod.CaptureHistoryStorageError) as failed:
         events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    assert failed.value.is_transient is False
+    assert isinstance(failed.value.__cause__, sqlite3.IntegrityError)
     with sqlite3.connect(ledger) as conn:
         assert (
             conn.execute(
@@ -369,3 +371,20 @@ def test_capture_history_cli_refuses_foreign_identity_without_writes(ledger: Pat
     assert result.exit_code == 1
     assert "schema_skew" in result.output
     assert ledger.read_bytes() == before
+
+
+def test_health_page_handles_sqlite_integer_domain_edges(ledger: Path) -> None:
+    event_id = events_mod.emit_daemon_event(events_mod.CAPTURE_HEALTH_EVENT_KIND)
+    maximum_id = 2**63 - 1
+    with sqlite3.connect(ledger) as conn:
+        conn.execute("UPDATE capture_health_history SET id = ? WHERE id = ?", (maximum_id, event_id))
+    page = events_mod.capture_health_page(page_size=2**100)
+    assert [row["id"] for row in page["events"]] == [maximum_id]
+    assert page["next_cursor"] is None
+    import base64
+    import json
+
+    cursor = base64.urlsafe_b64encode(json.dumps([2**100, "synthetic", 1]).encode()).decode()
+    with pytest.raises(events_mod.CaptureHistoryCursorError) as refused:
+        events_mod.capture_health_page(cursor=cursor)
+    assert str(refused.value) == "invalid_history_cursor"

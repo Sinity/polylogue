@@ -439,8 +439,9 @@ def test_capture_history_http_pages_and_report_id_after_another_emitter(
 
 
 @pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("permanent", [False, True])
 def test_capture_history_http_classifies_storage_refusal_and_fault(
-    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, method: str
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, method: str, permanent: bool
 ) -> None:
     import sqlite3
 
@@ -471,9 +472,15 @@ def test_capture_history_http_classifies_storage_refusal_and_fault(
         assert refused["error"] == "schema_skew"
 
         def fail_storage(*args: object, **kwargs: object) -> None:
-            raise sqlite3.OperationalError("synthetic read lock")
+            raise (
+                sqlite3.IntegrityError("synthetic constraint")
+                if permanent
+                else sqlite3.OperationalError("synthetic read lock")
+            )
 
-        monkeypatch.setattr(events_mod, "capture_health_page" if method == "GET" else "emit_daemon_event", fail_storage)
+        monkeypatch.setattr(
+            events_mod, "open_readonly_connection" if method == "GET" else "_ensure_events_db", fail_storage
+        )
         status, failed = request()
-        assert status == HTTPStatus.SERVICE_UNAVAILABLE
-        assert failed["error"] == "capture_history_unavailable"
+        assert status == (HTTPStatus.INTERNAL_SERVER_ERROR if permanent else HTTPStatus.SERVICE_UNAVAILABLE)
+        assert failed["error"] == ("capture_history_storage_failed" if permanent else "capture_history_unavailable")

@@ -354,7 +354,7 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
             "Extension-reported capture-health telemetry (gap/error/spool-backlog/"
             "provider-auth-broken), stored atomically in ops.db capture_health_history and announced under kind "
             "'browser_capture_health' so silent capture incompleteness becomes queryable "
-            "history rather than only-visible-in-the-popup-at-that-moment (polylogue-3v1)."
+            "history rather than only-visible-in-the-popup-at-that-moment (polylogue-3v1). Schema skew returns 409 schema_skew; storage faults use the same typed classification as GET."
         ),
     ),
     BrowserCaptureRouteContract(
@@ -364,7 +364,7 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "bearer_if_configured",
         "optional positive page_size and opaque cursor query parameters",
         "{ok: true, events: [...], next_cursor: string | null} | BrowserCaptureErrorPayload",
-        "Newest-first snapshot pages. Appends stay outside a continued snapshot; ops reset refuses history_cursor_reset. Schema skew returns 409 schema_skew; storage faults return retryable 503 capture_history_unavailable.",
+        "Newest-first snapshot pages. Appends stay outside a continued snapshot; ops reset refuses history_cursor_reset. Schema skew returns 409 schema_skew; transient storage faults return 503 capture_history_unavailable; deterministic storage faults return 500 capture_history_storage_failed.",
     ),
 )
 

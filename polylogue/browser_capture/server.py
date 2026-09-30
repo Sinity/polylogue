@@ -1224,7 +1224,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_health_event")
             return
         from polylogue.core.errors import SchemaSkew
-        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, emit_daemon_event
+        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, CaptureHistoryStorageError, emit_daemon_event
 
         try:
             event_id = emit_daemon_event(
@@ -1243,8 +1243,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except SchemaSkew:
             self._safe_error(HTTPStatus.CONFLICT, "schema_skew")
             return
-        except (sqlite3.Error, OSError):
-            self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "capture_history_unavailable")
+        except CaptureHistoryStorageError as exc:
+            self._safe_error(HTTPStatus(exc.http_status_code), exc.code)
             return
         logger.debug(
             "browser_capture.capture_health_reported",
@@ -1260,7 +1260,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _capture_health_list(self) -> None:
         from polylogue.core.errors import SchemaSkew
-        from polylogue.daemon.events import CaptureHistoryCursorError, capture_health_page
+        from polylogue.daemon.events import CaptureHistoryCursorError, CaptureHistoryStorageError, capture_health_page
 
         params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
         if set(params) - {"page_size", "cursor"} or any(len(values) != 1 for values in params.values()):
@@ -1282,8 +1282,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except SchemaSkew:
             self._safe_error(HTTPStatus.CONFLICT, "schema_skew")
             return
-        except (sqlite3.Error, OSError):
-            self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "capture_history_unavailable")
+        except CaptureHistoryStorageError as exc:
+            self._safe_error(HTTPStatus(exc.http_status_code), exc.code)
             return
         self._send_json(HTTPStatus.OK, {"ok": True, **page})
 

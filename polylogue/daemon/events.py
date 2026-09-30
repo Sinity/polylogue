@@ -12,10 +12,12 @@ from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
+from http import HTTPStatus
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, TypedDict
 
+from polylogue.core.errors import DatabaseError
 from polylogue.operations.judgment_scheduler import (
     ArchiveJudgmentSchedulerReceipt,
     record_judgment_scheduler_receipt,
@@ -302,6 +304,41 @@ def emit_daemon_events(
         conn.close()
 
 
+class CaptureHistoryStorageError(DatabaseError):
+    """A failed history transaction/read, never a fabricated empty page."""
+
+    def __init__(self, cause: sqlite3.Error | OSError) -> None:
+        error_code = getattr(cause, "sqlite_errorcode", None)
+        transient_codes = {
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_IOERR,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_FULL,
+            sqlite3.SQLITE_PROTOCOL,
+            sqlite3.SQLITE_READONLY,
+        }
+        self.is_transient = isinstance(cause, OSError) or (
+            isinstance(cause, sqlite3.OperationalError) if error_code is None else error_code & 0xFF in transient_codes
+        )
+        self.code = "capture_history_unavailable" if self.is_transient else "capture_history_storage_failed"
+        self.http_status_code = (
+            HTTPStatus.SERVICE_UNAVAILABLE if self.is_transient else HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+        super().__init__(self.code)
+
+
+@contextmanager
+def _capture_history_storage(*, enabled: bool = True) -> Iterator[None]:
+    """Classify storage faults at the history owner and preserve the original cause."""
+    try:
+        yield
+    except (sqlite3.Error, OSError) as exc:
+        if not enabled:
+            raise
+        raise CaptureHistoryStorageError(exc) from exc
+
+
 def _insert_daemon_event(
     conn: sqlite3.Connection,
     kind: str,
@@ -310,32 +347,33 @@ def _insert_daemon_event(
     idempotency_key: str | None,
     payload: dict[str, object],
 ) -> int:
-    # Health history outlives consumed resume frames, including replay deduplication.
-    if kind == CAPTURE_HEALTH_EVENT_KIND and idempotency_key is not None:
-        prior = conn.execute(
-            "SELECT id FROM capture_health_history WHERE idempotency_key = ?", (idempotency_key,)
+    with _capture_history_storage(enabled=kind == CAPTURE_HEALTH_EVENT_KIND):
+        # Health history outlives consumed resume frames, including replay deduplication.
+        if kind == CAPTURE_HEALTH_EVENT_KIND and idempotency_key is not None:
+            prior = conn.execute(
+                "SELECT id FROM capture_health_history WHERE idempotency_key = ?", (idempotency_key,)
+            ).fetchone()
+            if prior is not None:
+                return int(prior[0])
+        payload_json = json.dumps(payload)
+        inserted = conn.execute(
+            "INSERT INTO daemon_events (ts_ms, kind, operation_id, idempotency_key, payload_json) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(kind, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id",
+            (ts_ms, kind, operation_id, idempotency_key, payload_json),
         ).fetchone()
-        if prior is not None:
+        if inserted is None:
+            prior = conn.execute(
+                "SELECT id FROM daemon_events WHERE kind = ? AND idempotency_key = ?", (kind, idempotency_key)
+            ).fetchone()
+            assert prior is not None
             return int(prior[0])
-    payload_json = json.dumps(payload)
-    inserted = conn.execute(
-        "INSERT INTO daemon_events (ts_ms, kind, operation_id, idempotency_key, payload_json) VALUES (?, ?, ?, ?, ?) "
-        "ON CONFLICT(kind, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id",
-        (ts_ms, kind, operation_id, idempotency_key, payload_json),
-    ).fetchone()
-    if inserted is None:
-        prior = conn.execute(
-            "SELECT id FROM daemon_events WHERE kind = ? AND idempotency_key = ?", (kind, idempotency_key)
-        ).fetchone()
-        assert prior is not None
-        return int(prior[0])
-    event_id = int(inserted[0])
-    if kind == CAPTURE_HEALTH_EVENT_KIND:
-        conn.execute(
-            "INSERT INTO capture_health_history (id, report_key, ts_ms, operation_id, idempotency_key, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
-            (event_id, uuid.uuid4().hex, ts_ms, operation_id, idempotency_key, payload_json),
-        )
-    return event_id
+        event_id = int(inserted[0])
+        if kind == CAPTURE_HEALTH_EVENT_KIND:
+            conn.execute(
+                "INSERT INTO capture_health_history (id, report_key, ts_ms, operation_id, idempotency_key, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (event_id, uuid.uuid4().hex, ts_ms, operation_id, idempotency_key, payload_json),
+            )
+        return event_id
 
 
 def emit_daemon_event(
@@ -348,49 +386,50 @@ def emit_daemon_event(
     observed_at_ms: int | None = None,
 ) -> int:
     """Atomically emit a resume event and its history report; return its actual id."""
-    conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
-    try:
-        if kind == "judgment-automation":
-            receipt_payload = payload or {}
-            typed_operation_id = operation_id or f"judgment-automation:{uuid.uuid4().hex}"
-            counters = {
-                name: receipt_payload.get(name, 0)
-                for name in ("considered", "accepted", "rejected", "escalated", "idempotent", "failed")
-            }
-            with suppress(ValueError):
-                record_judgment_scheduler_receipt(
-                    conn,
-                    ArchiveJudgmentSchedulerReceipt(
-                        operation_id=typed_operation_id,
-                        observed_at_ms=current_epoch_ms() if observed_at_ms is None else observed_at_ms,
-                        status=str(receipt_payload.get("status", "")),
-                        reason=str(receipt_payload.get("reason", "")),
-                        retryable=receipt_payload.get("retryable", False),  # type: ignore[arg-type]
-                        retry_route=str(receipt_payload.get("retry_route", "")),
-                        batch_limit=receipt_payload.get("batch_limit", 0),  # type: ignore[arg-type]
-                        considered=counters["considered"],  # type: ignore[arg-type]
-                        accepted=counters["accepted"],  # type: ignore[arg-type]
-                        rejected=counters["rejected"],  # type: ignore[arg-type]
-                        escalated=counters["escalated"],  # type: ignore[arg-type]
-                        idempotent=counters["idempotent"],  # type: ignore[arg-type]
-                        failed=counters["failed"],  # type: ignore[arg-type]
-                        receipt_persistence_degraded=receipt_payload.get("receipt_persistence_degraded", False),  # type: ignore[arg-type]
-                        receipt_persistence_recovered=receipt_payload.get("receipt_persistence_recovered", False),  # type: ignore[arg-type]
-                    ),
-                )
-        event_id = _insert_daemon_event(
-            conn,
-            kind,
-            current_epoch_ms() if observed_at_ms is None else observed_at_ms,
-            operation_id,
-            idempotency_key,
-            payload or {},
-        )
-        prune_daemon_events(conn)
-        conn.commit()
-        return event_id
-    finally:
-        conn.close()
+    with _capture_history_storage(enabled=kind == CAPTURE_HEALTH_EVENT_KIND):
+        conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
+        try:
+            if kind == "judgment-automation":
+                receipt_payload = payload or {}
+                typed_operation_id = operation_id or f"judgment-automation:{uuid.uuid4().hex}"
+                counters = {
+                    name: receipt_payload.get(name, 0)
+                    for name in ("considered", "accepted", "rejected", "escalated", "idempotent", "failed")
+                }
+                with suppress(ValueError):
+                    record_judgment_scheduler_receipt(
+                        conn,
+                        ArchiveJudgmentSchedulerReceipt(
+                            operation_id=typed_operation_id,
+                            observed_at_ms=current_epoch_ms() if observed_at_ms is None else observed_at_ms,
+                            status=str(receipt_payload.get("status", "")),
+                            reason=str(receipt_payload.get("reason", "")),
+                            retryable=receipt_payload.get("retryable", False),  # type: ignore[arg-type]
+                            retry_route=str(receipt_payload.get("retry_route", "")),
+                            batch_limit=receipt_payload.get("batch_limit", 0),  # type: ignore[arg-type]
+                            considered=counters["considered"],  # type: ignore[arg-type]
+                            accepted=counters["accepted"],  # type: ignore[arg-type]
+                            rejected=counters["rejected"],  # type: ignore[arg-type]
+                            escalated=counters["escalated"],  # type: ignore[arg-type]
+                            idempotent=counters["idempotent"],  # type: ignore[arg-type]
+                            failed=counters["failed"],  # type: ignore[arg-type]
+                            receipt_persistence_degraded=receipt_payload.get("receipt_persistence_degraded", False),  # type: ignore[arg-type]
+                            receipt_persistence_recovered=receipt_payload.get("receipt_persistence_recovered", False),  # type: ignore[arg-type]
+                        ),
+                    )
+            event_id = _insert_daemon_event(
+                conn,
+                kind,
+                current_epoch_ms() if observed_at_ms is None else observed_at_ms,
+                operation_id,
+                idempotency_key,
+                payload or {},
+            )
+            prune_daemon_events(conn)
+            conn.commit()
+            return event_id
+        finally:
+            conn.close()
 
 
 def get_latest_daemon_event(
@@ -509,60 +548,63 @@ def capture_health_page(*, page_size: int = 100, cursor: str | None = None) -> C
                 type(anchor) is not int
                 or type(before) is not int
                 or not isinstance(report_key, str)
-                or not (0 < before <= anchor)
+                or not (0 < before <= anchor <= 2**63 - 1)
             ):
                 raise ValueError
         except (ValueError, TypeError, UnicodeError):
             raise CaptureHistoryCursorError("invalid_history_cursor") from None
-    path = _events_db_path()
-    try:
-        path.stat()
-    except FileNotFoundError:
-        if cursor is not None:
-            raise CaptureHistoryCursorError("history_cursor_reset") from None
-        return {"events": [], "next_cursor": None}
-    conn = open_readonly_connection(path, tier=ArchiveTier.OPS)
-    try:
-        conn.execute("BEGIN")
-        if anchor is None:
-            head = conn.execute("SELECT id, report_key FROM capture_health_history ORDER BY id DESC LIMIT 1").fetchone()
-            if head is None:
-                return {"events": [], "next_cursor": None}
-            anchor, report_key = int(head[0]), str(head[1])
-            before = anchor + 1
-        elif (
-            conn.execute(
-                "SELECT 1 FROM capture_health_history WHERE id = ? AND report_key = ?", (anchor, report_key)
-            ).fetchone()
-            is None
-        ):
-            raise CaptureHistoryCursorError("history_cursor_reset")
-        rows = conn.execute(
-            "SELECT id, ts_ms, operation_id, payload_json FROM capture_health_history WHERE id <= ? AND id < ? ORDER BY id DESC LIMIT ?",
-            (anchor, before, page_size),
-        )
-        events = [
-            {
-                "id": row[0],
-                "ts": _iso_from_ms(row[1]),
-                "kind": CAPTURE_HEALTH_EVENT_KIND,
-                "operation_id": row[2],
-                "payload": json.loads(row[3]),
-            }
-            for row in rows
-        ]
-        next_cursor = None
-        if events:
-            last_id = events[-1]["id"]
-            if (
-                conn.execute("SELECT 1 FROM capture_health_history WHERE id < ? LIMIT 1", (last_id,)).fetchone()
-                is not None
+    with _capture_history_storage():
+        path = _events_db_path()
+        try:
+            path.stat()
+        except FileNotFoundError:
+            if cursor is not None:
+                raise CaptureHistoryCursorError("history_cursor_reset") from None
+            return {"events": [], "next_cursor": None}
+        conn = open_readonly_connection(path, tier=ArchiveTier.OPS)
+        try:
+            conn.execute("BEGIN")
+            if anchor is None:
+                head = conn.execute(
+                    "SELECT id, report_key FROM capture_health_history ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if head is None:
+                    return {"events": [], "next_cursor": None}
+                anchor, report_key = int(head[0]), str(head[1])
+                before = None
+            elif (
+                conn.execute(
+                    "SELECT 1 FROM capture_health_history WHERE id = ? AND report_key = ?", (anchor, report_key)
+                ).fetchone()
+                is None
             ):
-                next_cursor = base64.urlsafe_b64encode(json.dumps([anchor, report_key, last_id]).encode()).decode()
-        return {"events": events, "next_cursor": next_cursor}
-    finally:
-        conn.rollback()
-        conn.close()
+                raise CaptureHistoryCursorError("history_cursor_reset")
+            rows = conn.execute(
+                "SELECT id, ts_ms, operation_id, payload_json FROM capture_health_history WHERE id <= ? AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?",
+                (anchor, before, before, min(page_size, 2**63 - 1)),
+            )
+            events = [
+                {
+                    "id": row[0],
+                    "ts": _iso_from_ms(row[1]),
+                    "kind": CAPTURE_HEALTH_EVENT_KIND,
+                    "operation_id": row[2],
+                    "payload": json.loads(row[3]),
+                }
+                for row in rows
+            ]
+            next_cursor = None
+            if events:
+                last_id = events[-1]["id"]
+                if (
+                    conn.execute("SELECT 1 FROM capture_health_history WHERE id < ? LIMIT 1", (last_id,)).fetchone()
+                    is not None
+                ):
+                    next_cursor = base64.urlsafe_b64encode(json.dumps([anchor, report_key, last_id]).encode()).decode()
+            return {"events": events, "next_cursor": next_cursor}
+        finally:
+            conn.rollback()
+            conn.close()
 
 
 class EventCursorStatus(str, Enum):
@@ -1198,5 +1240,6 @@ __all__ = [
     "iter_daemon_events",
     "capture_health_page",
     "CaptureHistoryCursorError",
+    "CaptureHistoryStorageError",
     "query_events_since",
 ]
