@@ -65,7 +65,6 @@ def bootstrap_baseline_archive(root: Path, monkeypatch: pytest.MonkeyPatch) -> N
         for owner in (
             "polylogue.storage.sqlite.archive_tiers",
             "polylogue.storage.sqlite.archive_tiers.bootstrap",
-            "polylogue.storage.sqlite.archive_tiers.archive_plan",
             "polylogue.storage.sqlite.migration_runner",
             "polylogue.operations.durable_change_train",
         ):

@@ -2578,7 +2578,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is True
+    assert readiness["messages_ready"] is True, readiness
     assert readiness["invariant_ready"] is True
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)

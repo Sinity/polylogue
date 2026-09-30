@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_FORMAT_FLOOR_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -175,7 +175,7 @@ def _format_digest(payload: dict[str, object]) -> str:
 
 
 def _archive_tier_versions() -> dict[str, int]:
-    return {tier.value: ARCHIVE_VERSION_BY_TIER[tier] for tier in ArchiveTier}
+    return {tier.value: ARCHIVE_BASELINE_VERSION_BY_TIER[tier] for tier in ArchiveTier}
 
 
 def _tier_schema_fingerprint(path: Path) -> str:

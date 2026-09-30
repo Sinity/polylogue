@@ -99,12 +99,11 @@ def test_runtime_target_without_a_declared_train_refuses_after_baseline_birth(
     from polylogue.core.errors import SchemaSkew
 
     advanced = dict(ARCHIVE_VERSION_BY_TIER)
-    advanced[ArchiveTier.SOURCE] += 1
+    advanced[ArchiveTier.USER] += 1
     monkeypatch.setattr(tier_bootstrap, "ARCHIVE_VERSION_BY_TIER", advanced)
-    monkeypatch.setattr(archive_plan, "ARCHIVE_VERSION_BY_TIER", advanced)
     with pytest.raises(SchemaSkew) as refused:
         initialize_active_archive_root(tmp_path)
-    assert refused.value.tier == "source"
+    assert refused.value.tier == "user"
     marker = json.loads((tmp_path / ".polylogue-format.json").read_text())
     assert set(marker["tier_versions"].values()) == {1}
     with sqlite3.connect(tmp_path / "source.db") as conn:

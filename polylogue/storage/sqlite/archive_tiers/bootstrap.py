@@ -380,6 +380,32 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
     _materialize_archive_tier(conn, tier)
 
 
+def initialize_runtime_tier_probe(
+    conn: sqlite3.Connection, tier: ArchiveTier, *, probe_path: Path | None = None
+) -> None:
+    """Build an isolated empty probe through baseline and installed migrations.
+
+    Probe consumers need the runtime schema without recursively releasing a
+    train whose riders they are proving. This is not an archive initializer:
+    populated connections refuse before any DDL.
+    """
+    databases = conn.execute("PRAGMA database_list").fetchall()
+    main_path = next((str(row[2]) for row in databases if row[1] == "main"), "")
+    if any(row[1] not in {"main", "temp"} for row in databases):
+        raise RuntimeError("runtime tier probe cannot have attached databases")
+    if main_path and (probe_path is None or Path(main_path).resolve() != probe_path.resolve()):
+        raise RuntimeError("file-backed runtime tier probe requires its declared isolated path")
+    if conn.in_transaction or int(conn.execute("PRAGMA user_version").fetchone()[0]) != 0:
+        raise RuntimeError("runtime tier probe requires an empty connection")
+    if conn.execute("SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone() is not None:
+        raise RuntimeError("runtime tier probe requires an empty connection")
+    initialize_archive_tier(conn, tier)
+    if tier in DURABLE_MIGRATION_TIERS:
+        from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+
+        migrate_archive_tier(conn, tier, backup_manifest=None)
+
+
 def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
     """Initialize a fresh archive tier database on an already-open connection.
 

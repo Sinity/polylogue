@@ -17,7 +17,7 @@ from typing import Literal, cast
 
 from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -236,12 +236,12 @@ def _canonical_connection(tier: ArchiveTier) -> sqlite3.Connection:
             connection.close()
             raise SchemaCensusError(f"canonical {tier.value} tier unavailable: sqlite-vec: {error or 'not loadable'}")
     try:
-        initialize_archive_tier(connection, tier)
+        initialize_runtime_tier_probe(connection, tier)
         if tier is ArchiveTier.OPS:
             from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 
             connection.executescript(DERIVED_SCHEMA_META_DDL)
-    except Exception:
+    except BaseException:
         connection.close()
         raise
     connection.execute("PRAGMA query_only = ON")

@@ -130,7 +130,12 @@ async def test_async_attached_tier_profiles_map_main_only(
     configured_mmap_size: int,
 ) -> None:
     _seed_attached_archive_tiers(tmp_path)
-    conn = await aiosqlite.connect(tmp_path / "index.db")
+    index_path = tmp_path / "index.db"
+    conn = (
+        await aiosqlite.connect(index_path.as_uri() + "?mode=ro", uri=True)
+        if configure is configure_read_connection
+        else await aiosqlite.connect(index_path)
+    )
     try:
         await configure(conn)
         values: dict[str, int] = {}

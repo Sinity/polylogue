@@ -82,6 +82,67 @@ def test_source002_rehearses_on_connection_local_schema_replica(tmp_path: Path) 
         conn.close()
 
 
+def test_runtime_probe_installs_numbered_source_effect_without_train_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+
+    def refuse_recursive_release(*args: object, **kwargs: object) -> None:
+        pytest.fail("an isolated schema probe must not release the train it is proving")
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train.execute_durable_change_train", refuse_recursive_release
+    )
+    with closing(sqlite3.connect(":memory:")) as conn:
+        initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        partitions = conn.execute(
+            "SELECT sql FROM sqlite_schema WHERE name IN "
+            "('idx_raw_artifacts_source_identity', 'idx_raw_artifacts_failure_identity')"
+        ).fetchall()
+        assert len(partitions) == 2
+        assert all("'terminal_missing_source_coordinates'" in row[0] for row in partitions)
+
+
+def test_runtime_probe_refuses_populated_or_undeclared_file_connections(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE custody (value TEXT)")
+        conn.execute("INSERT INTO custody VALUES ('retained')")
+        conn.commit()
+        with pytest.raises(RuntimeError):
+            initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE)
+        assert conn.execute("SELECT value FROM custody").fetchall() == [("retained",)]
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+    path = tmp_path / "isolated-source.db"
+    with closing(sqlite3.connect(path)) as conn:
+        with pytest.raises(RuntimeError):
+            initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE)
+        assert conn.execute("SELECT name FROM sqlite_schema").fetchall() == []
+        initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE, probe_path=path)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_canonical_birth_marker_stays_baseline_after_source_train_and_reopen(tmp_path: Path) -> None:
+    import json
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        initialize_active_archive_root,
+        invalidate_active_archive_bootstrap,
+    )
+
+    initialize_active_archive_root(tmp_path)
+    marker_path = tmp_path / ".polylogue-format.json"
+    original = marker_path.read_bytes()
+    assert set(json.loads(original)["tier_versions"].values()) == {1}
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    invalidate_active_archive_bootstrap(tmp_path)
+    initialize_active_archive_root(tmp_path)
+    assert marker_path.read_bytes() == original
+
+
 def test_standalone_runtime_source_constructor_refuses_before_creating_baseline(tmp_path: Path) -> None:
     from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers.bootstrap import (

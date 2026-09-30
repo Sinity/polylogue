@@ -869,7 +869,7 @@ def _runtime_consumer_results(
 def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
     """Exercise the source hook writer against an isolated fresh source tier."""
     from polylogue.core.enums import Origin
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
     from polylogue.storage.sqlite.archive_tiers.source_write import (
         ArchiveHookEvent,
         deterministic_blob_hash,
@@ -889,7 +889,7 @@ def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
     )
     expected_blob_hash = deterministic_blob_hash(payload)
     with sqlite_connection(":memory:") as probe:
-        initialize_archive_tier(probe, ArchiveTier.SOURCE)
+        initialize_runtime_tier_probe(probe, ArchiveTier.SOURCE)
         returned_raw_id = writer(
             probe,
             origin=hook_event.origin,
@@ -1039,10 +1039,14 @@ def _probe_accepted_marker_input_writer() -> str:
 
 def _runtime_probe_source_connection() -> sqlite3.Connection:
     """Create a fresh canonical source-tier probe."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
     connection = sqlite3.connect(":memory:")
-    initialize_archive_tier(connection, ArchiveTier.SOURCE)
+    try:
+        initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE)
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 
@@ -1247,10 +1251,14 @@ def _probe_material_read(get: Callable[..., object]) -> str:
 
 def _runtime_probe_user_connection() -> sqlite3.Connection:
     """Create a fresh canonical user-tier probe."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
     connection = sqlite3.connect(":memory:")
-    initialize_archive_tier(connection, ArchiveTier.USER)
+    try:
+        initialize_runtime_tier_probe(connection, ArchiveTier.USER)
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 
@@ -1670,13 +1678,13 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
     """
     from polylogue.core.enums import Origin, Provider
     from polylogue.core.sources import provider_from_origin
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
     with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-hydration-") as directory:
         source_path = Path(directory) / "source.db"
         with sqlite_connection(source_path) as connection:
             connection.row_factory = sqlite3.Row
-            initialize_archive_tier(connection, ArchiveTier.SOURCE)
+            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=source_path)
             _seed_probe_raw_row(
                 connection,
                 raw_id="durable-change-train-hydration-raw",
@@ -1713,9 +1721,9 @@ def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Pa
     with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-failure-") as directory:
         source_path = Path(directory) / "source.db"
         with sqlite_connection(source_path) as connection:
-            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
-            initialize_archive_tier(connection, ArchiveTier.SOURCE)
+            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=source_path)
         snapshot = reader(source_path, sample_limit=1)
     if not getattr(snapshot, "available", False):
         raise DurableChangeTrainError("raw failure lifecycle probe could not read source.db")

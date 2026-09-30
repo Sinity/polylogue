@@ -415,7 +415,6 @@ _NEXT_SOURCE_SIDECAR_NAME = f"{_NEXT_SOURCE_SLOT:03d}.train.json"
 _VERSION_MAP_OWNERS = (
     "polylogue.storage.sqlite.archive_tiers.ARCHIVE_VERSION_BY_TIER",
     "polylogue.storage.sqlite.archive_tiers.bootstrap.ARCHIVE_VERSION_BY_TIER",
-    "polylogue.storage.sqlite.archive_tiers.archive_plan.ARCHIVE_VERSION_BY_TIER",
     "polylogue.storage.sqlite.migration_runner.ARCHIVE_VERSION_BY_TIER",
     "polylogue.operations.durable_change_train.ARCHIVE_VERSION_BY_TIER",
 )

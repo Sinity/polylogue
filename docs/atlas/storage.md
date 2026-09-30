@@ -50,6 +50,12 @@ tier without applying migrations. A crash after baseline publication resumes
 the same persisted train rather than restamping the baseline as current
 (`storage/sqlite/archive_tiers/bootstrap.py`;
 `storage/sqlite/durable_change_train.py`).
+The format marker retains immutable baseline birth versions and fingerprints
+after migration. Isolated runtime consumer probes and canonical schema census
+build their empty connection through the baseline plus the actual numbered
+migration runner. File-backed probes declare their owned temporary path;
+populated or attached connections refuse. Probes never release the train
+whose consumers they are proving.
 Released train admission checks the physical archive identity, installed and
 historical schema bindings, version, `quick_check` and `integrity_check`; it
 does not count or hash mutable rows on ordinary restart. Interrupted APPLIED
