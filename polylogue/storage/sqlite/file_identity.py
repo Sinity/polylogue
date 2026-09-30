@@ -163,27 +163,27 @@ class SQLiteFileIdentity:
         if self._closed:
             raise OSError(errno.EBADF, "SQLite identity is closed")
 
-    def assert_unchanged(self) -> None:
+    def assert_unchanged(self, *, sqlite_path: Path | None = None) -> None:
         self._require_open()
         current = os.stat(self.name, dir_fd=self._directory, follow_symlinks=False)
         if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != self._identity:
             raise OSError(errno.ESTALE, "SQLite identity path was replaced", self.name)
 
+        if sqlite_path is not None:
+            selected = sqlite_path.stat(follow_symlinks=False)
+            directory = sqlite_path.parent.stat()
+            pinned_directory = os.fstat(self._directory)
+            if (
+                not stat.S_ISREG(selected.st_mode)
+                or (selected.st_dev, selected.st_ino) != self._identity
+                or (directory.st_dev, directory.st_ino) != (pinned_directory.st_dev, pinned_directory.st_ino)
+            ):
+                raise OSError(errno.ESTALE, "SQLite selected path or directory was substituted", str(sqlite_path))
+
     def sqlite_path(self) -> Path:
-        self.assert_unchanged()
-        if self._descriptor is not None:
-            for base in ("/dev/fd", "/proc/self/fd"):
-                alias = Path(base) / str(self._descriptor)
-                try:
-                    current = alias.stat()
-                except OSError:
-                    continue
-                if (current.st_dev, current.st_ino) == self._identity:
-                    return alias
-        candidate = _directory_path(self._directory) / self.name
-        current = candidate.stat(follow_symlinks=False)
-        if (current.st_dev, current.st_ino) != self._identity:
-            raise OSError(errno.ESTALE, "SQLite directory path was substituted", self.name)
+        """Resolve the native child SQLite will use, checking its full custody."""
+        candidate = _directory_path(self._directory, native=True) / self.name
+        self.assert_unchanged(sqlite_path=candidate)
         return candidate
 
     def physical_read(

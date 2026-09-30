@@ -1529,8 +1529,8 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     """Open source.db through an already-open descriptor.
 
     Identity custody retains the selected inode and parent directory through
-    connection close. The canonical reader admits a verified descriptor alias
-    or native directory child and checks its identity around SQLite open.
+    connection close. The canonical reader admits the verified native
+    directory child and checks both its file and directory around SQLite open.
     Ordinary inode descriptors never live in the SQLite-owning process.
     """
     path = archive_root / "source.db"
@@ -1716,8 +1716,9 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
             raise RuntimeError(f"{label} changed during descriptor validation: {path}")
         reopened_fd.close()
         reopened_fd = None
-        with closing(sqlite3.connect(str(fd.sqlite_path()))) as conn:
-            fd.assert_unchanged()
+        selected_path = fd.sqlite_path()
+        with closing(sqlite3.connect(str(selected_path))) as conn:
+            fd.assert_unchanged(sqlite_path=selected_path)
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     except OSError as exc:
         raise RuntimeError(f"cannot securely open {label}: {path}") from exc

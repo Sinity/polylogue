@@ -21,6 +21,7 @@ import pytest
 from polylogue.core.compute_cancel import compute_cancel
 from polylogue.operations import archive_backup
 from polylogue.storage.index_generation import _checkpoint_truncate, _open_source_snapshot
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite import connection_profile, lock_isolated_file_read
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import capture_schema_census
 from polylogue.storage.sqlite.audit_leaf import (
@@ -168,13 +169,13 @@ def test_migration_physical_fingerprint_preserves_its_transaction_locks(tmp_path
 def test_physical_reader_cancellation_reaps_the_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "source.db"
     _database(path)
-    children: list[subprocess.Popen[str]] = []
+    children: list[subprocess.Popen[bytes]] = []
     original = subprocess.Popen
     cancelled = threading.Event()
     token = compute_cancel.set(cancelled)
 
-    def start_then_cancel(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
-        child = cast("subprocess.Popen[str]", original(*args, **kwargs))
+    def start_then_cancel(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        child = cast("subprocess.Popen[bytes]", original(*args, **kwargs))
         children.append(child)
         cancelled.set()
         return child
@@ -321,7 +322,7 @@ def test_sqlite_descriptor_boundary_refuses_lock_releasing_file_handles(tmp_path
     with path.open("rb") as descriptor:
         with pytest.raises(ValueError, match="SQLiteFileIdentity"):
             connection_profile.open_readonly_connection(
-                path, opened_main_identity=descriptor.fileno(), validate_schema=False
+                path, opened_main_identity=cast(SQLiteFileIdentity, descriptor.fileno()), validate_schema=False
             )
 
 
@@ -374,7 +375,7 @@ def test_custody_follows_pinned_directory_rename(tmp_path: Path) -> None:
 def test_custody_rechecks_identity_after_sqlite_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "source.db"
     _database(path)
-    original = connection_profile.connect_measured
+    original = connect_measured
     connections = []
 
     def substitute_after_open(*args: Any, **kwargs: Any) -> sqlite3.Connection:
@@ -455,5 +456,33 @@ def test_physical_copy_preserves_metadata_and_supported_attributes(tmp_path: Pat
     assert after.st_size == result.size_bytes
     if attributes:
         assert os.getxattr(destination, "user.polylogue-neutral") == b"synthetic metadata"
-    if hasattr(before, "st_flags"):
-        assert after.st_flags == before.st_flags
+    flags = getattr(before, "st_flags", None)
+    if flags is not None:
+        assert after.st_flags == flags
+
+
+def test_sqlite_open_refuses_native_directory_substitution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Checking only the pinned directory entry misses the actual SQLite pathname."""
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    path = selected / "source.db"
+    _database(path)
+    original = connect_measured
+    connections = []
+
+    def substitute_directory_at_open(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        selected.rename(tmp_path / "pinned-directory")
+        selected.mkdir()
+        _database(path)
+        connection = original(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    with _live_reader(path), SQLiteFileIdentity(path, use_custodian=True) as identity:
+        monkeypatch.setattr(connection_profile, "connect_measured", substitute_directory_at_open)
+        with pytest.raises(OSError) as error:
+            connection_profile.open_readonly_connection(path, opened_main_identity=identity, validate_schema=False)
+        assert error.value.errno == errno.ESTALE
+        _assert_protected(tmp_path / "pinned-directory" / "source.db")
+        with pytest.raises(sqlite3.ProgrammingError):
+            connections[0].execute("SELECT 1")

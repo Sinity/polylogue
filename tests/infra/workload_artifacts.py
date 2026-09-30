@@ -1523,9 +1523,10 @@ def _measure_rows(root: Path) -> dict[str, int]:
     except OSError:
         return {}
     try:
-        connection = sqlite3.connect(f"{db_fd.sqlite_path().as_uri()}?mode=ro", uri=True)
+        selected_path = db_fd.sqlite_path()
+        connection = sqlite3.connect(f"{selected_path.as_uri()}?mode=ro", uri=True)
         with contextlib.closing(connection) as conn:
-            db_fd.assert_unchanged()
+            db_fd.assert_unchanged(sqlite_path=selected_path)
             for table in _MEASURED_ROW_TABLES:
                 counts[table] = int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
     except sqlite3.Error:
@@ -1723,9 +1724,10 @@ def _sqlite_integrity(root: Path) -> None:
         except FileNotFoundError:
             continue
         try:
-            connection = sqlite3.connect(f"{db_fd.sqlite_path().as_uri()}?mode={'ro' if read_only else 'rw'}", uri=True)
+            selected_path = db_fd.sqlite_path()
+            connection = sqlite3.connect(f"{selected_path.as_uri()}?mode={'ro' if read_only else 'rw'}", uri=True)
             with contextlib.closing(connection) as conn, conn:
-                db_fd.assert_unchanged()
+                db_fd.assert_unchanged(sqlite_path=selected_path)
                 quick = conn.execute("PRAGMA quick_check").fetchone()
                 foreign = conn.execute("PRAGMA foreign_key_check").fetchall()
                 if quick != ("ok",) or foreign:
@@ -3264,17 +3266,17 @@ def _copy_tree(source: Path, destination: Path) -> None:
                             os.close(child_dst)
                     elif stat.S_ISREG(info.st_mode):
                         if entry.name in _ARCHIVE_SQLITE_FILE_NAMES:
-                            in_fd = open_sqlite_identity(entry.name, dir_fd=src)
+                            source_identity = open_sqlite_identity(entry.name, dir_fd=src)
                             try:
                                 read_sqlite_file_in_lock_isolated_process(
                                     Path(entry.name),
-                                    opened_identity=in_fd,
+                                    opened_identity=source_identity,
                                     copy_to=Path(entry.name),
                                     copy_directory_fd=dst,
                                     copy_exclusive=True,
                                 )
                             finally:
-                                in_fd.close()
+                                source_identity.close()
                             continue
                         in_fd = os.open(entry.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=src)
                         out_fd = -1

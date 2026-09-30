@@ -1187,10 +1187,10 @@ def open_readonly_connection(
     helper does not perform it, since the check is specific to how the caller
     obtained the snapshot.
 
-    ``opened_main_identity`` retains a canonical inode and directory pin. Linux
-    uses a validated descriptor alias; portable custody uses the verified native
-    directory child. The selected entry is checked before and after opening;
-    replacement fails before the caller receives a connection.
+    ``opened_main_identity`` retains a canonical inode and directory pin. Its
+    verified native directory child is checked before and after SQLite opens
+    it, including both the selected file and parent directory. Replacement
+    fails before the caller receives a connection.
 
     ``validate_schema=False`` is reserved for diagnostic readers that need to
     inspect a tier before reporting its schema mismatch. It does not change the
@@ -1226,17 +1226,20 @@ def open_readonly_connection(
     if opened_main_identity is not None:
         require_sqlite_identity(opened_main_identity)
     opened_fd = opened_main_identity
+    selected_path: Path | None = None
     if opened_fd is None:
         # Percent-encode the path: an unescaped '?' or '#' in a filename would
         # otherwise be parsed as the URI's own query or fragment delimiter and
         # silently open a different file, or none.
         database_uri = f"file:{quote(str(path))}{suffix}"
     else:
-        database_uri = f"{opened_fd.sqlite_path().as_uri()}{suffix}"
+        selected_path = opened_fd.sqlite_path()
+        database_uri = f"{selected_path.as_uri()}{suffix}"
     conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
     try:
         if opened_main_identity is not None:
-            opened_main_identity.assert_unchanged()
+            assert selected_path is not None
+            opened_main_identity.assert_unchanged(sqlite_path=selected_path)
         if validate_schema:
             _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
         for stmt in profile.pragma_statements:

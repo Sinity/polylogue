@@ -15,8 +15,10 @@ from typing import Any
 
 def _stat_payload(descriptor: int) -> dict[str, Any]:
     metadata = os.fstat(descriptor)
-    extra = {name: getattr(metadata, name) for name in dir(metadata) if name.startswith("st_")}
-    return {"fields": list(metadata), "extra": extra}
+    # The stdlib reduction separates positional fields from named extras.
+    # Sending all st_* names duplicates positional fields in Python 3.14.
+    fields, extra = metadata.__reduce__()[1]
+    return {"fields": list(fields), "extra": extra}
 
 
 def _send(payload: dict[str, Any]) -> None:
@@ -59,7 +61,8 @@ def _copy_metadata(source: int, destination: int) -> None:
                     if exc.errno not in (errno.ENOTSUP, errno.ENODATA, errno.EINVAL, errno.EPERM):
                         raise
     os.fchmod(destination, stat.S_IMODE(metadata.st_mode))
-    if hasattr(metadata, "st_flags") and hasattr(os, "chflags"):
+    flags = getattr(metadata, "st_flags", None)
+    if flags is not None and hasattr(os, "chflags"):
         import fcntl
 
         request = getattr(fcntl, "F_GETPATH", None)
@@ -71,12 +74,32 @@ def _copy_metadata(source: int, destination: int) -> None:
         pinned = os.fstat(destination)
         if (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino):
             raise OSError(errno.ESTALE, "physical copy path was replaced")
-        os.chflags(path, metadata.st_flags, follow_symlinks=False)
+        os.chflags(path, flags, follow_symlinks=False)
+
+
+def _open_copy_destination(directory: int, name: str, *, exclusive: bool) -> int:
+    """Create only a no-follow regular leaf under the verified copy directory."""
+    if not name or Path(name).name != name or name in (".", ".."):
+        raise OSError(errno.EINVAL, "invalid SQLite copy destination leaf")
+    output = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_EXCL if exclusive else os.O_TRUNC),
+        0o600,
+        dir_fd=directory,
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(output).st_mode):
+            raise OSError(errno.EINVAL, "SQLite copy destination requires a regular file")
+        return output
+    except BaseException:
+        os.close(output)
+        raise
 
 
 def _read(descriptor: int, request: dict[str, Any]) -> dict[str, Any]:
     with ExitStack() as cleanup:
         writer = None
+        output: int | None = None
         if "destination" in request:
             name = request["name"]
             if not name or Path(name).name != name or name in (".", ".."):
@@ -86,19 +109,8 @@ def _read(descriptor: int, request: dict[str, Any]) -> dict[str, Any]:
             metadata = os.fstat(directory)
             if [metadata.st_dev, metadata.st_ino] != request["directory_identity"]:
                 raise OSError(errno.ESTALE, "SQLite copy directory was replaced")
-            output = os.open(
-                name,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_NOFOLLOW
-                | os.O_NONBLOCK
-                | (os.O_EXCL if request["exclusive"] else os.O_TRUNC),
-                0o600,
-                dir_fd=directory,
-            )
+            output = _open_copy_destination(directory, name, exclusive=request["exclusive"])
             cleanup.callback(os.close, output)
-            if not stat.S_ISREG(os.fstat(output).st_mode):
-                raise OSError(errno.EINVAL, "SQLite copy destination requires a regular file")
             writer = os.fdopen(os.dup(output), "wb")
             cleanup.enter_context(writer)
         os.lseek(descriptor, 0, os.SEEK_SET)
@@ -112,6 +124,7 @@ def _read(descriptor: int, request: dict[str, Any]) -> dict[str, Any]:
             _send({"progress_bytes": size})
         if writer is not None:
             writer.flush()
+            assert output is not None
             _copy_metadata(descriptor, output)
     return {"sha256": digest.hexdigest(), "size_bytes": size}
 
@@ -123,6 +136,7 @@ def main() -> None:
         for line in sys.stdin:
             try:
                 request = json.loads(line)
+                result: dict[str, Any]
                 if request["operation"] == "stat":
                     result = {"stat": _stat_payload(descriptor)}
                 elif request["operation"] == "chmod":
