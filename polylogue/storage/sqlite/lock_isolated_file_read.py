@@ -96,6 +96,18 @@ def read_sqlite_file_in_lock_isolated_process(
             os.close(descriptor)
 
 
+def _open_copy_destination(directory: int, name: str, *, exclusive: bool) -> int:
+    """Admit only the named regular copy leaf in the caller's pinned directory."""
+    if not name or Path(name).name != name or name in (".", ".."):
+        raise OSError(errno.EINVAL, "invalid SQLite copy destination leaf")
+    return os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC) | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=directory,
+    )
+
+
 def _read_in_child(
     descriptor: int, destination_directory: int | None, destination_name: str | None, exclusive: bool
 ) -> None:
@@ -110,13 +122,8 @@ def _read_in_child(
     )
     with ExitStack() as cleanup:
         reader = cleanup.enter_context(source.open("rb"))
-        if destination is not None and destination_name is not None:
-            destination_fd = os.open(
-                destination_name,
-                os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC) | os.O_NOFOLLOW,
-                0o666,
-                dir_fd=destination_directory,
-            )
+        if destination is not None and destination_name is not None and destination_directory is not None:
+            destination_fd = _open_copy_destination(destination_directory, destination_name, exclusive=exclusive)
             writer = cleanup.enter_context(os.fdopen(destination_fd, "wb"))
         else:
             writer = None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import os
 import sqlite3
@@ -11,7 +12,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -19,6 +20,7 @@ from polylogue.core.compute_cancel import compute_cancel
 from polylogue.operations import archive_backup
 from polylogue.storage.index_generation import _checkpoint_truncate, _open_source_snapshot
 from polylogue.storage.sqlite import connection_profile, lock_isolated_file_read
+from polylogue.storage.sqlite.archive_tiers.schema_inventory import capture_schema_census
 from polylogue.storage.sqlite.audit_leaf import (
     AuditLeafError,
     VerifiedAuditLeaf,
@@ -120,7 +122,7 @@ def test_backup_physical_copy_preserves_its_transaction_locks(tmp_path: Path, mo
     path = tmp_path / "source.db"
     destination = tmp_path / "snapshot.db"
     _database(path)
-    original = archive_backup.read_sqlite_file_in_lock_isolated_process
+    original = lock_isolated_file_read.read_sqlite_file_in_lock_isolated_process
     seen = []
 
     def checked_copy(source: Path, *, copy_to: Path | None = None) -> lock_isolated_file_read.SQLiteFileRead:
@@ -158,17 +160,17 @@ def test_physical_reader_cancellation_reaps_the_child(tmp_path: Path, monkeypatc
     path = tmp_path / "source.db"
     _database(path)
     children: list[subprocess.Popen[str]] = []
-    original = lock_isolated_file_read.subprocess.Popen
+    original = subprocess.Popen
     cancelled = threading.Event()
     token = compute_cancel.set(cancelled)
 
     def start_then_cancel(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
-        child = original(*args, **kwargs)
+        child = cast(subprocess.Popen[str], original(*args, **kwargs))
         children.append(child)
         cancelled.set()
         return child
 
-    monkeypatch.setattr(lock_isolated_file_read.subprocess, "Popen", start_then_cancel)
+    monkeypatch.setattr(subprocess, "Popen", start_then_cancel)
     try:
         with pytest.raises(OSError) as error:
             lock_isolated_file_read.read_sqlite_file_in_lock_isolated_process(path)
@@ -215,21 +217,19 @@ def test_writer_lock_namespace_rejects_unowned_shapes(tmp_path: Path, shape: str
 def test_main_replacement_during_writer_lock_admission_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.storage.sqlite import audit_leaf
-
     path = tmp_path / "audit.db"
     replacement = tmp_path / "replacement.db"
     _database(path)
     _database(replacement)
-    original = audit_leaf.fcntl.flock
+    original = fcntl.flock
 
     def replace_after_lock(descriptor: int, operation: int) -> None:
         original(descriptor, operation)
-        if operation == audit_leaf.fcntl.LOCK_EX | audit_leaf.fcntl.LOCK_NB:
+        if operation == fcntl.LOCK_EX | fcntl.LOCK_NB:
             path.rename(tmp_path / "displaced.db")
             replacement.rename(path)
 
-    monkeypatch.setattr(audit_leaf.fcntl, "flock", replace_after_lock)
+    monkeypatch.setattr(fcntl, "flock", replace_after_lock)
     with pytest.raises(AuditLeafError, match="leaf changed during writer admission"):
         with VerifiedAuditLeaf(tmp_path, lock_writer=True):
             pass
@@ -287,3 +287,13 @@ def test_sqlite_descriptor_boundary_refuses_lock_releasing_file_handles(tmp_path
     with path.open("rb") as descriptor:
         with pytest.raises(ValueError, match="O_PATH identity descriptor"):
             connection_profile.open_readonly_connection(path, opened_main_fd=descriptor.fileno(), validate_schema=False)
+
+
+def test_schema_census_hash_preserves_an_existing_tier_readers_locks(tmp_path: Path) -> None:
+    path = tmp_path / "source.db"
+    _database(path)
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    with _live_reader(path):
+        census = capture_schema_census(tmp_path, observed_at_ns=0, count_rows=False)
+        _assert_protected(path)
+    assert next(tier for tier in census.tiers if tier.tier.value == "source").file_sha256 == expected

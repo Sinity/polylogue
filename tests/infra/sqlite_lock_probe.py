@@ -27,4 +27,6 @@ print(json.dumps(result))
 
 def sqlite_lock_state(path: Path) -> dict[str, str]:
     """A separate process must observe the kernel locks, not its own lock table."""
-    return json.loads(subprocess.check_output([sys.executable, "-c", _PROBE, str(path)], text=True))
+    result = json.loads(subprocess.check_output([sys.executable, "-c", _PROBE, str(path)], text=True))
+    assert isinstance(result, dict)
+    return {str(key): str(value) for key, value in result.items()}

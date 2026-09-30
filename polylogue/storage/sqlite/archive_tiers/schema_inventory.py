@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.lock_isolated_file_read import read_sqlite_file_in_lock_isolated_process
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 SchemaObjectType = Literal["table", "index", "trigger", "view", "column"]
@@ -131,11 +132,7 @@ def _sha256(value: object) -> str:
 
 
 def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return read_sqlite_file_in_lock_isolated_process(path).sha256
 
 
 def _quote(identifier: str) -> str:
