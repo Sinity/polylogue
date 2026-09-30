@@ -190,7 +190,17 @@ def classify_decode_failure(error: BaseException) -> DecodeFailure | None:
     # ``ijson.JSONError`` is the streamed decoders' refusal (a truncated or
     # malformed document read incrementally); it is the same verdict on the
     # bytes as ``json.JSONDecodeError``.
-    if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError, PartialJsonStreamError, ijson.JSONError)):
+    if isinstance(error, PartialJsonStreamError):
+        # The decoder wraps every mid-stream exception after it has yielded
+        # records, including backend and source I/O failures. The wrapper is
+        # terminal evidence only when its explicit cause says the bytes did
+        # not decode; an OSError or parser assertion must remain retryable.
+        return (
+            DecodeFailure.DOCUMENT
+            if isinstance(error.cause, (json.JSONDecodeError, UnicodeDecodeError, ijson.JSONError))
+            else None
+        )
+    if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError, ijson.JSONError)):
         return DecodeFailure.DOCUMENT
     return None
 

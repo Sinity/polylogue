@@ -15,11 +15,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast, get_args
 
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
+    RawFailureEvidenceKind,
     terminal_carrier_overwrite_predicate,
 )
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -1219,6 +1220,12 @@ def bind_source_raw_revision(
     caller-managed commit window (polylogue-amg1) -- the caller must call
     ``conn.commit()`` (or ``conn.rollback()`` on failure) itself.
     """
+    exact_proven_append = (
+        revision.kind is RawRevisionKind.APPEND
+        and revision.authority is RawRevisionAuthority.BYTE_PROVEN
+        and revision.append_start_offset is not None
+        and revision.append_end_offset is not None
+    )
     with conn if manage_transaction else nullcontext():
         cursor = conn.execute(
             """
@@ -1260,6 +1267,8 @@ def bind_source_raw_revision(
             if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
                 existing_values, revision
             ):
+                if exact_proven_append:
+                    retire_missing_source_coordinate_refusal(conn, raw_id)
                 return
             field_names = (
                 "logical_source_key",
@@ -1280,6 +1289,8 @@ def bind_source_raw_revision(
                 if stored != proposed
             )
             raise ValueError(f"raw revision is already authoritative and differs for {raw_id}: {differing}")
+        if exact_proven_append:
+            retire_missing_source_coordinate_refusal(conn, raw_id)
 
 
 def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> ArchiveRawSessionEnvelope:
@@ -1661,6 +1672,23 @@ def upsert_raw_artifact(
         _insert_artifact(conn, raw_id, artifact)
 
 
+def retire_missing_source_coordinate_refusal(conn: sqlite3.Connection, raw_id: str) -> None:
+    """Retire stale non-session evidence after durable append coordinates are proven.
+
+    The membership receipt was derived while byte coordinates were absent. It
+    cannot continue to certify that this raw has no identity after a later
+    exact append witness is retained.
+    """
+    conn.execute(
+        "DELETE FROM raw_artifacts WHERE raw_id = ? AND artifact_kind = ?",
+        (raw_id, RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value),
+    )
+    conn.execute(
+        "DELETE FROM raw_membership_census WHERE raw_id = ? AND status = 'non_session'",
+        (raw_id,),
+    )
+
+
 def _insert_hook_event(
     conn: sqlite3.Connection,
     hook_event: ArchiveHookEvent,
@@ -1806,6 +1834,7 @@ __all__ = [
     "read_archive_raw_session_envelope",
     "record_capture_mode_observation",
     "record_raw_container_coordinate",
+    "retire_missing_source_coordinate_refusal",
     "record_excised_blob_hash",
     "pending_raw_logical_source_key",
     "upsert_raw_artifact",

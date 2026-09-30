@@ -6,9 +6,9 @@ every window kind a raw one route can prove is a raw the other can restore,
 and a source that no longer holds the bytes is refused by both. Raw
 derivation restores an absent ZIP-member blob from its container through
 acquisition's ZIP admission (polylogue-0y17g). The same owner re-anchors a
-recorded path at the archive root in force (polylogue-u5hs1) and orders a
-window-less append's predecessor by receipt, not wall clock
-(polylogue-ojfkc).
+recorded path at the archive root in force (polylogue-u5hs1) and provides
+first-retention and latest-reference append hypotheses that consumers verify
+by exact hash (polylogue-ojfkc).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import relocated_source_path
 from polylogue.operations import archive_backup
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
-from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
@@ -104,7 +104,7 @@ def _insert_raw(
 ) -> None:
     """One raw row and its ``raw_payload`` receipt, as admission writes them.
 
-    The receipt's rowid is the observation order; rows are received in call order.
+    The raw-session rowid is immutable first-retention order; rows are received in call order.
     """
     blob_hash = hashlib.sha256(blob).digest()
     conn.execute(
@@ -332,7 +332,7 @@ def test_inaccessible_literal_source_is_not_replaced_by_same_tail_candidate(
         relocated_source_path(literal, root)
 
 
-def test_a_window_less_append_finds_its_predecessor_in_receipt_order(tmp_path: Path) -> None:
+def test_a_window_less_append_finds_its_predecessor_in_first_retention_order(tmp_path: Path) -> None:
     """The predecessor is the full observation received before the append, whatever the clock said.
 
     The predecessor's ``acquired_at_ms`` is later than the append's (the clock
@@ -341,7 +341,7 @@ def test_a_window_less_append_finds_its_predecessor_in_receipt_order(tmp_path: P
 
     Anti-vacuity: ordering by ``acquired_at_ms`` finds no earlier full
     observation, so both routes refuse with ``legacy_append_window_missing``
-    / ``no_source_window``; picking the later receipt replays the wrong window.
+    / ``no_source_window``; picking the later retained row replays the wrong window.
     """
     case = _CASES["legacy_append"]
     raw_id, blob_hash, source_path = _seed(tmp_path, case, predecessor_acquired_at_ms=50)
@@ -367,6 +367,384 @@ def test_a_window_less_append_finds_its_predecessor_in_receipt_order(tmp_path: P
         str(len(_EARLIER) + len(_RECORD)),
     )
     assert (restored, reason) == (True, None)
+
+
+def test_replacing_an_earlier_raw_payload_reference_does_not_reorder_append_history(
+    tmp_path: Path,
+) -> None:
+    """A mutable blob-ref receipt cannot move a full anchor past its append.
+
+    Re-observation replaces the content-addressed ``blob_refs`` row and moves
+    its rowid. The first retained ``raw_sessions`` row remains the chronology
+    evidence, and the append's exact hash proves the inferred window.
+    """
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "inbox" / "rollout.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(_EARLIER + _RECORD)
+    append_hash = hashlib.sha256(_RECORD).hexdigest()
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        _insert_raw(
+            conn,
+            "full-a",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=0,
+            blob=_EARLIER,
+            acquired_at_ms=1,
+            revision_kind="full",
+        )
+        _insert_raw(
+            conn,
+            "append-b",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=-1,
+            blob=_RECORD,
+            acquired_at_ms=2,
+            revision_kind="unknown",
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO blob_refs
+               (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+               SELECT blob_hash, raw_id, 'raw_payload', source_path, blob_size, 3
+               FROM raw_sessions WHERE raw_id = 'full-a'"""
+        )
+
+    proofs, unproven = _backup_proof(tmp_path, append_hash)
+    restored, reason = _raw_restoration(tmp_path, "append-b", append_hash)
+
+    assert [proof["kind"] for proof in proofs] == ["historical_append_segment_sha256"], unproven
+    assert (proofs[0]["append_start_offset"], proofs[0]["append_end_offset"]) == (
+        str(len(_EARLIER)),
+        str(len(_EARLIER + _RECORD)),
+    )
+    assert (restored, reason) == (True, None)
+
+
+def test_reobserved_append_after_a_new_full_anchor_offers_hash_proven_windows(
+    tmp_path: Path,
+) -> None:
+    """Both immutable and latest-reference histories are hypotheses, not authority.
+
+    The same window-less append B is retained before full D, then observed
+    again after D. Its replaceable blob reference cannot represent both
+    observations. The latest-receipt hypothesis finds C after D+B; exact
+    digest and size checks select that candidate while rejecting the
+    first-retention hypothesis at the end of D.
+    """
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "inbox" / "repeated-rollout.jsonl"
+    source.parent.mkdir()
+    full_d = _EARLIER + _RECORD + _LATER
+    append_c = b'{"type":"event_msg","payload":{"type":"new"}}\n'
+    source.write_bytes(full_d + _RECORD + append_c)
+    append_hash = hashlib.sha256(append_c).hexdigest()
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        _insert_raw(
+            conn,
+            "full-a",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=0,
+            blob=_EARLIER,
+            acquired_at_ms=1,
+            revision_kind="full",
+        )
+        _insert_raw(
+            conn,
+            "append-b",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=-1,
+            blob=_RECORD,
+            acquired_at_ms=2,
+            revision_kind="unknown",
+        )
+        _insert_raw(
+            conn,
+            "full-d",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=0,
+            blob=full_d,
+            acquired_at_ms=3,
+            revision_kind="full",
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO blob_refs
+               (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+               SELECT blob_hash, raw_id, 'raw_payload', source_path, blob_size, 4
+               FROM raw_sessions WHERE raw_id = 'append-b'"""
+        )
+        _insert_raw(
+            conn,
+            "append-c",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=-1,
+            blob=append_c,
+            acquired_at_ms=5,
+            revision_kind="unknown",
+        )
+
+    from polylogue.storage.source_blob_restoration import (
+        SourceByteWindow,
+        read_raw_source_evidence,
+        retained_blob_sources_many,
+    )
+
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        row = read_raw_source_evidence(conn, "append-c")
+        assert row is not None
+        (candidate_source,) = retained_blob_sources_many(conn, (row,), root=tmp_path).values()
+    candidate_windows = [candidate.window for candidate in candidate_source.candidates]
+    assert candidate_windows == [
+        SourceByteWindow(len(full_d), len(full_d) + len(append_c)),
+        SourceByteWindow(
+            len(full_d) + len(_RECORD),
+            len(full_d) + len(_RECORD) + len(append_c),
+        ),
+    ]
+
+    proofs, unproven = _backup_proof(tmp_path, append_hash)
+    restored, reason = _raw_restoration(tmp_path, "append-c", append_hash)
+
+    assert [proof["kind"] for proof in proofs] == ["historical_append_segment_sha256"], unproven
+    assert (proofs[0]["append_start_offset"], proofs[0]["append_end_offset"]) == (
+        str(len(full_d) + len(_RECORD)),
+        str(len(full_d) + len(_RECORD) + len(append_c)),
+    )
+    assert (restored, reason) == (True, None)
+
+
+def test_reobserved_anchors_do_not_authorize_an_unproven_legacy_window(tmp_path: Path) -> None:
+    """First/latest receipt orderings are hypotheses, never chronology authority."""
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "inbox" / "ambiguous-rollout.jsonl"
+    source.parent.mkdir()
+    full_d = b"full-D-prefix-longer-than-A\n"
+    append_c = b"new-tail-after-reused-append\n"
+    source.write_bytes(full_d + _RECORD + append_c)
+    append_hash = hashlib.sha256(append_c).hexdigest()
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        _insert_raw(
+            conn,
+            "full-a",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=0,
+            blob=_EARLIER,
+            acquired_at_ms=1,
+            revision_kind="full",
+        )
+        _insert_raw(
+            conn,
+            "append-b",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=-1,
+            blob=_RECORD,
+            acquired_at_ms=2,
+            revision_kind="unknown",
+        )
+        _insert_raw(
+            conn,
+            "full-d",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=0,
+            blob=full_d,
+            acquired_at_ms=3,
+            revision_kind="full",
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO blob_refs
+               (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+               SELECT blob_hash, raw_id, 'raw_payload', source_path, blob_size, 4
+               FROM raw_sessions WHERE raw_id = 'append-b'"""
+        )
+        _insert_raw(
+            conn,
+            "append-c",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=-1,
+            blob=append_c,
+            acquired_at_ms=5,
+            revision_kind="unknown",
+        )
+        # Re-observing both anchors after C moves their mutable receipts after
+        # C. Neither first-retention nor latest-reference order then proves C.
+        for raw_id, stamp in (("full-a", 6), ("full-d", 7)):
+            conn.execute(
+                """INSERT OR REPLACE INTO blob_refs
+                   (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+                   SELECT blob_hash, raw_id, 'raw_payload', source_path, blob_size, ?
+                   FROM raw_sessions WHERE raw_id = ?""",
+                (stamp, raw_id),
+            )
+
+    proofs, unproven = _backup_proof(tmp_path, append_hash)
+    restored, reason = _raw_restoration(tmp_path, "append-c", append_hash)
+
+    assert proofs == []
+    assert unproven[0]["kind"] == "legacy_append_coordinates_unproven"
+    assert unproven[0]["reason"] == "legacy_append_coordinates_unproven"
+    assert restored is False and reason == "legacy_append_coordinates_unproven"
+
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, "append-c")
+    assert replacement.missing_source_coordinate_refusal is not None
+    assert adapter.publish(frame, replacement)
+    assert adapter.inspect(raw_observation_frame(tmp_path), ("append-c",))["append-c"] == "valid"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        refusal = conn.execute(
+            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = 'append-c'"
+        ).fetchone()
+    assert refusal == ("terminal_missing_source_coordinates", "unknown")
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.missing_source_coordinates == 1
+    assert lifecycle.state == "degraded"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        from polylogue.operations.status_workload import raw_failure_status_from_connection
+
+        status = raw_failure_status_from_connection(conn)
+    assert status["raw_missing_source_coordinates"] == 1
+    assert status["raw_failure_lifecycle_state"] == "degraded"
+
+
+def test_coordinate_refusal_retirement_invalidates_only_stale_non_session_census(tmp_path: Path) -> None:
+    """Exact append coordinates invalidate both refusal and its derived census."""
+    from polylogue.storage.sqlite.archive_tiers.source_write import retire_missing_source_coordinate_refusal
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "inbox" / "append.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(_RECORD)
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        _insert_raw(
+            conn,
+            "append-refused",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=-1,
+            blob=_RECORD,
+            acquired_at_ms=1,
+            revision_kind="unknown",
+        )
+        conn.execute(
+            """INSERT INTO raw_artifacts
+               (artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                classification_reason, support_status, parse_as_session, schema_eligible,
+                first_observed_at_ms, last_observed_at_ms)
+               VALUES ('refusal', 'append-refused', 'codex-session', ?, -1,
+                       'terminal_missing_source_coordinates', 'reason', 'unknown', 0, 0, 1, 1)""",
+            (str(source),),
+        )
+        conn.execute(
+            """INSERT INTO raw_membership_census
+               (raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority)
+               VALUES ('append-refused', 'old-parser', 'non_session', 0, 1, NULL, NULL)"""
+        )
+        conn.commit()
+        retire_missing_source_coordinate_refusal(conn, "append-refused")
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = 'append-refused' "
+            "AND artifact_kind = 'terminal_missing_source_coordinates'"
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = 'append-refused'"
+        ).fetchone() == (0,)
+
+
+def test_cancel_after_staging_first_blob_discards_owned_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancellation after one staged blob cannot orphan its temporary file."""
+    import asyncio
+
+    bootstrap_archive_root(tmp_path)
+    source_a = tmp_path / "inbox" / "a.jsonl"
+    source_b = tmp_path / "inbox" / "b.jsonl"
+    source_a.parent.mkdir()
+    source_a.write_bytes(_RECORD)
+    source_b.write_bytes(_LATER)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_a = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=_RECORD, source_path=str(source_a), acquired_at_ms=1
+        )
+        raw_b = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=_LATER, source_path=str(source_b), acquired_at_ms=2
+        )
+        descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in (raw_a, raw_b)}
+    store = BlobStore(tmp_path / "blob")
+    for _raw_id, blob_hash, _path, _kind, _size in descriptors.values():
+        store.blob_path(blob_hash).unlink()
+
+    adapter = RawObservationDerivation(tmp_path)
+    original = adapter._stage_blob_from_recorded_source
+    calls = 0
+
+    def stage_then_cancel(*args: object, **kwargs: object) -> tuple[PreparedBlob | None, str | None]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original(*args, **kwargs)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(adapter, "_stage_blob_from_recorded_source", stage_then_cancel)
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        with pytest.raises(asyncio.CancelledError):
+            adapter._stage_absent_blob_restorations(archive, (raw_a, raw_b), descriptors)
+    assert not any(store.staging_root.iterdir())
+
+
+def test_inaccessible_windowless_source_stays_retryable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "inbox" / "unanchored.jsonl"
+    source.parent.mkdir()
+    payload = b'{"type":"event_msg"}\n'
+    source.write_bytes(payload)
+    payload_hash = hashlib.sha256(payload).hexdigest()
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        _insert_raw(
+            conn,
+            "unanchored-append",
+            origin="codex-session",
+            capture_mode="codex",
+            source_path=str(source),
+            source_index=-1,
+            blob=payload,
+            acquired_at_ms=1,
+            revision_kind="unknown",
+        )
+
+    original_open = Path.open
+
+    def denied_source_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == source:
+            raise PermissionError("synthetic source read denial")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_source_open)
+    with pytest.raises(PermissionError, match="synthetic source read denial"):
+        _raw_restoration(tmp_path, "unanchored-append", payload_hash)
+    proofs, unproven = _backup_proof(tmp_path, payload_hash)
+    assert proofs == []
+    assert unproven[0]["kind"] == "replay_error"
 
 
 def test_a_second_window_less_append_starts_where_the_first_ends(tmp_path: Path) -> None:
@@ -408,7 +786,7 @@ def test_a_second_window_less_append_starts_where_the_first_ends(tmp_path: Path)
     assert (restored, reason) == (True, None)
 
 
-def test_many_window_less_appends_share_one_receipt_order_scan(tmp_path: Path) -> None:
+def test_many_window_less_appends_share_one_first_retention_order_scan(tmp_path: Path) -> None:
     from polylogue.storage.source_blob_restoration import read_raw_source_evidence, retained_blob_sources_many
 
     bootstrap_archive_root(tmp_path)
@@ -452,7 +830,7 @@ def test_many_window_less_appends_share_one_receipt_order_scan(tmp_path: Path) -
         sources = retained_blob_sources_many(conn, rows, root=tmp_path)
 
         scans = [statement for statement in statements if "WITH raw_cohort AS MATERIALIZED" in statement]
-        assert len(scans) == 1
+        assert len(scans) == 2
         assert len(sources) == len(appends)
         offset = len(prefix)
         for index, blob in enumerate(appends):
@@ -463,7 +841,7 @@ def test_many_window_less_appends_share_one_receipt_order_scan(tmp_path: Path) -
             offset += len(blob)
 
 
-def test_distinct_legacy_paths_restrict_receipt_scans_to_their_source_cohort(tmp_path: Path) -> None:
+def test_distinct_legacy_paths_restrict_history_scans_to_their_source_cohort(tmp_path: Path) -> None:
     from polylogue.storage.source_blob_restoration import read_raw_source_evidence, retained_blob_sources_many
 
     bootstrap_archive_root(tmp_path)
@@ -520,12 +898,13 @@ def test_distinct_legacy_paths_restrict_receipt_scans_to_their_source_cohort(tmp
         sources = retained_blob_sources_many(conn, tuple(rows), root=tmp_path)
 
         scans = [statement for statement in statements if "WITH raw_cohort AS MATERIALIZED" in statement]
-        assert len(scans) == path_count
-        assert all("ref_id IN (SELECT raw_id FROM raw_cohort)" in statement for statement in scans)
+        assert len(scans) == path_count * 2
+        assert all("SELECT rowid AS first_retained_order" in statement for statement in scans)
         plan = conn.execute(f"EXPLAIN QUERY PLAN {scans[0]}").fetchall()
         plan_details = [str(row[-1]) for row in plan]
+        assert any("SEARCH raw_sessions USING INDEX idx_raw_sessions_source_path" in detail for detail in plan_details)
         assert any("SEARCH blob_refs USING INDEX idx_blob_refs_ref_id" in detail for detail in plan_details)
-        assert not any("SCAN blob_refs" in detail for detail in plan_details)
+        assert not any("SCAN raw_sessions" in detail or "SCAN blob_refs" in detail for detail in plan_details)
         assert len(sources) == path_count
         for index in range(path_count):
             (candidate,) = sources[f"distinct-append-{index}"].candidates

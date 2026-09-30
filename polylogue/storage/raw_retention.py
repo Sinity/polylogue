@@ -2084,11 +2084,12 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
     retain the source coordinate's latest receipt while ``raw_sessions``
     retains its historical acquisition evidence, so authority attaches to each
     coordinate's newest raw observation rather than requiring a duplicate
-    receipt on every historical raw. A failure-kind carrier remains authority
+    receipt on every historical raw. A parse-failure carrier remains authority
     only while that raw's current parse or validation state is failed; a later
-    successful reparse makes the retained carrier historical evidence. Every
-    ``(origin, source_index)`` member of a physical path must be terminal before
-    the cursor path is exempt.
+    successful reparse makes the retained carrier historical evidence. A
+    missing-coordinate carrier remains authority until an exact append witness
+    replaces its stale byte-membership evidence. Every ``(origin, source_index)``
+    member of a physical path must be terminal before the cursor path is exempt.
     """
 
     result: set[str] = set()
@@ -2161,7 +2162,12 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                       OR (
                           artifact.artifact_kind IN ({terminal_raw_failure_placeholders})
                           AND (
-                              evidence_raw.parse_error IS NOT NULL
+                              (
+                                  artifact.artifact_kind = 'terminal_missing_source_coordinates'
+                                  AND evidence_raw.parse_error IS NULL
+                                  AND evidence_raw.validation_status IS NOT 'failed'
+                              )
+                              OR evidence_raw.parse_error IS NOT NULL
                               OR (
                                   evidence_raw.validation_status = 'failed'
                                   AND (

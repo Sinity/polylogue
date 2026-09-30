@@ -227,6 +227,11 @@ def _raw_disposition(row: sqlite3.Row, *, source_available: bool) -> tuple[str, 
         return ("parse_failure", "raw_sessions.parse_error records a parser refusal")
     if validation_status == "failed":
         return ("validation_rejected", "raw_sessions.validation_status=failed records schema refusal")
+    if artifact_kind == "terminal_missing_source_coordinates":
+        return (
+            "missing_source_coordinates",
+            "retained session bytes lack proven legacy append coordinates; keep the source denominator open",
+        )
     if parse_as_session == 0 and artifact_kind and artifact_kind != "unknown":
         return ("non_session_artifact", f"raw_artifacts declares {artifact_kind}")
     if parsed_at_ms is None:

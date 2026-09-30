@@ -25,10 +25,14 @@ class RawFailureEvidenceKind(StrEnum):
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
+    TERMINAL_MISSING_SOURCE_COORDINATES = "terminal_missing_source_coordinates"
 
     @property
     def support_status(self) -> ArtifactSupportStatus:
-        if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
+        if self in {
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+            RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES,
+        }:
             return ArtifactSupportStatus.UNKNOWN
         if self in {
             RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
@@ -47,6 +51,8 @@ class RawFailureEvidenceKind(StrEnum):
     def lifecycle(self) -> str:
         if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
             return "resolution"
+        if self is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES:
+            return "terminal"
         return "deferred" if self.value in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS else "terminal"
 
 
@@ -155,10 +161,14 @@ def validated_raw_failure_evidence_kind(
         return None
     if evidence_kind.support_status.value != str(support_status):
         return None
-    if validation_failed and not has_trusted_raw_failure_provenance(
-        classification_reason,
-        artifact_kind=evidence_kind,
-        outcome_code=outcome_code,
+    if (
+        validation_failed
+        and evidence_kind is not RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+        and not has_trusted_raw_failure_provenance(
+            classification_reason,
+            artifact_kind=evidence_kind,
+            outcome_code=outcome_code,
+        )
     ):
         return None
     return evidence_kind
@@ -197,6 +207,7 @@ RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value,
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+        RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value,
     }
 )
 RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(

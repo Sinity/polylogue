@@ -54,10 +54,12 @@ from polylogue.storage.blob_integrity import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.source_blob_restoration import (
+    LEGACY_APPEND_COORDINATES_UNPROVEN,
     RetainedBlobSource,
     RetainedBlobSourceKind,
     RetainedBlobSources,
     is_legacy_append_without_window,
+    legacy_append_coordinates_unproven,
     retained_blob_sources_many,
     source_window_holds_blob,
     stage_exact_blob,
@@ -104,6 +106,7 @@ _RECOVERABILITY_FAILURE_KINDS = frozenset(
         "no_replay_candidate",
         "source_missing",
         "legacy_append_window_missing",
+        LEGACY_APPEND_COORDINATES_UNPROVEN,
         "acquisition_coordinate",
         "replay_error",
         "container_member_rejected",
@@ -726,9 +729,18 @@ def _prove_missing_hashes(
             )
             resolved, candidates = sources.source_path, sources.candidates
             if not candidates:
-                errors.append(
-                    "legacy_append_window_missing" if is_legacy_append_without_window(row) else "no_replay_candidate"
-                )
+                try:
+                    coordinate_refusal = legacy_append_coordinates_unproven(row, sources, ())
+                except OSError as exc:
+                    errors.append(f"error:{exc}")
+                else:
+                    errors.append(
+                        LEGACY_APPEND_COORDINATES_UNPROVEN
+                        if coordinate_refusal
+                        else "legacy_append_window_missing"
+                        if is_legacy_append_without_window(row)
+                        else "no_replay_candidate"
+                    )
                 continue
             proven: RetainedBlobSource | None = None
             for candidate in candidates:
@@ -771,6 +783,14 @@ def _prove_missing_hashes(
                     proven = candidate
                     break
                 errors.append(error or "hash_mismatch")
+            if proven is None:
+                try:
+                    coordinate_refusal = legacy_append_coordinates_unproven(row, sources, errors)
+                except OSError as exc:
+                    errors.append(f"error:{exc}")
+                else:
+                    if coordinate_refusal:
+                        errors = [LEGACY_APPEND_COORDINATES_UNPROVEN]
             if proven is not None:
                 candidate = proven
                 # An append proof names the window whose bytes were hashed --
@@ -898,6 +918,8 @@ def _recoverability_failure_kind(error: str) -> str:
         return "source_missing"
     if error == "legacy_append_window_missing":
         return "legacy_append_window_missing"
+    if error == LEGACY_APPEND_COORDINATES_UNPROVEN:
+        return LEGACY_APPEND_COORDINATES_UNPROVEN
     if error == "short_read":
         return "replay_error"
     if error == "member_yields_no_payload":
@@ -922,13 +944,14 @@ def _recoverability_failure_kind(error: str) -> str:
 def _recoverability_failure_kind_for_attempts(kinds: set[str]) -> str:
     for kind in (
         "replay_error",
-        "legacy_append_window_missing",
-        "acquisition_coordinate",
         "source_missing",
         "no_replay_candidate",
+        "acquisition_coordinate",
         "container_member_rejected",
         "inexact_payload",
         "hash_mismatch",
+        "legacy_append_window_missing",
+        LEGACY_APPEND_COORDINATES_UNPROVEN,
     ):
         if kind in kinds:
             return kind

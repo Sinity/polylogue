@@ -1060,8 +1060,8 @@ def test_backup_types_legacy_codex_append_without_window(
     )
 
     assert proofs == []
-    assert unproven[0]["kind"] == "legacy_append_window_missing"
-    assert unproven[0]["reason"] == "legacy_append_window_missing"
+    assert unproven[0]["kind"] == "legacy_append_coordinates_unproven"
+    assert unproven[0]["reason"] == "legacy_append_coordinates_unproven"
 
 
 @pytest.mark.parametrize("origin", ["codex-session", "claude-code-session"])

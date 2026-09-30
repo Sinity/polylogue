@@ -186,6 +186,9 @@ def test_mid_stream_corruption_raises_partial_decode_error() -> None:
     err = excinfo.value
     assert err.recovered >= 2
     assert "sessions.json" in str(err)
+    from polylogue.sources.prepared_jsonl import DecodeFailure, classify_decode_failure
+
+    assert classify_decode_failure(err) is DecodeFailure.DOCUMENT
 
 
 def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> None:
@@ -232,6 +235,17 @@ def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> N
         )
 
     assert excinfo.value.recovered == 2
+    from polylogue.core.enums import Provider
+    from polylogue.sources.prepared_jsonl import classify_decode_failure, terminal_decode_evidence
+
+    assert classify_decode_failure(excinfo.value) is None
+    assert terminal_decode_evidence(excinfo.value, provider=Provider.CHATGPT) is None
+    assert terminal_decode_evidence(excinfo.value, provider=Provider.UNKNOWN) is None
+    from polylogue.sources.revision_backfill import RetainedParseFailure
+
+    carried = RetainedParseFailure.of(excinfo.value)
+    assert carried.decode_failure is None
+    assert carried.as_exception().__class__ is RuntimeError
 
 
 def test_clean_array_does_not_raise() -> None:

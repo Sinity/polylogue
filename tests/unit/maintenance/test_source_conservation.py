@@ -239,6 +239,79 @@ def test_coherent_archive_types_every_item_and_is_green(tmp_path: Path) -> None:
     assert all(term["rule"] for term in _terms(check).values())
 
 
+def test_missing_append_coordinates_remain_a_degraded_session_term(tmp_path: Path) -> None:
+    """A retained session with unknown append placement is not a non-session artifact."""
+    initialize_active_archive_root(tmp_path)
+    source = _write_source(tmp_path, "legacy-append.jsonl", b'{"type":"event_msg"}\n')
+    materialized_source = _write_source(tmp_path, "materialized-append.jsonl", b'{"type":"event_msg"}\n')
+    payload = source.read_bytes()
+    store = BlobStore(tmp_path / "blob")
+    blob_hash = store.write_from_bytes(payload)[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="legacy-append",
+            origin="codex-session",
+            native_id=None,
+            source_path=source,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        source_conn.execute(
+            "UPDATE raw_sessions SET source_index = -1, revision_kind = 'unknown' WHERE raw_id = 'legacy-append'"
+        )
+        _insert_artifact(
+            source_conn,
+            raw_id="legacy-append",
+            origin="codex-session",
+            source_path=source,
+            kind="terminal_missing_source_coordinates",
+            support="unknown",
+            parse_as_session=False,
+        )
+        materialized_hash = store.write_from_bytes(materialized_source.read_bytes())[0]
+        _insert_raw(
+            source_conn,
+            raw_id="materialized-append",
+            origin="codex-session",
+            native_id="materialized",
+            source_path=materialized_source,
+            blob_hash=materialized_hash,
+            parsed=True,
+        )
+        source_conn.execute(
+            "UPDATE raw_sessions SET source_index = -1, revision_kind = 'unknown' WHERE raw_id = 'materialized-append'"
+        )
+        _insert_artifact(
+            source_conn,
+            raw_id="materialized-append",
+            origin="codex-session",
+            source_path=materialized_source,
+            kind="terminal_missing_source_coordinates",
+            support="unknown",
+            parse_as_session=False,
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _insert_session(index_conn, origin="codex-session", native_id="materialized", raw_id="materialized-append")
+        index_conn.commit()
+    finally:
+        index_conn.close()
+
+    check = _run(tmp_path)
+    assert _count(check, "missing_source_coordinates") == 1
+    assert _count(check, "non_session_artifact") == 0
+    assert _count(check, "unexplained") == 0
+    assert check.evidence["forward_total"] == 2
+    assert check.evidence["blocking_count"] == 0
+    assert _count(check, "phantom_declared_non_session_lineage") == 0
+    assert check.status is OutcomeStatus.WARNING
+
+
 def test_configured_frontier_binds_exact_totals_and_digest(tmp_path: Path) -> None:
     _seed(tmp_path)
     frontier = build_source_frontier(
