@@ -18,6 +18,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from functools import partial
 from multiprocessing import get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
@@ -1110,7 +1111,7 @@ class RawObservationDerivation:
                     blob_hash=blob_hash,
                     row=evidence_rows.get(raw_id),
                     sources=sources,
-                    on_staged=lambda prepared, raw_id=raw_id: staged_owner.add(raw_id, prepared),
+                    on_staged=partial(staged_owner.add, raw_id),
                 )
                 if prepared is None:
                     row = evidence_rows.get(raw_id)
@@ -1224,7 +1225,7 @@ class RawObservationDerivation:
             if prepared is not None:
                 return prepared, None
             failures.append(reason or "hash_mismatch")
-        if row is not None and legacy_append_coordinates_unproven(row, sources, failures):
+        if legacy_append_coordinates_unproven(row, sources, failures):
             return None, LEGACY_APPEND_COORDINATES_UNPROVEN
         return None, reason
 
@@ -1329,18 +1330,18 @@ class RawObservationDerivation:
                     if not preflight_retry and len(refusal_rows) == len(
                         replacement.missing_source_coordinate_refusal.raw_ids
                     ):
-                        for raw_id, row in refusal_rows:
+                        for refused_raw_id, refused_evidence in refusal_rows:
                             kind = RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
-                            acquired_at_ms = int(row["acquired_at_ms"] or 0)
-                            origin = Origin.from_string(str(row["origin"]))
-                            source_path = str(row["source_path"] or raw_id)
-                            source_index = int(row["source_index"] or 0)
+                            acquired_at_ms = int(cast(int | str | None, refused_evidence["acquired_at_ms"]) or 0)
+                            origin = Origin.from_string(str(refused_evidence["origin"]))
+                            source_path = str(refused_evidence["source_path"] or refused_raw_id)
+                            source_index = int(cast(int | str | None, refused_evidence["source_index"]) or 0)
                             upsert_raw_artifact(
                                 conn,
-                                raw_id,
+                                refused_raw_id,
                                 ArchiveSourceArtifact(
                                     artifact_id="raw-failure:"
-                                    + hashlib.sha256(f"{raw_id}:{kind.value}".encode()).hexdigest(),
+                                    + hashlib.sha256(f"{refused_raw_id}:{kind.value}".encode()).hexdigest(),
                                     origin=origin,
                                     source_path=source_path,
                                     source_index=source_index,

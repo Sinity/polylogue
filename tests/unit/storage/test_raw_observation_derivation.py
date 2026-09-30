@@ -462,10 +462,10 @@ def test_present_retained_blob_does_not_resolve_an_inaccessible_source_path(
 
     original_stat = Path.stat
 
-    def denied_source_stat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+    def denied_source_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
         if path == source:
             raise PermissionError("synthetic inaccessible source")
-        return original_stat(path, *args, **kwargs)
+        return original_stat(path, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", denied_source_stat)
     replacement = RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)

@@ -740,10 +740,17 @@ def test_inaccessible_windowless_source_stays_retryable(tmp_path: Path, monkeypa
 
     original_open = Path.open
 
-    def denied_source_open(path: Path, *args: object, **kwargs: object) -> object:
+    def denied_source_open(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> object:
         if path == source:
             raise PermissionError("synthetic source read denial")
-        return original_open(path, *args, **kwargs)
+        return original_open(path, mode, buffering, encoding, errors, newline)
 
     monkeypatch.setattr(Path, "open", denied_source_open)
     with pytest.raises(PermissionError, match="synthetic source read denial"):
