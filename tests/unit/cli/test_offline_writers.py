@@ -30,6 +30,7 @@ Two directions per row, and the second is what keeps the first honest:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sys
@@ -190,11 +191,20 @@ def _prepare_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, needs: str) -
 
 
 def _tier_digest(root: Path) -> str:
-    """Digest every tier file and journal under ``root``."""
+    """Digest tier bytes and nonempty journals, excluding reader bookkeeping.
+
+    SQLite WAL readers may create shared-memory files and empty WAL files;
+    neither is an archive write. A nonempty WAL remains mutation evidence.
+    """
     digest = hashlib.sha256()
     for path in sorted(root.glob("*.db*")):
+        if path.name.endswith("-shm"):
+            continue
+        payload = path.read_bytes()
+        if path.name.endswith("-wal") and not payload:
+            continue
         digest.update(path.name.encode())
-        digest.update(path.read_bytes())
+        digest.update(payload)
     return digest.hexdigest()
 
 
@@ -280,12 +290,8 @@ def test_row_still_opens_a_writable_tier(
     Anti-vacuity for this test itself: point a row at ``find`` and it goes
     red, because no writable tier open reaches the interception seam.
 
-    ``find`` and not ``ops status``, which looks like the obvious read-only
-    control and is not one: ``status`` writes a route-observation receipt to
-    the disposable ``ops.db`` through
-    ``polylogue.operations.route_observation._emit_best_effort``, so it opens
-    a writable tier on every run and would make this test pass while proving
-    nothing.
+    ``test_status_and_agent_views_open_no_writable_tier`` below is the read
+    side of the same seam.
     """
     del machine_tail
     from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
@@ -345,3 +351,37 @@ def test_machine_format_refusal_is_typed(
     assert details["archive_root"] == str(root), payload
     assert f"PID {resident_pid}" in str(details["resident_writer"]), payload
     assert "stop it" in str(details["remedy"]), payload
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [("status",), ("ops", "status"), ("agents", "status"), ("agents", "work-item")],
+    ids=["status", "ops status", "agents status", "agents work-item"],
+)
+def test_status_and_agent_views_open_no_writable_tier(
+    argv: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The read-only views write no tier from the CLI process (polylogue-k5iaf).
+
+    They used to time themselves through ``observe_route`` and write the
+    receipt into ``ops.db`` with a plain ``sqlite3.connect``: a second writer
+    beside the daemon when none was resident, and a refused open (a dropped
+    receipt) when one was. The CLI process is not the ops tier's owner, so it
+    records no route observation at all.
+
+    Anti-vacuity: wrap any of these commands in ``observe_route`` again and
+    its row records ``ops.db`` here.
+    """
+    from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
+
+    root = _prepare_root(monkeypatch, tmp_path, _NEEDS_TIERS)
+    before = _tier_digest(root)
+    opened: list[Path] = []
+    monkeypatch.setattr(sys, "argv", ["polylogue", "--plain", *argv])
+    with refuse_writable_tier_opens(opened.append), contextlib.suppress(SystemExit):
+        run_machine_entry(cli, ["--plain", *argv])
+
+    assert opened == []
+    assert _tier_digest(root) == before

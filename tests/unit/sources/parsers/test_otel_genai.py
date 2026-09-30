@@ -10,6 +10,7 @@ from typing import Any, cast
 from polylogue.core.enums import Origin, Provider, ToolOutcome, ToolResultUnknownReason
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider, parse_payload, require_positive_conversational_evidence
+from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL
 from polylogue.sources.parsers import otel_genai
 
 FIXTURE = Path(__file__).parents[3] / "fixtures" / "otel-genai" / "trace.json"
@@ -306,7 +307,7 @@ def _document(*resources: tuple[list[dict[str, object]], list[dict[str, object]]
         "resourceSpans": [
             {
                 "resource": {"attributes": resource_attributes},
-                "scopeSpans": [{"schemaUrl": otel_genai.SEMCONV_SCHEMA_URL, "spans": spans}],
+                "scopeSpans": [{"schemaUrl": SEMCONV_SCHEMA_URL, "spans": spans}],
             }
             for resource_attributes, spans in resources
         ]

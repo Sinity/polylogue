@@ -1,11 +1,14 @@
 """Bounded route-latency observation (polylogue-jtwu / polylogue-20d.17 AC #4).
 
 Covers the routes ``mcp_call_log`` (whole MCP tool calls, durably delivered
-via an outbox) does not: CLI command invocations and MCP sub-route detail a
-caller wants to time without routing through it. Best-effort telemetry, not
-audit evidence -- a caller that cannot reach ``ops.db`` (no archive
-configured, disposable tier missing, locked) drops the observation rather
-than blocking or retrying the operation being observed.
+via an outbox) does not. Best-effort telemetry, not audit evidence -- a
+caller that cannot reach ``ops.db`` (no archive configured, disposable tier
+missing, locked) drops the observation rather than blocking or retrying the
+operation being observed.
+
+Only the ops tier's owner may persist a receipt. The CLI and MCP processes
+are not that owner and record none (polylogue-k5iaf): they used to write
+``ops.db`` here beside the daemon.
 
 :class:`RouteObservationSpec` and :class:`RouteObservationReceipt` are the one
 declared contract every latency product derives from
@@ -18,12 +21,13 @@ Dropped observations are counted, not merely logged (polylogue-jtwu.2). A
 percentile over a sample that silently lost an unknown number of members is
 not a measurement of the route, so :func:`compute_latency_percentiles` cannot
 be called without stating the drop disposition and returns a
-:class:`RouteLatencyReport` that carries it beside the p50/p95. Every drop
-is recorded in the ops tier's ``route_observation_drops`` -- at once when the
-observation's own write can carry it, otherwise by the process's next
-successful write to that tier or its exit flush -- so a reader in any process
-counts them. A drop that no write can record before the process exits is
-reported as a typed ``route_observation.drops_unflushed`` event instead.
+:class:`RouteLatencyReport` that carries it beside the p50/p95. The writer's
+drops are recorded in the ops tier's ``route_observation_drops`` -- at once
+when its observation write can carry them, otherwise by its next successful
+write or exit flush. A writer drop that remains unrecorded at exit emits a
+typed ``route_observation.drops_unflushed`` event. Client routes emit
+``route_observation.unobserved`` with reason ``client_not_owner`` and keep
+explicitly incomplete process-local counters; they never persist to a tier.
 """
 
 from __future__ import annotations
@@ -109,6 +113,9 @@ WINDOW_EXCEEDS_RETENTION = "window_exceeds_retention"
 class RouteObservationDropReason(str, Enum):
     """Why an observation never reached the sample a percentile is computed over."""
 
+    CLIENT_NOT_OWNER = "client_not_owner"
+    """A CLI or MCP process does not own the ops-tier route sample."""
+
     NO_ARCHIVE_ROOT = "no_archive_root"
     """The observed caller had no archive configured at all."""
 
@@ -138,9 +145,8 @@ class RouteObservationDrops:
 
     ``accounting_complete`` is the honesty bit: zero drops and unknown drops
     are different answers and a percentile must not present the second as the
-    first. The ops-tier reader counts ``route_observation_drops``, where every
-    process records its drops, so its answer is complete; a process-local
-    snapshot of unrecorded drops is not.
+    first. The ops-tier reader counts the writer's ``route_observation_drops``;
+    a process-local snapshot of unrecorded or client-only drops is incomplete.
     """
 
     accounting_complete: bool
@@ -360,6 +366,21 @@ def flush_route_observation_drops() -> int:
             count=remaining,
         )
     return remaining
+
+
+def record_unobserved_client_route(*, surface: str, route: str) -> RouteObservationDropReason:
+    """Declare a client route unobserved without opening an archive tier.
+
+    Client-side counters are explicitly incomplete and carry no ops path, so
+    their exit flush cannot create a second writer. The typed event explains
+    why the route has no latency receipt in this process.
+    """
+    from polylogue.logging import INFO, emit
+
+    reason = RouteObservationDropReason.CLIENT_NOT_OWNER
+    _DROP_LEDGER.record(reason, surface=surface, route=route, ops_db=None, observed_at_ms=int(time.time() * 1000))
+    emit("route_observation.unobserved", level=INFO, outcome="skipped", reason=reason.value, route=route)
+    return reason
 
 
 def route_observation_drops() -> RouteObservationDrops:
@@ -1091,9 +1112,9 @@ def read_latency_report(
     and its row cap for observations, ``MCP_CALL_LOG_RETENTION_MS`` for MCP
     calls), not by this reader.
 
-    Drops come from ``route_observation_drops``, where every emitting process
-    records what it lost (polylogue-jtwu.2), so a reader in another process
-    reports them beside the percentiles and an answer with nothing lost is
+    Writer drops come from ``route_observation_drops`` (polylogue-jtwu.2), so
+    a reader in another process reports them beside the writer's percentiles
+    and an answer with nothing lost is
     ``ok``. A window that starts before the retention horizon is ``degraded``:
     that part of it was retired, observations and drop records alike.
     """

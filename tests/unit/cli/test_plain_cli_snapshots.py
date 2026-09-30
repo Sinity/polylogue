@@ -150,10 +150,17 @@ def postmortem_seeded_env(
         yield postmortem_archive.root / "index.db"
 
 
-def _invoke(runner: CliRunner, args: list[str]) -> str:
+def _invoke(runner: CliRunner, args: list[str], *, exit_code: int = 0) -> str:
     result = runner.invoke(cli, args, catch_exceptions=False)
-    assert result.exit_code == 0, f"args={args!r} output={result.output!r}"
+    assert result.exit_code == exit_code, f"args={args!r} output={result.output!r}"
     return _redact(result.output)
+
+
+def _degraded_exit() -> int:
+    """The postmortem's declared exit: ``longest_tool_gap`` is unavailable in v0."""
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
+    return OUTCOME_EXIT_CODES["degraded"]
 
 
 def test_plain_read_all_snapshot(
@@ -265,7 +272,7 @@ def test_plain_analyze_postmortem_snapshot(
     snapshot: object,
 ) -> None:
     """``polylogue --plain analyze --postmortem`` pins the distilled bundle text (#2380)."""
-    output = _invoke(runner, ["--plain", "analyze", "--postmortem"])
+    output = _invoke(runner, ["--plain", "analyze", "--postmortem"], exit_code=_degraded_exit())
     assert output == snapshot
 
 
@@ -275,7 +282,7 @@ def test_json_analyze_postmortem_snapshot(
     snapshot: object,
 ) -> None:
     """``polylogue --plain analyze --postmortem --format json`` pins the JSON envelope (#2380)."""
-    output = _invoke_json(runner, ["analyze", "--postmortem", "--format", "json"])
+    output = _invoke(runner, ["--plain", "analyze", "--postmortem", "--format", "json"], exit_code=_degraded_exit())
     assert output == snapshot
 
 
@@ -285,7 +292,7 @@ def test_markdown_analyze_postmortem_snapshot(
     snapshot: object,
 ) -> None:
     """``polylogue --plain analyze --postmortem --format markdown`` pins the Markdown render (#2380)."""
-    output = _invoke(runner, ["--plain", "analyze", "--postmortem", "--format", "markdown"])
+    output = _invoke(runner, ["--plain", "analyze", "--postmortem", "--format", "markdown"], exit_code=_degraded_exit())
     assert output == snapshot
 
 
@@ -301,7 +308,7 @@ def test_analyze_postmortem_json_has_stable_headline_keys(
         ["--plain", "analyze", "--postmortem", "--format", "json"],
         catch_exceptions=False,
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == _degraded_exit(), result.output
     payload = _json.loads(result.output)
     bundle = payload["result"]["postmortem"]
     expected_keys = {
@@ -328,6 +335,37 @@ def test_analyze_postmortem_json_has_stable_headline_keys(
     assert bundle["longest_tool_gap"]["status"] == "unavailable"
     assert bundle["wasted_loop"]["status"] in {"detected", "clean", "partial", "unavailable"}
     assert bundle["failure_mode"]["status"] in {"detected", "clean", "partial", "unavailable"}
+
+
+def test_analyze_postmortem_decides_one_terminal_outcome(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+) -> None:
+    """Truncated is ``degraded`` (exit 1) and an empty scope is ``empty`` (exit 2) (polylogue-t4115).
+
+    Anti-vacuity: drop ``postmortem_outcome`` from the route and both
+    invocations exit 0 with no ``outcome`` in the envelope, which is how a cut
+    or empty scope read as a complete postmortem.
+    """
+    import json as _json
+
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
+    truncated = runner.invoke(
+        cli, ["--plain", "analyze", "postmortem", "--limit", "1", "--format", "json"], catch_exceptions=False
+    )
+    assert truncated.exit_code == OUTCOME_EXIT_CODES["degraded"], truncated.output
+    outcome = _json.loads(truncated.output)["result"]["outcome"]
+    assert outcome["state"] == "degraded"
+    assert "match_cap_exceeded" in outcome["detail"]["gaps"]
+
+    empty = runner.invoke(
+        cli,
+        ["--plain", "find", "repo:does-not-exist", "then", "analyze", "postmortem", "--format", "json"],
+        catch_exceptions=False,
+    )
+    assert empty.exit_code == OUTCOME_EXIT_CODES["empty"], empty.output
+    assert _json.loads(empty.output)["result"]["outcome"]["state"] == "empty"
 
 
 def test_plain_analyze_portfolio_snapshot(

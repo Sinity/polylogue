@@ -71,28 +71,22 @@ def test_fresh_ops_schema_declares_daemon_event_lifecycle_indexes(tmp_path: Path
     with sqlite3.connect(ops_db) as conn:
         indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
 
-    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle"} <= indexes
+    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle", "idx_daemon_events_idempotency"} <= indexes
 
 
-def test_existing_ops_db_reapply_creates_daemon_event_indexes(tmp_path: Path) -> None:
+def test_fresh_ops_daemon_events_enforce_idempotency_identity(tmp_path: Path) -> None:
+    """Removing the canonical partial unique index admits duplicate event identities."""
     ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
     with sqlite3.connect(ops_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE daemon_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts_ms INTEGER NOT NULL,
-                kind TEXT NOT NULL,
-                operation_id TEXT,
-                payload_json TEXT NOT NULL DEFAULT '{}'
-            ) STRICT;
-            PRAGMA user_version = 1;
-            """
-        )
-        initialize_archive_tier(conn, ArchiveTier.OPS)
-        indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
-
-    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle"} <= indexes
+        sql = "INSERT INTO daemon_events (ts_ms, kind, idempotency_key, payload_json) VALUES (?, ?, ?, '{}')"
+        conn.execute(sql, (1, "batch", "one"))
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(sql, (2, "batch", "one"))
+        conn.execute(sql, (3, "other", "one"))
+        conn.execute(sql, (4, "batch", None))
+        conn.execute(sql, (5, "batch", None))
+        assert conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone()[0] == 4
 
 
 def test_ops_upsert_ingest_cursor_updates_single_row(tmp_path: Path) -> None:
@@ -844,7 +838,7 @@ def test_reopening_a_current_ops_db_writes_nothing(tmp_path: Path) -> None:
     """A converged ops database is opened read-only by every later initializer.
 
     Anti-vacuity: restoring the unconditional DELETE/INSERT in
-    ``_record_ops_schema_state`` commits a transaction on reopen and moves
+    Replaying bootstrap writes on reopen moves
     ``PRAGMA data_version`` as seen from the observer connection.
     """
     ops_db = tmp_path / "ops.db"
@@ -853,7 +847,7 @@ def test_reopening_a_current_ops_db_writes_nothing(tmp_path: Path) -> None:
     observer = sqlite3.connect(ops_db)
     try:
         before = observer.execute("PRAGMA data_version").fetchone()[0]
-        observer.execute("SELECT count(*) FROM polylogue_ops_schema_state").fetchone()
+        observer.execute("SELECT count(*) FROM schema_identity").fetchone()
         initialize_archive_database(ops_db, ArchiveTier.OPS)
         after = observer.execute("PRAGMA data_version").fetchone()[0]
     finally:

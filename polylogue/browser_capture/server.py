@@ -92,12 +92,8 @@ from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
 
-# polylogue.daemon.events is imported lazily inside the capture-health route
-# handlers below, not at module scope: polylogue.daemon's package __init__
-# imports polylogue.daemon.cli, which imports this module for
-# BrowserCaptureHTTPServer/make_server -- a module-level import here would
-# be a circular import at package-init time.
-CAPTURE_HEALTH_EVENT_KIND = "browser_capture_health"
+# Import the daemon event ledger inside capture-health route handlers so HTTP
+# server bootstrap does not load its storage dependencies before a health request.
 
 logger = get_logger(__name__)
 
@@ -1227,21 +1223,29 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_health_event")
             return
-        from polylogue.daemon.events import emit_daemon_event, get_latest_event_id
+        from polylogue.core.errors import SchemaSkew
+        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, CaptureHistoryStorageError, emit_daemon_event
 
-        emit_daemon_event(
-            CAPTURE_HEALTH_EVENT_KIND,
-            operation_id=request.extension_instance_id,
-            payload={
-                "event": request.event,
-                "provider": request.provider,
-                "provider_session_id": request.provider_session_id,
-                "visible_count": request.visible_count,
-                "captured_count": request.captured_count,
-                "reason": request.reason,
-                "detail": request.detail,
-            },
-        )
+        try:
+            event_id = emit_daemon_event(
+                CAPTURE_HEALTH_EVENT_KIND,
+                operation_id=request.extension_instance_id,
+                payload={
+                    "event": request.event,
+                    "provider": request.provider,
+                    "provider_session_id": request.provider_session_id,
+                    "visible_count": request.visible_count,
+                    "captured_count": request.captured_count,
+                    "reason": request.reason,
+                    "detail": request.detail,
+                },
+            )
+        except SchemaSkew:
+            self._safe_error(HTTPStatus.CONFLICT, "schema_skew")
+            return
+        except CaptureHistoryStorageError as exc:
+            self._safe_error(HTTPStatus(exc.http_status_code), exc.code)
+            return
         logger.debug(
             "browser_capture.capture_health_reported",
             request_id=self._request_id(),
@@ -1251,19 +1255,37 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
-            BrowserCaptureHealthEventAcceptedPayload(event_id=get_latest_event_id()).model_dump(mode="json"),
+            BrowserCaptureHealthEventAcceptedPayload(event_id=event_id).model_dump(mode="json"),
         )
 
     def _capture_health_list(self) -> None:
-        params = parse_qs(urlparse(self.path).query)
-        try:
-            limit = max(1, min(500, int(params.get("limit", ["100"])[0])))
-        except ValueError:
-            limit = 100
-        from polylogue.daemon.events import query_daemon_events
+        from polylogue.core.errors import SchemaSkew
+        from polylogue.daemon.events import CaptureHistoryCursorError, CaptureHistoryStorageError, capture_health_page
 
-        events = query_daemon_events(kind=CAPTURE_HEALTH_EVENT_KIND, limit=limit)
-        self._send_json(HTTPStatus.OK, {"ok": True, "events": events})
+        params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+        if set(params) - {"page_size", "cursor"} or any(len(values) != 1 for values in params.values()):
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_history_parameters")
+            return
+        try:
+            page_size = int(params.get("page_size", ["100"])[0])
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_history_page_size")
+            return
+        try:
+            page = capture_health_page(page_size=page_size, cursor=params.get("cursor", [None])[0])
+        except CaptureHistoryCursorError as exc:
+            reason = str(exc)
+            self._safe_error(
+                HTTPStatus.CONFLICT if reason == "history_cursor_reset" else HTTPStatus.BAD_REQUEST, reason
+            )
+            return
+        except SchemaSkew:
+            self._safe_error(HTTPStatus.CONFLICT, "schema_skew")
+            return
+        except CaptureHistoryStorageError as exc:
+            self._safe_error(HTTPStatus(exc.http_status_code), exc.code)
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True, **page})
 
 
 def make_server(

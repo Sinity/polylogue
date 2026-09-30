@@ -979,7 +979,7 @@ def _assert_schema_supported(
         # caller fails on the missing table it asked for, which is a truthful
         # not-provisioned answer, where skew would misreport corruption.
         return
-    if resolved_tier is ArchiveTier.INDEX and found == 0:
+    if resolved_tier is ArchiveTier.INDEX and found == 0 and _tier_holds_no_schema(conn):
         return
     if found != expected:
         raise SchemaSkew(

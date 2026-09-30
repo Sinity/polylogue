@@ -53,6 +53,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 )
 from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
 from tests.infra.identity import archive_message_id
+from tests.infra.session_profiles import write_session_profile
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -6451,9 +6452,11 @@ def test_thread_source_high_water_mark_compares_instants_not_storage_types(test_
     )
     # Only the parent carries a profile, so its ISO TEXT source_updated_at meets
     # the child's raw epoch-ms updated_at_ms inside the same MAX().
-    test_conn.execute(
-        "INSERT INTO session_profiles(session_id, source_name, source_updated_at) "
-        "VALUES ('unknown-export:hwm-root', 'unknown-export', '2020-01-01T00:00:00+00:00')"
+    write_session_profile(
+        test_conn,
+        "unknown-export:hwm-root",
+        source_name="unknown-export",
+        source_updated_at="2020-01-01T00:00:00+00:00",
     )
     test_conn.commit()
 

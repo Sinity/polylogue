@@ -24,6 +24,7 @@ from tests.infra.mcp import (
     installed_runtime_services,
     invoke_surface_async,
 )
+from tests.infra.session_profiles import write_session_profile
 
 
 def _seed_archive(archive_root: Path) -> str:
@@ -106,14 +107,14 @@ def _seed_repo_filtered_archive(archive_root: Path) -> str:
     with ArchiveStore(archive_root) as archive:
         session_ids = [write_index_session(archive, session) for session in sessions]
         for session_id in session_ids:
-            archive._conn.execute(
-                """
-                INSERT INTO session_profiles (
-                    session_id, workflow_shape, workflow_shape_method, workflow_shape_confidence,
-                    terminal_state, terminal_state_method, terminal_state_confidence, search_text
-                ) VALUES (?, 'chat', 'fixture', 1.0, 'question_left', 'fixture', 1.0, '')
-                """,
-                (session_id,),
+            write_session_profile(
+                archive._conn,
+                session_id,
+                workflow_shape="chat",
+                workflow_shape_confidence=1.0,
+                terminal_state="question_left",
+                terminal_state_method="fixture",
+                terminal_state_confidence=1.0,
             )
         archive._conn.execute(
             """

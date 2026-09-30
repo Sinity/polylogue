@@ -203,11 +203,19 @@ def test_open_profiled_connection_applies_the_selected_profile(
 
 def test_index_schema_guard_distinguishes_uninitialized_from_stale(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
-    with sqlite3.connect(db_path) as connection:
-        connection.execute("CREATE TABLE evidence (value TEXT NOT NULL)")
+    with sqlite3.connect(db_path):
+        pass
 
     with connection_profile.open_readonly_connection(db_path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM evidence").fetchone() == (0,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (0,)
+
+    # An unstamped file with a schema is partial derived state, not absence.
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT NOT NULL)")
+    with pytest.raises(SchemaSkew) as partial:
+        connection_profile.open_readonly_connection(db_path)
+    assert partial.value.tier == ArchiveTier.INDEX.value
+    assert partial.value.found == 0
 
     # A version this runtime cannot serve. The index sits at the format
     # floor, so stepping one below collapses onto 0 -- the uninitialized

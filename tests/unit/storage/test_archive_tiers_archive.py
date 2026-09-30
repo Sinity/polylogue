@@ -50,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
+from tests.infra.session_profiles import write_session_profile
 from tests.infra.workload_artifacts import build_seeded_archive
 
 
@@ -2035,14 +2036,14 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
         second_id = write_index_session(facade, second)
         conn = facade._conn
         facade.add_user_tags((first_id,), ("archive",))
-        conn.execute(
-            """
-            INSERT INTO session_profiles (
-                session_id, workflow_shape, workflow_shape_method, workflow_shape_confidence,
-                terminal_state, terminal_state_method, terminal_state_confidence, search_text
-            ) VALUES (?, 'implementation', 'fixture', 1.0, 'complete', 'fixture', 1.0, '')
-            """,
-            (first_id,),
+        write_session_profile(
+            conn,
+            first_id,
+            workflow_shape="implementation",
+            workflow_shape_confidence=1.0,
+            terminal_state="complete",
+            terminal_state_method="fixture",
+            terminal_state_confidence=1.0,
         )
         conn.commit()
 
@@ -2727,7 +2728,7 @@ def test_session_profile_debt_measures_derivation_lag_only(tmp_path: Path) -> No
     assert debt.detail == "1 sessions without a derived session profile"
 
     with ArchiveStore(root) as facade:
-        facade._conn.execute("INSERT INTO session_profiles (session_id) VALUES (?)", (session_id,))
+        write_session_profile(facade._conn, session_id)
         facade._conn.commit()
 
     with ArchiveStore.open_existing(root) as facade:
@@ -2774,10 +2775,10 @@ def test_orphan_session_profile_is_unreachable_through_production_writes(tmp_pat
     with ArchiveStore(root) as facade:
         assert facade._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         with pytest.raises(sqlite3.IntegrityError):
-            facade._conn.execute("INSERT INTO session_profiles (session_id) VALUES ('codex:no-such-session')")
+            write_session_profile(facade._conn, "codex:no-such-session")
         facade._conn.rollback()
 
-        facade._conn.execute("INSERT INTO session_profiles (session_id) VALUES (?)", (session_id,))
+        write_session_profile(facade._conn, session_id)
         facade._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         facade._conn.commit()
         assert facade._conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0

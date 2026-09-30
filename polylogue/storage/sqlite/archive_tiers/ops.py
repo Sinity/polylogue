@@ -52,6 +52,9 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     "daemon_stage_events": OpsTableDisposition(
         "daemon", "one row per stage transition", False, "retain pending event map"
     ),
+    "capture_health_history": OpsTableDisposition(
+        "browser capture", "one row per health report", True, "retain independently"
+    ),
     "daemon_events": OpsTableDisposition("daemon", "one row per SSE/event-log event", True, "retain"),
     "judgment_scheduler_receipts": OpsTableDisposition(
         "judgment scheduler", "one typed receipt per operation", True, "retain independently"
@@ -87,9 +90,6 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
         "context scheduler", "one admission decision per candidate item", True, "retain"
     ),
     "schema_identity": OpsTableDisposition("schema bootstrap", "one derived-schema identity", True, "retain"),
-    "polylogue_ops_schema_state": OpsTableDisposition(
-        "schema bootstrap", "one current derived-schema digest", True, "retain"
-    ),
 }
 # Batch aggregation is a terminal run state distinct from both success and
 # failure: completed siblings and retryable failed siblings remain visible.
@@ -286,14 +286,28 @@ ON daemon_stage_events(attempt_id, observed_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_daemon_stage_events_stage_observed
 ON daemon_stage_events(stage, observed_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS capture_health_history (
+    id INTEGER PRIMARY KEY,
+    report_key TEXT NOT NULL UNIQUE,
+    ts_ms INTEGER NOT NULL,
+    operation_id TEXT,
+    idempotency_key TEXT,
+    payload_json TEXT NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_capture_health_history_idempotency
+ON capture_health_history(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS daemon_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_ms          INTEGER NOT NULL,
     kind           TEXT NOT NULL,
     operation_id   TEXT,
+    idempotency_key TEXT,
     payload_json   TEXT NOT NULL DEFAULT '{{}}'
 ) STRICT;
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daemon_events_idempotency
+ON daemon_events(kind, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC);

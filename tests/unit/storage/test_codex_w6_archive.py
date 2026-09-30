@@ -19,6 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import ArchiveAggMetricSpec
 from polylogue.storage.sqlite.queries.sessions_reads import get_session, get_sessions_batch
 from tests.infra.live_ingest import write_index_session
+from tests.infra.session_profiles import write_session_profile
 
 
 def _seed_session(archive: ArchiveStore) -> str:
@@ -217,11 +218,7 @@ def test_attachment_reference_identity_and_order_invalidate_profile_binding(
             "INSERT INTO attachment_refs(attachment_id, session_id, message_id, position) VALUES ('original', ?, ?, 0)",
             (session_id, message_id),
         )
-        conn.execute(
-            "INSERT INTO session_profiles(session_id, input_content_hash) VALUES (?, 'published-binding') "
-            "ON CONFLICT(session_id) DO UPDATE SET input_content_hash = excluded.input_content_hash",
-            (session_id,),
-        )
+        write_session_profile(conn, session_id, input_content_hash="published-binding")
         conn.execute("DELETE FROM session_profile_demand WHERE session_id = ?", (session_id,))
         conn.execute(f"UPDATE attachment_refs SET {column} = ? WHERE session_id = ?", (value, session_id))
         assert (

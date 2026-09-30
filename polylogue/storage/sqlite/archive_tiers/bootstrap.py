@@ -141,8 +141,6 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 #:   outlier at ~44ms, and the route that reached it was paying a further
 #:   ~102ms re-stamping an unchanged derived identity -- which is why an
 #:   already-current tier now takes :func:`converge_same_version_tier`.
-#: * ``schema_convergence`` -- ops.db proved current by its recorded schema
-#:   digest, so only the schema-state record and identity stamp ran.
 #:
 #: Kept because the split is not observable from the outside: all of them look
 #: like "initialize a tier" to a caller, while their costs differ by two orders
@@ -325,32 +323,29 @@ def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> N
     is where the saving is (35.5ms -> 21.4ms per open); the other five tiers
     were only paying 0.3-4ms of no-op DDL each.
 
-    What is *not* redundant stays: ops.db evolves by idempotent additive DDL
-    without a version bump, so it keeps the full pass; user.db gains declared
-    annotation schemas; index.db takes its runtime indexes.
-
-    index.db verifies its derived schema identity and refuses a stale or absent
-    stamp with a typed ``SchemaSkew``: fresh materialisation stamps it in the
-    same transaction that writes ``user_version``, so a current-version index
-    without a matching stamp was not produced by this runtime and is rebuilt
-    through the daemon rather than re-stamped in place.
+    Existing index and ops tiers verify their derived identity before any
+    schema statement. A stale or absent stamp raises ``SchemaSkew``; only a
+    fresh empty tier is materialized and stamped by this runtime. An admitted
+    index tier gains only the canonical runtime performance indexes before
+    manifest validation, as on ordinary writable sync and async opens. User-tier
+    annotation rows and the embeddings connection's extension remain owned
+    by their respective same-version policies.
     """
-    if tier is ArchiveTier.OPS:
-        # ops.db is disposable and evolves through idempotent additive DDL
-        # without version bumps. Re-apply it so existing same-version archives
-        # receive newly introduced tables and indexes.
-        initialize_archive_tier(conn, tier)
+    if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+        from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
+
+        # Admission precedes every DDL path, including runtime indexes: an
+        # foreign derived identity is never patched or restamped into currency.
+        assert_tier_schema_supported(conn, f"{tier.value}.db", tier)
+        if tier is ArchiveTier.INDEX:
+            from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+            from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
+
+            ensure_runtime_indexes_sync(conn)
+            assert_schema_manifest(conn, tier)
     elif tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
         conn.commit()
-    elif tier is ArchiveTier.INDEX:
-        from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-        from polylogue.storage.sqlite.schema_bootstrap import assert_derived_schema_identity
-        from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
-
-        ensure_runtime_indexes_sync(conn)
-        assert_derived_schema_identity(conn, tier.value)
-        assert_schema_manifest(conn, tier)
     elif tier is ArchiveTier.EMBEDDINGS:
         # Every embeddings connection needs the extension loaded, not just the
         # freshly initialized one: sqlite-vec state is connection-local, so a
@@ -388,30 +383,17 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     extended here because the open-connection route is what nearly a
     hundred test modules build every archive through (~0.8s of DDL per
     database, multiplied by four tiers and thousands of tests). A
-    non-empty database keeps the executescript path: its IF NOT EXISTS
-    semantics are non-destructive, while a page-copy restore would
-    overwrite existing content.
+    non-empty derived database is admitted as-is by its schema identity;
+    other tiers retain their declared initialization policy.
     """
     spec = archive_tier_spec(tier)
     # Foreign-key enforcement is connection state, not schema: every branch
-    # below, including the OPS same-digest shortcut, must leave it enabled.
+    # below must leave it enabled.
     conn.execute("PRAGMA foreign_keys = ON")
-    if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
-        digest = _tier_prototype_key(conn, tier, spec.version)[2]
-        state = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'polylogue_ops_schema_state'"
-        ).fetchone()
-        current = (
-            state is not None
-            and conn.execute(
-                "SELECT 1 FROM polylogue_ops_schema_state WHERE schema_digest = ?",
-                (digest,),
-            ).fetchone()
-            is not None
-        )
-        if current:
-            _apply_archive_tier_convergence(conn, tier, spec)
-            _record_tier_init(tier, "schema_convergence")
+    if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+        object_count = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
+        if object_count or int(conn.execute("PRAGMA user_version").fetchone()[0]) != 0:
+            converge_same_version_tier(conn, tier)
             return
     if tier in _PROTOTYPE_CACHEABLE_TIERS:
         object_count = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
@@ -479,16 +461,6 @@ def _apply_archive_tier_convergence(
     """
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
-    if tier is ArchiveTier.OPS:
-        # OPS is the one schema that intentionally has additive same-version
-        # convergence.  Remember which DDL was applied so an already-current
-        # database can take the cheap convergence-only route on its next open.
-        # The table is internal bootstrap state; it is included in the
-        # prototype snapshot and therefore does not make prototypes writable
-        # or share state between archive roots.
-        from polylogue.storage.sqlite.archive_tiers.ops_write import _record_ops_schema_state
-
-        _record_ops_schema_state(conn, _tier_prototype_key(conn, tier, spec.version)[2])
     if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
         from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
@@ -506,9 +478,6 @@ def _apply_archive_tier_convergence(
     # ``CREATE TABLE IF NOT EXISTS`` statements -- accounts for 0.33ms of that.
     # The DDL was never the cost; the header write was (polylogue-c1jgh).
     #
-    # Deliberately NOT a short-circuit of the schema pass itself: the reapply is
-    # how an existing same-version archive receives newly introduced OPS tables.
-    # Only the redundant header write is removed.
     if int(conn.execute("PRAGMA user_version").fetchone()[0]) != spec.version:
         conn.execute(f"PRAGMA user_version = {spec.version}")
     conn.commit()
@@ -593,10 +562,8 @@ def initialize_archive_database(
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version if expected_version is None else expected_version
-        # ops.db is disposable and converges by re-applying its idempotent
-        # additive DDL, so an absent or superseded identity stamp is a
-        # convergence input rather than a refusal; index.db is rebuilt through
-        # the daemon route and must refuse a foreign identity here.
+        # Both derived tiers refuse a stale identity before issuing DDL.
+        # The daemon replaces disposable ops state at its startup seam.
         if current_version == required_version:
             converge_same_version_tier(conn, tier)
             return

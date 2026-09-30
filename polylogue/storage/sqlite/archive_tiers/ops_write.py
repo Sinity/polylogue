@@ -49,34 +49,6 @@ SCHEMA_DRIFT_SAMPLE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 SCHEMA_DRIFT_SAMPLE_ROW_CAP = 20_000
 
 
-def _record_ops_schema_state(conn: sqlite3.Connection, schema_digest: str) -> None:
-    """Record the DDL digest used to converge this disposable OPS database.
-
-    Opening an already-current database must not write: every reader that
-    constructs a cursor store re-enters this path, and a write here contends
-    with the daemon's writer lease on the same file.
-    """
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS polylogue_ops_schema_state (
-            schema_digest TEXT PRIMARY KEY
-        ) STRICT
-        """
-    )
-    recorded = [row[0] for row in conn.execute("SELECT schema_digest FROM polylogue_ops_schema_state")]
-    if recorded == [schema_digest]:
-        return
-    if recorded:
-        conn.execute(
-            "DELETE FROM polylogue_ops_schema_state WHERE schema_digest <> ?",
-            (schema_digest,),
-        )
-    conn.execute(
-        "INSERT OR IGNORE INTO polylogue_ops_schema_state(schema_digest) VALUES (?)",
-        (schema_digest,),
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class OpsCompactState:
     """Compact one-row status snapshot from OPS-tier tables."""
@@ -267,11 +239,6 @@ def _read_latest_judgment_scheduler_receipt(
 ) -> ArchiveJudgmentSchedulerReceipt | None:
     """Read the newest typed scheduler receipt, optionally for one operation."""
 
-    table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'judgment_scheduler_receipts'"
-    ).fetchone()
-    if table is None:
-        return None
     query = """
         SELECT operation_id, observed_at_ms, status, reason, retryable, retry_route,
                batch_limit, considered, accepted, rejected, escalated, idempotent,
@@ -791,50 +758,20 @@ def record_ingest_attempt(
     if attempt_id is None:
         attempt_id = str(uuid.uuid4())
     status_value = require_literal(status, OperationRunStatus, name="ingest attempt status")
-    has_storage_route = _table_has_column(conn, "ingest_attempts", "storage_route")
-    route_column = "storage_route,\n            " if has_storage_route else ""
-    route_value = "?, " if has_storage_route else ""
-    route_update = (
-        "storage_route = COALESCE(excluded.storage_route, ingest_attempts.storage_route),\n            "
-        if has_storage_route
-        else ""
-    )
-    route_params: tuple[object, ...] = (storage_route,) if has_storage_route else ()
-
-    has_outcome_code = _table_has_column(conn, "ingest_attempts", "outcome_code")
-    outcome_column = (
-        "outcome_code, retryable, evidence_ref, diagnostic, remediation,\n            " if has_outcome_code else ""
-    )
-    outcome_value = "?, ?, ?, ?, ?, " if has_outcome_code else ""
-    outcome_update = (
-        "outcome_code = excluded.outcome_code,\n            "
-        "retryable = excluded.retryable,\n            "
-        "evidence_ref = excluded.evidence_ref,\n            "
-        "diagnostic = excluded.diagnostic,\n            "
-        "remediation = excluded.remediation,\n            "
-        if has_outcome_code
-        else ""
-    )
     outcome_code = disposition.outcome_code if disposition is not None else IngestOutcome.LEGACY_UNKNOWN.value
     retryable = disposition.retryable if disposition is not None else None
-    evidence_ref = disposition.evidence_ref if disposition is not None else None
-    diagnostic = disposition.diagnostic if disposition is not None else None
-    remediation = disposition.remediation if disposition is not None else None
     retryable_int = None if retryable is None else (1 if retryable else 0)
-    outcome_params: tuple[object, ...] = (
-        (outcome_code, retryable_int, evidence_ref, diagnostic, remediation) if has_outcome_code else ()
-    )
 
     conn.execute(
-        f"""
+        """
         INSERT INTO ingest_attempts (
             attempt_id,
             source_path,
             origin,
             status,
             phase,
-            {route_column}
-            {outcome_column}
+            storage_route,
+            outcome_code, retryable, evidence_ref, diagnostic, remediation,
             started_at_ms,
             heartbeat_at_ms,
             finished_at_ms,
@@ -843,14 +780,18 @@ def record_ingest_attempt(
             error_message,
             source_paths_json
         )
-        VALUES (?, ?, ?, ?, ?, {route_value}{outcome_value}?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (attempt_id) DO UPDATE SET
             source_path = excluded.source_path,
             origin = excluded.origin,
             status = excluded.status,
             phase = excluded.phase,
-            {route_update}
-            {outcome_update}
+            storage_route = COALESCE(excluded.storage_route, ingest_attempts.storage_route),
+            outcome_code = excluded.outcome_code,
+            retryable = excluded.retryable,
+            evidence_ref = excluded.evidence_ref,
+            diagnostic = excluded.diagnostic,
+            remediation = excluded.remediation,
             started_at_ms = excluded.started_at_ms,
             heartbeat_at_ms = excluded.heartbeat_at_ms,
             finished_at_ms = excluded.finished_at_ms,
@@ -865,8 +806,12 @@ def record_ingest_attempt(
             _origin_value(origin),
             status_value,
             phase,
-            *route_params,
-            *outcome_params,
+            storage_route,
+            outcome_code,
+            retryable_int,
+            disposition.evidence_ref if disposition is not None else None,
+            disposition.diagnostic if disposition is not None else None,
+            disposition.remediation if disposition is not None else None,
             started_at_ms,
             heartbeat_at_ms,
             finished_at_ms,
@@ -1884,10 +1829,6 @@ def _origin_value(origin: Origin | str | None) -> str | None:
     if isinstance(origin, Origin):
         return origin.value
     return origin
-
-
-def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
 def _stage_event_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveDaemonStageEvent:

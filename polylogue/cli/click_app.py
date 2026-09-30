@@ -52,6 +52,21 @@ register_completion_classes()
 class QueryFirstGroup(QueryFirstGroupBase):
     """Project-specific query-first CLI group."""
 
+    def format_help_text(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        """Resolve the root help's query markers only when help is rendered.
+
+        Resolving them needs the declared query examples, whose import chain
+        reaches the archive tiers; doing it at import made every command,
+        ``status`` included, pay for help it never printed (polylogue-8s70).
+        """
+        authored = self.help
+        if authored is not None:
+            self.help = _render_query_help_examples(authored)
+        try:
+            super().format_help_text(ctx, formatter)
+        finally:
+            self.help = authored
+
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         """Group root commands by product role instead of one flat command drawer."""
         rows_by_section: list[tuple[str, list[tuple[str, str]], str | None]] = []
@@ -565,10 +580,6 @@ def _render_query_help_examples(help_text: str) -> str:
 
     marker = re.compile(r"@@query:([a-z0-9][a-z0-9-]*)@@")
     return marker.sub(lambda match: query_discovery_example(match.group(1)).expression, help_text)
-
-
-if cli.help is not None:
-    cli.help = _render_query_help_examples(cli.help)
 
 
 register_root_commands(cli)

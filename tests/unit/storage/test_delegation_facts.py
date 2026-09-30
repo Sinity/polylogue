@@ -19,6 +19,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -32,6 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.surfaces.payloads import DelegationCardPayload, QueryUnitAggregateRowPayload
+from tests.infra.session_profiles import write_session_profile
 
 _HASH = b"x" * 32
 
@@ -142,7 +144,7 @@ def _insert_dispatch_action(
         )
 
 
-def _insert_session_profile(conn: sqlite3.Connection, *, session_id: str, **overrides: object) -> None:
+def _insert_session_profile(conn: sqlite3.Connection, *, session_id: str, **overrides: Any) -> None:
     cost_fields = {
         "total_cost_usd",
         "total_input_tokens",
@@ -151,13 +153,7 @@ def _insert_session_profile(conn: sqlite3.Connection, *, session_id: str, **over
         "total_cache_write_tokens",
     }
     cost = {key: overrides.pop(key, None) for key in cost_fields}
-    columns = {"session_id": session_id, **overrides}
-    keys = list(columns.keys())
-    placeholders = ", ".join("?" for _ in keys)
-    conn.execute(
-        f"INSERT INTO session_profiles ({', '.join(keys)}) VALUES ({placeholders})",
-        tuple(columns.values()),
-    )
+    write_session_profile(conn, session_id, **overrides)
     if any(value is not None for value in cost.values()):
         conn.execute(
             "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",

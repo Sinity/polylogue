@@ -538,7 +538,7 @@ class BrowserCaptureHealthEventRequest(BaseModel):
 
 
 class BrowserCaptureHealthEventAcceptedPayload(BaseModel):
-    """Accepted capture-health event, echoing the ledger id it landed at."""
+    """Accepted capture-health report, echoing its committed history/resume id."""
 
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER

@@ -1027,13 +1027,6 @@ def _archive_aggregate_facet_families(
                 counts[key] = counts.get(key, 0) + int(row[1] or 0)
         return counts
 
-    def table_has_column(table: str, column: str) -> bool:
-        try:
-            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        except sqlite3.Error:
-            return False
-        return any(str(row[1]) == column for row in rows)
-
     repo_rows = scoped_rows(
         """
         SELECT sr.session_id, r.repo_name, r.root_path, r.origin_url
@@ -1059,38 +1052,36 @@ def _archive_aggregate_facet_families(
     result["repos"] = {label: len(sessions) for label, sessions in repo_sessions.items()}
     if omitted_repo_sessions:
         result["omitted"]["repos"] = len(omitted_repo_sessions)
-    if table_has_column("messages", "role"):
-        result["role_counts"] = keyed(
-            scoped_rows(
-                """
-                SELECT COALESCE(NULLIF(role, ''), 'unknown') AS role_key, COUNT(*) AS n
-                FROM messages
-                WHERE session_id IN ({})
-                GROUP BY role_key
-                """,
-                """
-                SELECT COALESCE(NULLIF(role, ''), 'unknown') AS role_key, COUNT(*) AS n
-                FROM messages
-                GROUP BY role_key
-                """,
-            )
+    result["role_counts"] = keyed(
+        scoped_rows(
+            """
+            SELECT COALESCE(NULLIF(role, ''), 'unknown') AS role_key, COUNT(*) AS n
+            FROM messages
+            WHERE session_id IN ({})
+            GROUP BY role_key
+            """,
+            """
+            SELECT COALESCE(NULLIF(role, ''), 'unknown') AS role_key, COUNT(*) AS n
+            FROM messages
+            GROUP BY role_key
+            """,
         )
-    if table_has_column("messages", "material_origin"):
-        result["material_origins"] = keyed(
-            scoped_rows(
-                """
-                SELECT COALESCE(NULLIF(material_origin, ''), 'unknown') AS material_key, COUNT(*) AS n
-                FROM messages
-                WHERE session_id IN ({})
-                GROUP BY material_key
-                """,
-                """
-                SELECT COALESCE(NULLIF(material_origin, ''), 'unknown') AS material_key, COUNT(*) AS n
-                FROM messages
-                GROUP BY material_key
-                """,
-            )
+    )
+    result["material_origins"] = keyed(
+        scoped_rows(
+            """
+            SELECT COALESCE(NULLIF(material_origin, ''), 'unknown') AS material_key, COUNT(*) AS n
+            FROM messages
+            WHERE session_id IN ({})
+            GROUP BY material_key
+            """,
+            """
+            SELECT COALESCE(NULLIF(material_origin, ''), 'unknown') AS material_key, COUNT(*) AS n
+            FROM messages
+            GROUP BY material_key
+            """,
         )
+    )
     result["message_types"] = keyed(
         scoped_rows(
             "SELECT message_type, COUNT(*) AS n FROM messages WHERE session_id IN ({}) GROUP BY message_type",

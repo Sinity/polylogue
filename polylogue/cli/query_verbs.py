@@ -2200,18 +2200,34 @@ def analyze_verb(
     if show_postmortem:
         if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --postmortem` only supports terminal text, --format json, or markdown")
-        from polylogue.analysis.postmortem import render_postmortem_markdown, render_postmortem_plain
+        from polylogue.analysis.postmortem import (
+            postmortem_outcome,
+            render_postmortem_markdown,
+            render_postmortem_plain,
+        )
         from polylogue.cli.shared.machine_errors import success
+        from polylogue.surfaces.outcome import outcome_exit_code
         from polylogue.surfaces.payloads import model_json_document
 
         spec = request.query_spec()
         bundle = run_coroutine_sync(env.polylogue.postmortem_bundle(spec, limit=limit))
+        # The same outcome owner MCP uses decides every format: a truncated,
+        # partly unprofiled or undigested scope, or an unavailable headline
+        # measurement, is ``degraded``; an empty scope is ``empty``.
+        outcome = postmortem_outcome(bundle)
         if output_format == "json":
-            click.echo(success({"postmortem": model_json_document(bundle, exclude_none=True)}).to_json())
-        elif output_format == "markdown":
-            click.echo(render_postmortem_markdown(bundle))
+            payload = model_json_document(bundle, exclude_none=True)
+            click.echo(success({"postmortem": payload, "outcome": outcome.to_dict()}).to_json())
         else:
-            click.echo(render_postmortem_plain(bundle))
+            click.echo(
+                render_postmortem_markdown(bundle) if output_format == "markdown" else render_postmortem_plain(bundle)
+            )
+            outcome_line = render_outcome_line(outcome)
+            if outcome_line is not None:
+                click.echo(outcome_line, err=True)
+        exit_code = outcome_exit_code(outcome)
+        if exit_code:
+            raise SystemExit(exit_code)
         return
 
     if show_portfolio:

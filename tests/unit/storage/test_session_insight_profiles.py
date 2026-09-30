@@ -392,6 +392,56 @@ def test_session_profile_round_trips_through_the_canonical_table(tmp_path: Path)
     assert (restored.workflow_shape, restored.terminal_state) == (record.workflow_shape, record.terminal_state)
 
 
+@pytest.mark.parametrize("column", ["evidence_payload_json", "inference_payload_json", "enrichment_payload_json"])
+def test_a_profile_row_without_a_stored_payload_is_refused(tmp_path: Path, column: str) -> None:
+    """A row no writer produced is corruption, not an older shape to rebuild.
+
+    The canonical writer stores all three payloads, so a ``'{}'`` payload is a
+    row that only a hand-written INSERT leaves behind. Both typed readers --
+    the record mapper and the archive insight/record reader -- refuse it
+    instead of synthesizing a profile from sibling columns (polylogue-77tzg).
+
+    Anti-vacuity: restore any ``*_from_fallback`` synthesis (or treat an empty
+    payload as absent) and the reads below return a profile instead of raising.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
+    from polylogue.core.errors import DatabaseError
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.queries.mappers_insight_profiles import _row_to_session_profile_record
+    from tests.infra.live_ingest import write_index_session
+    from tests.infra.session_profiles import write_session_profile
+
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="payload-refusal",
+        title="Payload refusal",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="profile target")],
+            )
+        ],
+    )
+    with ArchiveStore(tmp_path) as archive:
+        session_id = write_index_session(archive, session)
+        write_session_profile(archive._conn, session_id)
+        archive._conn.commit()
+        assert archive.get_session_profile_record(session_id) is not None
+        archive._conn.execute(f"UPDATE session_profiles SET {column} = '{{}}' WHERE session_id = ?", (session_id,))
+        archive._conn.commit()
+        archive._conn.row_factory = sqlite3.Row
+        row = archive._conn.execute("SELECT * FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        with pytest.raises(DatabaseError, match=column):
+            _row_to_session_profile_record(row)
+        with pytest.raises(DatabaseError, match=column):
+            archive.get_session_profile_insight(session_id)
+        with pytest.raises(DatabaseError, match=column):
+            archive.get_session_profile_record(session_id)
+
+
 def test_session_profile_evidence_payload_exposes_token_cost_fields() -> None:
     profile = build_session_profile(_enrichment_session())
     profile = profile.__class__.from_dict(
