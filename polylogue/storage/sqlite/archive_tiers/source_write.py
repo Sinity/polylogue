@@ -1679,14 +1679,15 @@ def retire_missing_source_coordinate_refusal(conn: sqlite3.Connection, raw_id: s
     cannot continue to certify that this raw has no identity after a later
     exact append witness is retained.
     """
-    conn.execute(
+    retired = conn.execute(
         "DELETE FROM raw_artifacts WHERE raw_id = ? AND artifact_kind = ?",
         (raw_id, RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value),
     )
-    conn.execute(
-        "DELETE FROM raw_membership_census WHERE raw_id = ? AND status = 'non_session'",
-        (raw_id,),
-    )
+    if retired.rowcount:
+        conn.execute(
+            "DELETE FROM raw_membership_census WHERE raw_id = ? AND status = 'non_session'",
+            (raw_id,),
+        )
 
 
 def _insert_hook_event(

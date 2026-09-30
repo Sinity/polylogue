@@ -536,13 +536,14 @@ def test_daemon_status_text_marks_missing_frontier_non_green() -> None:
             "daemon_liveness": True,
             "raw_missing_source_coordinates": 2,
             "raw_failure_lifecycle_state": "degraded",
+            "raw_frontier_integrity": _healthy_raw_frontier_integrity(),
         },
     )
 
     rendered = _combined_calls(env)
     assert "[bold yellow]Daemon: running; status degraded[/bold yellow]" in rendered
     assert "Retained session bytes missing append coordinates: [yellow]2 (degraded)[/yellow]" in rendered
-    assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
+    assert "Raw frontier: [green]healthy[/green]" in rendered
 
 
 def test_daemon_status_stale_healthy_frontier_becomes_unknown() -> None:

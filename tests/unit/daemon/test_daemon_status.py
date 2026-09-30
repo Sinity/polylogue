@@ -2296,18 +2296,21 @@ def _verdict_clean_component_readiness() -> dict[str, object]:
 
 
 @pytest.mark.parametrize(
-    ("available", "lifecycle_state", "expected_ok"),
+    ("available", "lifecycle_state", "expected_ok", "parse_failures", "missing_coordinates"),
     [
-        (False, "unavailable", False),
-        (True, "blocked", False),
-        (True, "degraded", False),
-        (True, "healthy", True),
+        (False, "unavailable", False, 0, 0),
+        (True, "blocked", False, 0, 0),
+        (True, "degraded", False, 1, 0),
+        (True, "degraded", False, 0, 1),
+        (True, "healthy", True, 0, 0),
     ],
 )
 def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
     available: bool,
     lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"],
     expected_ok: bool,
+    parse_failures: int,
+    missing_coordinates: int,
 ) -> None:
     """Root status JSON never promotes missing or non-clean source evidence.
 
@@ -2325,9 +2328,9 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
         raw_failure_lifecycle_reason="source evidence test state",
         raw_frontier_integrity=_proven_healthy_frontier(),
         component_readiness=_verdict_clean_component_readiness(),
-        raw_parse_failures=0,
+        raw_parse_failures=parse_failures,
         raw_unexplained_failures=1 if lifecycle_state == "blocked" else 0,
-        raw_missing_source_coordinates=1 if lifecycle_state == "degraded" else 0,
+        raw_missing_source_coordinates=missing_coordinates,
     )
     with (
         patch("polylogue.daemon.status.build_daemon_status", return_value=status),
@@ -2342,7 +2345,9 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
         assert not any("Raw failures: unavailable" in line for line in lines)
     else:
         assert any("Raw failures:" in line for line in lines)
-    if lifecycle_state == "degraded":
+    if parse_failures:
+        assert any("Raw failures:" in line for line in lines)
+    if missing_coordinates:
         assert "Retained session bytes missing append coordinates: 1 (degraded)" in lines
 
 

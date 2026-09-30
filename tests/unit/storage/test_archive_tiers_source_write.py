@@ -305,6 +305,50 @@ def test_exact_append_binding_retires_coordinate_refusal_and_non_session_census(
     conn.close()
 
 
+def test_exact_append_binding_preserves_unrelated_non_session_census(tmp_path: Path) -> None:
+    """An append bind cannot erase a census unless it retires its refusal carrier."""
+    conn = _connect(tmp_path / "source.db")
+    try:
+        payload = b'{"type":"event_msg"}\n'
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            capture_mode=Provider.CODEX,
+            source_path=str(tmp_path / "append.jsonl"),
+            source_index=-1,
+            payload=payload,
+            acquired_at_ms=1,
+            parsed_at_ms=2,
+        )
+        conn.execute(
+            """INSERT INTO raw_membership_census
+               (raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority)
+               VALUES (?, 'old-parser', 'non_session', 0, 1, '', NULL)""",
+            (raw_id,),
+        )
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key="codex-session:append",
+                kind=RawRevisionKind.APPEND,
+                source_revision="a" * 64,
+                acquisition_generation=1,
+                predecessor_source_revision="b" * 64,
+                predecessor_raw_id="previous-append",
+                baseline_raw_id="baseline-full",
+                append_start_offset=0,
+                append_end_offset=len(payload),
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "non_session",
+        )
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     ("column", "reader_field"),
     [
