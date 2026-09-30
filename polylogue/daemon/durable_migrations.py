@@ -21,10 +21,12 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 
 from polylogue.operations.durable_change_train import (
+    DurableMigrationReplayProof,
     OwnedArchiveLocation,
     PendingDurableMigration,
     execute_durable_change_train,
     pending_durable_migrations,
+    rehearse_pending_durable_migration,
 )
 
 
@@ -70,10 +72,9 @@ def apply_declared_durable_migrations(
     """Apply the pending numbered step of each tier behind its declared version.
 
     Each step is one train; a data-changing step gets its own backup of the
-    bytes it is about to change. Returns the steps applied, in order. A tier
-    more than one slot behind is refused with ``DurableChangeTrainError``:
-    bootstrap DDL describes only the shipped version, so an intermediate slot
-    has no fresh-DDL image to prove its step against.
+    bytes it is about to change. Before any backup in a pass, every pending
+    tier chain is replayed on a schema-only replica through current canonical
+    DDL. Each live step is checked against its captured intermediate inventory.
 
     The caller holds exclusive archive ownership for the whole call and keeps
     it afterwards, so the train's ownership release is a no-op here. Each
@@ -83,12 +84,21 @@ def apply_declared_durable_migrations(
 
     applied: list[PendingDurableMigration] = []
     while pending := pending_durable_migrations(archive_root):
+        replay_proofs: dict[str, DurableMigrationReplayProof] = {}
+        for migration in pending:
+            replay_proofs[migration.tier.value] = rehearse_pending_durable_migration(archive_root, migration)
         for migration in pending:
             if migration in applied:
                 raise RuntimeError(
                     f"{migration.tier.value}.db did not advance past v{migration.current_version}; refusing to loop"
                 )
-            _apply_step(archive_root, migration, archive_owner=archive_owner, write_lease=write_lease)
+            _apply_step(
+                archive_root,
+                migration,
+                archive_owner=archive_owner,
+                write_lease=write_lease,
+                schema_replay_proof=replay_proofs[migration.tier.value],
+            )
             applied.append(migration)
     return tuple(applied)
 
@@ -99,6 +109,7 @@ def _apply_step(
     *,
     archive_owner: OwnedArchiveLocation,
     write_lease: Callable[[str], AbstractContextManager[object]],
+    schema_replay_proof: DurableMigrationReplayProof,
 ) -> None:
     with write_lease("daemon.durable_migration.apply"):
         manifest = (
@@ -112,6 +123,7 @@ def _apply_step(
             backup_manifest=manifest,
             daemon_stopped_evidence_ref="proof:daemon-open-before-serving",
             single_writer_evidence_ref="proof:archive-ownership-lock",
+            schema_replay_proof=schema_replay_proof,
             release_archive_ownership=lambda: None,
         )
 
