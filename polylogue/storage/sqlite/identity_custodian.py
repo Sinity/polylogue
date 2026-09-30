@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 
-def _stat_payload(descriptor: int) -> dict[str, Any]:
-    metadata = os.fstat(descriptor)
+def _stat_payload(metadata: os.stat_result) -> dict[str, Any]:
     # The stdlib reduction separates positional fields from named extras.
     # Sending all st_* names duplicates positional fields in Python 3.14.
     fields, extra = cast(tuple[tuple[int, ...], dict[str, Any]], metadata.__reduce__()[1])
@@ -44,8 +43,7 @@ def _open_source(directory: int, name: str, identity_fd: int | None) -> int:
     return descriptor
 
 
-def _copy_metadata(source: int, destination: int) -> None:
-    metadata = os.fstat(source)
+def _copy_metadata(source: int, destination: int, metadata: os.stat_result) -> None:
     os.utime(destination, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     if hasattr(os, "listxattr"):
         try:
@@ -97,6 +95,8 @@ def _open_copy_destination(directory: int, name: str, *, exclusive: bool) -> int
 
 
 def _read(descriptor: int, request: dict[str, Any]) -> dict[str, Any]:
+    # Streaming can advance atime. Copy and report the same pre-read snapshot.
+    metadata = os.fstat(descriptor)
     with ExitStack() as cleanup:
         writer = None
         output: int | None = None
@@ -106,8 +106,8 @@ def _read(descriptor: int, request: dict[str, Any]) -> dict[str, Any]:
                 raise OSError(errno.EINVAL, "invalid SQLite copy destination leaf")
             directory = os.open(request["destination"], os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
             cleanup.callback(os.close, directory)
-            metadata = os.fstat(directory)
-            if [metadata.st_dev, metadata.st_ino] != request["directory_identity"]:
+            directory_metadata = os.fstat(directory)
+            if [directory_metadata.st_dev, directory_metadata.st_ino] != request["directory_identity"]:
                 raise OSError(errno.ESTALE, "SQLite copy directory was replaced")
             output = _open_copy_destination(directory, name, exclusive=request["exclusive"])
             cleanup.callback(os.close, output)
@@ -125,20 +125,20 @@ def _read(descriptor: int, request: dict[str, Any]) -> dict[str, Any]:
         if writer is not None:
             writer.flush()
             assert output is not None
-            _copy_metadata(descriptor, output)
-    return {"sha256": digest.hexdigest(), "size_bytes": size}
+            _copy_metadata(descriptor, output, metadata)
+    return {"sha256": digest.hexdigest(), "size_bytes": size, "metadata": _stat_payload(metadata)}
 
 
 def main() -> None:
     descriptor = _open_source(int(sys.argv[1]), sys.argv[2], int(sys.argv[3]) if len(sys.argv) == 4 else None)
     try:
-        _send({"stat": _stat_payload(descriptor)})
+        _send({"stat": _stat_payload(os.fstat(descriptor))})
         for line in sys.stdin:
             try:
                 request = json.loads(line)
                 result: dict[str, Any]
                 if request["operation"] == "stat":
-                    result = {"stat": _stat_payload(descriptor)}
+                    result = {"stat": _stat_payload(os.fstat(descriptor))}
                 elif request["operation"] == "chmod":
                     os.fchmod(descriptor, request["mode"])
                     result = {"changed": True}

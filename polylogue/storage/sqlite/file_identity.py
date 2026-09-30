@@ -210,7 +210,9 @@ class SQLiteFileIdentity:
                     directory_identity=[metadata.st_dev, metadata.st_ino],
                     exclusive=copy_exclusive,
                 )
-            return worker.request(payload)
+            result = worker.request(payload)
+            result["metadata"] = _decode_stat(result["metadata"])
+            return result
         finally:
             if own_worker:
                 worker.close()

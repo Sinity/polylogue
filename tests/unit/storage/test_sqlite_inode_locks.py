@@ -435,7 +435,6 @@ def test_physical_copy_preserves_metadata_and_supported_attributes(tmp_path: Pat
     destination = tmp_path / "snapshot.db"
     _database(path)
     path.chmod(0o640)
-    os.utime(path, ns=(1_600_000_000_123_456_789, 1_600_000_001_987_654_321))
     attributes = hasattr(os, "setxattr")
     if attributes:
         try:
@@ -446,19 +445,44 @@ def test_physical_copy_preserves_metadata_and_supported_attributes(tmp_path: Pat
             attributes = False
     if hasattr(os, "chflags"):
         os.chflags(path, stat.UF_NODUMP)
-    before = path.stat()
     with _live_reader(path):
+        os.utime(path, ns=(1_600_000_000_123_456_789, 1_600_000_001_987_654_321))
+        before = path.stat()
         result = lock_isolated_file_read.read_sqlite_file_in_lock_isolated_process(path, copy_to=destination)
         _assert_protected(path)
     after = destination.stat()
     assert after.st_mode == before.st_mode
     assert after.st_mtime_ns == before.st_mtime_ns
+    assert after.st_atime_ns == before.st_atime_ns == result.metadata.st_atime_ns
     assert after.st_size == result.size_bytes
     if attributes:
         assert os.getxattr(destination, "user.polylogue-neutral") == b"synthetic metadata"
     flags = getattr(before, "st_flags", None)
     if flags is not None:
         assert getattr(after, "st_flags", None) == flags
+
+
+@pytest.mark.parametrize("copy", [False, True])
+def test_physical_read_metadata_precedes_streaming(tmp_path: Path, copy: bool) -> None:
+    """A post-read stat disagrees with the copied and reported original atime."""
+    path = tmp_path / "source.db"
+    destination = tmp_path / "snapshot.db"
+    _database(path)
+    with _live_reader(path):
+        # Set this after SQLite's own initial read, so the physical reader is
+        # the operation that advances access time on a relatime filesystem.
+        os.utime(path, ns=(1_600_000_000_123_456_789, 1_600_000_001_987_654_321))
+        before = path.stat()
+        result = lock_isolated_file_read.read_sqlite_file_in_lock_isolated_process(
+            path, copy_to=destination if copy else None
+        )
+        _assert_protected(path)
+        assert result.metadata.st_atime_ns == before.st_atime_ns
+        assert result.metadata.st_mtime_ns == before.st_mtime_ns
+        if copy:
+            assert destination.stat().st_atime_ns == before.st_atime_ns
+        if sys.platform == "linux":
+            assert path.stat().st_atime_ns > before.st_atime_ns
 
 
 def test_sqlite_open_refuses_native_directory_substitution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

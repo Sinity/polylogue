@@ -28,11 +28,10 @@ def read_sqlite_file_in_lock_isolated_process(
     identity = open_sqlite_identity(path) if opened_identity is None else opened_identity
     try:
         require_sqlite_identity(identity)
-        metadata = identity.stat()
         result = identity.physical_read(
             copy_to=copy_to, copy_exclusive=copy_exclusive, copy_directory_fd=copy_directory_fd
         )
-        return SQLiteFileRead(str(result["sha256"]), int(result["size_bytes"]), metadata)
+        return SQLiteFileRead(str(result["sha256"]), int(result["size_bytes"]), result["metadata"])
     finally:
         if opened_identity is None:
             identity.close()
