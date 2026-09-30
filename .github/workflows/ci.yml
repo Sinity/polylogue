@@ -8,6 +8,11 @@ on:
         required: true
         default: false
         type: boolean
+      sqlite_identity_only:
+        description: "Run only the native macOS SQLite identity contract"
+        required: true
+        default: false
+        type: boolean
   push:
     branches: [master]
   pull_request:
@@ -27,6 +32,7 @@ concurrency:
 
 jobs:
   lint:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -76,6 +82,7 @@ jobs:
           if-no-files-found: warn
 
   interactive-pty:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     # PTY tests need a controlling terminal and must not share xdist workers.
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -93,7 +100,7 @@ jobs:
     # Keep a generous job ceiling so pytest's per-test timeout can report the
     # actual stalled node.
     # Broad verification is explicitly requested, never triggered by publication.
-    if: github.event_name == 'workflow_dispatch' && inputs.run_full_suite == true
+    if: github.event_name == 'workflow_dispatch' && inputs.run_full_suite == true && inputs.sqlite_identity_only != true
     timeout-minutes: 90
     runs-on: ubuntu-latest
     strategy:
@@ -112,6 +119,7 @@ jobs:
           HYPOTHESIS_PROFILE: ci
 
   typecheck:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     # Strict mypy over the clean subset of polylogue/*. The list of
     # legacy-dirty files is maintained in `pyproject.toml` under
     # `[tool.mypy] exclude` — shrinking that list is the mechanism for
@@ -127,6 +135,7 @@ jobs:
       - run: uv run mypy polylogue/
 
   demo-visual-verify:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -140,6 +149,7 @@ jobs:
           POLYLOGUE_FORCE_PLAIN: "1"
 
   web-first-party-auth:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -178,6 +188,7 @@ jobs:
           POLYLOGUE_FORCE_PLAIN: "1"
 
   distribution:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     # Build wheel + sdist from the checkout, rebuild a wheel from the unpacked
     # sdist, install each into fresh venvs, and smoke the runtime entrypoints
     # (polylogue / polylogued / polylogue-mcp). Closes the distribution.wheel-ci
