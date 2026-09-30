@@ -386,6 +386,8 @@ holder or the ETA.
 | `component_state.browser_capture` | `running` or `stopped` |
 | `source_lag` | Per-source file counts and availability |
 | `failing_files` | Files that failed ingestion |
+| `raw_missing_source_coordinates` | Retained session bytes whose append position is unproven; any count degrades status until exact coordinates are recorded |
+| `raw_failure_samples[].failure_kind` | Typed failure category, including `terminal_missing_source_coordinates` for a retained append without proven coordinates |
 | `fts_readiness.messages_ready` | FTS index covers all messages |
 | `fts_readiness.actions_ready` | FTS index covers tool-use/tool-result action blocks |
 | `insight_freshness` | Sessions with profiles vs. total |

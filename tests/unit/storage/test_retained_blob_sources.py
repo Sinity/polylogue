@@ -595,6 +595,12 @@ def test_reobserved_anchors_do_not_authorize_an_unproven_legacy_window(tmp_path:
                 (stamp, raw_id),
             )
 
+    # Keep unrelated historical blobs present: only append-c is meant to
+    # exercise ambiguous coordinate proof in this component restoration.
+    blob_store = BlobStore(tmp_path / "blob")
+    for payload in (_EARLIER, _RECORD, full_d):
+        blob_store.write_from_bytes(payload)
+
     proofs, unproven = _backup_proof(tmp_path, append_hash)
     restored, reason = _raw_restoration(tmp_path, "append-c", append_hash)
 
@@ -659,7 +665,7 @@ def test_coordinate_refusal_retirement_invalidates_only_stale_non_session_census
         conn.execute(
             """INSERT INTO raw_membership_census
                (raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority)
-               VALUES ('append-refused', 'old-parser', 'non_session', 0, 1, NULL, NULL)"""
+               VALUES ('append-refused', 'old-parser', 'non_session', 0, 1, '', NULL)"""
         )
         conn.commit()
         retire_missing_source_coordinate_refusal(conn, "append-refused")

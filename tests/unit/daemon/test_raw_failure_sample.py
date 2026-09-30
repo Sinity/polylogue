@@ -69,6 +69,8 @@ class TestRawFailureSampleModel:
         ):
             sample = RawFailureSample(failure_kind=cast(Any, kind))
             assert sample.failure_kind == kind
+        schema = RawFailureSample.model_json_schema()
+        assert "terminal_missing_source_coordinates" in schema["properties"]["failure_kind"]["enum"]
 
     def test_raw_evidence_kinds_have_closed_lifecycle_partition(self) -> None:
         assert (
@@ -88,6 +90,7 @@ class TestRawFailureSampleModel:
                     "terminal_unknown_json_decode",
                     "terminal_unknown_export_no_session",
                     "terminal_unsupported_shape",
+                    "terminal_missing_source_coordinates",
                 }
             )
             == RAW_FAILURE_TERMINAL_EVIDENCE_KINDS

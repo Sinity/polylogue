@@ -542,7 +542,10 @@ def test_daemon_status_text_marks_missing_frontier_non_green() -> None:
     assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
 
 
-def test_daemon_status_text_marks_missing_coordinates_degraded_with_healthy_frontier() -> None:
+@pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+def test_daemon_status_text_marks_missing_coordinates_degraded_with_healthy_frontier(
+    frozen_clock: FrozenClock,
+) -> None:
     env = _make_app_env()
 
     _show_daemon_status(
@@ -553,6 +556,7 @@ def test_daemon_status_text_marks_missing_coordinates_degraded_with_healthy_fron
             "raw_missing_source_coordinates": 2,
             "raw_failure_lifecycle_state": "degraded",
             "raw_frontier_integrity": _healthy_raw_frontier_integrity(),
+            "status_snapshot": _fresh_status_snapshot(frozen_clock),
         },
     )
 

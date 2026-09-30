@@ -297,11 +297,15 @@ def test_exact_append_binding_retires_coordinate_refusal_and_non_session_census(
             (raw_id,),
         ).fetchone()
     ) == (0, len(payload), "byte_proven")
-    assert conn.execute(
-        "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ? AND artifact_kind = ?",
-        (raw_id, kind.value),
-    ).fetchone() == (0,)
-    assert conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+    assert tuple(
+        conn.execute(
+            "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ? AND artifact_kind = ?",
+            (raw_id, kind.value),
+        ).fetchone()
+    ) == (0,)
+    assert tuple(conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone()) == (
+        0,
+    )
     conn.close()
 
 
@@ -342,9 +346,9 @@ def test_exact_append_binding_preserves_unrelated_non_session_census(tmp_path: P
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
-            "non_session",
-        )
+        assert tuple(
+            conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone()
+        ) == ("non_session",)
     finally:
         conn.close()
 
