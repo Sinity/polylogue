@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,7 @@ def test_lineage_refuses_unsafe_tier_before_sqlite_open(
     initialize_active_archive_root(root)
     tier = root / "user.db"
     unrelated = tmp_path / "unrelated.db"
-    with sqlite3.connect(unrelated) as connection:
+    with closing(sqlite3.connect(unrelated)) as connection, connection:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("CREATE TABLE unrelated (value TEXT)")
     before = unrelated.read_bytes()
