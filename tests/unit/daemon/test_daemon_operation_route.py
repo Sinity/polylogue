@@ -1368,6 +1368,10 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                 # deadline. Consume that cursor before testing an idle wait.
                 state = timed_out["result"]
                 assert state["outcome"] in {"accepted", "running"}, timed_out
+                assert (state["sequence"], state.get("progress_sequence", after_progress_sequence)) != (
+                    after_sequence,
+                    after_progress_sequence,
+                ), timed_out
                 after_sequence = state["sequence"]
                 after_progress_sequence = state.get("progress_sequence", after_progress_sequence)
             assert timed_out is not None and timed_out["outcome"] == "timed-out", timed_out
