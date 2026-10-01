@@ -20,7 +20,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.browser_capture.capture_stream import CaptureSummary, summarize_capture_stream
+from polylogue.browser_capture.capture_stream import CaptureEnvelopeError, CaptureSummary, summarize_capture_stream
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
     BrowserCaptureSpoolConflictError,
@@ -417,6 +417,40 @@ def test_interruption_between_publication_and_receipt_resumes_without_double_adm
     assert outcomes[entries[0][0]] == "deduplicated"
     assert {path.name: path.read_bytes() for path in published.glob("*.json")} == before
     assert ledger.read_text().split()[1] == "deduplicated"
+
+
+def test_codex_native_record_fingerprint_preserves_shape_and_order() -> None:
+    payload = _payload(session_id="codex-native")
+    cast(dict[str, object], payload["session"])["provider"] = "codex"
+    payload["raw_provider_payload"] = [
+        {"type": "session_meta", "payload": {"id": "codex-native", "timestamp": "2026-08-26T12:00:00Z"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "m1",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "authored"}],
+            },
+        },
+    ]
+
+    def summary(value: dict[str, object]) -> CaptureSummary:
+        return summarize_capture_stream(io.BytesIO(json.dumps(value).encode()))
+
+    original = summary(payload)
+    assert original.has_native_provider_payload
+    reordered_keys = json.loads(json.dumps(payload, sort_keys=True))
+    assert summary(reordered_keys).dedup_content_hash == original.dedup_content_hash
+    reordered_records = json.loads(json.dumps(payload))
+    reordered_records["raw_provider_payload"].reverse()
+    assert summary(reordered_records).dedup_content_hash != original.dedup_content_hash
+    changed = json.loads(json.dumps(payload))
+    changed["raw_provider_payload"][1]["payload"]["content"][0]["text"] = "changed"
+    assert summary(changed).dedup_content_hash != original.dedup_content_hash
+    cast(dict[str, object], payload["session"])["provider"] = "chatgpt"
+    with pytest.raises(CaptureEnvelopeError):
+        summary(payload)
 
 
 def test_raw_provider_payload_fingerprint_is_structural_and_complete() -> None:

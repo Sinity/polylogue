@@ -235,6 +235,13 @@ sites:
     reason: "pinned by the initial census; adjudication is follow-up work"
   - file: "polylogue/sources/parsers/browser_capture.py"
     function: "_merge_envelope_attachments"
+    subject: "owner_coordinate"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "Composes excluded private parser-to-writer ownership evidence from retained native turns and acquired attachment descriptors; no stored read-model value is substituted or repaired."
+  - file: "polylogue/sources/parsers/browser_capture.py"
+    function: "_merge_envelope_attachments"
     subject: "name"
     kind: "read_path_substitution"
     scope: "read_only_module"

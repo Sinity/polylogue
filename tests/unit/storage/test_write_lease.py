@@ -1934,3 +1934,34 @@ def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
             handle.allow_cleanup.set()
         if owner is not None:
             owner.close()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_lease_observation_rejects_inherited_child_task(tmp_path: Path) -> None:
+    """Only the actual admitted execution unit observes coordinator authority."""
+    from polylogue.core.write_lease import coordinator_write_lease_active
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    assert not coordinator_write_lease_active()
+
+    def offline() -> bool:
+        with write_lease("test.offline", archive_root=tmp_path):
+            return coordinator_write_lease_active()
+
+    assert not await asyncio.to_thread(offline)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+
+    async def admitted() -> None:
+        assert coordinator_write_lease_active()
+
+        async def child() -> bool:
+            return coordinator_write_lease_active()
+
+        assert not await asyncio.create_task(child())
+        assert coordinator_write_lease_active()
+
+    try:
+        await coordinator.run("test.coordinator.observation", admitted)
+    finally:
+        await coordinator.shutdown(timeout=1.0)
+    assert not coordinator_write_lease_active()
