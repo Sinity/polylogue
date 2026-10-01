@@ -14,6 +14,9 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+from polylogue.archive.session_revision_membership import MembershipClassification
+from polylogue.core.enums import Provider
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
@@ -413,14 +416,14 @@ def test_retained_replay_writes_hold_the_publisher_slot_through_their_commit(tmp
     try:
         with ArchiveStore(root, read_only=False) as store:
             store.write_parsed_for_retained_raw_result(
-                object(),
+                ParsedSession(source_name=Provider.CODEX, provider_session_id="custody-probe"),
                 raw_id="raw-1",
                 source_path="s.jsonl",
                 acquired_at_ms=1,
             )
             assert exclusion_available()
             store.write_parsed_for_retained_raw_result(
-                object(),
+                ParsedSession(source_name=Provider.CODEX, provider_session_id="custody-probe"),
                 raw_id="raw-2",
                 source_path="s.jsonl",
                 acquired_at_ms=1,
@@ -475,8 +478,15 @@ def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path:
     monkeypatch.setattr(archive_module, "write_parsed_for_retained_raw", observed)
     try:
         with ArchiveStore(root, read_only=False) as store:
-            store.apply_raw_membership_classification("key", object(), {}, {}, acquired_at_ms=1)
-            store.write_parsed_for_retained_raw(object(), raw_id="raw", source_path="s.jsonl", acquired_at_ms=1)
+            store.apply_raw_membership_classification(
+                "key", MembershipClassification((), (), ()), {}, {}, acquired_at_ms=1
+            )
+            store.write_parsed_for_retained_raw(
+                ParsedSession(source_name=Provider.CODEX, provider_session_id="custody-probe"),
+                raw_id="raw",
+                source_path="s.jsonl",
+                acquired_at_ms=1,
+            )
     finally:
         monkeypatch.undo()
 

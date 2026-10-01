@@ -25,7 +25,7 @@ from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.sql_settlement import NativeSQLCustodyOwner
+from polylogue.core.sql_settlement import NativeSQLCustodyOwner, current_native_sql_lifetimes
 from polylogue.core.text_identity import nfc
 from polylogue.core.types import ContentHash, MessageId, SessionId
 
@@ -421,8 +421,7 @@ def _retain_projection_sql_connection(connection: sqlite3.Connection, *, lifetim
     )
 
     try:
-        owner = NativeOwner(connection)
-        owner.retain_lifetime(lifetime)
+        owner = NativeOwner(connection, lifetime_dependencies=(*current_native_sql_lifetimes(), lifetime))
         return owner
     except NativeConnectionSettlementError as failure:
         failure.owner.retain_lifetime(lifetime)

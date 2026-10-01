@@ -33,7 +33,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import parse_qs, quote, urlsplit
 
-from polylogue.core.sql_settlement import SQLCustodyOwner, register_native_sql_census
+from polylogue.core.sql_settlement import SQLCustodyOwner, current_native_sql_lifetimes, register_native_sql_census
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, current_sql_custody, require_write_lease
 
@@ -143,7 +143,7 @@ def retained_native_sql_owners_for_lifetime(dependency: object) -> tuple[NativeS
             owner
             for owner in _LIVE_NATIVE_SQL_OWNERS.values()
             if owner.pid == os.getpid()
-            and not owner._settled
+            and (not owner._settled or owner._terminal_parent is not None)
             and any(item is dependency for item in owner._lifetime_dependencies)
         )
 
@@ -184,13 +184,14 @@ class NativeSQLCustodyOwner:
         anchored_descriptors: tuple[int, ...] = (),
         terminal_parent: SQLCustodyOwner | None = None,
         scratch_directory: tempfile.TemporaryDirectory[str] | None = None,
+        lifetime_dependencies: tuple[object, ...] = (),
     ) -> None:
         self.close_required = False
         self._settled = False
         self._terminal_parent = terminal_parent
         self.scratch_directory = scratch_directory
         self._connection_identity = id(connection)
-        self._lifetime_dependencies: list[object] = []
+        self._lifetime_dependencies: list[object] = list(lifetime_dependencies)
         self.leaf = leaf
         self.cache_entry = cache_entry
         self.anchored_descriptors = anchored_descriptors
@@ -228,7 +229,7 @@ class NativeSQLCustodyOwner:
     def handoff(self) -> sqlite3.Connection:
         """Retire temporary construction custody without closing the idle handle."""
         self._require_owner()
-        if self._terminal_parent is not None or self.scratch_directory is not None:
+        if self._terminal_parent is not None or self.scratch_directory is not None or self._lifetime_dependencies:
             raise RuntimeError("native SQLite handle with terminal obligations cannot be handed off")
         connection = self.connection
         if connection is None:
@@ -2500,7 +2501,9 @@ def scratch_connection_context(
     except BaseException:
         scratch.cleanup()
         raise
-    owner = NativeSQLCustodyOwner(connection, scratch_directory=scratch)
+    owner = NativeSQLCustodyOwner(
+        connection, scratch_directory=scratch, lifetime_dependencies=current_native_sql_lifetimes()
+    )
     try:
         connection.execute("PRAGMA journal_mode = MEMORY")
         connection.execute("PRAGMA synchronous = OFF")

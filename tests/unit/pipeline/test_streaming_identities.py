@@ -57,7 +57,7 @@ def test_projection_close_preserves_artifact_until_failed_reader_close_settles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import sqlite3
-    from typing import Any
+    from typing import Any, cast
 
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, NativeSQLCustodyOwner
 
@@ -85,7 +85,7 @@ def test_projection_close_preserves_artifact_until_failed_reader_close_settles(
             assert isinstance(connection, FailingReader)
             opened.append(connection)
             return connection
-        return actual_connect(database, *args, **kwargs)
+        return cast(sqlite3.Connection, actual_connect(database, *args, **kwargs))
 
     def failed_page() -> NativeSQLCustodyOwner:
         with pytest.raises(NativeConnectionSettlementError) as refused:

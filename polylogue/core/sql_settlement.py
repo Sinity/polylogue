@@ -1,9 +1,29 @@
 """Structural cleanup contracts for retained SQL handles."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import Condition
 from typing import Protocol
+
+if "_native_sql_lifetimes" not in globals():
+    _native_sql_lifetimes: ContextVar[tuple[object, ...]] = ContextVar("native_sql_artifact_lifetimes", default=())
+
+
+def current_native_sql_lifetimes() -> tuple[object, ...]:
+    """Dependencies explicitly captured by artifact SQL registrations."""
+    return _native_sql_lifetimes.get()
+
+
+@contextmanager
+def retain_native_sql_lifetimes(*dependencies: object) -> Iterator[None]:
+    """Carry existing scratch owners through captured compute and read contexts."""
+    token = _native_sql_lifetimes.set((*current_native_sql_lifetimes(), *dependencies))
+    try:
+        yield
+    finally:
+        _native_sql_lifetimes.reset(token)
 
 
 class SQLCustodyOwner(Protocol):

@@ -513,6 +513,10 @@ def test_async_writer_grant_is_retained_until_worker_connection_closes(
         fail_close = True
         worker: threading.Thread | None = None
 
+        def set_progress_handler(self, callback: object, steps: int) -> None:
+            assert threading.current_thread() is self.worker
+            assert callback is None and steps == 0
+
         def rollback(self) -> None:
             assert threading.current_thread() is self.worker
 
@@ -1631,7 +1635,7 @@ def test_direct_blackboard_writer_acquires_custody_and_retires_temporary_user_ha
 
     initialize_active_archive_root(tmp_path)
     store = archive_module.ArchiveStore(tmp_path, initialize=False)
-    real_open = cast(Callable[..., sqlite3.Connection], archive_module.open_connection)
+    real_open = cast(Callable[..., sqlite3.Connection], vars(archive_module)["open_connection"])
     admissions: list[bool] = []
 
     def observe_open(path: Path, *args: object, **kwargs: object) -> sqlite3.Connection:

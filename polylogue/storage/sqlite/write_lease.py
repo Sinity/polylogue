@@ -1245,8 +1245,8 @@ def write_lease(
                 "storage.write_lease.hold_exceeded",
                 level=WARNING,
                 actor=actor,
-                held_seconds=lease.held_seconds,
-                declared_hold_seconds=lease.max_hold_seconds,
+                hold_ms=lease.held_seconds * 1000,
+                budget_ms=lease.max_hold_seconds * 1000,
                 outcome="failed",
             )
         _restore_active_lease(token, lease)
@@ -1267,8 +1267,8 @@ def write_lease(
                 "storage.write_lease.hold_exceeded",
                 level=WARNING,
                 actor=actor,
-                held_seconds=lease.held_seconds,
-                declared_hold_seconds=lease.max_hold_seconds,
+                hold_ms=lease.held_seconds * 1000,
+                budget_ms=lease.max_hold_seconds * 1000,
                 outcome="committed",
             )
         if lease.owns_custody_ref and lease.custody is not None:

@@ -33,6 +33,7 @@ import ijson
 
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.sources import value_bounds
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
 from polylogue.sources.live.tool_result_sidecars import (
@@ -1344,7 +1345,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
 @contextmanager
 def _prepared_reader(path: Path) -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(_read_uri(path), uri=True)
-    owner = NativeSQLCustodyOwner(connection)
+    owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield connection
     finally:
@@ -1377,8 +1378,9 @@ class SqliteMessageStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.conn = sqlite3.connect(path)
-        self._sql_owner = NativeSQLCustodyOwner(self.conn)
-        self._sql_owner.retain_lifetime(self)
+        self._sql_owner = NativeSQLCustodyOwner(
+            self.conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self)
+        )
         self.conn.execute("PRAGMA journal_mode = DELETE")
         # The schema is created inside the store's one transaction: as separate
         # autocommit statements each CREATE paid its own journal and fsync, per

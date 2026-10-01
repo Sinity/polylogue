@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import ItemsView, Iterator
+from collections.abc import Callable, ItemsView, Iterator
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
@@ -3362,7 +3362,7 @@ def test_census_batching_reduces_commit_count(tmp_path: Path) -> None:
     def _manage_transaction_flags(archive_root: Path, *, commit_batch_size: int | None) -> tuple[list[bool], int]:
         flags: list[bool] = []
         commit_count = 0
-        original_bind = ArchiveStore.bind_raw_revision
+        original_bind: Callable[..., None] = ArchiveStore.bind_raw_revision
         original_commit = ArchiveStore.commit
 
         def recording_bind(self: ArchiveStore, raw_id: str, revision: object, **bind_kwargs: object) -> None:
@@ -3435,7 +3435,7 @@ def test_census_batch_crash_loses_at_most_one_batch_and_resumes_cleanly(
     root = tmp_path / "archive"
     build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000)
 
-    original_bind = ArchiveStore.bind_raw_revision
+    original_bind: Callable[..., None] = ArchiveStore.bind_raw_revision
     calls = 0
     # Crash on the 7th bind call: batch 1 (calls 1-4) has already committed;
     # batch 2 (calls 5-8) is interrupted after its 3rd call (7), before it
@@ -3496,7 +3496,7 @@ def test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly(
     root = tmp_path / "archive"
     build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000)
 
-    original_apply = ArchiveStore.apply_raw_revision_replay
+    original_apply: Callable[..., object] = ArchiveStore.apply_raw_revision_replay
     calls = 0
     # Batch 1 (cohorts 1-4) commits cleanly and resets the counter. Batch 2
     # starts (cohort 5 applies, uncommitted), then crashes on cohort 6 --

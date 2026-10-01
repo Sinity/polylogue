@@ -3835,10 +3835,8 @@ def _process_ingest_batch_sync(
 
     if current_write_lease() is not None:
         raise RuntimeError("ingest writer admission requires a precomputed durable-reference seal")
-    db_path = kwargs.get("db_path")
-    archive_root_str = kwargs.get("archive_root_str")
-    if not isinstance(db_path, Path) or not isinstance(archive_root_str, str):
-        raise TypeError("ingest reference preparation requires explicit index and archive paths")
+    db_path = kwargs["db_path"]
+    archive_root_str = kwargs["archive_root_str"]
     archive_root = Path(archive_root_str)
     with PreparedIndexMutation(db_path, archive_root=archive_root) as seal:
         prepared = kwargs.get("prepared_unit")
@@ -3846,14 +3844,12 @@ def _process_ingest_batch_sync(
             prepared,
             db_path=db_path,
             archive_root=archive_root,
-            validation_mode=cast(str, kwargs["validation_mode"]),
-            publication_mode=cast(PublicationMode, kwargs.get("publication_mode", PublicationMode.OFF)),
+            validation_mode=kwargs["validation_mode"],
+            publication_mode=kwargs.get("publication_mode", PublicationMode.OFF),
             reference_seal=seal,
         ):
             discard_ingest_result_payload(prepared.result)
-            return _new_ingest_batch_summary(
-                raw_artifacts, ingest_workers=cast(int | None, kwargs.get("ingest_workers"))
-            )
+            return _new_ingest_batch_summary(raw_artifacts, ingest_workers=kwargs["ingest_workers"])
         with write_lease("offline.ingest.index", archive_root=archive_root):
             seal.validate_observers_current()
             if isinstance(prepared, _PreparedIngestUnit) and prepared.drive_revision_updates:

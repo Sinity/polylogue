@@ -378,7 +378,7 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
     connect = aiosqlite.connect
 
     def capture_connection(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
-        conn = cast(aiosqlite.Connection, connect(*args, **kwargs))
+        conn = connect(*args, **kwargs)
         connections.append(conn)
         return conn
 

@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, overload
 from urllib.parse import quote
 
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 
@@ -177,7 +178,7 @@ def _shard_connection(path: Path, *, readonly: bool = True) -> Iterator[sqlite3.
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
     connection = sqlite3.connect(_read_only_uri(path), uri=True) if readonly else sqlite3.connect(path)
-    owner = NativeSQLCustodyOwner(connection)
+    owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield connection
     finally:
@@ -199,7 +200,7 @@ class SessionShardBuilder:
         self._discard_on_close = True
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
-        NativeSQLCustodyOwner(self._conn, terminal_parent=self)
+        NativeSQLCustodyOwner(self._conn, terminal_parent=self, lifetime_dependencies=current_native_sql_lifetimes())
         # A shard is scratch: it is read once, by one process, and deleted.
         # Its durability is the source file it was parsed from, so paying for
         # synchronous writes here would buy nothing the re-parse does not.

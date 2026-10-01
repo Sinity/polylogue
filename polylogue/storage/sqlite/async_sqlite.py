@@ -129,12 +129,20 @@ async def _settled_connection_operation(
         return exc, cancellation
 
 
+async def _clear_connection_progress_guard(conn: aiosqlite.Connection) -> None:
+    """Clear interruption on the actual worker before rollback or native close."""
+    raw = conn._connection
+    if raw is not None:
+        # aiosqlite's public annotation omits SQLite's documented None callback.
+        await conn._execute(raw.set_progress_handler, None, 0)  # type: ignore[no-untyped-call]
+
+
 async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool) -> _ConnectionCloseResult:
     """Retain the raw handle and worker until native close has actually settled."""
     error = None
     cancellation = None
     if conn._connection is not None:
-        error, cancellation = await _settled_connection_operation(conn.set_progress_handler(None, 0))
+        error, cancellation = await _settled_connection_operation(_clear_connection_progress_guard(conn))
     if rollback and conn._connection is not None:
         rollback_error, rollback_cancellation = await _settled_connection_operation(conn.rollback())
         error = error or rollback_error
@@ -612,7 +620,7 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
                 yield
             except BaseException as primary:
                 try:
-                    await _await_settled(backend._bulk_conn.set_progress_handler(None, 0))
+                    await _await_settled(_clear_connection_progress_guard(backend._bulk_conn))
                 except BaseException as cleanup:
                     primary.add_note(f"bulk cancellation guard cleanup also failed: {cleanup}")
                 for statement in (f"ROLLBACK TO SAVEPOINT {sp_name}", f"RELEASE SAVEPOINT {sp_name}"):
@@ -729,7 +737,7 @@ async def _backend_rollback(backend: SQLiteBackend) -> None:
         backend._transaction_owner_task = None
     else:
         next_depth = backend._transaction_depth - 1
-        await _await_settled(backend._txn_conn.set_progress_handler(None, 0))
+        await _await_settled(_clear_connection_progress_guard(backend._txn_conn))
         await _await_settled(backend._txn_conn.execute(f"ROLLBACK TO SAVEPOINT sp_{next_depth}"))
         await _await_settled(backend._txn_conn.execute(f"RELEASE SAVEPOINT sp_{next_depth}"))
         backend._transaction_depth = next_depth

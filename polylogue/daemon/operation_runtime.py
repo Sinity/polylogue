@@ -615,6 +615,7 @@ class DaemonOperationRuntime:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(packet, stream, sort_keys=True, separators=(",", ":"))
                 stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, path)
             sync_directory(path.parent)
         finally:

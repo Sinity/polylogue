@@ -215,7 +215,7 @@ def test_workspace_fixture_teardown_retains_failed_population_fence(
 
     create_fixture = cast(
         Callable[[Path, pytest.MonkeyPatch], Generator[dict[str, Path], None, None]],
-        conftest.workspace_paths.__wrapped__,
+        vars(conftest.workspace_paths)["__wrapped__"],
     )
     fixture = create_fixture(tmp_path, monkeypatch)
     paths = next(fixture)
