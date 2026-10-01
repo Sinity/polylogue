@@ -93,7 +93,7 @@ _PARSER_FINGERPRINT = "live-batched-v5"
 # acquired files, full-ingest progress groups and archive-write records (a
 # single session write cannot be split mid-transaction), never mid-record, so
 # overshoot is one work item. Past the writer gate's own declared hold bound
-# the same checkpoints end the pass with ``WriteHoldBudgetError``.
+# elapsed writer thresholds are diagnostic and never refuse an admitted item.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
 _RAW_RETENTION_RETRY_BUDGET_SECONDS = 30.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024

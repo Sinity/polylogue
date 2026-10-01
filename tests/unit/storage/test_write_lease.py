@@ -1494,8 +1494,10 @@ def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority(tmp_
     Anti-vacuity: restore the ident-only membership check in
     ``require_write_lease`` and the impostor below is admitted.
     """
+    from types import SimpleNamespace
     from unittest.mock import patch
 
+    from polylogue.storage.sqlite import write_lease as lease_module
     from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
 
     observed: dict[str, object] = {}
@@ -1517,15 +1519,15 @@ def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority(tmp_
         assert retired_ident in lease.authorized_threads()
 
         def impostor() -> None:
-            with patch.object(threading, "get_ident", return_value=retired_ident):
+            threading_view = SimpleNamespace(**vars(threading))
+            threading_view.get_ident = lambda: retired_ident
+            with patch.object(lease_module, "threading", threading_view):
                 try:
                     require_write_lease("write from a thread that reused a retired ident", archive_root=tmp_path)
                 except UnleasedWriteError:
                     observed["outcome"] = "refused"
                 else:
                     observed["outcome"] = "admitted"
-                finally:
-                    threading._active.pop(retired_ident, None)  # type: ignore[attr-defined]
 
         thread = threading.Thread(target=impostor, name="ident-reuse-impostor")
         thread.start()

@@ -253,9 +253,15 @@ class DaemonSupervisor:
                 f"daemon service {name!r} started before its dependencies: {', '.join(sorted(unresolved))}"
             )
 
-        task = asyncio.create_task(self._run(spec, factory()), name=f"{TASK_NAME_PREFIX}{name}")
+        task = asyncio.create_task(self._run(spec, factory), name=f"{TASK_NAME_PREFIX}{name}")
         self._tasks[name] = task
         self._resolve(spec, ServiceState.RUNNING)
+
+        def settle_unstarted(done: asyncio.Task[None]) -> None:
+            if done.cancelled() and self.state(name) is ServiceState.RUNNING:
+                self._settle(spec, ServiceState.STOPPED, reason="cancelled before service start")
+
+        task.add_done_callback(settle_unstarted)
         return task
 
     def mark_unavailable(self, name: str, *, reason: str) -> None:
@@ -309,10 +315,10 @@ class DaemonSupervisor:
             return
         await asyncio.gather(*self._tasks.values())
 
-    async def _run(self, spec: DaemonServiceSpec, coro: Coroutine[Any, Any, None]) -> None:
+    async def _run(self, spec: DaemonServiceSpec, factory: Callable[[], Coroutine[Any, Any, None]]) -> None:
         self._publish(spec, ServiceState.RUNNING)
         try:
-            await coro
+            await factory()
         except asyncio.CancelledError:
             self._settle(spec, ServiceState.STOPPED, reason="cancelled")
             raise

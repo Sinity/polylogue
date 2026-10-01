@@ -849,7 +849,8 @@ def test_promotion_refuses_ownerless_predecessor_before_pointer_swap(tmp_path: P
     assert store.load(candidate.generation_id).state == "inactive"
 
 
-def test_promotion_refuses_candidate_that_orphans_a_resolved_user_message_ref(tmp_path: Path) -> None:
+@pytest.mark.parametrize("anchor", ["assertion", "annotation_prompt", "audit_preview"])
+def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref(tmp_path: Path, anchor: str) -> None:
     """Promotion preserves refs resolved by the previous active generation."""
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType, Provider
@@ -888,16 +889,56 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_user_message_ref(tm
             conn.commit()
         finally:
             conn.close()
-        user = sqlite3.connect(tmp_path / "user.db")
-        try:
-            user.execute(
-                "INSERT INTO assertions(assertion_id, target_ref, kind, created_at_ms, updated_at_ms) "
-                "VALUES (?, ?, 'fact', 0, 0)",
-                ("assertion-preserve-message", ObjectRef("message", message_id).format()),
-            )
-            user.commit()
-        finally:
-            user.close()
+        target_ref = ObjectRef("message", message_id).format()
+        if anchor == "assertion":
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            with ArchiveStore(tmp_path, initialize=False) as archive:
+                archive.save_annotation(
+                    "annotation-preserve-message",
+                    "message",
+                    message_id,
+                    "Synthetic retained note",
+                    owner_session_id=session_id,
+                )
+                archive.commit()
+        elif anchor == "annotation_prompt":
+            from polylogue.annotations.batch import AnnotationBatch
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            with ArchiveStore(tmp_path, initialize=False) as archive:
+                archive.save_annotation_batch(
+                    AnnotationBatch(
+                        batch_id="annotation-preserve-prompt",
+                        schema_id="delegation.discourse",
+                        schema_version=1,
+                        target_ref="delegation:neutral",
+                        source_result_ref="result-set:neutral",
+                        actor_ref="agent:neutral",
+                        model_ref="agent:neutral",
+                        prompt_ref=target_ref,
+                        total_count=0,
+                        valid_count=0,
+                        invalid_count=0,
+                        abstained_count=0,
+                    )
+                )
+                archive.commit()
+        else:
+            with sqlite3.connect(tmp_path / "audit.db") as audit:
+                audit.execute(
+                    "INSERT INTO operation_previews(preview_id, operation_name, operation_version, "
+                    "archive_instance_id, archive_identity_digest, plan_hash, parameter_digest, target_digest, "
+                    "target_count, destructive_class, required_confirmation, required_capability_count, "
+                    "principal_actor_ref, principal_surface, state, created_at_ms, expires_at_ms, plan_json) "
+                    "VALUES ('preview-reference', 'test.reference', 1, 'neutral', 'neutral', 'neutral', 'neutral', "
+                    "'neutral', 1, 'additive', 'role_only', 0, 'user:local', 'internal', 'prepared', 0, 1, '{}')"
+                )
+                audit.execute(
+                    "INSERT INTO operation_preview_targets VALUES ('preview-reference', 0, 'message', ?, "
+                    "'neutral', 'neutral', 'derived', 'rebuild')",
+                    (target_ref,),
+                )
 
     store = IndexGenerationStore.for_archive_root(tmp_path)
     active_before = Path(store.active_pointer).resolve(strict=True)

@@ -9179,16 +9179,8 @@ def test_hold_budget_spent_after_the_commit_still_records_the_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A committed batch's cursor is durable even when the hold is spent.
-
-    The ``archive_write_complete`` checkpoint sits after the archive commit and
-    before ``_record_full_cursor``, so raising there wrote the session and left
-    the cursor unrecorded, and every later pass re-parsed and re-wrote the same
-    file forever (polylogue-3ijaa). Restoring the raise at that checkpoint turns
-    this red: ``ingest_files`` propagates ``WriteHoldBudgetError`` with the
-    session written and ``get_record`` returning ``None``.
-    """
-    from polylogue.core.write_hold import WriteHoldBudgetError
+    """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -9200,16 +9192,11 @@ def test_hold_budget_spent_after_the_commit_still_records_the_cursor(
     )
     processor, cursor = _live_processor(tmp_path, root, source_name="codex")
 
-    def spend_only_the_post_commit_checkpoint(checkpoint: str) -> None:
-        if checkpoint == "archive_write_complete":
-            raise WriteHoldBudgetError(actor="test", checkpoint=checkpoint, hold_seconds=99.0, budget_s=30.0)
-
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.check_write_hold_budget",
-        spend_only_the_post_commit_checkpoint,
-    )
-
-    first = asyncio.run(processor.ingest_files([path], emit_event=False))
+    token = enter_write_hold("watcher.live_ingest.full", 0)
+    try:
+        first = asyncio.run(processor.ingest_files([path], emit_event=False))
+    finally:
+        exit_write_hold(token)
 
     assert first.succeeded_file_count == 1
     assert first.ingested_session_count == 1
@@ -9724,20 +9711,12 @@ def test_deferred_cursor_records_when_the_tail_cannot_be_reopened(
     assert after.byte_offset == before.byte_offset
 
 
-@pytest.mark.parametrize("halt", ["write_hold_spent", "stop_requested"])
 @pytest.mark.asyncio
 async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    halt: str,
 ) -> None:
-    """A held same-session revision the batch never reaches is deferred, not settled.
-
-    Anti-vacuity: end the unit (spent writer hold, or a stop seen at the held
-    group's halt checks) without accounting for the held group and the later
-    revision is in no outcome collection, so it is neither deferred nor
-    retried.
-    """
+    """Cancellation leaves an ordering-held revision retryable and unpublished."""
     root = tmp_path / "sessions"
     root.mkdir()
     first, second = root / "revision-1.json", root / "revision-2.json"
@@ -9761,7 +9740,6 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
             source_payload_read_bytes=0,
             raw_fingerprints={first: "raw-first"},
             ordering_held=[second],
-            write_hold_exhausted=halt == "write_hold_spent",
         )
 
     def fake_append_plan(_path: Path, **_kwargs: object) -> None:
@@ -9773,8 +9751,7 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(processor, "_compact_superseded_raw_snapshots", lambda _paths: None)
     monkeypatch.setattr(processor, "_defer_full_cursor_retry", lambda path, **_kwargs: deferred.append(path))
-    if halt == "stop_requested":
-        monkeypatch.setattr(processor, "_stop_requested", lambda: bool(published))
+    monkeypatch.setattr(processor, "_stop_requested", lambda: bool(published))
 
     metrics = await processor.ingest_files([first, second], emit_event=False)
 
@@ -9849,12 +9826,12 @@ def test_append_publication_does_not_hide_growth_after_planning(
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (3,)
 
 
-def test_append_budget_refusal_retains_retryable_raw_without_poisoning_source(
+def test_slow_append_finishes_once_without_poisoning_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     frozen_clock: Any,
 ) -> None:
-    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
     from polylogue.sources.live import append_ingest
 
     path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="append-budget")
@@ -9870,9 +9847,7 @@ def test_append_budget_refusal_retains_retryable_raw_without_poisoning_source(
     monkeypatch.setattr(append_ingest, "_write_append_raw_payload", delayed_capture)
     token = enter_write_hold("watcher.live_ingest.append", 30)
     try:
-        with pytest.raises(WriteHoldBudgetError) as caught:
-            ingest_append_plans(cast(Any, owner), [plan])
-        assert caught.value.checkpoint == "append_parse"
+        assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
     finally:
         exit_write_hold(token)
     after = processor._cursor.get_record(path)
@@ -9885,8 +9860,6 @@ def test_append_budget_refusal_retains_retryable_raw_without_poisoning_source(
             (str(path),),
         ).fetchall() == [(None,)]
 
-    monkeypatch.setattr(append_ingest, "_write_append_raw_payload", original)
-    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
     assert processor._record_append_cursor(plan) is True
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)

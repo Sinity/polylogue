@@ -104,21 +104,8 @@ class DaemonWriterOwnerLoopStopped(RuntimeError):  # noqa: N818 - typed outcome 
 
 #: Declared hold budgets, longest matching actor prefix wins.
 #:
-#: The coordinator cannot abort an operation that is already inside a SQLite
-#: transaction, so a budget does not preempt. It is published to the admitted
-#: unit of work through :mod:`polylogue.core.write_hold`, and every checkpoint
-#: that unit offers -- between files, between records -- ends the unit with a
-#: typed ``WriteHoldBudgetError`` once the bound is spent, so overshoot is
-#: one work item.
-#:
-#: The numbers come from measurement, not preference. A non-gated writer times
-#: out after the storage layer's busy timeout -- 30 s, DB_TIMEOUT in
-#: storage/sqlite/connection_profile.py, not imported here because the daemon
-#: ring may not reach into storage -- so any hold longer than that can starve
-#: one. A live catch-up chunk held 1.0-3.1 s in rehearsal-11,
-#: and maintenance.drive_catchup was measured at hold_max 18,623 s
-#: (daemon/cli.py), which is the hold this budget exists to surface
-#: (polylogue-8qm4k).
+#: These thresholds report long holds without withdrawing admitted work.
+#: Explicit cancellation and terminal SQL settlement determine writer lifetime.
 WRITE_HOLD_BUDGETS_S: Mapping[str, float] = {
     "watcher.catch_up.chunk": 30.0,
     "watcher.live_ingest": 30.0,
@@ -669,7 +656,7 @@ class DaemonWriteCoordinator:
                     admission_failed = True
                     raise
             # Establish the storage-side authorization in the coordinator-owned
-            # task.  ``_run_in_daemon_thread`` copies this context into the
+            # task.  ``_run_writer_worker`` copies this context into the
             # actual writer thread, so every writable open remains behind the
             # same gate even when the callable is synchronous.
             async with async_write_lease(request.actor, archive_root=self._archive_root, coordinator=self) as lease:
@@ -741,6 +728,32 @@ class DaemonWriteCoordinator:
         """Run blocking writer work without making process exit unbounded."""
         return await self._run_sync(actor, function, None, None, *args, **kwargs)
 
+    async def run_prepared_sync(
+        self,
+        actor: str,
+        operation: Callable[[], T],
+        *,
+        submit_worker: Callable[[Callable[[], None]], ConcurrentFuture[None]],
+        settlement_owners: Callable[[], tuple[SQLCustodyOwner, ...]],
+    ) -> T:
+        """Own an off-gate preparation worker through its final SQL settlement.
+
+        The callable acquires ordinary bridge admission after preparing on its
+        worker. Its result is delivered independently from the managed compute
+        slot, which remains occupied while that same thread settles failed SQL.
+        """
+        self._require_process()
+        if current_write_lease() is not None:
+            raise RuntimeError("prepared writer work must begin outside admission")
+        if not self._accepting:
+            raise RuntimeError("daemon writer is shutting down")
+        task = asyncio.create_task(
+            _run_writer_worker(self, _WorkerDispatch(submit_worker, settlement_owners), operation, actor),
+            name=f"polylogue-prepared-writer:{actor}",
+        )
+        self._track_execution(task, actor=actor)
+        return await asyncio.shield(task)
+
     async def run_sync_with_completion(
         self,
         actor: str,
@@ -765,8 +778,9 @@ class DaemonWriteCoordinator:
         **kwargs: P.kwargs,
     ) -> T:
         async def operation() -> T:
-            return await _run_in_daemon_thread(
+            return await _run_writer_worker(
                 self,
+                None,
                 function,
                 f"polylogue-writer:{actor}",
                 *args,
@@ -958,8 +972,15 @@ class DaemonWriteCoordinator:
             _LATEST_TELEMETRY.update(payload)
 
 
-async def _run_in_daemon_thread(
+@dataclass(frozen=True)
+class _WorkerDispatch:
+    submit: Callable[[Callable[[], None]], ConcurrentFuture[None]]
+    settlement_owners: Callable[[], tuple[SQLCustodyOwner, ...]]
+
+
+async def _run_writer_worker(
     coordinator: DaemonWriteCoordinator,
+    dispatch: _WorkerDispatch | None,
     function: Callable[P, T],
     thread_name: str,
     /,
@@ -983,7 +1004,13 @@ async def _run_in_daemon_thread(
         custody = thread_grant.lease.custody if thread_grant is not None else None
 
         def sql_owners() -> tuple[SQLCustodyOwner, ...]:
-            return custody.retained_sql_owners_on_current_thread() if custody is not None else ()
+            from polylogue.storage.sqlite.reference_seal import retained_reference_seals_on_current_thread
+            from polylogue.storage.sqlite.write_lease import retained_sql_owners_on_current_thread
+
+            observers = retained_reference_seals_on_current_thread()
+            registered = retained_sql_owners_on_current_thread()
+            prepared = dispatch.settlement_owners() if dispatch is not None else ()
+            return tuple({id(owner): owner for owner in (*registered, *observers, *prepared)}.values())
 
         def reconcile_cached_handles() -> None:
             from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
@@ -1024,13 +1051,9 @@ async def _run_in_daemon_thread(
         try:
 
             def invoke() -> T:
-                try:
-                    if thread_grant is not None:
-                        bind_write_lease_thread(thread_grant)
-                    return function(*args, **kwargs)
-                finally:
-                    if thread_grant is not None:
-                        thread_grant.complete()
+                if thread_grant is not None:
+                    bind_write_lease_thread(thread_grant)
+                return function(*args, **kwargs)
 
             value = context.run(invoke)
         except BaseException as exc:
@@ -1084,7 +1107,21 @@ async def _run_in_daemon_thread(
             )
 
     try:
-        threading.Thread(target=worker, name=thread_name, daemon=True).start()
+        if dispatch is None:
+            threading.Thread(target=worker, name=thread_name, daemon=True).start()
+        else:
+            submission = dispatch.submit(worker)
+
+            def submission_finished(done: ConcurrentFuture[None]) -> None:
+                if result.done():
+                    return
+                try:
+                    done.result()
+                except BaseException as exc:
+                    with contextlib.suppress(InvalidStateError):
+                        result.set_exception(exc)
+
+            submission.add_done_callback(submission_finished)
     except BaseException:
         if thread_grant is not None:
             thread_grant.complete()
@@ -1136,7 +1173,9 @@ class DaemonWriteThreadBridge:
 
                         return asyncio.run(child())
 
-                    return await _run_in_daemon_thread(self._coordinator, work, f"polylogue-writer:{delegation.actor}")
+                    return await _run_writer_worker(
+                        self._coordinator, None, work, f"polylogue-writer:{delegation.actor}"
+                    )
             finally:
                 _ACTIVE_LEASE.reset(token)
 

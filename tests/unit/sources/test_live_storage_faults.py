@@ -329,14 +329,11 @@ def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(t
 
 
 @pytest.mark.asyncio
-async def test_a_spent_writer_hold_closes_the_attempt_as_retryable(
+async def test_sqlite_contention_closes_the_attempt_as_retryable(
     storage_env: tuple[Polylogue, LiveWatcher, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The adapter requeues a page whose writer hold ran out; its attempt row
-    must agree. Anti-vacuity: through the generic classification the row
-    records ``parser_defect`` with ``retryable=0``."""
-    from polylogue.core.write_hold import WriteHoldBudgetError
+    """A real SQLite contention failure closes its attempt as retryable."""
     from polylogue.sources.live.batch import LiveBatchProcessor
 
     archive, watcher, source_path = storage_env
@@ -349,18 +346,18 @@ async def test_a_spent_writer_hold_closes_the_attempt_as_retryable(
         )
         attempt.opened(attempt_id)
         attempt.started = True
-        raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
+        raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)
     try:
-        with pytest.raises(WriteHoldBudgetError):
+        with pytest.raises(sqlite3.OperationalError):
             await watcher._batch_processor.ingest_files([source_path])
         with sqlite3.connect(watcher._cursor._ops_db_path) as conn:
             row = conn.execute(
                 "SELECT status, outcome_code, retryable, evidence_ref FROM ingest_attempts "
                 "ORDER BY started_at_ms DESC, rowid DESC LIMIT 1"
             ).fetchone()
-        assert tuple(row) == ("failed", "transient_error", 1, "write_hold_budget")
+        assert tuple(row) == ("failed", "transient_error", 1, "archive_write:OperationalError")
     finally:
         monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", original)
         watcher.stop()
@@ -411,7 +408,6 @@ async def test_an_attempt_close_skipped_under_lock_is_reported(
     """``finish_ingest_attempt`` gives up quietly (returns ``False``) when the
     ops tier stays locked; the closer must say the row is still running.
     Anti-vacuity: treating every non-raising call as closed emits nothing."""
-    from polylogue.core.write_hold import WriteHoldBudgetError
     from polylogue.sources.live.batch import LiveBatchProcessor
 
     archive, watcher, source_path = storage_env
@@ -422,12 +418,12 @@ async def test_an_attempt_close_skipped_under_lock_is_reported(
         )
         kwargs["open_attempt"].opened(attempt_id)
         kwargs["open_attempt"].started = True
-        raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
+        raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)
     monkeypatch.setattr(CursorStore, "finish_ingest_attempt", lambda self, *args, **kwargs: False)
     try:
-        with capture() as events, pytest.raises(WriteHoldBudgetError):
+        with capture() as events, pytest.raises(sqlite3.OperationalError):
             await watcher._batch_processor.ingest_files([source_path])
         skipped = [event for event in events if event.get("event") == "live.ingest.attempt_finish_failed"]
         assert [event.get("reason") for event in skipped] == ["ops_write_skipped"]

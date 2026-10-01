@@ -1292,7 +1292,7 @@ class TestDeclaredHoldBudgets:
         assert event.hold_over_budget is True
         assert count == 1
 
-    def test_the_admitted_work_can_end_itself_at_the_bound(
+    def test_admitted_work_finishes_past_its_diagnostic_threshold(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The declared bound reaches the work that has to respect it.
@@ -1302,7 +1302,7 @@ class TestDeclaredHoldBudgets:
         only trace of an over-long hold is the release warning -- the state
         this closes.
         """
-        from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
+        from polylogue.core.write_hold import active_write_hold
         from polylogue.daemon import write_coordinator as wc
 
         monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
@@ -1312,7 +1312,7 @@ class TestDeclaredHoldBudgets:
             coordinator = wc.DaemonWriteCoordinator(archive_root=tmp_path)
 
             def work_item(name: str) -> None:
-                check_write_hold_budget(f"item:{name}")
+                assert active_write_hold() is not None
                 reached.append(name)
 
             async def operation() -> None:
@@ -1332,19 +1332,15 @@ class TestDeclaredHoldBudgets:
 
         error, event = asyncio.run(scenario())
 
-        assert isinstance(error, WriteHoldBudgetError)
-        assert error.actor == "slow.actor"
-        assert error.checkpoint == "item:first"
-        assert error.budget_s == 0.0
-        assert reached == []
+        assert error is None
+        assert reached == ["first", "second"]
         assert event.hold_over_budget is True
 
-    def test_a_checkpoint_off_a_hold_has_no_bound_to_enforce(self) -> None:
+    def test_an_unadmitted_context_has_no_hold_telemetry(self) -> None:
         """Un-gated callers (CLI ingest, focused tests) keep their old shape."""
-        from polylogue.core.write_hold import active_write_hold, check_write_hold_budget
+        from polylogue.core.write_hold import active_write_hold
 
         assert active_write_hold() is None
-        check_write_hold_budget("item:none")
 
 
 @pytest.mark.asyncio

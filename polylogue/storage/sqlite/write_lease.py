@@ -328,6 +328,17 @@ class ArchiveWriteCustody:
                 self._close_directory_descriptor()
 
 
+def retained_sql_owners_on_current_thread() -> tuple[SQLCustodyOwner, ...]:
+    """Return actual unsettled SQL from this process's original worker thread."""
+    with _CUSTODY_REGISTRY_LOCK:
+        return tuple(
+            owner
+            for custody in tuple(_CUSTODIES)
+            if custody.owner_pid == os.getpid()
+            for owner in custody.retained_sql_owners_on_current_thread()
+        )
+
+
 def _before_fork() -> None:
     _CUSTODY_REGISTRY_LOCK.acquire()
 

@@ -19,10 +19,29 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from polylogue.core.compute_cancel import compute_cancel_requested
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+_LIVE_SEALS_LOCK = threading.RLock()
+_LIVE_SEALS: dict[int, PreparedIndexMutation] = {}
+
+
+def retained_reference_seals_on_current_thread() -> tuple[PreparedIndexMutation, ...]:
+    """Keep failed observer cleanup reachable by its original preparation worker."""
+    with _LIVE_SEALS_LOCK:
+        return tuple(
+            seal
+            for seal in _LIVE_SEALS.values()
+            if seal.index_pid == os.getpid() and seal.index_thread is threading.current_thread()
+        )
+
+
+def _check_reference_cancellation() -> None:
+    if compute_cancel_requested():
+        raise asyncio.CancelledError("durable-reference proof cancelled by its owner")
 
 
 class ReferenceSealError(RuntimeError):
@@ -120,6 +139,7 @@ def _json_strings(conn: sqlite3.Connection, value: object, *, field: str) -> Ite
             raise ReferenceSealError(f"durable {field} must be a JSON string array")
         events = conn.execute("SELECT type, value FROM json_each(?)", (value,))
         for event_type, item in events:
+            _check_reference_cancellation()
             if event_type != "text" or not isinstance(item, str):
                 raise ReferenceSealError(f"durable {field} must contain only strings")
             yield item
@@ -147,10 +167,19 @@ def _references_from_user(conn: sqlite3.Connection) -> Iterable[str]:
                 yield str(value)
         yield from _json_strings(conn, row["evidence_refs_json"], field="assertions.evidence_refs_json")
 
-    for row in conn.execute("SELECT target_ref, source_result_ref, assertion_refs_json FROM annotation_batches"):
-        yield str(row["target_ref"])
-        yield str(row["source_result_ref"])
+    for row in conn.execute(
+        "SELECT target_ref, source_result_ref, actor_ref, model_ref, prompt_ref, assertion_refs_json "
+        "FROM annotation_batches"
+    ):
+        for column in ("target_ref", "source_result_ref", "actor_ref", "model_ref", "prompt_ref"):
+            yield str(row[column])
         yield from _json_strings(conn, row["assertion_refs_json"], field="annotation_batches.assertion_refs_json")
+
+    for (model_refs,) in conn.execute("SELECT model_refs_json FROM query_evaluation_receipts"):
+        yield from _json_strings(conn, model_refs, field="query_evaluation_receipts.model_refs_json")
+
+    for (session_id,) in conn.execute("SELECT session_id FROM session_marker_delivery"):
+        yield ObjectRef("session", str(session_id)).format()
 
     for (value,) in conn.execute("SELECT member_ref FROM result_set_members"):
         yield str(value)
@@ -187,8 +216,10 @@ def _references_from_user(conn: sqlite3.Connection) -> Iterable[str]:
 
 
 def _references_from_audit(conn: sqlite3.Connection) -> Iterable[str]:
-    for (value,) in conn.execute("SELECT target_ref FROM operation_targets"):
-        yield str(value)
+    for table in ("operation_preview_targets", "operation_targets"):
+        for (value,) in conn.execute(f"SELECT target_ref FROM {table}"):
+            _check_reference_cancellation()
+            yield str(value)
 
 
 def _resolve(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef) -> _ResolvedReference | None:
@@ -328,9 +359,13 @@ class PreparedIndexMutation:
         self._closed = False
         self._scratch_directory: tempfile.TemporaryDirectory | None = None
         self._scratch: sqlite3.Connection | None = None
+        with _LIVE_SEALS_LOCK:
+            _LIVE_SEALS[id(self)] = self
         try:
             self._scratch_directory = tempfile.TemporaryDirectory(prefix="polylogue-reference-seal-")
+            _check_reference_cancellation()
             self._scratch = connect_scratch_database(Path(self._scratch_directory.name) / "refs.db")
+            self._scratch.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
             self._scratch.executescript(
                 "CREATE TABLE resolved_refs ("
                 "kind TEXT NOT NULL, owner_session_id TEXT NOT NULL, object_id TEXT NOT NULL, "
@@ -352,9 +387,11 @@ class PreparedIndexMutation:
                 if self._observer_identity(name) != self._identities[name]:
                     raise ReferenceSealStaleError(f"the {name}.db file changed while opening its observer")
             self._read_resolved_references()
-        except BaseException:
+        except BaseException as exc:
             with suppress(BaseException):
                 self.close()
+            if compute_cancel_requested():
+                raise asyncio.CancelledError("durable-reference preparation cancelled") from exc
             raise
 
     def _open_observer(self, name: str, path: Path) -> sqlite3.Connection:
@@ -366,6 +403,7 @@ class PreparedIndexMutation:
         try:
             leaf.assert_unchanged()
             conn.row_factory = sqlite3.Row
+            conn.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
             return conn
         except BaseException:
             try:
@@ -407,6 +445,7 @@ class PreparedIndexMutation:
                         observer.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
                         refs = ()
                     for raw in refs:
+                        _check_reference_cancellation()
                         parsed = _relevant_ref(raw)
                         if parsed is not None:
                             target = _resolve(index_observer, parsed)
@@ -472,6 +511,7 @@ class PreparedIndexMutation:
             (session_id,),
         )
         for (affected_session_id,) in descendants:
+            _check_reference_cancellation()
             self._scratch.execute(
                 "INSERT OR IGNORE INTO candidate_refs "
                 "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id "
@@ -595,6 +635,7 @@ class PreparedIndexMutation:
                 "FROM resolved_refs ORDER BY kind, object_id, qualifier"
             )
             for row in rows:
+                _check_reference_cancellation()
                 ref = _ResolvedReference(
                     str(row[0]),
                     str(row[1]),
@@ -631,6 +672,7 @@ class PreparedIndexMutation:
             if page_size < 1:
                 raise ReferenceSealError("SQLite variable limit cannot compare promotion coverage")
             while True:
+                _check_reference_cancellation()
                 rows = active.execute(
                     "SELECT session_id, raw_id FROM sessions "
                     "WHERE session_id > ? AND raw_id IS NOT NULL ORDER BY session_id LIMIT ?",
@@ -658,6 +700,7 @@ class PreparedIndexMutation:
                     )
                 }
                 for session_id in owed:
+                    _check_reference_cancellation()
                     if session_id not in present:
                         missing_count += 1
                         if first_missing is None:
@@ -826,6 +869,7 @@ class PreparedIndexMutation:
         lost_count = 0
         first: _ResolvedReference | None = None
         for row in rows:
+            _check_reference_cancellation()
             ref = _ResolvedReference(
                 str(row[0]),
                 str(row[1]),
@@ -845,6 +889,7 @@ class PreparedIndexMutation:
             )
 
     def _require_live_owner(self) -> None:
+        _check_reference_cancellation()
         if self._closed:
             raise ReferenceSealError("reference seal is closed")
         if (
@@ -895,6 +940,9 @@ class PreparedIndexMutation:
             and self._scratch is None
             and self._scratch_directory is None
         )
+        if self._closed:
+            with _LIVE_SEALS_LOCK:
+                _LIVE_SEALS.pop(id(self), None)
         if first_error is not None:
             raise first_error
 

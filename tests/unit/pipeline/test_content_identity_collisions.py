@@ -427,6 +427,25 @@ def test_ordinary_idless_message_ids_keep_pre_a44_vectors(message: ParsedMessage
     assert message_content_identity(message) == expected
 
 
+def test_marker_shaped_mapping_key_keeps_its_noncolliding_pre_a44_id() -> None:
+    message = ParsedMessage(
+        provider_message_id="",
+        role=Role.ASSISTANT,
+        text="anchor",
+        timestamp=None,
+        blocks=[
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_input={"__POLYLOGUE_NULL__": "value"},
+                tool_id="tool",
+                tool_name="read_file",
+            )
+        ],
+    )
+    # Computed by the shipped pre-a44 encoder, not the candidate helper.
+    assert message_content_identity(message) == "622c8a6196d308c682ca401518fa82b7"
+
+
 def test_recursive_marker_literals_and_empty_lists_remain_disjoint() -> None:
     def id_for(*, payload: dict[str, object], block: bool = True) -> str:
         message = ParsedMessage(

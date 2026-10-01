@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, TypeVar
 
+from polylogue.core.compute_cancel import compute_cancel
 from polylogue.core.write_lease import adopt_write_lease, current_write_lease
 from polylogue.daemon.execution import BoundedComputeAdapter, daemon_compute_adapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import propagate
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.write_lease import SQLCustodyOwner
 
 T = TypeVar("T")
 P = TypeVar("P")
@@ -87,8 +93,20 @@ class DriveCatchupExecution:
         if current_write_lease() is not None:
             raise RuntimeError("prepared publication cannot begin inside writer admission")
 
+        retained_prepared: list[SQLCustodyOwner] = []
+
         def prepare_and_publish() -> T:
             prepared = prepare()
+
+            class PreparedSettlement:
+                def close(self) -> None:
+                    close = getattr(prepared, "close", None)
+                    if callable(close):
+                        close()
+                    retained_prepared.clear()
+
+            settlement = PreparedSettlement()
+            retained_prepared.append(settlement)
             try:
                 with (
                     self._bridge.hold(f"maintenance.drive_catchup.{actor}") as delegation,
@@ -96,19 +114,39 @@ class DriveCatchupExecution:
                 ):
                     return operation(prepared)
             finally:
-                close = getattr(prepared, "close", None)
-                if callable(close):
-                    close()
+                settlement.close()
 
-        submitted = self._compute_adapter.submit(
-            propagate(prepare_and_publish),
-            admission_class="incremental-background",
-            estimated_bytes=estimated_bytes,
-        )
-        pending = asyncio.wrap_future(submitted.future)
+        def settlement_owners() -> tuple[SQLCustodyOwner, ...]:
+            # The prepared carrier stays on this worker until close succeeds.
+            # A successfully closed carrier disappears even when publication
+            # raised; an unsettled one is kept for original-thread cleanup.
+            return tuple(retained_prepared)
+
+        def submit_worker(worker: Callable[[], None]) -> Future[None]:
+            return self._compute_adapter.submit(
+                propagate(worker),
+                admission_class="incremental-background",
+                estimated_bytes=estimated_bytes,
+            ).future
+
+        cancelled = threading.Event()
+        cancellation_token = compute_cancel.set(cancelled)
+        try:
+            pending = asyncio.create_task(
+                self.coordinator.run_prepared_sync(
+                    f"maintenance.drive_catchup.{actor}",
+                    prepare_and_publish,
+                    submit_worker=submit_worker,
+                    settlement_owners=settlement_owners,
+                ),
+                name=f"polylogue-drive-prepared:{actor}",
+            )
+        finally:
+            compute_cancel.reset(cancellation_token)
         try:
             return await asyncio.shield(pending)
         except asyncio.CancelledError:
+            cancelled.set()
             # Once admitted, the observer-owning callable must settle on its
             # worker before this owner unwinds or the bridge can be released.
             while not pending.done():

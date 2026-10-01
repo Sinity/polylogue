@@ -3919,14 +3919,7 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
 async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock, file_count: int
 ) -> None:
-    """slc55: an acquired file is finished, not discarded, when its own capture spends the hold.
-
-    The unit stops taking new files, the files it never reached stay
-    backlog, and the acquired one publishes its cursor. Anti-vacuity: raise
-    at the next admission or after the acquisition loop (the predecessor)
-    and the pass ends with no cursor, so a file that always outlasts the
-    bound is re-acquired and refused forever.
-    """
+    """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
     from polylogue.core.write_hold import enter_write_hold, exit_write_hold
     from polylogue.sources.live.batch_support import classify_pre_acquisition
 
@@ -3967,27 +3960,16 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
         exit_write_hold(token)
 
     assert result.failed_file_count == 0
-    assert result.succeeded_file_count == 1
-    assert [path for path in paths if cursor.get_record(path) is not None] == [paths[0]]
+    assert result.succeeded_file_count == file_count
+    assert [path for path in paths if cursor.get_record(path) is not None] == paths
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (file_count,)
 
 
 @pytest.mark.asyncio
-async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> None:
-    """polylogue-ipyvj: past the bound the unit of work ends, typed.
-
-    The writer gate declares how long an admitted unit may hold the sole
-    archive writer. A unit that reaches a checkpoint already past it stops
-    there instead of finishing and being warned about afterwards, and the
-    files it never reached stay ordinary backlog -- no cursor, no failure
-    count, no retry backoff.
-
-    Anti-vacuity: drop ``check_write_hold_budget`` from
-    ``_ingest_pass_exhausted`` and this pass runs all three files to
-    completion with no bound in force, since ``max_pass_seconds`` is None.
-    """
-    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+async def test_zero_hold_threshold_does_not_refuse_acquired_files(tmp_path: Path) -> None:
+    """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -4017,21 +3999,13 @@ async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> N
 
     token = enter_write_hold("watcher.catch_up.chunk", 0.0)
     try:
-        with pytest.raises(WriteHoldBudgetError) as raised:
-            await processor.ingest_files(paths, emit_event=False)
+        result = await processor.ingest_files(paths, emit_event=False)
     finally:
         exit_write_hold(token)
 
-    assert raised.value.actor == "watcher.catch_up.chunk"
-    assert raised.value.checkpoint == "full_acquisition_file"
-    assert raised.value.budget_s == 0.0
-    for path in paths:
-        assert cursor.get_record(path) is None
-
-    recovered = await processor.ingest_files(paths, emit_event=False)
-
-    assert recovered.succeeded_file_count == 3
-    assert recovered.failed_file_count == 0
+    assert result.succeeded_file_count == 3
+    assert result.failed_file_count == 0
+    assert all(cursor.get_record(path) is not None for path in paths)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
 

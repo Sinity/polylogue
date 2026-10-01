@@ -986,8 +986,6 @@ def _identity_normalize_value(
             if not isinstance(key, str):
                 escape_reasons.append((path + (("key", _legacy_json_key(key)),), "non-string-mapping-key"))
             key_path = path + (("key", normalized_key),)
-            if isinstance(key, str) and key in {_ID_NULL_SENTINEL, _ID_EMPTY_SENTINEL}:
-                escape_reasons.append((key_path, "marker-string-key"))
             result[normalized_key] = _identity_normalize_value(
                 item,
                 path=key_path,
