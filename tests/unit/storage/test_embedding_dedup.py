@@ -57,6 +57,9 @@ class _FakeVectorProvider:
     def query_by_session(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         return []
 
+    def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("this fixture does not perform retained-session reads")
+
 
 def _write_session(root: Path, *, native_id: str, text: str, origin: Provider = Provider.CODEX) -> str:
     with ArchiveStore(root) as archive:

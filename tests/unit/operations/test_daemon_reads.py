@@ -776,6 +776,7 @@ def test_keyless_text_search_with_retained_binding_remains_disabled(
     seed_vector_archive(
         tmp_path,
         [("seed", "m1", "Synthetic needle prose with retained embeddings.", [1.0] + [0.0] * 1023)],
+        model="voyage-4-lite",
     )
     binding = VectorReadBinding(voyage_key=None, model="voyage-4-lite", dimension=1024)
     acquisition = MagicMock(side_effect=AssertionError("keyless text must not call acquisition"))
@@ -784,6 +785,7 @@ def test_keyless_text_search_with_retained_binding_remains_disabled(
         embeddings_path=tmp_path / "embeddings.db", index_path=tmp_path / "index.db", recipe=binding.recipe
     )
     try:
+        assert connection.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
         with open_operation_read(tmp_path) as pinned:
 
             def execute() -> object:

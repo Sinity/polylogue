@@ -125,7 +125,7 @@ async def test_supplied_public_vector_provider_projects_retained_similarity(tmp_
         ],
     )
     provider: VectorProvider = SqliteVecProvider(
-        voyage_key=None, db_path=tmp_path / "embeddings.db", archive_root=tmp_path
+        voyage_key=None, db_path=tmp_path / "embeddings.db", archive_root=tmp_path, model="voyage-4"
     )
     assert isinstance(provider, VectorProvider)
     with patch.object(provider, "_get_embeddings", side_effect=AssertionError("no acquisition")) as acquisition:
