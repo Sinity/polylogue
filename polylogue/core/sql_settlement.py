@@ -118,6 +118,7 @@ def settle_native_sql(
     on_pending: Callable[[NativeSQLSettlementEvidence], None],
     on_settled: Callable[[], None],
     preserved_native_owners: tuple[SQLCustodyOwner, ...] = (),
+    initial_observed_generation: int | None = None,
 ) -> BaseException | None:
     """Settle on the creator worker, retaining it on a failed native close.
 
@@ -127,7 +128,10 @@ def settle_native_sql(
     result, and the native owner census remains the authority for handles.
     """
     first_failure: BaseException | None = None
-    observed = retry.generation()
+    # A runtime may bind its physical task mailbox before execution. Keep
+    # requests delivered during that work available after the first failure;
+    # nested cleanup carries the same task's consumed generation.
+    observed = retry.generation() if initial_observed_generation is None else initial_observed_generation
     while True:
         failures: list[BaseException] = []
         try:
