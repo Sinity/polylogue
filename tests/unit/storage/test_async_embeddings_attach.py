@@ -496,7 +496,7 @@ def test_last_async_grant_retains_backend_and_original_cleanup_task(
                 settlement.cancel()
                 await asyncio.sleep(0)
                 assert not settlement.done()
-                assert entry.cleanup_attempt is not None and not entry.cleanup_attempt.done()
+                assert not entry.cleanup_attempt.done()
         finally:
             monkeypatch.setattr(os, "close", real_close)
             for custody in owners:
@@ -533,8 +533,9 @@ def test_last_async_grant_retains_backend_and_original_cleanup_task(
                 assert isinstance(error, ArchiveCustodySettlementError)
                 assert error.failure is fault
 
+        assert isinstance(outcome[0], BaseException)
         assert_outcome(outcome[0], interrupted=cancelled == "owner")
-        assert settlement_outcome
+        assert settlement_outcome and isinstance(settlement_outcome[0], BaseException)
         assert_outcome(settlement_outcome[0], interrupted=cancelled in {"owner", "waiter"})
         await asyncio.sleep(0)
         assert loop_errors == []

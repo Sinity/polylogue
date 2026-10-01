@@ -335,7 +335,7 @@ def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(
     archive._conn.execute("CREATE TABLE close_probe (value INTEGER)")
     vector = arm_settlement(connect_measured(":memory:"))
     vector.execute("BEGIN")
-    archive.operation_vector_connection = vector  # type: ignore[assignment]
+    archive.operation_vector_connection = vector
     try:
         with pytest.raises(ArchiveStoreSettlementError) as failure:
             archive.close()
@@ -407,7 +407,7 @@ def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled
             finally:
                 finished.set()
 
-        contender = threading.Thread(target=competing_writer, context=contextvars.Context())
+        contender = threading.Thread(target=contextvars.Context().run, args=(competing_writer,))
         contender.start()
         assert not acquired.wait(0.05)
         assert not contender_failures
@@ -509,7 +509,7 @@ def test_async_writer_grant_is_retained_until_worker_connection_closes(
     """The actual worker and grant stay owned through native close failure."""
     from polylogue.storage.sqlite import async_sqlite
     from polylogue.storage.sqlite.write_lease import async_write_lease
-    from tests.infra.sqlite_cursor_settlement import arm_settlement
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     async def scenario() -> None:
         root = workspace_env["archive_root"]
@@ -519,7 +519,10 @@ def test_async_writer_grant_is_retained_until_worker_connection_closes(
             entry = async_sqlite._BACKEND_CONNECTIONS[id(connection)]
             grant = entry.grant
             assert grant is not None
-            raw = await connection._execute(lambda: arm_settlement(connection._conn))
+            raw = cast(
+                SettlementConnection,
+                await connection._execute(lambda: arm_settlement(connection._conn)),  # type: ignore[no-untyped-call]
+            )
             try:
                 with pytest.raises(BaseExceptionGroup) as refused:
                     await async_sqlite._close_backend_connection(connection, rollback=True)
@@ -1881,7 +1884,7 @@ def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
     def open_connection(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = arm_settlement(actual_open(*args, **kwargs))  # type: ignore[arg-type]
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     def materialize(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
         assert tier is ArchiveTier.OPS
@@ -1992,6 +1995,7 @@ def test_custody_ambiguous_close_retains_exact_binding_without_numeric_retry(
         # Controlled failures occurred before effect. Settle those actual
         # retained bindings even if a behavioral assertion failed.
         monkeypatch.setattr(os, "close", real_close)
+        assert custody is not None
         for descriptor in tuple(custody._pending_descriptor_closes):
             real_close(descriptor)
         custody.close()

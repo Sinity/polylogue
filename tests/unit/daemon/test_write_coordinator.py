@@ -1816,7 +1816,7 @@ async def test_terminal_worker_retains_failed_temporary_user_writer(
         if path.name == "user.db":
             handle = arm_settlement(connection)
             handles.append(handle)
-            return handle  # type: ignore[return-value]
+            return handle
         return connection
 
     def failed_commit(*args: object, **kwargs: object) -> None:
@@ -1978,7 +1978,7 @@ async def test_terminal_settlement_owns_direct_and_nested_async_workers(
         handle = arm_settlement(real_connect(backend, grant))  # type: ignore[arg-type]
         handle.allow_cleanup.set()
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(async_sqlite, "_connect_write_thread", controlled_connect)
 
@@ -2200,8 +2200,10 @@ async def test_native_factory_failure_keeps_actual_connection_until_terminal_cle
     handles: list[SettlementConnection] = []
     real_sqlite_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
 
+    from typing import Any
+
     class FailedConfigurationHandle(SettlementConnection):
-        def execute(self, *args: object, **kwargs: object) -> object:
+        def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
             raise OSError("synthetic profile setup failure")
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
@@ -2211,7 +2213,7 @@ async def test_native_factory_failure_keeps_actual_connection_until_terminal_cle
         )
         handle = arm_settlement(connection)
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     if factory_name == "initialize_archive_database":
         monkeypatch.setattr(sqlite3, "connect", controlled_connect)
@@ -2273,7 +2275,7 @@ async def test_cached_connection_settles_after_context_and_retains_failed_close(
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = arm_settlement(real_connect(*args, **kwargs))
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(cached, "connect_measured", controlled_connect)
 
@@ -2340,7 +2342,7 @@ async def test_verified_leaf_is_retained_with_failed_native_close(
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = arm_settlement(real_connect(*args, **kwargs))
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     def remember_leaf(leaf: audit_leaf.VerifiedAuditLeaf) -> audit_leaf.VerifiedAuditLeaf:
         result = real_enter(leaf)
@@ -2401,7 +2403,7 @@ async def test_cached_cleanup_attempts_later_handle_after_first_close_failure(
         if handles:
             handle.allow_cleanup.set()
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(cached, "connect_measured", controlled_connect)
 
@@ -2613,7 +2615,7 @@ async def test_coordinator_second_settlement_retries_original_last_grant_cleanup
             if first and getattr(function, "__name__", None) == "close_raw":
                 first = False
                 raise original_failure
-            return await execute(function, *args, **kwargs)
+            return await execute(function, *args, **kwargs)  # type: ignore[no-untyped-call]
 
         monkeypatch.setattr(conn, "_execute", refuse_first_close)
         with pytest.raises(OSError) as caught:

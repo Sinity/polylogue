@@ -989,8 +989,11 @@ def test_user_post_and_delete_delegate_writer_ownership_to_operation_runtime() -
     assert delete_timeline == ["body"]
 
 
-def test_standalone_http_server_owns_and_idempotently_closes_writer_runtime() -> None:
-    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
+def test_standalone_http_server_owns_and_idempotently_closes_writer_runtime(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=tmp_path)
     runtime = server._owned_write_runtime
     assert runtime is not None
     assert runtime.thread.is_alive()
@@ -1001,8 +1004,11 @@ def test_standalone_http_server_owns_and_idempotently_closes_writer_runtime() ->
     assert not runtime.thread.is_alive()
 
 
-def test_standalone_http_server_stops_loop_after_late_writer_drain() -> None:
-    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
+def test_standalone_http_server_stops_loop_after_late_writer_drain(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=tmp_path)
     runtime = server._owned_write_runtime
     assert runtime is not None
     assert runtime.coordinator is not None
@@ -1608,7 +1614,7 @@ def test_inline_ops_failed_close_has_retryable_answer_and_original_worker_cleanu
         if opened == 2:
             handle = arm_settlement(connection)
             handles.append(handle)
-            return handle  # type: ignore[return-value]
+            return handle
         return connection
 
     monkeypatch.setattr(connection_profile, "open_daemon_connection", controlled_open)

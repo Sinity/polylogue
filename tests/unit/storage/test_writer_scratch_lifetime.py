@@ -404,6 +404,7 @@ def test_file_edit_iteration_transfers_closed_pages_and_settles_abandoned_artifa
                     ParsedContentBlock(
                         type=BlockType.TOOL_RESULT,
                         tool_outcome=ToolOutcome.OK,
+                        is_error=False,
                         tool_id=tool_id,
                         file_edit=ParsedFileEdit(file_path="neutral.py", old_string="before", new_string="after"),
                     ),

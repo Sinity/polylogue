@@ -227,14 +227,49 @@ def _relevant_ref(value: str) -> ObjectRef | EvidenceRef | BlockAnchor | None:
     return None
 
 
-def _references_from_user(conn: sqlite3.Connection) -> Iterable[str]:
-    for row in conn.execute("SELECT scope_ref, target_ref, author_ref, evidence_refs_json FROM assertions"):
+@dataclass(frozen=True, slots=True)
+class _ReferenceAnchor:
+    wire: str
+    permits_absence: bool
+    assertion_id: str = ""
+    field: str = ""
+    position: int = -1
+    assertion_target: str = ""
+
+
+def _references_from_user(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor]:
+    for row in conn.execute(
+        "SELECT assertion_id, kind, scope_ref, target_ref, author_ref, evidence_refs_json FROM assertions"
+    ):
         for column in ("scope_ref", "target_ref", "author_ref"):
             value = row[column]
             if value is not None:
-                yield str(value)
-        yield from _json_strings(conn, row["evidence_refs_json"], field="assertions.evidence_refs_json")
+                lifecycle = column == "target_ref" and str(row["kind"]) in {
+                    "suppression",
+                    "excision_record",
+                    "excision_request",
+                }
+                # Lifecycle targets describe an absent session, but their other
+                # fields remain ordinary durable references.
+                yield _ReferenceAnchor(
+                    str(value),
+                    lifecycle and str(value).startswith("session:"),
+                    str(row["assertion_id"]),
+                    column,
+                    -1,
+                    str(row["target_ref"]),
+                )
+        for position, value in enumerate(
+            _json_strings(conn, row["evidence_refs_json"], field="assertions.evidence_refs_json")
+        ):
+            yield _ReferenceAnchor(
+                value, False, str(row["assertion_id"]), "evidence_refs_json", position, str(row["target_ref"])
+            )
+    for value in _other_user_references(conn):
+        yield _ReferenceAnchor(value, False)
 
+
+def _other_user_references(conn: sqlite3.Connection) -> Iterable[str]:
     for row in conn.execute(
         "SELECT target_ref, source_result_ref, actor_ref, model_ref, prompt_ref, assertion_refs_json "
         "FROM annotation_batches"
@@ -283,11 +318,11 @@ def _references_from_user(conn: sqlite3.Connection) -> Iterable[str]:
             yield from segment.assertion_refs
 
 
-def _references_from_audit(conn: sqlite3.Connection) -> Iterable[str]:
+def _references_from_audit(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor]:
     for table in ("operation_preview_targets", "operation_targets"):
         for (value,) in conn.execute(f"SELECT target_ref FROM {table}"):
             _check_reference_cancellation()
-            yield str(value)
+            yield _ReferenceAnchor(str(value), True)
 
 
 def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | BlockAnchor) -> _ResolvedReference | None:
@@ -535,6 +570,11 @@ class PreparedIndexMutation:
                 "CREATE INDEX temp.resolved_refs_by_target_message ON resolved_refs(target_message_id);"
                 "CREATE INDEX temp.resolved_refs_aliases ON resolved_refs(has_session_alias) WHERE has_session_alias = 1;"
                 "CREATE TEMP TABLE destructive_message_ids(message_id TEXT PRIMARY KEY) WITHOUT ROWID;"
+                "CREATE TEMP TABLE reference_anchors("
+                "wire_ref TEXT NOT NULL, tier TEXT NOT NULL, assertion_id TEXT NOT NULL, field TEXT NOT NULL, "
+                "position INTEGER NOT NULL, assertion_target TEXT NOT NULL, permits_absence INTEGER NOT NULL, "
+                "PRIMARY KEY(wire_ref, tier, assertion_id, field, position)) WITHOUT ROWID;"
+                "CREATE TEMP TABLE authorized_removals(session_id TEXT PRIMARY KEY) WITHOUT ROWID;"
                 "CREATE TEMP TABLE candidate_refs ("
                 "kind TEXT NOT NULL, owner_session_id TEXT NOT NULL, object_id TEXT NOT NULL, "
                 "qualifier TEXT NOT NULL, scope_session_id TEXT NOT NULL, target_message_id TEXT NOT NULL, "
@@ -640,12 +680,24 @@ class PreparedIndexMutation:
             else:
                 observer.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
                 refs = ()
-            for raw in refs:
+            for anchor in refs:
                 _check_reference_cancellation()
-                parsed = _relevant_ref(raw)
+                parsed = _relevant_ref(anchor.wire)
                 if parsed is not None:
                     target = _resolve(index_observer, parsed)
                     if target is not None:
+                        self._scratch.execute(
+                            "INSERT OR IGNORE INTO reference_anchors VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                target.wire_ref,
+                                name,
+                                anchor.assertion_id,
+                                anchor.field,
+                                anchor.position,
+                                anchor.assertion_target,
+                                int(anchor.permits_absence),
+                            ),
+                        )
                         self._scratch.execute(
                             "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                             (
@@ -688,6 +740,44 @@ class PreparedIndexMutation:
             "WHERE owner_session_id = ? OR scope_session_id = ?",
             (session_id, session_id),
         )
+
+    def authorize_session_removal(self, session_ids: tuple[str, ...]) -> None:
+        """Retain only exact begun removal targets from this physical apply."""
+        self._require_new_work()
+        from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+        permitted = permitted_session_removals(archive_root=self.archive_root)
+        if not set(session_ids).issubset(permitted):
+            raise ReferenceSealError("session disappearance is outside the validated removal plan")
+        self._scratch.executemany(
+            "INSERT OR IGNORE INTO authorized_removals VALUES (?)", ((sid,) for sid in session_ids)
+        )
+
+    def _intentional_absence(self, conn: sqlite3.Connection, ref: _ResolvedReference) -> bool:
+        from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+        permitted = permitted_session_removals(archive_root=self.archive_root)
+        if self._scratch.execute(
+            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND permits_absence = 0", (ref.wire_ref,)
+        ).fetchone():
+            return False
+        if not self._scratch.execute(
+            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND permits_absence = 1", (ref.wire_ref,)
+        ).fetchone():
+            return False
+        for session_id in (ref.owner_session_id, ref.scope_session_id):
+            if session_id is None:
+                continue
+            if session_id not in permitted:
+                return False
+            if not self._scratch.execute(
+                "SELECT 1 FROM authorized_removals WHERE session_id = ?", (session_id,)
+            ).fetchone():
+                return False
+            if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone():
+                return False
+        parsed = _relevant_ref(ref.wire_ref)
+        return parsed is not None and _resolve_target(conn, parsed) is None
 
     def note_lineage_change(self, conn: sqlite3.Connection, session_id: str) -> None:
         """Track refs scoped to every composed transcript below a changed node."""
@@ -1067,7 +1157,7 @@ class PreparedIndexMutation:
                 str(row[6]),
                 bool(row[7]),
             )
-            if not _still_resolves(conn, ref):
+            if not _still_resolves(conn, ref) and not self._intentional_absence(conn, ref):
                 lost_count += 1
                 if first is None:
                     first = ref
@@ -1374,6 +1464,11 @@ class IndexMutationScope:
         _check_reference_cancellation()
         if self.seal is not None:
             self.seal.note_session_namespace_change()
+
+    def authorize_session_removal(self, session_ids: tuple[str, ...]) -> None:
+        self.require_connection(self.conn)
+        if self.seal is not None:
+            self.seal.authorize_session_removal(session_ids)
 
     def note_deleted_session(self, session_id: str) -> None:
         self.require_connection(self.conn)

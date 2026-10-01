@@ -67,7 +67,7 @@ def _cheap_work(store: ArchiveStore) -> int:
 
 
 async def test_cancel_interrupts_expensive_statement_within_slo(tmp_path: Path) -> None:
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     ctx = QueryExecutionContext.create(query_text="expensive", timeout_s=None)
     controller = QueryAdmissionController()
 
@@ -86,7 +86,7 @@ async def test_cancel_interrupts_expensive_statement_within_slo(tmp_path: Path) 
 
 
 async def test_deadline_aborts_expensive_statement(tmp_path: Path) -> None:
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     ctx = QueryExecutionContext.create(query_text="expensive", timeout_s=0.3)
     controller = QueryAdmissionController()
 
@@ -103,7 +103,7 @@ async def test_deadline_aborts_expensive_statement(tmp_path: Path) -> None:
 async def test_client_disconnect_cancels_and_releases(tmp_path: Path) -> None:
     """asyncio cancellation (the MCP disconnect shape) interrupts the exact
     connection, drains the worker, and releases admission exactly once."""
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     ctx = QueryExecutionContext.create(query_text="expensive", timeout_s=None)
     controller = QueryAdmissionController()
 
@@ -168,7 +168,7 @@ def test_asyncio_run_shutdown_keeps_admission_until_executor_operation_finishes(
 async def test_event_loop_stays_responsive_during_expensive_read(tmp_path: Path) -> None:
     """A blocking-scale statement must not freeze the loop: cheap awaitables
     keep their interactive latency while the worker thread grinds."""
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     ctx = QueryExecutionContext.create(query_text="expensive", timeout_s=1.5)
     controller = QueryAdmissionController()
 
@@ -200,7 +200,7 @@ async def test_event_loop_stays_responsive_during_expensive_read(tmp_path: Path)
 
 
 async def test_cheap_read_completes_while_expensive_read_runs(tmp_path: Path) -> None:
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     controller = QueryAdmissionController()
     slow_ctx = QueryExecutionContext.create(query_text="expensive", timeout_s=2.0)
     slow = asyncio.create_task(execute_archive_read(root, _expensive_work, ctx=slow_ctx, controller=controller))
@@ -225,7 +225,7 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
     from polylogue.storage.sqlite import async_adapter
     from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
 
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     adapter = ArchiveReadAsyncAdapter(max_workers=2)
     monkeypatch.setattr(async_adapter, "default_archive_read_async_adapter", lambda: adapter)
     controller = QueryAdmissionController(capacity=2, reserved_interactive=1)
@@ -296,7 +296,7 @@ async def test_adapter_close_releases_queued_executor_admission(
     from polylogue.storage.sqlite import async_adapter
     from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
 
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     adapter = ArchiveReadAsyncAdapter(max_workers=1)
     monkeypatch.setattr(async_adapter, "default_archive_read_async_adapter", lambda: adapter)
     controller = QueryAdmissionController(capacity=2, reserved_interactive=0)
@@ -342,7 +342,7 @@ async def test_adapter_close_releases_queued_executor_admission(
 
 async def test_cancelled_pre_admission_scan_never_reaches_archive_worker(tmp_path: Path) -> None:
     """Cancellation removes a queued read before storage submission."""
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
     release_first_scan = threading.Event()
     first_scan_started = threading.Event()
@@ -674,6 +674,7 @@ def test_runner_holds_one_read_snapshot_until_owned_cleanup(tmp_path: Path) -> N
     writer_done = threading.Event()
     writer_errors: list[BaseException] = []
     owned_stores: list[ArchiveStore] = []
+    owned_connections: list[sqlite3.Connection] = []
 
     def _writer() -> None:
         try:
@@ -690,6 +691,7 @@ def test_runner_holds_one_read_snapshot_until_owned_cleanup(tmp_path: Path) -> N
 
     def _read_twice(store: ArchiveStore) -> tuple[int, int]:
         owned_stores.append(store)
+        owned_connections.append(store._conn)
         first = int(store._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
         first_read.set()
         assert writer_done.wait(timeout=5)
@@ -714,7 +716,7 @@ def test_runner_holds_one_read_snapshot_until_owned_cleanup(tmp_path: Path) -> N
     assert ctx.receipt.state == "completed"
     assert ctx.receipt.cleanup_complete is True
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        owned_stores[0]._conn.execute("SELECT 1")
+        owned_connections[0].execute("SELECT 1")
 
 
 def test_sqlite_vm_work_budget_interrupts_deterministically_and_cleans_up(tmp_path: Path) -> None:
@@ -789,7 +791,7 @@ async def test_api_query_units_routes_through_execution_control(
     from polylogue import Polylogue
     from polylogue.surfaces.payloads import QueryUnitEnvelope
 
-    _bootstrap_archive(tmp_path)
+    await asyncio.to_thread(_bootstrap_archive, tmp_path)
     seen: list[str] = []
     original_run = InterruptibleSQLiteRead.run
 
@@ -825,7 +827,7 @@ async def test_api_multi_aggregate_receipt_reports_real_work_selection_and_deliv
     from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
     from tests.infra.storage_records import SessionBuilder
 
-    _bootstrap_archive(tmp_path)
+    await asyncio.to_thread(_bootstrap_archive, tmp_path)
     (
         SessionBuilder(tmp_path / "index.db", "receipt")
         .provider("claude-code")
@@ -922,7 +924,7 @@ async def test_disconnect_drain_is_bounded_for_uninterruptible_work(
     import polylogue.archive.query.execution_control as ec
 
     monkeypatch.setattr(ec, "DISCONNECT_DRAIN_TIMEOUT_S", 0.3)
-    root = _bootstrap_archive(tmp_path)
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
     ctx = QueryExecutionContext.create(query_text="stuck", timeout_s=None)
     controller = QueryAdmissionController()
     worker_done = threading.Event()
@@ -968,7 +970,7 @@ async def test_api_query_units_classifies_aggregate_as_scan(tmp_path: Path, monk
     hard-coding interactive again fails here."""
     from polylogue import Polylogue
 
-    _bootstrap_archive(tmp_path)
+    await asyncio.to_thread(_bootstrap_archive, tmp_path)
     seen: list[str] = []
     original_run = InterruptibleSQLiteRead.run
 

@@ -166,6 +166,33 @@ def retained_native_settlement_owners_on_current_thread(
     return tuple(result.values())
 
 
+def settle_cached_connections_on_current_thread(custody: object) -> None:
+    """Settle admitted cache entries through their existing physical owners."""
+    owners = tuple(
+        owner
+        for owner in retained_native_sql_owners_on_current_thread()
+        if owner.custody is custody and owner.cache_entry is not None
+    )
+    failures: list[BaseException] = []
+    for owner in owners:
+        if owner.connection is not None and (owner.close_required or owner.connection.in_transaction):
+            failures.append(
+                NativeConnectionSettlementError(
+                    owner, RuntimeError("cached SQLite transaction or close remains unsettled")
+                )
+            )
+    if not failures:
+        for owner in owners:
+            try:
+                owner.close()
+            except BaseException as error:
+                failures.append(error)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Cached native connection settlement failed", failures)
+
+
 def retained_native_sql_owners_for_lifetime(dependency: object) -> tuple[NativeSQLCustodyOwner, ...]:
     """Protect artifact cleanup while any actual native owner retains it."""
     with _LIVE_NATIVE_SQL_OWNERS_LOCK:

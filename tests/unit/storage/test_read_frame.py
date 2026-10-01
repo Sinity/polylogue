@@ -521,11 +521,15 @@ def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
     handles: list[SettlementConnection] = []
     frames: list[ReadFrame] = []
     fault = failure_point == "initial"
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    failed: ControlledCursor | None = None
+    successful: ControlledCursor | None = None
 
     def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = arm_settlement(original_open(*args, **kwargs))  # type: ignore[arg-type]
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     def version(connection: sqlite3.Connection) -> int:
         if fault:
@@ -570,6 +574,7 @@ def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
         owner.close()
         assert owner.frame is None
         if failure_point == "close":
+            assert failed is not None and successful is not None
             assert failed.close_attempts == 2
             assert successful.close_attempts == 1
         assert owner.connection is None
@@ -599,7 +604,7 @@ def test_independent_frame_census_retains_discarded_failed_cleanup(
     def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = arm_settlement(actual_open(*args, **kwargs))  # type: ignore[arg-type]
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(profiles, "open_readonly_connection", controlled_open)
     try:

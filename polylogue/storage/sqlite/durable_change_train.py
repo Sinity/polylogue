@@ -18,7 +18,7 @@ from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from polylogue.storage.sqlite import migration_runner as _migration_runner
+import polylogue.storage.sqlite.migration_runner as _migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.managed_connection import sqlite_connection

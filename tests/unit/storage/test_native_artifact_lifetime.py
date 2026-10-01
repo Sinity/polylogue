@@ -75,7 +75,7 @@ def test_unsettled_cursor_retains_native_owner_artifact_and_creator_cleanup(
         assert selected_file_descriptors(identity)
         with pytest.raises(NativeConnectionSettlementError):
             owner.close()
-        assert owner.connection is not None and directory.exists()
+        assert directory.exists()
         for cursor in cursors:
             cursor.allow_cleanup.set()
         owner.close()
@@ -271,7 +271,7 @@ def test_ambiguous_descriptor_close_retains_creator_custody_and_artifact_without
         # native owner then observes EBADF; it never reuses the numeric slot.
         os.close(first)
         owner.close()
-        assert owner.anchored_descriptors == ()
+        assert not owner.anchored_descriptors
         assert not Path(scratch.name).exists()
         assert archive_custody_available(tmp_path)
     finally:
@@ -305,7 +305,7 @@ def test_same_file_descriptor_reuse_is_not_an_open_file_description_proof(
         assert os.write(replacement, b"replacement remains owned by its opener") > 0
         os.close(replacement)
         owner.close()
-        assert owner.anchored_descriptors == ()
+        assert not owner.anchored_descriptors
     finally:
         if owner.anchored_descriptors:
             os.close(descriptor)

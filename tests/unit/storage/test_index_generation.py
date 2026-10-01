@@ -1133,15 +1133,18 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
         store.prepare_promotion(candidate)
 
     preserving = store.create(owner_id="preserving-owner", source_snapshot="snapshot-c")
-    preserving_conn = sqlite3.connect(preserving.index_path)
-    preserving_conn.row_factory = sqlite3.Row
-    try:
-        parent, child = parent_and_child("composed-child")
-        write_fixture_index_session(preserving_conn, parent)
-        write_fixture_index_session(preserving_conn, child)
-        preserving_conn.commit()
-    finally:
-        preserving_conn.close()
+    with write_lease("test.seed-preserving-composed-candidate", archive_root=tmp_path):
+        with (
+            ArchiveStore.open_owned_inactive_generation(
+                Path(preserving.index_path).parent,
+                generation_id=preserving.generation_id,
+                owner_id=preserving.owner_id,
+            ) as preserving_archive,
+            preserving_archive.index_mutation_scope(),
+        ):
+            parent, child = parent_and_child("composed-child")
+            write_fixture_index_session(preserving_archive._conn, parent)
+            write_fixture_index_session(preserving_archive._conn, child)
     with store.prepare_promotion(preserving) as prepared:
         with write_lease("test.promote-composed-evidence", archive_root=tmp_path):
             promoted = store.promote(preserving, prepared)
@@ -1505,46 +1508,52 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
         return actual_materialize(connection)
 
     monkeypatch.setattr(artifacts, "materialize_artifact_observations", materialize)
-    with write_lease("test.promotion_cache", archive_root=tmp_path):
-        with cached.connection_context(tmp_path / "index.db") as old:
-            assert old.execute("SELECT title FROM sessions").fetchone()[0] == "old"
-        cache = cached._connection_cache.conns
-        owner = cache[str(tmp_path / "index.db")]
-        handle: SettlementConnection | None = None
-        if pending == "transaction":
-            old.execute("BEGIN")
-            old.execute("SELECT * FROM sessions").fetchall()
-        elif pending == "failed_close":
-            handle = arm_settlement(old)
-        if pending != "idle":
-            with pytest.raises(NativeConnectionSettlementError):
-                store.promote(generation)
-            assert not (tmp_path / "index.db").is_symlink()
-            assert owner.connection is not None
-            assert not archive_custody_available(tmp_path)
-            if handle is not None:
-                handle.allow_cleanup.set()
+    with store.prepare_promotion(generation) as prepared:
+        with write_lease("test.promotion_cache", archive_root=tmp_path):
+            with cached.connection_context(tmp_path / "index.db") as old:
+                assert old.execute("SELECT title FROM sessions").fetchone()[0] == "old"
+            cache = cached._connection_cache.conns
+            owner = cache[str(tmp_path / "index.db")]
+            try:
+                handle: SettlementConnection | None = None
+                if pending == "transaction":
+                    old.execute("BEGIN")
+                    old.execute("SELECT * FROM sessions").fetchall()
+                elif pending == "failed_close":
+                    handle = arm_settlement(old)
+                if pending != "idle":
+                    with pytest.raises(NativeConnectionSettlementError):
+                        store.promote(generation, prepared)
+                    assert not (tmp_path / "index.db").is_symlink()
+                    assert owner.connection is not None
+                    assert not archive_custody_available(tmp_path)
+                    if handle is not None:
+                        handle.allow_cleanup.set()
+                        owner.close()
+                    else:
+                        old.rollback()
+                store.promote(generation, prepared)
+                with pytest.raises(sqlite3.ProgrammingError):
+                    old.execute("SELECT 1")
+                assert (
+                    artifacts.list_artifact_observation_rows(
+                        db_path=tmp_path / "index.db",
+                        request=ArtifactObservationQuery(),
+                    )
+                    == []
+                )
+                assert (
+                    artifacts.list_artifact_cohort_rows(
+                        db_path=tmp_path / "index.db",
+                        request=ArtifactObservationQuery(),
+                    )
+                    == []
+                )
+                assert seen == ["new", "new"]
+            finally:
+                if isinstance(old, SettlementConnection):
+                    old.allow_cleanup.set()
                 owner.close()
-            else:
-                old.rollback()
-        store.promote(generation)
-        with pytest.raises(sqlite3.ProgrammingError):
-            old.execute("SELECT 1")
-        assert (
-            artifacts.list_artifact_observation_rows(
-                db_path=tmp_path / "index.db",
-                request=ArtifactObservationQuery(),
-            )
-            == []
-        )
-        assert (
-            artifacts.list_artifact_cohort_rows(
-                db_path=tmp_path / "index.db",
-                request=ArtifactObservationQuery(),
-            )
-            == []
-        )
-        assert seen == ["new", "new"]
     assert archive_custody_available(tmp_path)
 
 
@@ -1622,7 +1631,7 @@ def test_generation_native_failed_close_retains_selected_descriptor_and_sql(
     def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = arm_settlement(actual_connect(*args, **kwargs))
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     owner = None
@@ -1801,9 +1810,9 @@ def test_proof_snapshot_failure_rolls_back_once_and_preserves_both_errors(
         captured.append(connection)
         raise primary
 
-    def user_references(connection: sqlite3.Connection) -> Generator[str]:
+    def user_references(connection: sqlite3.Connection) -> Generator[reference_seal._ReferenceAnchor]:
         fail(connection)
-        yield "unreachable"
+        yield reference_seal._ReferenceAnchor("unreachable", False)
 
     def resolve(connection: sqlite3.Connection, ref: reference_seal._ResolvedReference) -> bool:
         fail(connection)

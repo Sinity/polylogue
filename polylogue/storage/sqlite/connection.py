@@ -6,10 +6,10 @@ import atexit
 import os
 import sqlite3
 import threading
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
@@ -25,7 +25,6 @@ from polylogue.storage.sqlite.connection_profile import (
     WRITE_CACHE_SIZE_KIB,
     WRITE_CONNECTION_PROFILE,
     WRITE_MMAP_SIZE_BYTES,
-    NativeConnectionSettlementError,
     NativeSQLCustodyOwner,
     _attach_sibling_tiers,
     _close_failed_native_construction,
@@ -36,9 +35,6 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.schema import _ensure_schema, assert_readable_archive_layout
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
-
-if TYPE_CHECKING:
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 
@@ -154,24 +150,6 @@ def _get_cached_connection(path: Path, *, archive_root: Path) -> sqlite3.Connect
     return conn
 
 
-def settle_cached_connections_on_current_thread(custody: object) -> None:
-    """Close operation cache handles only after actual transaction settlement."""
-    cache: dict[str, NativeSQLCustodyOwner] = getattr(_connection_cache, "conns", {})
-    failure: BaseException | None = None
-    for owner in tuple(cache.values()):
-        if owner.custody is custody:
-            try:
-                if owner.connection is not None and (owner.close_required or owner.connection.in_transaction):
-                    raise NativeConnectionSettlementError(
-                        owner, RuntimeError("cached SQLite transaction or close remains unsettled")
-                    )
-                owner.close()
-            except BaseException as error:
-                failure = failure or error
-    if failure is not None:
-        raise failure
-
-
 def _clear_connection_cache() -> None:
     """Close all cached connections and clear the thread-local cache.
 
@@ -183,14 +161,16 @@ def _clear_connection_cache() -> None:
     Also useful in test teardown to ensure test isolation.
     """
     cache: dict[str, NativeSQLCustodyOwner] = getattr(_connection_cache, "conns", {})
-    failure: BaseException | None = None
+    failures: list[BaseException] = []
     for owner in tuple(cache.values()):
         try:
             owner.close()
         except BaseException as error:
-            failure = failure or error
-    if failure is not None:
-        raise failure
+            failures.append(error)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Cached connection cleanup failed", failures)
 
 
 atexit.register(_clear_connection_cache)
@@ -277,21 +257,6 @@ def open_read_connection(
         owner.close()
 
 
-def create_default_backend() -> SQLiteBackend:
-    """Create a SQLiteBackend with the default database path.
-
-    This is a convenience function for creating backends when
-    no custom path is needed.
-
-    Returns:
-        SQLiteBackend connected to the default database location
-    """
-    # Late import to avoid circular dependency
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    return SQLiteBackend(db_path=None)
-
-
 def _build_scope_filter(
     names: Sequence[str] | None,
     *,
@@ -371,7 +336,6 @@ __all__ = [
     "_build_source_path_scope_filter",
     "_build_source_scope_filter",
     "connection_context",
-    "create_default_backend",
     "open_connection",
     "open_read_connection",
 ]

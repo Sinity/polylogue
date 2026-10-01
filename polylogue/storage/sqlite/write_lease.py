@@ -40,6 +40,7 @@ from builtins import BaseExceptionGroup
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from types import BuiltinFunctionType
 from typing import Any
@@ -133,6 +134,7 @@ class ArchiveWriteCustody:
         "_descriptor_cleanup_thread",
         "_descriptor_cleanup_task",
         "settlement_retry",
+        "_authorized_removals",
         "__weakref__",
     )
 
@@ -165,6 +167,7 @@ class ArchiveWriteCustody:
         self._descriptor_cleanup_thread: threading.Thread | None = None
         self._descriptor_cleanup_task: asyncio.Task[Any] | None = None
         self.settlement_retry = settlement_retry
+        self._authorized_removals: list[tuple[str, frozenset[str], threading.Thread, object | None]] = []
         _CUSTODIES.add(self)
         try:
             directory = os.fstat(directory_fd)
@@ -381,7 +384,7 @@ class ArchiveWriteCustody:
             or self._descriptor_cleanup_task is not _current_task()
         ):
             raise UnleasedWriteError("failed archive descriptor cleanup belongs to its original execution unit")
-        from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
+        from polylogue.storage.sqlite.connection_profile import settle_cached_connections_on_current_thread
 
         def release_owner() -> None:
             release = False
@@ -581,7 +584,7 @@ def _acquire_archive_write_custody(
             else:
                 _finish_cleanup(
                     "Unregistered custody acquisition cleanup failed",
-                    tuple(lambda value=value: os.close(value) for value in (fd, directory_fd) if value >= 0),
+                    tuple(partial(os.close, value) for value in (fd, directory_fd) if value >= 0),
                 )
         except BaseException as cleanup_error:
             raise BaseExceptionGroup(
@@ -697,17 +700,17 @@ def archive_write_custody(archive_root: str | Path) -> Iterator[ArchiveWriteCust
     custody = _acquire_archive_write_custody(archive_root)
     custody.bind_owner_context()
     previous = _set_context_custody(custody)
-    primary: BaseException | None = None
+    owned_primary: BaseException | None = None
     try:
         yield custody
     except BaseException as error:
-        primary = error
+        owned_primary = error
         raise
     finally:
         _finish_cleanup(
             "Archive custody and cleanup failed",
             (lambda: _restore_context_custody(previous), custody.close_owner),
-            primary,
+            owned_primary,
         )
 
 
@@ -984,6 +987,39 @@ def current_sql_custody() -> ArchiveWriteCustody | None:
             return None
         custody.require_owner_context("native SQLite custody")
     return custody
+
+
+@contextmanager
+def authorized_session_removal(*, archive_root: Path, plan_hash: str, session_ids: tuple[str, ...]) -> Iterator[None]:
+    """Bind validated deletion intent to the existing physical apply custody."""
+    require_write_lease("authorized session removal", archive_root=archive_root)
+    custody = current_sql_custody()
+    if custody is None or custody.archive_root.resolve() != archive_root.resolve():
+        raise UnleasedWriteError("authorized removal requires matching physical archive custody")
+    custody.assert_namespace()
+    frame = (plan_hash, frozenset(session_ids), threading.current_thread(), _current_task())
+    custody._authorized_removals.append(frame)
+    try:
+        yield
+    finally:
+        # Exact identity prevents nested or inherited execution from retiring
+        # another physical apply's permission.
+        for position in range(len(custody._authorized_removals) - 1, -1, -1):
+            if custody._authorized_removals[position] is frame:
+                del custody._authorized_removals[position]
+                break
+
+
+def permitted_session_removals(*, archive_root: Path) -> frozenset[str]:
+    require_write_lease("observe authorized session removal", archive_root=archive_root)
+    custody = current_sql_custody()
+    if custody is None or custody.archive_root.resolve() != archive_root.resolve():
+        return frozenset()
+    custody.assert_namespace()
+    for _plan_hash, session_ids, thread, task in reversed(custody._authorized_removals):
+        if thread is threading.current_thread() and task is _current_task():
+            return session_ids
+    return frozenset()
 
 
 def _set_context_custody(custody: ArchiveWriteCustody) -> object:

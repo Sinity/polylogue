@@ -1101,7 +1101,7 @@ class IndexGenerationStore:
             return self._promote_unlocked(generation)
 
     def _promote_unlocked(self, generation: IndexGeneration) -> IndexGeneration:
-        from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
+        from polylogue.storage.sqlite.connection_profile import settle_cached_connections_on_current_thread
         from polylogue.storage.sqlite.write_lease import current_sql_custody
 
         custody = current_sql_custody()

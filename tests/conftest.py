@@ -499,7 +499,15 @@ def _close_test_opened_sqlite_connections(
         return conns
 
     def _close_current_thread() -> None:
+        from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_on_current_thread
+
+        owned = {id(owner.connection) for owner in retained_native_sql_owners_on_current_thread()}
         for conn in _bucket():
+            # A controlled factory can appear under tests/ before the actual
+            # producer registers its handle. Never become a second closer for
+            # that production owner or bypass its retained failure obligations.
+            if id(conn) in owned:
+                continue
             try:
                 conn.close()
             except Exception:
@@ -563,7 +571,13 @@ def _close_test_opened_sqlite_connections(
             import asyncio
 
             async def _close_async() -> None:
+                from polylogue.storage.sqlite.async_sqlite import _BACKEND_CONNECTIONS, _BACKEND_CONNECTIONS_LOCK
+
                 for conn in still_open:
+                    with _BACKEND_CONNECTIONS_LOCK:
+                        owner = _BACKEND_CONNECTIONS.get(id(conn))
+                        if owner is not None and owner.connection is conn:
+                            continue
                     try:
                         await conn.close()
                     except Exception:
@@ -887,9 +901,9 @@ def storage_repository(workspace_env: dict[str, Path]) -> SessionRepository:
     creating the default backend.
     """
     from polylogue.storage.repository import SessionRepository
-    from polylogue.storage.sqlite.connection import create_default_backend
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-    backend = create_default_backend()
+    backend = SQLiteBackend(db_path=None)
     return SessionRepository(backend=backend)
 
 

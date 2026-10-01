@@ -6357,6 +6357,12 @@ class ArchiveStore:
 
             seal = PreparedIndexMutation(self.index_db_path, archive_root=self._write_lease_archive_root)
             with seal, seal.mutation_scope(conn) as mutation_scope:
+                from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+                if set(resolved_session_ids).issubset(
+                    permitted_session_removals(archive_root=self._write_lease_archive_root)
+                ):
+                    mutation_scope.authorize_session_removal(resolved_session_ids)
                 try:
                     for session_id in resolved_session_ids:
                         mutation_scope.note_deleted_session(session_id)

@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from builtins import BaseExceptionGroup
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -74,40 +74,29 @@ def control_archive_connections(monkeypatch: pytest.MonkeyPatch, *paths: str | P
         ) -> sqlite3.Connection:
             if str(database) in targets:
                 return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
-            return _original(database, *args, **kwargs)
+            return cast(sqlite3.Connection, _original(database, *args, **kwargs))
 
         monkeypatch.setattr(module, "connect_measured", controlled)
 
 
-class BackupCursorFault:
-    """Real backup plus retained native statement at the copy boundary."""
+class BackupCursorFault(_MeasuredConnection):
+    """Actual native backup owner retaining a statement at the copy boundary."""
 
-    def __init__(self, connection: sqlite3.Connection, *, on_target: bool, fail_copy: bool) -> None:
-        self.connection = connection
-        self.on_target = on_target
-        self.fail_copy = fail_copy
-        self.cursor: ControlledCursor | None = None
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.on_target = False
+        self.fail_copy = False
+        self.retained_cursor: ControlledCursor | None = None
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.connection, name)
-
-    @property
-    def row_factory(self) -> Any:
-        return self.connection.row_factory
-
-    @row_factory.setter
-    def row_factory(self, value: Any) -> None:
-        self.connection.row_factory = value
-
-    def backup(self, target: sqlite3.Connection) -> None:
-        self.connection.backup(target)
+    def backup(self, target: sqlite3.Connection, **kwargs: Any) -> None:
+        super().backup(target, **kwargs)
         if not self.on_target and any(row[2] for row in target.execute("PRAGMA database_list") if row[1] == "main"):
             return
-        connection = target if self.on_target else self.connection
-        self.cursor = connection.cursor(factory=ControlledCursor)
-        self.cursor.execute("SELECT 1 UNION ALL SELECT 2")
-        assert next(self.cursor)[0] == 1
-        self.cursor.allow_cleanup.clear()
+        connection = target if self.on_target else self
+        self.retained_cursor = connection.cursor(factory=ControlledCursor)
+        self.retained_cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        assert next(self.retained_cursor)[0] == 1
+        self.retained_cursor.allow_cleanup.clear()
         if self.fail_copy:
             raise OSError("synthetic failure after physical SQLite backup")
 
@@ -205,6 +194,6 @@ def native_settlement_connections(monkeypatch: pytest.MonkeyPatch) -> None:
         factory = kwargs.get("factory", sqlite3.Connection)
         if factory in (sqlite3.Connection, _MeasuredConnection):
             kwargs["factory"] = SettlementConnection
-        return original(*args, **kwargs)
+        return cast(sqlite3.Connection, original(*args, **kwargs))
 
     monkeypatch.setattr(sqlite3, "connect", connect)

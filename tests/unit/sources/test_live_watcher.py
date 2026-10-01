@@ -3214,7 +3214,7 @@ def test_v5_cursor_reprocesses_unchanged_bytes_through_live_batch(tmp_path: Path
     selected, deferred = watcher.classify_ingest_candidates([path])
     assert selected == (path,)
     assert deferred == ()
-    asyncio.run(watcher._ingest_files(selected))
+    asyncio.run(watcher._ingest_files(list(selected)))
 
     after = path.stat()
     assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
