@@ -75,7 +75,12 @@ def _install_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Pat
     versions[ArchiveTier.SOURCE] = 3
     monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
     ddl = dict(migration_runner.ARCHIVE_DDL_BY_TIER)
-    final_ddl = "CREATE TABLE base_items (id INTEGER PRIMARY KEY) STRICT;\n" + step_2 + step_3
+    from polylogue.storage.sqlite import archive_tiers
+
+    baseline = dict(archive_tiers.ARCHIVE_BASELINE_DDL_BY_TIER)
+    baseline[ArchiveTier.SOURCE] = "CREATE TABLE base_items (id INTEGER PRIMARY KEY) STRICT;\n"
+    monkeypatch.setattr(archive_tiers, "ARCHIVE_BASELINE_DDL_BY_TIER", baseline)
+    final_ddl = baseline[ArchiveTier.SOURCE] + step_2 + step_3
     ddl[ArchiveTier.SOURCE] = final_ddl
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     return source, final_ddl

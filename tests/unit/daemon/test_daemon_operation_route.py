@@ -1352,7 +1352,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                 archive_root=str(stack.archive_root),
                 deadline_ms=25,
             )
-            assert timed_out is not None and timed_out["outcome"] == "timed-out"
+            assert timed_out is not None and timed_out["outcome"] == "timed-out", timed_out
             assert monotonic() - started < 1.0
             assert not release_apply.is_set()
 
@@ -2074,9 +2074,9 @@ def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evid
         ArchiveStore.open_existing(destination)
 
 
-@pytest.mark.parametrize("audit_read_gap", [False, True])
+@pytest.mark.parametrize("audit_read_gap,spill_failure", [(False, False), (True, False), (True, True)])
 def test_accepted_restore_outlives_implicit_deadline_and_control_returns_terminal_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_read_gap: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_read_gap: bool, spill_failure: bool
 ) -> None:
     from time import monotonic
 
@@ -2137,6 +2137,12 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                     raise AuditContinuityError("synthetic temporary control read gap")
 
                 monkeypatch.setattr(operation_runtime, "open_operation_control", unavailable_control_read)
+            if spill_failure:
+
+                def refuse_terminal_transfer(exchange: Any) -> None:
+                    raise OSError("synthetic result publication refusal")
+
+                monkeypatch.setattr(stack.runtime, "_retain_unbound_terminal", refuse_terminal_transfer)
             release.set()
             terminal = stack.client.await_operation(request_id, archive_root=str(stack.archive_root))
             while terminal is not None and terminal["result"]["outcome"] in {"accepted", "running", "indeterminate"}:
@@ -2153,8 +2159,82 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                 "operation.status", {"request_id": request_id}, archive_root=str(stack.archive_root)
             )
             assert status is not None and status["result"] == terminal["result"]
+            if spill_failure:
+                assert terminal["result"]["terminal_custody_error"] == "OSError"
+                assert request_id in stack.runtime._exchanges
+                blocked_destination = tmp_path / "blocked-result-custody"
+                blocked = stack.client.operation(
+                    "maintenance.restore_verified_backup",
+                    {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(blocked_destination)},
+                    archive_root=str(stack.archive_root),
+                )
+                assert blocked is not None and blocked["outcome"] == "rejected", blocked
+                assert blocked["error"]["code"] == "operation_result_custody_unavailable"
+                assert not blocked_destination.exists()
+                scratch = None
+            else:
+                assert request_id not in stack.runtime._exchanges
+                assert stack.runtime._terminal_scratch is not None
+                scratch = Path(stack.runtime._terminal_scratch.name)
+                assert len(tuple(scratch.iterdir())) == 1
+            from polylogue.core.enums import PrincipalSurface
+            from polylogue.operations.daemon_protocol import DaemonOperationRequest
+            from polylogue.operations.mutation_transaction import MutationPrincipal
+
+            if spill_failure:
+                held = stack.runtime._exchanges[request_id]
+                principal = held.context.principal
+                assert held.snapshot is not None
+                archive_identity = held.snapshot.identity.authority_identity_digest
+            else:
+                assert scratch is not None
+                with next(scratch.iterdir()).open(encoding="utf-8") as stream:
+                    packet = json.load(stream)
+                declared = packet["principal"]
+                principal = MutationPrincipal(
+                    actor_ref=declared["actor_ref"],
+                    capabilities=frozenset(declared["capabilities"]),
+                    surface=PrincipalSurface(declared["surface"]),
+                    role_label=declared["role_label"],
+                )
+                archive_identity = packet["archive_identity"]
+            control_request = DaemonOperationRequest(
+                operation="operation.status", payload={"request_id": request_id}, request_id="inspect-retained-result"
+            )
+            with pytest.raises(PermissionError):
+                stack.runtime.control(
+                    control_request, replace(principal, actor_ref="synthetic-unrelated"), archive_identity
+                )
+            with pytest.raises(ValueError, match="archive_identity_stale"):
+                stack.runtime.control(control_request, principal, "synthetic-different-archive")
+            # A result is not a five-minute progress buffer. An identical
+            # replay must not execute restoration against the occupied root.
+            offset += 601.0
+            replay = stack.client.operation(
+                "maintenance.restore_verified_backup",
+                {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
+                archive_root=str(stack.archive_root),
+                request_id=request_id,
+            )
+            assert replay is not None and replay["outcome"] == "completed", replay
+            assert replay["result"]["result"] == terminal["result"]["result"]
+            later = stack.client.operation(
+                "operation.cancel", {"request_id": request_id}, archive_root=str(stack.archive_root)
+            )
+            assert later is not None and later["result"]["outcome"] == "completed", later
+            conflicting = stack.client.operation(
+                "maintenance.restore_verified_backup",
+                {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(tmp_path / "conflict")},
+                archive_root=str(stack.archive_root),
+                request_id=request_id,
+            )
+            assert conflicting is not None and conflicting["outcome"] == "rejected", conflicting
+            assert not (tmp_path / "conflict").exists()
         finally:
             release.set()
             thread.join()
+    if scratch is not None:
+        assert not scratch.exists()
+    assert stack.runtime.shutdown_settled
     with ArchiveStore.open_existing(destination, read_only=True):
         pass

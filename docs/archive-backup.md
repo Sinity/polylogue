@@ -397,7 +397,13 @@ The machine restore exchange has a 300-second response budget. Once its first
 possible filesystem effect has been admitted, expiry returns `indeterminate`
 and the accepted restore continues; it does not cancel progressing work.
 `operation.await` or `operation.status` with the same request ID and principal
-reads the retained exchange's terminal result while that daemon remains live.
+reads its exact terminal result while that daemon remains live. Completed unbound
+results transfer atomically to private runtime scratch before the live exchange
+retires; they are not subject to progress-buffer expiry. A transfer fault keeps
+the original terminal future owned and visible through `terminal_custody_error`;
+new mutation admission pauses retryably until that transfer succeeds. Runtime
+shutdown drains workers before removing its result scratch. These files are not Audit receipts and do
+not grant restart authority.
 An await may return a running observation or progress frame first; consumers
 follow its state and progress cursors until the terminal outcome.
 This unbound filesystem operation does not mint an Audit machine-request

@@ -1314,7 +1314,7 @@ def mutation_annotation_import_batch(
         # boundary only if the exchange is still live, so the runtime never
         # reports timed-out or disconnected-before-acceptance for a write that
         # then commits.
-        runtime.begin_unbound_write(request)
+        runtime.begin_unbound_write(request, snapshot=snapshot)
 
     async def _run() -> AnnotationBatchImportResult:
         with adopt_write_lease(delegation):

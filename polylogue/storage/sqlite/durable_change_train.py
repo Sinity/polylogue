@@ -1850,42 +1850,48 @@ def _released_live_schema_inventory_sha256(
 
 
 def _canonical_schema_inventory(tier: ArchiveTier, target_version: int) -> _migration_runner.DurableSchemaInventory:
-    """Construct the canonical object set for one live durable schema version."""
-    try:
-        normalized_target_version = int(target_version)
-    except (TypeError, ValueError) as exc:
-        raise DurableChangeTrainError("canonical schema inventory target version must be an integer") from exc
-    if isinstance(target_version, bool):
+    """Construct one declared version from its immutable baseline and steps."""
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_DDL_BY_TIER
+
+    if type(target_version) is not int:
         raise DurableChangeTrainError("canonical schema inventory target version must be an integer")
-    registry = getattr(_migration_runner, "ARCHIVE_DDL_BY_TIER", None)
-    archive_ddl = registry.get(tier) if isinstance(registry, dict) else None
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
+    if not floor <= target_version <= _runtime_durable_version(tier):
+        raise DurableChangeTrainError("canonical schema inventory target is not supported")
+    archive_ddl = ARCHIVE_BASELINE_DDL_BY_TIER.get(tier)
     if not isinstance(archive_ddl, str):
-        raise DurableChangeTrainError(f"no canonical archive DDL is registered for {tier.value}")
-    return _canonical_schema_inventory_for_ddl(tier, normalized_target_version, archive_ddl)
+        raise DurableChangeTrainError(f"no canonical archive baseline DDL is registered for {tier.value}")
+    steps = tuple(step for step in _migration_runner._load_migrations(tier) if floor < step.version <= target_version)
+    if tuple(step.version for step in steps) != tuple(range(floor + 1, target_version + 1)):
+        raise DurableChangeTrainError("canonical schema inventory lacks its declared migration chain")
+    return _canonical_schema_inventory_for_ddl(tier, target_version, archive_ddl, steps)
 
 
 @lru_cache(maxsize=64)
 def _canonical_schema_inventory_for_ddl(
-    tier: ArchiveTier, target_version: int, archive_ddl: str
+    tier: ArchiveTier,
+    target_version: int,
+    archive_ddl: str,
+    steps: tuple[_migration_runner.MigrationStep, ...],
 ) -> _migration_runner.DurableSchemaInventory:
-    """Build the canonical inventory for one (tier, version, DDL) triple.
+    """Memoize only exact baseline/ordered installed SQL schema computation.
 
-    The result is a pure function of exactly these three inputs -- it never
-    reads the archive -- so it is memoized per process. The registered DDL
-    text is part of the key rather than assumed constant, so a substituted
-    ``ARCHIVE_DDL_BY_TIER`` entry (tests do substitute one) yields a different
-    inventory instead of a stale hit. ``DurableSchemaInventory`` is frozen, so
-    callers share one instance safely.
-
-    This matters because startup reconciliation rebuilds these inventories on
-    every active-root bootstrap, and active-root bootstrap runs once per ingest
-    batch -- once per catch-up chunk during a rebuild.
+    Discovery validates the installed sidecar claims before every memo lookup.
+    Each destination's physical application and live proofs remain uncached.
+    The baseline and complete ordered steps are keys, so neither a different
+    baseline nor changed installed SQL can reuse a prior schema inventory.
     """
     with closing(sqlite3.connect(":memory:")) as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
         fresh.executescript(archive_ddl)
-        fresh.execute(f"PRAGMA user_version = {target_version}")
+        fresh.execute(f"PRAGMA user_version = {DURABLE_MIGRATION_ADOPTION_FLOORS[tier]}")
         fresh.commit()
+        for step in steps:
+            with fresh:
+                _migration_runner._execute_proved_migration_sql(fresh, step)
+                fresh.execute(f"PRAGMA user_version = {step.version}")
+        if int(fresh.execute("PRAGMA user_version").fetchone()[0]) != target_version:
+            raise DurableChangeTrainError("canonical schema inventory did not reach its declared target")
         return _migration_runner.capture_durable_schema_inventory(fresh)
 
 

@@ -1366,7 +1366,7 @@ async def execute_backup_operation(
     if payload.get("check_only"):
         result = await runtime.compute_phase(run)
     else:
-        runtime.begin_unbound_write(request)
+        runtime.begin_unbound_write(request, snapshot=snapshot)
         result = await runtime.write_phase("backup", run)
     detail = result.model_dump(mode="json")
     return operation_envelope(
@@ -1567,7 +1567,7 @@ async def execute_restore_verified_backup_operation(
     assert runtime is not None
     snapshot = await runtime.compute_phase(lambda: observe_control_authority(context.archive_root))
     _validate_identity(request, context, snapshot)
-    runtime.begin_unbound_write(request)
+    runtime.begin_unbound_write(request, snapshot=snapshot)
     try:
         detail = await runtime.compute_phase(
             lambda: restore_verified_backup(

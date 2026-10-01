@@ -1188,6 +1188,9 @@ class MutationResult(_OperationPayload):
     artifact_refs: list[str] | None = None
     result: dict[str, object] | None = None
     cancellation_requested: bool | None = None
+    #: The actual terminal future is still owned because private scratch
+    #: transfer failed; this is separate from the operation's own error.
+    terminal_custody_error: str | None = None
     accepted: bool | None = None
     progress_sequence: int | None = Field(default=None, ge=0)
     progress_events: list[dict[str, object]] | None = None

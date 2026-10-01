@@ -486,6 +486,11 @@ def _install_synthetic_migration(
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
     ddl = dict(ARCHIVE_DDL_BY_TIER)
+    from polylogue.storage.sqlite import archive_tiers
+
+    baseline = dict(ARCHIVE_BASELINE_DDL_BY_TIER)
+    baseline[tier] = canonical_base
+    monkeypatch.setattr(archive_tiers, "ARCHIVE_BASELINE_DDL_BY_TIER", baseline)
     canonical = f"{canonical_base}\n{sql}"
     ddl[tier] = canonical
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
