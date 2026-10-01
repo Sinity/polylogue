@@ -753,6 +753,10 @@ def _invoke_runtime_consumers(
                     detail = _probe_source_profile_identity(
                         cast(Callable[..., object], value), writer=reference.endswith(":record_raw_profile_identity")
                     )
+                elif reference.endswith(":has_raw_byte_revision_dependents"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("byte revision dependency reader is source-tier-only")
+                    detail = _probe_raw_byte_revision_dependents(cast(Callable[..., object], value))
                 elif reference.endswith(":read_raw_failure_lifecycle"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -1795,6 +1799,29 @@ def _probe_zip_container_coordinate_write(writer: Callable[..., object]) -> str:
     if "durable-change-train-unrelated-raw" in recorded:
         raise DurableChangeTrainError("zip container coordinate write recorded an identity it should have rejected")
     return "recorded a v2 zip member coordinate and rejected an unrelated identity"
+
+
+def _probe_raw_byte_revision_dependents(reader: Callable[..., object]) -> str:
+    """Exercise both indexed dependency arms and the excluded self row."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+
+    with sqlite_connection(":memory:") as connection:
+        initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE)
+        for raw_id in ("parent", "child"):
+            _seed_probe_raw_row(connection, raw_id=raw_id, source_path=f"/{raw_id}.jsonl", blob_hash=b"0" * 32)
+        connection.execute(
+            "UPDATE raw_sessions SET predecessor_raw_id = 'parent', baseline_raw_id = 'parent' WHERE raw_id = 'parent'"
+        )
+        if reader(connection, "parent") or reader(connection, "missing"):
+            raise DurableChangeTrainError("dependency reader counted its own row or an absent dependency")
+        for column in ("predecessor_raw_id", "baseline_raw_id"):
+            connection.execute(f"UPDATE raw_sessions SET {column} = 'parent' WHERE raw_id = 'child'")
+            if not reader(connection, "parent"):
+                raise DurableChangeTrainError(f"dependency reader missed {column}")
+            connection.execute(f"UPDATE raw_sessions SET {column} = NULL WHERE raw_id = 'child'")
+        if reader(connection, "parent"):
+            raise DurableChangeTrainError("dependency reader retained a removed dependency")
+    return "read predecessor and baseline dependents while excluding self and absent dependencies"
 
 
 def _probe_revision_provider_resolution(descriptor: Callable[..., object]) -> str:

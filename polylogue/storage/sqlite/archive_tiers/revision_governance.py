@@ -2493,6 +2493,23 @@ def raw_payload_sizes(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) 
     return {str(row[0]): int(row[1] or 0) for row in rows}
 
 
+RAW_BYTE_REVISION_DEPENDENTS_SQL = """
+SELECT 1 FROM raw_sessions
+WHERE raw_id != ?
+  AND (predecessor_raw_id = ? OR baseline_raw_id = ?)
+LIMIT 1
+"""
+
+
+def has_raw_byte_revision_dependents(conn: sqlite3.Connection, raw_id: str) -> bool:
+    """Read dependency authority from the caller's exact Source snapshot."""
+    cursor = conn.execute(RAW_BYTE_REVISION_DEPENDENTS_SQL, (raw_id, raw_id, raw_id))
+    try:
+        return cursor.fetchone() is not None
+    finally:
+        cursor.close()
+
+
 def replace_raw_membership_census(
     store: RawRevisionGovernanceHost,
     raw_id: str,
@@ -2523,16 +2540,7 @@ def replace_raw_membership_census(
             ).fetchone()
             if revision is None:
                 raise RuntimeError(f"membership census raw is missing: {raw_id}")
-            dependent = conn.execute(
-                """
-                SELECT 1 FROM raw_sessions
-                WHERE raw_id != ?
-                  AND (predecessor_raw_id = ? OR baseline_raw_id = ?)
-                LIMIT 1
-                """,
-                (raw_id, raw_id, raw_id),
-            ).fetchone()
-            if dependent is not None:
+            if has_raw_byte_revision_dependents(conn, raw_id):
                 raise ActiveByteRevisionChainError("an active byte-revision chain cannot move to membership governance")
             # Authority is supplied by the producer; detail is display text.
             census_authority = revision_authority
