@@ -1111,3 +1111,31 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
         assert not replacement.scratch_directory.exists()
     with sqlite3.connect(tmp_path / "index.db") as index:
         assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+def test_raw_publication_rejects_foreign_original_seal_before_binding_lifetime(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    root = tmp_path / "selected"
+    other = tmp_path / "other"
+    bootstrap_archive_root(root)
+    bootstrap_archive_root(other)
+    raw_id = _admit(root, ("original-seal",))
+    adapter = RawObservationDerivation(root)
+    frame = raw_observation_frame(root, raw_ids=(raw_id,))
+    prepared = adapter.compute(frame, raw_id)
+    assert prepared.reference_seal is not None
+    prepared.reference_seal.close()
+    foreign = PreparedIndexMutation(other / "index.db", archive_root=other)
+    moved = replace(prepared, reference_seal=foreign)
+    before = _snapshot(root)
+    with pytest.raises(RuntimeError):
+        _publish(adapter, frame, moved)
+    assert not foreign.publication_lifetime_bound
+    assert foreign._closed
+    assert _snapshot(root) == before
+    assert moved.scratch_directory is not None and not moved.scratch_directory.exists()
+    with sqlite3.connect(root / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
