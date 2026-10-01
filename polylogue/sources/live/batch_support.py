@@ -270,6 +270,7 @@ class _AppendPlan:
 
 @dataclass(frozen=True, slots=True)
 class _AppendResult:
+    write_hold_exhausted: bool = field(default=False, kw_only=True)
     succeeded: list[_AppendPlan]
     failed: list[_AppendPlan]
     deferred: list[_AppendPlan] = field(default_factory=list)

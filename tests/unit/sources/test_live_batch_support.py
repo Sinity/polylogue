@@ -9740,8 +9740,8 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     """
     root = tmp_path / "sessions"
     root.mkdir()
-    first, second = root / "revision-1.json", root / "revision-2.json"
-    for path in (first, second):
+    first, second, third = root / "revision-1.json", root / "revision-2.json", root / "later.json"
+    for path in (first, second, third):
         path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
     processor = LiveBatchProcessor(
@@ -9768,6 +9768,9 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
         return None
 
     monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._full_parse_progress_groups", lambda paths: iter([paths[:2], paths[2:]])
+    )
     monkeypatch.setattr(processor, "_ingest_full_paths", holding_full_ingest)
     monkeypatch.setattr(processor, "_converge_paths", lambda paths: (set(paths), 0.0, {}, []))
     monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
@@ -9776,12 +9779,16 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     if halt == "stop_requested":
         monkeypatch.setattr(processor, "_stop_requested", lambda: bool(published))
 
-    metrics = await processor.ingest_files([first, second], emit_event=False)
+    metrics = await processor.ingest_files([first, second, third], emit_event=False)
 
     assert published == [[first, second]]
     assert metrics.succeeded_file_count == 1
     assert str(second) in metrics.deferred_paths
     assert deferred == [second]
+    assert metrics.excluded_paths == {
+        str(third): "unattempted_time_budget" if halt == "write_hold_spent" else "unattempted"
+    }
+    assert metrics.time_budget_exceeded is (halt == "write_hold_spent")
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude-code"])
@@ -9849,45 +9856,52 @@ def test_append_publication_does_not_hide_growth_after_planning(
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (3,)
 
 
-def test_append_budget_refusal_retains_retryable_raw_without_poisoning_source(
+@pytest.mark.parametrize("slow_phase", ["capture", "replay", "complete"])
+def test_append_overrun_finishes_started_plan_and_keeps_later_plans_backlog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     frozen_clock: Any,
+    slow_phase: str,
 ) -> None:
-    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+    from types import ModuleType
+
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
+    from polylogue.sources import revision_backfill
     from polylogue.sources.live import append_ingest
 
     path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="append-budget")
     before = processor._cursor.get_record(path)
     assert before is not None
-    original = append_ingest._write_append_raw_payload
+    module: ModuleType
+    if slow_phase == "capture":
+        module, name = append_ingest, "_write_append_raw_payload"
+    elif slow_phase == "replay":
+        module, name = revision_backfill, "parse_retained_raw_sessions"
+    else:
+        module, name = append_ingest, "_add_timing"
+    original = getattr(module, name)
 
-    def delayed_capture(*args: Any, **kwargs: Any) -> Any:
+    def delayed(*args: Any, **kwargs: Any) -> Any:
         result = original(*args, **kwargs)
-        frozen_clock.advance(31)
+        if slow_phase != "complete" or args[1] == "append.raw_and_index_write":
+            frozen_clock.advance(31)
         return result
 
-    monkeypatch.setattr(append_ingest, "_write_append_raw_payload", delayed_capture)
+    monkeypatch.setattr(module, name, delayed)
     token = enter_write_hold("watcher.live_ingest.append", 30)
     try:
-        with pytest.raises(WriteHoldBudgetError) as caught:
-            ingest_append_plans(cast(Any, owner), [plan])
-        assert caught.value.checkpoint == "append_parse"
+        # Offering the same plan twice proves the later plan was not attempted.
+        result = ingest_append_plans(cast(Any, owner), [plan, plan])
+        assert result.succeeded == [plan]
+        assert result.failed == []
+        assert result.write_hold_exhausted
+        assert processor._record_append_cursor(plan) is True
     finally:
         exit_write_hold(token)
     after = processor._cursor.get_record(path)
     assert after is not None
-    assert after.byte_offset == before.byte_offset
+    assert after.byte_offset == plan.last_complete_newline > before.byte_offset
     assert after.failure_count == 0
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT parse_error FROM raw_sessions WHERE source_path = ? AND source_index = -1",
-            (str(path),),
-        ).fetchall() == [(None,)]
-
-    monkeypatch.setattr(append_ingest, "_write_append_raw_payload", original)
-    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
-    assert processor._record_append_cursor(plan) is True
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)
 
@@ -10154,3 +10168,83 @@ def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.M
     assert frontier.prefix_size == len(record) * 4000
     assert frontier.incomplete_tail and not frontier.malformed_record
     assert read < 4 * 4096
+
+
+@pytest.mark.parametrize("slow_phase", ["capture", "archive_open"])
+def test_live_append_overrun_settles_cursor_before_ending_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: Any, slow_phase: str
+) -> None:
+    from contextlib import contextmanager
+
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
+    from polylogue.sources.live import append_ingest, batch
+    from polylogue.sources.live.archive_open import _open_archive_for_live_write
+
+    first, first_plan, _owner, processor = _seed_live_append_plan(tmp_path, native_id="first-budget")
+    second = first.with_name("second-budget.jsonl")
+    baseline = first.read_bytes()[: first_plan.start_offset].replace(b"first-budget", b"second-budget")
+    second.write_bytes(baseline)
+    assert asyncio.run(processor.ingest_files([second], emit_event=False)).succeeded_file_count == 1
+    with second.open("ab") as stream:
+        stream.write(first_plan.payload)
+    second_before = processor._cursor.get_record(second)
+    assert second_before is not None
+    full = first.with_name("later-full.jsonl")
+    full.write_bytes(baseline.replace(b"second-budget", b"later-full"))
+    monkeypatch.setattr(batch, "_append_plan_group_ready", lambda plans: len(plans) >= 2)
+    monkeypatch.setattr(processor, "_converge_paths", lambda paths, **kwargs: (set(paths), 0.0, {}, []))
+    monkeypatch.setattr(processor, "_compact_superseded_raw_snapshots", lambda paths: None)
+
+    async def unexpected_full(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("later full group ran after append spent the hold")
+
+    monkeypatch.setattr(processor, "_ingest_full_paths", unexpected_full)
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(batch, "emit", lambda event, **fields: events.append((event, fields)))
+    if slow_phase == "capture":
+        original_capture = append_ingest._write_append_raw_payload
+
+        def delayed_capture(*args: Any, **kwargs: Any) -> Any:
+            result = original_capture(*args, **kwargs)
+            frozen_clock.advance(31)
+            return result
+
+        monkeypatch.setattr(append_ingest, "_write_append_raw_payload", delayed_capture)
+    else:
+        original_open = _open_archive_for_live_write
+
+        @contextmanager
+        def delayed_open(*args: Any, **kwargs: Any) -> Any:
+            with original_open(*args, **kwargs) as archive:
+                frozen_clock.advance(31)
+                yield archive
+
+        monkeypatch.setattr(append_ingest, "_open_archive_for_live_write", delayed_open)
+    token = enter_write_hold("watcher.live_ingest.append", 30)
+    try:
+        metrics = asyncio.run(processor.ingest_files([full, first, second], emit_event=False))
+    finally:
+        exit_write_hold(token)
+    first_after = processor._cursor.get_record(first)
+    assert first_after is not None and first_after.byte_offset == first.stat().st_size
+    assert processor._cursor.get_record(second) == second_before
+    assert processor._cursor.get_record(full) is None
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 0
+    assert metrics.time_budget_exceeded
+    assert metrics.excluded_paths == {
+        str(second): "unattempted_time_budget",
+        str(full): "unattempted_time_budget",
+    }
+    assert metrics.excluded_file_count == 2
+    assert metrics.refused_bytes_by_reason["unattempted_time_budget"] == second.stat().st_size + full.stat().st_size
+    spent = [fields for event, fields in events if event == "live.ingest.write_hold_spent_after_commit"]
+    assert len(spent) == 1
+    assert spent[0]["reason"] == "cursors_recorded_before_unit_end"
+    chunk = [fields for event, fields in events if event == "live.ingest.chunk"]
+    assert len(chunk) == 1 and chunk[0]["outcome"] == "degraded"
+    assert chunk[0]["refused"] == 2
+    with processor._cursor._connect_ops_read() as conn:
+        assert conn.execute(
+            "SELECT outcome_code, retryable, evidence_ref FROM ingest_attempts ORDER BY rowid DESC LIMIT 1"
+        ).fetchone() == ("transient_error", 1, "batch:unattempted_sources")

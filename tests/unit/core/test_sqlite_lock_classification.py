@@ -44,6 +44,8 @@ def test_shared_lock_codes_are_transient(predicate: _Predicate) -> None:
         errorcode=sqlite3.SQLITE_LOCKED | (1 << 8),
         errorname="SQLITE_LOCKED_SHAREDCACHE",
     )
+    protocol = _operational_error("WAL race", errorcode=sqlite3.SQLITE_PROTOCOL, errorname="SQLITE_PROTOCOL")
+    assert predicate(protocol) is True
     assert predicate(busy) is True
     assert predicate(locked) is True
     assert predicate(shared_cache) is True

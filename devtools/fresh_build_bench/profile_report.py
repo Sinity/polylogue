@@ -1,4 +1,4 @@
-"""Summarise a stack-sample document written by :mod:`.sampler`."""
+"""Summarise collected stacks; unavailable profiling returns a refusal and exit 2."""
 
 from __future__ import annotations
 
@@ -15,6 +15,25 @@ _SQLITE_CALL: Final = re.compile(
     r"|sqlite3\.connect|__exit__|for .* in (conn|cursor|connection)\b"
 )
 _WAIT_FUNCTIONS: Final = frozenset({"wait", "_wait_for_tstate_lock", "select", "get", "sleep", "join", "acquire"})
+
+
+class ProfileRefusedError(ValueError):
+    """Stack measurements were unavailable, rather than empty observations."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def profile_refusal_reason(document: dict[str, Any]) -> str | None:
+    """Decide whether a sampler document supplies stack measurements."""
+    reason = document.get("profile_refusal") or (None if document.get("stacks") else "profile_samples_unavailable")
+    return str(reason) if reason else None
+
+
+def _require_profile(document: dict[str, Any]) -> None:
+    if reason := profile_refusal_reason(document):
+        raise ProfileRefusedError(reason)
 
 
 def _short(path: str) -> str:
@@ -49,6 +68,7 @@ def classify_leaf(frame: list[Any]) -> str:
 
 
 def summarise(document: dict[str, Any], *, top: int, thread_filter: str | None) -> dict[str, Any]:
+    _require_profile(document)
     ticks_per_s = float(document["clock_ticks_per_s"])
     interval = float(document["interval_s"])
     by_thread_wall: Counter[str] = Counter()
@@ -98,6 +118,7 @@ def summarise(document: dict[str, Any], *, top: int, thread_filter: str | None) 
 
 def collapsed(document: dict[str, Any], *, weight: str, thread_filter: str | None) -> list[str]:
     """Brendan Gregg collapsed-stack lines for a flame graph renderer."""
+    _require_profile(document)
     ticks_per_s = float(document["clock_ticks_per_s"])
     interval = float(document["interval_s"])
     lines: Counter[str] = Counter()
@@ -122,6 +143,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--weight", choices=("cpu", "wall"), default="cpu")
     args = parser.parse_args(argv)
     document = json.loads(args.samples.read_text(encoding="utf-8"))
+    try:
+        _require_profile(document)
+    except ProfileRefusedError as exc:
+        print(f"profile outcome=refused reason={exc.reason}")
+        return 2
     summary = summarise(document, top=args.top, thread_filter=args.thread)
     for key, value in summary.items():
         if isinstance(value, list):
