@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import fcntl
 import json
 import os
@@ -14,12 +16,13 @@ import sys
 import threading
 import time
 import uuid
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from types import TracebackType
+from types import BuiltinFunctionType, TracebackType
 from typing import Any, cast
 
 from polylogue.logging import WARNING, emit
@@ -310,7 +313,7 @@ class PreparedIndexPromotion:
         except BaseException as close_error:
             if exc is None:
                 raise
-            raise close_error from exc
+            raise BaseExceptionGroup("Index promotion and proof cleanup failed", [exc, close_error]) from exc
 
 
 class RebuildLeaseUnavailableError(RuntimeError):
@@ -546,6 +549,15 @@ class RebuildLease:
             raise interruption
 
 
+class ActiveWriterLeaseSettlementError(RuntimeError):
+    """The exact exclusion descriptor remains owned after an uncertain close."""
+
+    def __init__(self, lease: ActiveWriterLease, failure: BaseException) -> None:
+        super().__init__("active-writer exclusion requires original-owner descriptor settlement")
+        self.lease = lease
+        self.failure = failure
+
+
 class ActiveWriterLease:
     """Shared process-held lease refused while an offline rebuild owns the archive."""
 
@@ -553,6 +565,36 @@ class ActiveWriterLease:
         self.path = archive_root / ".index-rebuild.lock"
         self._fd: int | None = None
         self._owner_pid = os.getpid()
+        self._owner_thread = threading.current_thread()
+        self._owner_task = self._task()
+        self._identity: tuple[int, int] | None = None
+        self._close_failure: BaseException | None = None
+
+    @staticmethod
+    def _task() -> object | None:
+        try:
+            return asyncio.current_task()
+        except RuntimeError:
+            return None
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def require_owner(self, archive_root: Path) -> None:
+        if (
+            self._owner_pid != os.getpid()
+            or self._owner_thread is not threading.current_thread()
+            or self._owner_task is not self._task()
+            or self.path.parent.resolve(strict=True) != archive_root.resolve(strict=True)
+            or self._fd is None
+            or self._close_failure is not None
+        ):
+            raise RuntimeError("publication exclusion requires its exact acquired creator and archive")
+        opened = os.fstat(self._fd)
+        linked = self.path.stat(follow_symlinks=False)
+        if self._identity != (opened.st_dev, opened.st_ino) or self._identity != (linked.st_dev, linked.st_ino):
+            raise RuntimeError("publication exclusion namespace changed after acquisition")
 
     def acquire(self) -> None:
         if self._owner_pid != os.getpid():
@@ -564,16 +606,56 @@ class ActiveWriterLease:
             fcntl.LOCK_SH,
             unavailable_message=f"offline index rebuild owns archive: {self.path}",
         )
+        try:
+            metadata = os.fstat(self._fd)
+            self._identity = metadata.st_dev, metadata.st_ino
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "Active-writer acquisition and cleanup failed", [primary, cleanup]
+                ) from primary
+            raise
+
+    def _binding_retired(self, fd: int) -> bool:
+        try:
+            metadata = os.fstat(fd)
+        except OSError as error:
+            return error.errno == errno.EBADF
+        return self._identity is not None and self._identity != (metadata.st_dev, metadata.st_ino)
 
     def close(self) -> None:
         if self._owner_pid != os.getpid():
             raise RuntimeError("cannot release active-writer exclusion inherited across fork")
         if self._fd is not None:
-            fd, self._fd = self._fd, None
+            fd = self._fd
+            if self._close_failure is not None:
+                if not self._binding_retired(fd):
+                    raise ActiveWriterLeaseSettlementError(self, self._close_failure) from self._close_failure
+                self._fd = None
+                self._close_failure = None
+                return
+            closer = os.close
+            native_linux_close = (
+                sys.platform == "linux"
+                and isinstance(closer, BuiltinFunctionType)
+                and closer.__module__ == "posix"
+                and closer.__name__ == "close"
+            )
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+                # Closing the original open file description releases flock.
+                # An earlier LOCK_UN would surrender exclusion even when a
+                # controlled close fails before releasing that description.
+                closer(fd)
+            except BaseException as error:
+                if (native_linux_close and isinstance(error, OSError)) or self._binding_retired(fd):
+                    self._fd = None
+                    raise
+                self._close_failure = error
+                raise ActiveWriterLeaseSettlementError(self, error) from error
+            else:
+                self._fd = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -643,12 +725,38 @@ def rebuild_lease_status(archive_root: Path) -> RebuildLeaseStatus:
         os.close(fd)
 
 
-def _stable_link_target(source: Path, *, label: str) -> tuple[Path, tuple[int, int], bool]:
-    """Capture one durable tier target and verify its inode across resolution."""
+def _configured_link_identity(path: Path) -> tuple[int, int, int, str | None, int, int, int, int]:
+    metadata = path.lstat()
+    target = os.readlink(path) if stat.S_ISLNK(metadata.st_mode) else None
+    after = path.lstat()
+    parent = path.parent.stat()
+    target_parent = path.resolve(strict=True).parent.stat()
+    identity = (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        target,
+        parent.st_dev,
+        parent.st_ino,
+        target_parent.st_dev,
+        target_parent.st_ino,
+    )
+    if (after.st_dev, after.st_ino, after.st_mode) != identity[:3]:
+        raise RuntimeError(f"configured tier link changed during capture: {path}")
+    return identity
+
+
+def _stable_link_target(
+    source: Path, *, label: str
+) -> tuple[Path, tuple[int, int], bool, tuple[int, int, int, str | None, int, int, int, int]]:
+    """Capture the declared link incarnation and its exact durable leaf."""
     try:
+        link_identity = _configured_link_identity(source)
         before = source.stat()
         resolved = source.resolve(strict=True)
         after = source.stat()
+        if _configured_link_identity(source) != link_identity:
+            raise RuntimeError(f"{label} namespace changed during identity capture: {source}")
     except FileNotFoundError:
         raise
     except OSError as exc:
@@ -657,12 +765,20 @@ def _stable_link_target(source: Path, *, label: str) -> tuple[Path, tuple[int, i
     after_identity = (after.st_dev, after.st_ino)
     if before_identity != after_identity:
         raise RuntimeError(f"{label} changed during identity capture: {source}")
-    return resolved, after_identity, stat.S_ISDIR(after.st_mode)
+    return resolved, after_identity, stat.S_ISDIR(after.st_mode), link_identity
 
 
-def _require_path_identity(path: Path, identity: tuple[int, int], *, label: str) -> None:
-    """Fail closed if a pathname no longer names the captured inode."""
+def _require_path_identity(
+    path: Path,
+    identity: tuple[int, int],
+    *,
+    label: str,
+    link_identity: tuple[int, int, int, str | None, int, int, int, int],
+) -> None:
+    """Require both the configured link and the selected leaf to survive."""
     try:
+        if _configured_link_identity(path) != link_identity:
+            raise RuntimeError(f"{label} configured link was replaced: {path}")
         metadata = path.stat()
     except OSError as exc:
         raise RuntimeError(f"cannot verify {label}: {path}") from exc
@@ -769,6 +885,13 @@ class IndexGenerationStore:
             str, tuple[IndexGeneration, Path, Path, tuple[int, int] | None, tuple[str, ...]]
         ] = {}
         self._active_parent_identity = _stable_directory(self.active_pointer.parent, label="active pointer parent")
+        self._active_parent_link_identity = _configured_link_identity(self.active_pointer.parent)
+        _require_path_identity(
+            self.active_pointer.parent,
+            self._active_parent_identity,
+            label="active pointer parent",
+            link_identity=self._active_parent_link_identity,
+        )
         self._lifecycle_lock_fd: int | None = None
         if self._lifecycle_lock_path.is_symlink():
             raise RuntimeError(f"lifecycle lock is a symlink: {self._lifecycle_lock_path}")
@@ -780,11 +903,19 @@ class IndexGenerationStore:
         if self._lifecycle_lock_fd is not None:
             yield
             return
-        _require_path_identity(self.active_pointer.parent, self._active_parent_identity, label="active pointer parent")
+        _require_path_identity(
+            self.active_pointer.parent,
+            self._active_parent_identity,
+            label="active pointer parent",
+            link_identity=self._active_parent_link_identity,
+        )
         fd = os.open(self._lifecycle_lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             _require_path_identity(
-                self.active_pointer.parent, self._active_parent_identity, label="active pointer parent"
+                self.active_pointer.parent,
+                self._active_parent_identity,
+                label="active pointer parent",
+                link_identity=self._active_parent_link_identity,
             )
             fcntl.flock(fd, fcntl.LOCK_EX)
             self._lifecycle_lock_fd = fd
@@ -904,7 +1035,9 @@ class IndexGenerationStore:
             for filename in _GENERATION_READ_THROUGH_MEMBERS:
                 source = self.archive_root / filename
                 if source.exists() or source.is_symlink():
-                    target, identity, is_directory = _stable_link_target(source, label=f"durable tier {filename}")
+                    target, identity, is_directory, link_identity = _stable_link_target(
+                        source, label=f"durable tier {filename}"
+                    )
                     link = root / filename
                     link.symlink_to(target, target_is_directory=is_directory)
                     try:
@@ -916,7 +1049,9 @@ class IndexGenerationStore:
                     # The source pathname is still an authority boundary after the
                     # link is installed.  Do not proceed if it was replaced between
                     # capture and post-link verification.
-                    _require_path_identity(source, identity, label=f"durable tier {filename}")
+                    _require_path_identity(
+                        source, identity, label=f"durable tier {filename}", link_identity=link_identity
+                    )
             index_path = root / "index.db"
             from polylogue.storage.sqlite.write_lease import require_write_lease
 
@@ -982,8 +1117,13 @@ class IndexGenerationStore:
                 missing_session_count=seal.candidate_missing_session_count,
                 first_missing_session_id=seal.candidate_first_missing_session_id,
             )
-        except BaseException:
-            seal.close()
+        except BaseException as primary:
+            try:
+                seal.close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "Index promotion preparation and cleanup failed", [primary, cleanup]
+                ) from primary
             raise
 
     def promote(
@@ -1042,7 +1182,7 @@ class IndexGenerationStore:
             return self._promote_unlocked(generation)
 
     def _promote_unlocked(self, generation: IndexGeneration) -> IndexGeneration:
-        from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
+        from polylogue.storage.sqlite.connection_profile import settle_cached_connections_on_current_thread
         from polylogue.storage.sqlite.write_lease import current_sql_custody
 
         custody = current_sql_custody()
@@ -1358,6 +1498,13 @@ class IndexGenerationStore:
         reclaimed state after filesystem removal.
         """
         generations_root_identity = _stable_directory(self.generations_root, label="generation root")
+        generations_root_link_identity = _configured_link_identity(self.generations_root)
+        _require_path_identity(
+            self.generations_root,
+            generations_root_identity,
+            label="generation root",
+            link_identity=generations_root_link_identity,
+        )
         active_target = self.active_pointer.resolve(strict=True)
         candidates: list[tuple[int, int, str, Path, IndexGeneration]] = []
         for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
@@ -1453,7 +1600,12 @@ class IndexGenerationStore:
             raise RuntimeError("cannot securely open generation root") from exc
         try:
             for _lifecycle_at_ns, _created_at_ns, generation_id, directory, _generation in eligible:
-                _require_path_identity(self.generations_root, generations_root_identity, label="generation root")
+                _require_path_identity(
+                    self.generations_root,
+                    generations_root_identity,
+                    label="generation root",
+                    link_identity=generations_root_link_identity,
+                )
                 shutil.rmtree(directory.name, dir_fd=generations_fd)
                 reclaimed.append(generation_id)
         finally:
@@ -1474,7 +1626,12 @@ class IndexGenerationStore:
             raise RuntimeError("cannot securely open generation root") from exc
         try:
             for marker in markers[SUPERSEDED_GENERATION_RETENTION:]:
-                _require_path_identity(self.generations_root, generations_root_identity, label="generation root")
+                _require_path_identity(
+                    self.generations_root,
+                    generations_root_identity,
+                    label="generation root",
+                    link_identity=generations_root_link_identity,
+                )
                 shutil.rmtree(marker.name, dir_fd=markers_fd)
                 pruned_markers += 1
         finally:
@@ -1777,7 +1934,7 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     against.
     """
     path = archive_root / "source.db"
-    target, expected_identity, is_directory = _stable_link_target(path, label="source snapshot")
+    target, expected_identity, is_directory, link_identity = _stable_link_target(path, label="source snapshot")
     if is_directory:
         raise RuntimeError(f"source snapshot is not a regular file: {path}")
     from polylogue.storage.sqlite.connection_profile import (
@@ -1792,7 +1949,7 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         opened = os.fstat(fd)
         if (opened.st_dev, opened.st_ino) != expected_identity:
             raise RuntimeError(f"source snapshot changed during descriptor admission: {path}")
-        _require_path_identity(path, expected_identity, label="source snapshot")
+        _require_path_identity(path, expected_identity, label="source snapshot", link_identity=link_identity)
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for source snapshot: {path}")
@@ -1811,6 +1968,7 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
         try:
             yield conn
+            _require_path_identity(path, expected_identity, label="source snapshot", link_identity=link_identity)
         except BaseException as primary:
             _close_failed_native_construction(owner, primary)
             raise

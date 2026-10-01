@@ -25,7 +25,6 @@ from typing import Any
 import pytest
 
 from polylogue.security.excision import (
-    apply_session_excision,
     plan_session_excision,
     resolve_session_excision_target,
 )
@@ -35,6 +34,7 @@ from polylogue.sources.codex_state_evidence import (
 )
 from polylogue.storage.materials import MaterialObservation, list_materials, list_materials_page, read_material
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.excision_execution import execute_excision
 
 _THREAD_A = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
 _THREAD_B = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
@@ -302,10 +302,10 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
     plan = plan_session_excision(root, _SESSION_A)
     assert plan.source_materials == 1
 
-    receipt = apply_session_excision(root, _SESSION_A, reason="operator request", actor="tests")
-    assert receipt.found is True
-    assert receipt.counts["source_materials"] == 1
-    assert hash_a.hex() in receipt.removed_blob_hashes
+    receipt = execute_excision(root, _SESSION_A, reason="operator request", actor="tests")
+    assert receipt["found"] is True
+    assert receipt["counts"]["source_materials"] == 1
+    assert hash_a.hex() in receipt["removed_blob_hashes"]
 
     with sqlite3.connect(root / "source.db") as conn:
         assert list_materials(conn, evidence_ref=_SESSION_A) == []

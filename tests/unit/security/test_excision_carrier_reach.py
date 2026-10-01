@@ -20,7 +20,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.security.excision import (
-    apply_session_excision,
     plan_session_excision,
     resolve_session_excision_target,
 )
@@ -42,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision_execution import apply_excision_fault_control, execute_excision
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 _NATIVE_ID = "session-under-excision"
@@ -213,7 +213,7 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
     plan = plan_session_excision(tmp_path, session_id)
     assert plan.source_marker_inputs_pending == 1
     assert plan.source_marker_inputs_accepted == 1
-    receipt = apply_session_excision(tmp_path, session_id, reason="marker secret", actor="user:local", now_ms=7)
+    receipt = apply_excision_fault_control(tmp_path, session_id, reason="marker secret", actor="user:local", now_ms=7)
     assert receipt.counts["source_marker_inputs_pending"] == 1
     assert receipt.counts["source_marker_inputs_accepted"] == 1
     assert receipt.counts["index_marker_witnesses"] == 2
@@ -277,7 +277,7 @@ def test_mixed_marker_carrier_refuses_before_any_session_tier_mutates(tmp_path: 
         source.execute("BEGIN IMMEDIATE")
         persist_pending_marker_input_sync(source, mixed, expected_incarnation_id=str(uuid.uuid4()))
     with pytest.raises(MixedAcceptedMarkerInputError, match="retained sessions"):
-        apply_session_excision(tmp_path, session_id, reason="mixed", actor="user:local")
+        execute_excision(tmp_path, session_id, reason="mixed", actor="user:local")
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = 'raw-target'").fetchone() == (1,)
         assert source.execute(
@@ -316,7 +316,7 @@ def test_an_undeclared_session_keyed_table_makes_excision_refuse(tmp_path: Path)
     assert "raw_future_evidence" in str(excinfo.value)
 
     with pytest.raises(UnclassifiedSessionCarrierError):
-        apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
+        execute_excision(tmp_path, session_id, reason="test", actor="user:local")
 
 
 def test_raw_existence_journal_is_declared_as_excised(tmp_path: Path) -> None:
@@ -380,10 +380,10 @@ def test_container_membership_is_excised_per_member(tmp_path: Path) -> None:
     assert plan.source_container_items == 0
     assert plan.retained_source_containers == ("gen-1:item-1",)
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.counts["source_container_members"] == 1
-    assert receipt.retained_source_containers == ("gen-1:item-1",)
-    assert not receipt.complete, "a container still holding the excised bytes is not a complete excision"
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["counts"]["source_container_members"] == 1
+    assert receipt["retained_source_containers"] == ["gen-1:item-1"]
+    assert not receipt["complete"], "a container still holding the excised bytes is not a complete excision"
 
     conn = _source_conn(tmp_path)
     try:
@@ -397,10 +397,10 @@ def test_container_membership_is_excised_per_member(tmp_path: Path) -> None:
     assert hashlib.sha256(_PAYLOAD).digest() in excised
 
     # Excising the last live member releases the container itself.
-    second = apply_session_excision(tmp_path, other_session_id, reason="test", actor="user:local")
-    assert second.counts["source_container_items"] == 1
-    assert second.retained_source_containers == ()
-    assert second.complete
+    second = execute_excision(tmp_path, other_session_id, reason="test", actor="user:local")
+    assert second["counts"]["source_container_items"] == 1
+    assert second["retained_source_containers"] == []
+    assert second["complete"]
     conn = _source_conn(tmp_path)
     try:
         assert int(conn.execute("SELECT COUNT(*) FROM source_items").fetchone()[0]) == 0
@@ -415,7 +415,7 @@ def test_lineage_cascade_releases_container_shared_only_by_cascade_targets(tmp_p
     Anti-vacuity: resolving each session independently leaves the shared item
     retained because the other cascade member still appears live at preflight.
     """
-    from polylogue.security.excision import apply_session_excision, plan_session_excision
+    from polylogue.security.excision import plan_session_excision
 
     parent_id, child_id = _seed_archive(tmp_path)
     _seed_container(tmp_path)
@@ -435,8 +435,8 @@ def test_lineage_cascade_releases_container_shared_only_by_cascade_targets(tmp_p
     plan = plan_session_excision(tmp_path, parent_id, cascade_lineage=True)
     assert plan.source_container_items == 1
     assert plan.retained_source_containers == ()
-    receipt = apply_session_excision(tmp_path, parent_id, reason="lineage", actor="user:local", cascade_lineage=True)
-    assert receipt.counts["source_container_items"] == 1
+    receipt = execute_excision(tmp_path, parent_id, reason="lineage", actor="user:local", cascade_lineage=True)
+    assert receipt["counts"]["source_container_items"] == 1
     source = _source_conn(tmp_path)
     try:
         assert source.execute("SELECT COUNT(*) FROM source_items").fetchone() == (0,)
@@ -464,8 +464,8 @@ def test_excision_drops_publication_reservations_for_removed_blobs(tmp_path: Pat
     finally:
         conn.close()
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.counts["source_publication_reservations"] == 1
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["counts"]["source_publication_reservations"] == 1
 
     conn = _source_conn(tmp_path)
     try:

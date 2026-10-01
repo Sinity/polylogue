@@ -16,7 +16,7 @@ import tempfile
 import threading
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from polylogue.storage.index_generation import IndexGeneration
+    from polylogue.storage.index_generation import ActiveWriterLease, IndexGeneration
     from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
 
 from polylogue.core.compute_cancel import compute_cancel_requested
@@ -109,7 +109,7 @@ class ReferenceSealStaleError(ReferenceSealError):
 
 
 @dataclass(frozen=True, slots=True)
-class KnownSourceMutationReceipt:
+class KnownTierMutationReceipt:
     """Proof handle for one exact Source mutation committed under this seal."""
 
     _seal: PreparedIndexMutation
@@ -121,10 +121,11 @@ class KnownSourceMutationReceipt:
     _seal_nonce: object
     _key_column: str
     _effect_count: int
+    _tier: Literal["source", "user"]
 
 
 @dataclass(frozen=True, slots=True)
-class KnownSourceMutationPermit:
+class KnownTierMutationPermit:
     """Exact rows an admitted Source writer is authorized to update."""
 
     _seal: PreparedIndexMutation
@@ -136,6 +137,7 @@ class KnownSourceMutationPermit:
     _seal_nonce: object
 
     _key_column: str
+    _tier: Literal["source", "user"]
     _connection: sqlite3.Connection | None = field(default=None, init=False, compare=False, repr=False)
     _custody: ArchiveWriteCustody | None = field(default=None, init=False, compare=False, repr=False)
     _guard_setup: bool = field(default=False, init=False, compare=False, repr=False)
@@ -145,7 +147,7 @@ class KnownSourceMutationPermit:
     _failure: BaseException | None = field(default=None, init=False, compare=False, repr=False)
 
     @contextmanager
-    def hold_authority(self) -> Iterator[KnownSourceMutationPermit]:
+    def hold_authority(self) -> Iterator[KnownTierMutationPermit]:
         self._seal.validate_observers_current()
         require_write_lease("known Source mutation", archive_root=self._seal.archive_root)
         custody = current_sql_custody()
@@ -153,18 +155,18 @@ class KnownSourceMutationPermit:
             raise ReferenceSealError("known Source mutation requires actual physical archive custody")
         object.__setattr__(self, "_custody", custody)
         try:
-            with custody.known_source_mutation(self):
+            with custody.known_tier_mutation(self):
                 yield self
         finally:
             object.__setattr__(self, "_custody", None)
 
     @contextmanager
-    def source_connection(self) -> Iterator[sqlite3.Connection]:
+    def mutation_connection(self) -> Iterator[sqlite3.Connection]:
         owner = NativeSQLCustodyOwner(
             open_source_tier_write_connection(
                 self._seal._paths["source"],
                 archive_root=self._seal.archive_root,
-                source_permit=self,
+                mutation_permit=self,
             )
         )
         try:
@@ -180,7 +182,7 @@ class KnownSourceMutationPermit:
         else:
             owner.close()
 
-    def bind_source_connection(self, connection: sqlite3.Connection) -> None:
+    def bind_mutation_connection(self, connection: sqlite3.Connection) -> None:
         self._seal._require_live_owner()
         if self._custody is None or current_sql_custody() is not self._custody:
             raise ReferenceSealError("known Source connection has no admitted physical custody")
@@ -196,7 +198,7 @@ class KnownSourceMutationPermit:
                 self._seal._require_live_owner()
                 key, actual = values[0], tuple(values[1:])
                 row = self._seal._scratch.execute(
-                    "SELECT values_blob FROM known_source_mutation_rows WHERE row_key = ?", (key,)
+                    "SELECT values_blob FROM known_tier_mutation_rows WHERE row_key = ?", (key,)
                 ).fetchone()
                 if row is None or pickle.loads(row[0]) != actual:
                     raise ReferenceSealError("Source transaction attempted an undeclared key or value")
@@ -219,7 +221,7 @@ class KnownSourceMutationPermit:
         finally:
             object.__setattr__(self, "_guard_setup", False)
 
-    def authorize_source_sql(
+    def authorize_tier_sql(
         self,
         connection: sqlite3.Connection,
         action: int,
@@ -284,9 +286,9 @@ class KnownSourceMutationPermit:
         if (table, columns, rows) != (self._table, self._columns, self._rows):
             raise ReferenceSealError("Source writer does not match the exact prepared mutation")
 
-    def committed(self) -> KnownSourceMutationReceipt:
+    def committed(self) -> KnownTierMutationReceipt:
         """Mint a receipt only after the exact Source connection context committed."""
-        return self._seal._record_known_source_commit(self)
+        return self._seal._record_known_tier_commit(self)
 
 
 _ACTIVE_MUTATION_SCOPE: ContextVar[IndexMutationScope | None] = ContextVar(
@@ -372,14 +374,49 @@ def _relevant_ref(value: str) -> ObjectRef | EvidenceRef | BlockAnchor | None:
     return None
 
 
-def _references_from_user(conn: sqlite3.Connection) -> Iterable[str]:
-    for row in conn.execute("SELECT scope_ref, target_ref, author_ref, evidence_refs_json FROM assertions"):
+@dataclass(frozen=True, slots=True)
+class _ReferenceAnchor:
+    wire: str
+    permits_absence: bool
+    assertion_id: str = ""
+    field: str = ""
+    position: int = -1
+    assertion_target: str = ""
+
+
+def _references_from_user(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor]:
+    for row in conn.execute(
+        "SELECT assertion_id, kind, scope_ref, target_ref, author_ref, evidence_refs_json FROM assertions"
+    ):
         for column in ("scope_ref", "target_ref", "author_ref"):
             value = row[column]
             if value is not None:
-                yield str(value)
-        yield from _json_strings(conn, row["evidence_refs_json"], field="assertions.evidence_refs_json")
+                lifecycle = column == "target_ref" and str(row["kind"]) in {
+                    "suppression",
+                    "excision_record",
+                    "excision_request",
+                }
+                # Lifecycle targets describe an absent session, but their other
+                # fields remain ordinary durable references.
+                yield _ReferenceAnchor(
+                    str(value),
+                    lifecycle and str(value).startswith("session:"),
+                    str(row["assertion_id"]),
+                    column,
+                    -1,
+                    str(row["target_ref"]),
+                )
+        for position, value in enumerate(
+            _json_strings(conn, row["evidence_refs_json"], field="assertions.evidence_refs_json")
+        ):
+            yield _ReferenceAnchor(
+                value, False, str(row["assertion_id"]), "evidence_refs_json", position, str(row["target_ref"])
+            )
+    for value in _other_user_references(conn):
+        yield _ReferenceAnchor(value, False)
 
+
+def _other_user_references(conn: sqlite3.Connection) -> Iterable[str]:
     for row in conn.execute(
         "SELECT target_ref, source_result_ref, actor_ref, model_ref, prompt_ref, assertion_refs_json "
         "FROM annotation_batches"
@@ -428,11 +465,11 @@ def _references_from_user(conn: sqlite3.Connection) -> Iterable[str]:
             yield from segment.assertion_refs
 
 
-def _references_from_audit(conn: sqlite3.Connection) -> Iterable[str]:
+def _references_from_audit(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor]:
     for table in ("operation_preview_targets", "operation_targets"):
         for (value,) in conn.execute(f"SELECT target_ref FROM {table}"):
             _check_reference_cancellation()
-            yield str(value)
+            yield _ReferenceAnchor(str(value), True)
 
 
 def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | BlockAnchor) -> _ResolvedReference | None:
@@ -615,6 +652,7 @@ class PreparedIndexMutation:
         archive_root: Path,
         destination: IndexMutationDestination | None = None,
     ) -> None:
+        self._configured_root = archive_root.absolute()
         self.archive_root = archive_root.resolve(strict=True)
         self.index_path = index_path.resolve(strict=True)
         from polylogue.storage.archive_identity import resolve_active_index_path
@@ -636,12 +674,26 @@ class PreparedIndexMutation:
         self.index_pid = os.getpid()
         self.index_task = _current_task()
         self.index_identity = _tier_identity(self.index_path)
+        # Resolve declared links before opening, then retain both the link
+        # incarnation and the exact selected leaf. A configured symlink farm
+        # is supported; a retargeted link cannot inherit the old proof.
+        self._configured_paths = {
+            "source": self._configured_root / "source.db",
+            "user": self._configured_root / "user.db",
+            "audit": self._configured_root / "audit.db",
+        }
+        self._namespace_paths = (
+            self._configured_root,
+            self._configured_root / "index.db",
+            self._configured_root / ".index-active-pointer",
+            *self._configured_paths.values(),
+        )
+        self._namespace = {path: self._namespace_identity(path) for path in self._namespace_paths}
         self._paths = {
             "index": self.index_path,
-            "source": self.archive_root / "source.db",
-            "user": self.archive_root / "user.db",
-            "audit": self.archive_root / "audit.db",
+            **{name: path.resolve(strict=True) for name, path in self._configured_paths.items()},
         }
+        self._assert_configured_namespace()
         self._identities = {name: _tier_identity(path) for name, path in self._paths.items()}
         self._observers: dict[str, sqlite3.Connection] = {}
         self._observer_leaves: dict[str, VerifiedAuditLeaf] = {}
@@ -652,9 +704,12 @@ class PreparedIndexMutation:
         self._candidate_schema: tuple[int, str | None] | None = None
         self.candidate_missing_session_count = 0
         self.candidate_first_missing_session_id: str | None = None
-        self._source_mutation_nonce = object()
-        self._pending_source_permit: KnownSourceMutationPermit | None = None
-        self._pending_source_receipt: KnownSourceMutationReceipt | None = None
+        self._tier_mutation_nonce = object()
+        self._pending_tier_permit: KnownTierMutationPermit | None = None
+        self._pending_tier_receipt: KnownTierMutationReceipt | None = None
+        self._publication_exclusion: ActiveWriterLease | None = None
+        self._publication_payload_cleanup: Callable[[], None] | None = None
+        self._publication_lifetime_bound = False
         self._closed = False
         self._cleanup_requested = False
         self._session_namespace_noted = False
@@ -682,6 +737,11 @@ class PreparedIndexMutation:
                 "CREATE INDEX temp.resolved_refs_by_target_message ON resolved_refs(target_message_id);"
                 "CREATE INDEX temp.resolved_refs_aliases ON resolved_refs(has_session_alias) WHERE has_session_alias = 1;"
                 "CREATE TEMP TABLE destructive_message_ids(message_id TEXT PRIMARY KEY) WITHOUT ROWID;"
+                "CREATE TEMP TABLE reference_anchors("
+                "wire_ref TEXT NOT NULL, tier TEXT NOT NULL, assertion_id TEXT NOT NULL, field TEXT NOT NULL, "
+                "position INTEGER NOT NULL, assertion_target TEXT NOT NULL, permits_absence INTEGER NOT NULL, "
+                "PRIMARY KEY(wire_ref, tier, assertion_id, field, position)) WITHOUT ROWID;"
+                "CREATE TEMP TABLE authorized_removals(session_id TEXT PRIMARY KEY) WITHOUT ROWID;"
                 "CREATE TEMP TABLE candidate_refs ("
                 "kind TEXT NOT NULL, owner_session_id TEXT NOT NULL, object_id TEXT NOT NULL, "
                 "qualifier TEXT NOT NULL, scope_session_id TEXT NOT NULL, target_message_id TEXT NOT NULL, "
@@ -710,6 +770,7 @@ class PreparedIndexMutation:
         return connection
 
     def _open_observer(self, name: str, path: Path) -> sqlite3.Connection:
+        self._assert_configured_namespace()
         leaf = VerifiedAuditLeaf(path.parent, filename=path.name, identity_access="lock-preserving")
         leaf.__enter__()
         self._observer_leaves[name] = leaf
@@ -718,27 +779,46 @@ class PreparedIndexMutation:
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
         NativeSQLCustodyOwner(conn, terminal_parent=self)
-        try:
-            leaf.assert_unchanged()
-            conn.row_factory = sqlite3.Row
-            conn.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
-            return conn
-        except BaseException:
-            try:
-                self._close_native_connection(conn)
-            except BaseException:
-                # Retain both actual handles for owner-thread recovery.
-                raise
-            else:
-                self._observers.pop(name, None)
-            raise
+        # Constructor and promotion callers settle this parent once on every
+        # failure. Closing here would retry a failed child during that unwind.
+        leaf.assert_unchanged()
+        self._assert_configured_namespace()
+        conn.row_factory = sqlite3.Row
+        conn.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
+        return conn
 
     def _close_native_connection(self, connection: sqlite3.Connection) -> None:
         from polylogue.storage.sqlite.connection_profile import close_parent_native_connection
 
         close_parent_native_connection(self, connection)
 
+    @staticmethod
+    def _namespace_identity(path: Path) -> tuple[int, int, int, str | None] | None:
+        try:
+            before = path.lstat()
+        except FileNotFoundError:
+            return None
+        link = os.readlink(path) if path.is_symlink() else None
+        after = path.lstat()
+        identity = (before.st_dev, before.st_ino, before.st_mode, link)
+        if (after.st_dev, after.st_ino, after.st_mode) != identity[:3]:
+            raise ReferenceSealStaleError("configured archive namespace changed during capture")
+        return identity
+
+    def _assert_configured_namespace(self) -> None:
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        for path, identity in self._namespace.items():
+            if self._namespace_identity(path) != identity:
+                raise ReferenceSealStaleError("configured archive namespace changed after reference preparation")
+        for name, path in self._configured_paths.items():
+            if path.resolve(strict=True) != self._paths[name]:
+                raise ReferenceSealStaleError(f"configured {name}.db target changed after reference preparation")
+        if resolve_active_index_path(self._configured_root).resolve(strict=True) != self.index_path:
+            raise ReferenceSealStaleError("configured active Index changed after reference preparation")
+
     def _observer_identity(self, name: str) -> tuple[int, int, int, int]:
+        self._assert_configured_namespace()
         metadata = self._observer_leaves[name].identity_metadata()
         return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
 
@@ -754,52 +834,56 @@ class PreparedIndexMutation:
         index_observer = self._observers["index"]
         before_index = int(index_observer.execute("PRAGMA data_version").fetchone()[0])
         index_observer.execute("BEGIN")
-        try:
-            for name in ("source", "user", "audit"):
-                observer = self._observers[name]
-                before = int(observer.execute("PRAGMA data_version").fetchone()[0])
-                observer.execute("BEGIN")
-                try:
-                    if name == "user":
-                        refs = _references_from_user(observer)
-                    elif name == "audit":
-                        refs = _references_from_audit(observer)
-                    else:
-                        observer.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
-                        refs = ()
-                    for raw in refs:
-                        _check_reference_cancellation()
-                        parsed = _relevant_ref(raw)
-                        if parsed is not None:
-                            target = _resolve(index_observer, parsed)
-                            if target is not None:
-                                self._scratch.execute(
-                                    "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                    (
-                                        target.kind,
-                                        target.owner_session_id,
-                                        target.object_id,
-                                        target.qualifier or "",
-                                        target.scope_session_id or "",
-                                        target.target_message_id or "",
-                                        target.wire_ref,
-                                        int(target.has_session_alias),
-                                    ),
-                                )
-                except BaseException:
-                    observer.rollback()
-                    raise
-                else:
-                    observer.commit()
-                after = int(observer.execute("PRAGMA data_version").fetchone()[0])
-                if before != after:
-                    raise ReferenceSealStaleError(f"{name}.db changed during reference preparation")
-                self._versions[name] = after
-        except BaseException:
-            index_observer.rollback()
-            raise
-        else:
-            index_observer.commit()
+        # Failed preparation retains its snapshots for the parent's one
+        # terminal cleanup attempt; successful readonly snapshots commit.
+        for name in ("source", "user", "audit"):
+            observer = self._observers[name]
+            before = int(observer.execute("PRAGMA data_version").fetchone()[0])
+            observer.execute("BEGIN")
+            if name == "user":
+                refs = _references_from_user(observer)
+            elif name == "audit":
+                refs = _references_from_audit(observer)
+            else:
+                observer.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
+                refs = ()
+            for anchor in refs:
+                _check_reference_cancellation()
+                parsed = _relevant_ref(anchor.wire)
+                if parsed is not None:
+                    target = _resolve(index_observer, parsed)
+                    if target is not None:
+                        self._scratch.execute(
+                            "INSERT OR IGNORE INTO reference_anchors VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                target.wire_ref,
+                                name,
+                                anchor.assertion_id,
+                                anchor.field,
+                                anchor.position,
+                                anchor.assertion_target,
+                                int(anchor.permits_absence),
+                            ),
+                        )
+                        self._scratch.execute(
+                            "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                target.kind,
+                                target.owner_session_id,
+                                target.object_id,
+                                target.qualifier or "",
+                                target.scope_session_id or "",
+                                target.target_message_id or "",
+                                target.wire_ref,
+                                int(target.has_session_alias),
+                            ),
+                        )
+            observer.commit()
+            after = int(observer.execute("PRAGMA data_version").fetchone()[0])
+            if before != after:
+                raise ReferenceSealStaleError(f"{name}.db changed during reference preparation")
+            self._versions[name] = after
+        index_observer.commit()
         after_index = int(index_observer.execute("PRAGMA data_version").fetchone()[0])
         if before_index != after_index:
             raise ReferenceSealStaleError("index.db changed during reference preparation")
@@ -823,6 +907,44 @@ class PreparedIndexMutation:
             "WHERE owner_session_id = ? OR scope_session_id = ?",
             (session_id, session_id),
         )
+
+    def authorize_session_removal(self, session_ids: tuple[str, ...]) -> None:
+        """Retain only exact begun removal targets from this physical apply."""
+        self._require_new_work()
+        from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+        permitted = permitted_session_removals(archive_root=self.archive_root)
+        if not set(session_ids).issubset(permitted):
+            raise ReferenceSealError("session disappearance is outside the validated removal plan")
+        self._scratch.executemany(
+            "INSERT OR IGNORE INTO authorized_removals VALUES (?)", ((sid,) for sid in session_ids)
+        )
+
+    def _intentional_absence(self, conn: sqlite3.Connection, ref: _ResolvedReference) -> bool:
+        from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+        permitted = permitted_session_removals(archive_root=self.archive_root)
+        if self._scratch.execute(
+            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND permits_absence = 0", (ref.wire_ref,)
+        ).fetchone():
+            return False
+        if not self._scratch.execute(
+            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND permits_absence = 1", (ref.wire_ref,)
+        ).fetchone():
+            return False
+        for session_id in (ref.owner_session_id, ref.scope_session_id):
+            if session_id is None:
+                continue
+            if session_id not in permitted:
+                return False
+            if not self._scratch.execute(
+                "SELECT 1 FROM authorized_removals WHERE session_id = ?", (session_id,)
+            ).fetchone():
+                return False
+            if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone():
+                return False
+        parsed = _relevant_ref(ref.wire_ref)
+        return parsed is not None and _resolve_target(conn, parsed) is None
 
     def note_lineage_change(self, conn: sqlite3.Connection, session_id: str) -> None:
         """Track refs scoped to every composed transcript below a changed node."""
@@ -951,120 +1073,104 @@ class PreparedIndexMutation:
         first: _ResolvedReference | None = None
         lost_count = 0
         version_before = version_after = -1
-        primary: BaseException | None = None
         schema: tuple[int, str | None] = (0, None)
         missing_count = 0
         first_missing: str | None = None
-        try:
-            version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
-            schema = self._candidate_schema_identity(observer)
-            observer.execute("BEGIN")
-            reference_rows = self._scratch.execute(
-                "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
-                "FROM resolved_refs ORDER BY kind, object_id, qualifier"
+        # The promotion preparer owns this seal on success and failure.
+        # Leave failed snapshots/handles registered for that terminal pass.
+        version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
+        schema = self._candidate_schema_identity(observer)
+        observer.execute("BEGIN")
+        reference_rows = self._scratch.execute(
+            "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
+            "FROM resolved_refs ORDER BY kind, object_id, qualifier"
+        )
+        for row in reference_rows:
+            _check_reference_cancellation()
+            ref = _ResolvedReference(
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                str(row[3]) or None,
+                str(row[4]) or None,
+                str(row[5]) or None,
+                str(row[6]),
+                bool(row[7]),
             )
-            for row in reference_rows:
-                _check_reference_cancellation()
-                ref = _ResolvedReference(
-                    str(row[0]),
-                    str(row[1]),
-                    str(row[2]),
-                    str(row[3]) or None,
-                    str(row[4]) or None,
-                    str(row[5]) or None,
-                    str(row[6]),
-                    bool(row[7]),
-                )
-                if not _still_resolves(observer, ref):
-                    lost_count += 1
-                    if first is None:
-                        first = ref
+            if not _still_resolves(observer, ref):
+                lost_count += 1
+                if first is None:
+                    first = ref
 
-            # Promotion also must not drop a session that the active index
-            # still serves from retained raw evidence. Keep this complete scan
-            # beside the typed-reference proof so neither is repeated under
-            # the lifecycle lock or physical writer lease.
-            active = self._observers["index"]
-            source = self._observers["source"]
-            active_before = int(active.execute("PRAGMA data_version").fetchone()[0])
-            source_before = int(source.execute("PRAGMA data_version").fetchone()[0])
-            if active_before != self._versions["index"] or source_before != self._versions["source"]:
-                raise ReferenceSealStaleError("archive changed before promotion coverage validation")
-            active.execute("BEGIN")
-            source.execute("BEGIN")
-            missing_count = 0
-            first_missing = None
-            after = ""
-            page_size = min(
-                512,
-                int(source.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
-                int(observer.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
-            )
-            if page_size < 1:
-                raise ReferenceSealError("SQLite variable limit cannot compare promotion coverage")
-            while True:
+        # Promotion also must not drop a session that the active index
+        # still serves from retained raw evidence. Keep this complete scan
+        # beside the typed-reference proof so neither is repeated under
+        # the lifecycle lock or physical writer lease.
+        active = self._observers["index"]
+        source = self._observers["source"]
+        active_before = int(active.execute("PRAGMA data_version").fetchone()[0])
+        source_before = int(source.execute("PRAGMA data_version").fetchone()[0])
+        if active_before != self._versions["index"] or source_before != self._versions["source"]:
+            raise ReferenceSealStaleError("archive changed before promotion coverage validation")
+        active.execute("BEGIN")
+        source.execute("BEGIN")
+        missing_count = 0
+        first_missing = None
+        after = ""
+        page_size = min(
+            512,
+            int(source.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
+            int(observer.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
+        )
+        if page_size < 1:
+            raise ReferenceSealError("SQLite variable limit cannot compare promotion coverage")
+        while True:
+            _check_reference_cancellation()
+            rows = active.execute(
+                "SELECT session_id, raw_id FROM sessions "
+                "WHERE session_id > ? AND raw_id IS NOT NULL ORDER BY session_id LIMIT ?",
+                (after, page_size),
+            ).fetchall()
+            if not rows:
+                break
+            after = str(rows[-1][0])
+            raw_ids = tuple(dict.fromkeys(str(row[1]) for row in rows))
+            retained = {
+                str(row[0])
+                for row in source.execute(
+                    f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
+                    raw_ids,
+                )
+            }
+            owed = tuple(str(row[0]) for row in rows if str(row[1]) in retained)
+            if not owed:
+                continue
+            present = {
+                str(row[0])
+                for row in observer.execute(
+                    f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' for _ in owed)})",
+                    owed,
+                )
+            }
+            for session_id in owed:
                 _check_reference_cancellation()
-                rows = active.execute(
-                    "SELECT session_id, raw_id FROM sessions "
-                    "WHERE session_id > ? AND raw_id IS NOT NULL ORDER BY session_id LIMIT ?",
-                    (after, page_size),
-                ).fetchall()
-                if not rows:
-                    break
-                after = str(rows[-1][0])
-                raw_ids = tuple(dict.fromkeys(str(row[1]) for row in rows))
-                retained = {
-                    str(row[0])
-                    for row in source.execute(
-                        f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
-                        raw_ids,
-                    )
-                }
-                owed = tuple(str(row[0]) for row in rows if str(row[1]) in retained)
-                if not owed:
-                    continue
-                present = {
-                    str(row[0])
-                    for row in observer.execute(
-                        f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' for _ in owed)})",
-                        owed,
-                    )
-                }
-                for session_id in owed:
-                    _check_reference_cancellation()
-                    if session_id not in present:
-                        missing_count += 1
-                        if first_missing is None:
-                            first_missing = session_id
-            source.rollback()
-            active.rollback()
-            active_after = int(active.execute("PRAGMA data_version").fetchone()[0])
-            source_after = int(source.execute("PRAGMA data_version").fetchone()[0])
-            if active_after != active_before or source_after != source_before:
-                raise ReferenceSealStaleError("archive changed during promotion coverage validation")
-            observer.rollback()
-            version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
-        except BaseException as exc:
-            primary = exc
-            with suppress(BaseException):
-                if observer.in_transaction:
-                    observer.rollback()
-            with suppress(BaseException):
-                if self._observers.get("source") is not None and self._observers["source"].in_transaction:
-                    self._observers["source"].rollback()
-            with suppress(BaseException):
-                if self._observers.get("index") is not None and self._observers["index"].in_transaction:
-                    self._observers["index"].rollback()
-        if primary is not None:
-            with suppress(BaseException):
-                observer.close()
-            raise primary
+                if session_id not in present:
+                    missing_count += 1
+                    if first_missing is None:
+                        first_missing = session_id
+        source.commit()
+        active.commit()
+        active_after = int(active.execute("PRAGMA data_version").fetchone()[0])
+        source_after = int(source.execute("PRAGMA data_version").fetchone()[0])
+        if active_after != active_before or source_after != source_before:
+            raise ReferenceSealStaleError("archive changed during promotion coverage validation")
+        observer.commit()
+        version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
         identity_after = _tier_identity(candidate)
+        self._assert_configured_namespace()
         if identity_after != identity_before or version_after != version_before:
-            observer.close()
             raise ReferenceSealStaleError("promotion candidate changed during durable-reference validation")
         if lost_count and first is not None:
-            observer.close()
             raise ReferenceSealError(
                 f"index promotion would orphan {lost_count} resolved durable reference(s); "
                 f"first lost {first.kind} reference in session {first.owner_session_id!r}"
@@ -1107,16 +1213,19 @@ class PreparedIndexMutation:
             raise ReferenceSealStaleError("publisher Source incarnation changed after preparation")
         self.validate_observers_current()
 
-    def prepare_known_source_mutation(
+    def prepare_known_tier_mutation(
         self,
         table: str,
         columns: tuple[str, ...],
         rows: tuple[tuple[object, ...], ...],
         *,
         key_column: str,
-    ) -> KnownSourceMutationPermit:
+        tier: Literal["source", "user"],
+    ) -> KnownTierMutationPermit:
         """Bind one exact prepared Source write to this observer baseline."""
         self._require_new_work()
+        if tier != "source":
+            raise ReferenceSealError("User effects require the exact removal effect witness")
         if (
             not table.isidentifier()
             or not key_column.isidentifier()
@@ -1129,40 +1238,41 @@ class PreparedIndexMutation:
         source_identity = _tier_identity(self._paths["source"])
         if source_identity != self._identities["source"]:
             raise ReferenceSealStaleError("source.db incarnation changed before prepared source publication")
-        if self._pending_source_permit is not None:
+        if self._pending_tier_permit is not None:
             raise ReferenceSealError("this seal already has a pending known Source mutation")
-        permit = KnownSourceMutationPermit(
+        permit = KnownTierMutationPermit(
             self,
             source_identity,
             self._versions["source"],
             table,
             columns,
             rows,
-            self._source_mutation_nonce,
+            self._tier_mutation_nonce,
             key_column,
+            tier,
         )
         self._scratch.execute(
-            "CREATE TABLE IF NOT EXISTS known_source_mutation_rows(row_key TEXT PRIMARY KEY, values_blob BLOB NOT NULL) WITHOUT ROWID"
+            "CREATE TABLE IF NOT EXISTS known_tier_mutation_rows(row_key TEXT PRIMARY KEY, values_blob BLOB NOT NULL) WITHOUT ROWID"
         )
-        self._scratch.execute("DELETE FROM known_source_mutation_rows")
+        self._scratch.execute("DELETE FROM known_tier_mutation_rows")
         self._scratch.executemany(
-            "INSERT INTO known_source_mutation_rows VALUES (?, ?)",
+            "INSERT INTO known_tier_mutation_rows VALUES (?, ?)",
             ((row[-1], pickle.dumps(row[:-1], protocol=5)) for row in rows),
         )
         self._scratch.commit()
-        self._pending_source_permit = permit
+        self._pending_tier_permit = permit
         return permit
 
-    def _record_known_source_commit(self, permit: KnownSourceMutationPermit) -> KnownSourceMutationReceipt:
+    def _record_known_tier_commit(self, permit: KnownTierMutationPermit) -> KnownTierMutationReceipt:
         self._require_live_owner()
-        if permit is not self._pending_source_permit or permit._seal_nonce is not self._source_mutation_nonce:
+        if permit is not self._pending_tier_permit or permit._seal_nonce is not self._tier_mutation_nonce:
             raise ReferenceSealError("Source writer used a permit outside its prepared seal")
-        if self._pending_source_receipt is not None:
+        if self._pending_tier_receipt is not None:
             raise ReferenceSealError("known Source mutation permit was already committed")
         if (
             permit._custody is None
             or current_sql_custody() is not permit._custody
-            or permit._custody.known_source_authority is not permit
+            or permit._custody.known_tier_authority is not permit
             or permit._connection is None
             or permit._connection.in_transaction
             or not permit._commit_allowed
@@ -1170,7 +1280,7 @@ class PreparedIndexMutation:
             or permit._failure is not None
         ):
             raise ReferenceSealError("Source receipt requires its actual completed dedicated transaction")
-        receipt = KnownSourceMutationReceipt(
+        receipt = KnownTierMutationReceipt(
             self,
             permit._source_identity,
             permit._prior_data_version,
@@ -1180,41 +1290,43 @@ class PreparedIndexMutation:
             permit._seal_nonce,
             permit._key_column,
             permit._effects,
+            permit._tier,
         )
-        self._pending_source_receipt = receipt
+        self._pending_tier_receipt = receipt
         return receipt
 
-    def accept_known_source_commit(self, receipt: KnownSourceMutationReceipt) -> None:
+    def accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
         """Settle an already committed Source receipt even after cancellation."""
         self._require_live_owner()
         observer = self._observers["source"]
         observer.set_progress_handler(None, 0)
         try:
-            self._accept_known_source_commit(receipt)
+            self._accept_known_tier_commit(receipt)
         finally:
             observer.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
 
-    def _accept_known_source_commit(self, receipt: KnownSourceMutationReceipt) -> None:
+    def _accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
         if (
             receipt._seal is not self
-            or receipt is not self._pending_source_receipt
-            or receipt._seal_nonce is not self._source_mutation_nonce
+            or receipt is not self._pending_tier_receipt
+            or receipt._seal_nonce is not self._tier_mutation_nonce
             or receipt._source_identity != self._identities["source"]
             or receipt._prior_data_version != self._versions["source"]
         ):
             raise ReferenceSealError("Source commit receipt does not belong to this prepared seal")
+        self._assert_configured_namespace()
         identity_before = _tier_identity(self._paths["source"])
         if not _same_incarnation(identity_before, receipt._source_identity):
             raise ReferenceSealStaleError("source.db incarnation changed during the prepared source publication")
         observer = self._observers["source"]
         if observer.in_transaction:
             raise ReferenceSealError("cannot advance Source authority while its observer has a read transaction")
-        permit = self._pending_source_permit
+        permit = self._pending_tier_permit
         if (
             permit is None
             or permit._custody is None
             or current_sql_custody() is not permit._custody
-            or permit._custody.known_source_authority is not permit
+            or permit._custody.known_tier_authority is not permit
         ):
             raise ReferenceSealError("Source acceptance lost its exact physical mutation authority")
         for tier in ("index", "user", "audit"):
@@ -1236,6 +1348,7 @@ class PreparedIndexMutation:
             ).fetchone()
             if actual is None or tuple(actual) != expected_values:
                 raise ReferenceSealStaleError("committed Source rows differ from the exact prepared mutation")
+        self._assert_configured_namespace()
         identity_after = _tier_identity(self._paths["source"])
         version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
         if not _same_incarnation(identity_before, identity_after) or version_after != version_before:
@@ -1245,8 +1358,8 @@ class PreparedIndexMutation:
         # between stable incarnation and data_version checks.
         self._identities["source"] = identity_after
         self._versions["source"] = version_after
-        self._pending_source_permit = None
-        self._pending_source_receipt = None
+        self._pending_tier_permit = None
+        self._pending_tier_receipt = None
 
     def validate_reachability(self, conn: sqlite3.Connection) -> None:
         self._require_new_work()
@@ -1271,7 +1384,7 @@ class PreparedIndexMutation:
                 str(row[6]),
                 bool(row[7]),
             )
-            if not _still_resolves(conn, ref):
+            if not _still_resolves(conn, ref) and not self._intentional_absence(conn, ref):
                 lost_count += 1
                 if first is None:
                     first = ref
@@ -1286,6 +1399,7 @@ class PreparedIndexMutation:
         if self._cleanup_requested:
             raise ReferenceSealError("reference seal requires original-owner terminal cleanup")
         _check_reference_cancellation()
+        self._assert_configured_namespace()
 
     def _require_live_owner(self) -> None:
         if self._closed:
@@ -1296,6 +1410,25 @@ class PreparedIndexMutation:
             or _current_task() is not self.index_task
         ):
             raise ReferenceSealError("reference seal must be used by its observing index owner")
+
+    def retain_publication_lifetime(self, exclusion: ActiveWriterLease, close_payload: Callable[[], None]) -> None:
+        """Keep this publication's rebuild exclusion through physical cleanup."""
+        from polylogue.storage.index_generation import ActiveWriterLease
+
+        self._require_new_work()
+        if not isinstance(exclusion, ActiveWriterLease):
+            raise ReferenceSealError("publication requires its actual active-writer exclusion")
+        exclusion.require_owner(self.archive_root)
+        if self._publication_exclusion is not None or self._publication_payload_cleanup is not None:
+            raise ReferenceSealError("reference seal already owns a publication lifetime")
+        self._publication_exclusion = exclusion
+        self._publication_payload_cleanup = close_payload
+        self._publication_lifetime_bound = True
+
+    @property
+    def publication_lifetime_bound(self) -> bool:
+        """Whether this seal ever accepted its publication's terminal lifetime."""
+        return self._publication_lifetime_bound
 
     def close(self) -> None:
         if self._closed:
@@ -1321,6 +1454,8 @@ class PreparedIndexMutation:
                 failures.append(exc)
                 return False
 
+        if self._publication_payload_cleanup is not None and settle(self._publication_payload_cleanup):
+            self._publication_payload_cleanup = None
         for name, observer in tuple(self._observers.items()):
             attempted_connections.add(id(observer))
             if settle(partial(self._close_native_connection, observer)):
@@ -1342,13 +1477,18 @@ class PreparedIndexMutation:
         for owner in native_sql_children(self):
             if not owner._settled and owner._connection_identity not in attempted_connections:
                 settle(owner.close)
-        self._closed = (
+        sql_settled = (
             not self._observers
             and not self._observer_leaves
             and self._owned_scratch_connection is None
             and self._scratch_directory is None
             and all(owner._settled for owner in native_sql_children(self))
         )
+        if sql_settled and self._publication_payload_cleanup is None and self._publication_exclusion is not None:
+            exclusion = self._publication_exclusion
+            if settle(exclusion.close) or not exclusion.held:
+                self._publication_exclusion = None
+        self._closed = sql_settled and self._publication_payload_cleanup is None and self._publication_exclusion is None
         if self._closed:
             retire_native_sql_parent(self)
             with _LIVE_SEALS_LOCK:
@@ -1577,6 +1717,11 @@ class IndexMutationScope:
         _check_reference_cancellation()
         if self.seal is not None:
             self.seal.note_session_namespace_change()
+
+    def authorize_session_removal(self, session_ids: tuple[str, ...]) -> None:
+        self.require_connection(self.conn)
+        if self.seal is not None:
+            self.seal.authorize_session_removal(session_ids)
 
     def note_deleted_session(self, session_id: str) -> None:
         self.require_connection(self.conn)

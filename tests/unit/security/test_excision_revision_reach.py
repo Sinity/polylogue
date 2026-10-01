@@ -24,7 +24,6 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
 )
 from polylogue.security.excision import (
-    apply_session_excision,
     plan_session_excision,
     resolve_session_excision_target,
 )
@@ -37,6 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision_execution import execute_excision
 
 _LOGICAL_KEY = "codex-session:multi-revision"
 
@@ -188,8 +188,8 @@ def test_excision_reaches_every_revision_of_the_session(tmp_path: Path) -> None:
     plan = plan_session_excision(tmp_path, session_id)
     assert plan.source_raw_rows == 2
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.found
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["found"]
 
     assert _raw_ids(tmp_path) == {"raw-unrelated"}, "an earlier revision survived the excision"
     assert _blob_ref_ids(tmp_path) == {"raw-unrelated"}
@@ -236,11 +236,11 @@ def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
     plan = plan_session_excision(tmp_path, session_id)
     assert plan.source_hook_events == 1, "the preview must name the hook evidence in scope"
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.found
-    assert receipt.counts["source_hook_events"] == 1
-    assert receipt.retained_hook_events == (), "nothing should have survived the excision"
-    assert receipt.complete is True
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["found"]
+    assert receipt["counts"]["source_hook_events"] == 1
+    assert receipt["retained_hook_events"] == [], "nothing should have survived the excision"
+    assert receipt["complete"] is True
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
@@ -305,9 +305,9 @@ def test_excision_names_hook_evidence_it_could_not_remove(tmp_path: Path) -> Non
     finally:
         source_conn.close()
 
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.retained_hook_events == ("hook-2",)
-    assert receipt.complete is False, "an excision that leaves hook payloads must not report completeness"
+    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt["retained_hook_events"] == ["hook-2"]
+    assert receipt["complete"] is False, "an excision that leaves hook payloads must not report completeness"
     assert receipt.as_dict()["retained_hook_events"] == ["hook-2"]
 
     with sqlite3.connect(tmp_path / "source.db") as conn:

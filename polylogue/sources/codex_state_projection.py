@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import polylogue.storage.sqlite.agent_thread_state as agent_thread_state
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.parsers import codex_state
-from polylogue.storage.sqlite import agent_thread_state
 from polylogue.storage.sqlite.agent_thread_state import SpawnRecord, ThreadRecord
 
 logger = get_logger(__name__)

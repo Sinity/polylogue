@@ -124,3 +124,11 @@ def __getattr__(name: str) -> Any:
     }:
         return getattr(_implementation(), name)
     raise AttributeError(name)
+
+
+@contextmanager
+def authorized_session_removal(*, archive_root: Path, plan_hash: str, session_ids: tuple[str, ...]) -> Iterator[None]:
+    with _implementation().authorized_session_removal(
+        archive_root=archive_root, plan_hash=plan_hash, session_ids=session_ids
+    ):
+        yield

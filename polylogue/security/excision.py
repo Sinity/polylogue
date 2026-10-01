@@ -1679,7 +1679,15 @@ def _apply_single_session_excision(
                         ),
                     )
                     tombstoned_assertions += max(marker_cursor.rowcount, 0)
-                    cursor = conn.execute("DELETE FROM assertions WHERE target_ref = ?", (ref,))
+                    cursor = conn.execute(
+                        "DELETE FROM assertions WHERE target_ref = ? AND kind NOT IN (?, ?, ?)",
+                        (
+                            ref,
+                            AssertionKind.SUPPRESSION.value,
+                            AssertionKind.EXCISION_RECORD.value,
+                            AssertionKind.EXCISION_REQUEST.value,
+                        ),
+                    )
                     removed_assertions += max(cursor.rowcount, 0)
                 counts["user_assertions_removed"] = removed_assertions
                 counts["user_assertions_tombstoned"] = tombstoned_assertions
@@ -1849,6 +1857,11 @@ def apply_session_excision(
         target = targets[-1]
         if not target.found:
             return ExcisionReceipt(session_id=session_id, found=False)
+        from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+        from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+        if not target_session_ids.issubset(permitted_session_removals(archive_root=archive_root)):
+            raise ReferenceSealError("excision requires a validated exact removal plan before mutation")
 
         timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
         cascaded_receipts = tuple(

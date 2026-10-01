@@ -16,13 +16,13 @@ from polylogue.pipeline.services.ingest_batch._core import (
     _incoming_write_carries_distinct_messages,
 )
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.security.excision import apply_session_excision
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages
+from tests.infra.excision_execution import execute_excision
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
 
@@ -265,8 +265,8 @@ def test_cascade_excision_removes_rawless_inherited_child(tmp_path: Path) -> Non
     )
     conn.commit()
     conn.close()
-    receipt = apply_session_excision(tmp_path, parent_id, reason="test", cascade_lineage=True)
-    assert child_id in receipt.cascaded_session_ids
+    receipt = execute_excision(tmp_path, parent_id, reason="test", cascade_lineage=True)
+    assert child_id in receipt["cascaded_session_ids"]
     check = sqlite3.connect(tmp_path / "index.db")
     assert check.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     check.close()

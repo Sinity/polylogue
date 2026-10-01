@@ -2,7 +2,7 @@
 
 from contextlib import closing
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -20,15 +20,17 @@ def test_in_memory_probe_retains_actual_scratch_until_cursor_settles(
     import sqlite3
 
     handles: list[BackupCursorFault] = []
-    actual_connect = profiles.connect_measured
+
+    actual_connect = connect_measured
 
     def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        connection = actual_connect(path, *args, **kwargs)
         if "polylogue-tier-probe-" in str(path):
-            handle = BackupCursorFault(connection, on_target=False, fail_copy=fail_copy)
+            handle = sqlite3.connect(path, *args, factory=BackupCursorFault, **kwargs)
+            assert isinstance(handle, BackupCursorFault)
+            handle.fail_copy = fail_copy
             handles.append(handle)
-            return cast(sqlite3.Connection, handle)
-        return connection
+            return handle
+        return actual_connect(path, *args, **kwargs)
 
     monkeypatch.setattr(profiles, "connect_measured", connect)
     # Avoid unrelated process prototype reuse; the real tier/probe/migration
@@ -39,14 +41,19 @@ def test_in_memory_probe_retains_actual_scratch_until_cursor_settles(
         with pytest.raises(profiles.NativeConnectionSettlementError) as failed:
             bootstrap.initialize_runtime_tier_probe(destination, ArchiveTier.USER)
         owner = failed.value.owner
-        assert owner.scratch_directory is not None
-        directory = Path(owner.scratch_directory.name)
-        assert directory.exists() and (directory / "user.db").exists()
-        assert handles[0].cursor is not None
-        assert handles[0].cursor.close_attempts == 1
-        handles[0].cursor.allow_cleanup.set()
-        owner.close()
-        assert handles[0].cursor.close_attempts == 2
+        try:
+            assert owner.scratch_directory is not None
+            directory = Path(owner.scratch_directory.name)
+            assert directory.exists() and (directory / "user.db").exists()
+            assert handles[0].retained_cursor is not None
+            assert handles[0].retained_cursor.close_attempts == 1
+        finally:
+            for handle in handles:
+                if handle.retained_cursor is not None:
+                    handle.retained_cursor.allow_cleanup.set()
+            owner.close()
+        assert handles[0].retained_cursor is not None
+        assert handles[0].retained_cursor.close_attempts == 2
         assert not directory.exists()
 
 
@@ -60,20 +67,27 @@ def test_prototype_copy_retains_staging_and_directory_until_native_cursor_settle
     directory.mkdir()
     monkeypatch.setattr(bootstrap, "_TIER_PROTOTYPE_DIR", directory)
     monkeypatch.setattr(bootstrap, "_TIER_PROTOTYPES", {})
-    with closing(connect_measured(":memory:")) as connection:
+    with closing(sqlite3.connect(":memory:", factory=BackupCursorFault)) as connection:
         connection.execute("CREATE TABLE evidence(value INTEGER)")
         connection.commit()
-        source = BackupCursorFault(connection, on_target=True, fail_copy=fail_copy)
+        assert isinstance(connection, BackupCursorFault)
+        source = connection
+        source.on_target = True
+        source.fail_copy = fail_copy
         with pytest.raises(profiles.NativeConnectionSettlementError) as failed:
-            bootstrap._record_tier_prototype(cast(sqlite3.Connection, source), ArchiveTier.USER, 1)
+            bootstrap._record_tier_prototype(source, ArchiveTier.USER, 1)
         owner = failed.value.owner
-        assert source.cursor is not None and source.cursor.close_attempts == 1
-        assert list(directory.glob("*.tmp"))
-        with pytest.raises(RuntimeError):
+        try:
+            assert source.retained_cursor is not None and source.retained_cursor.close_attempts == 1
+            assert list(directory.glob("*.tmp"))
+            with pytest.raises(RuntimeError):
+                bootstrap._cleanup_tier_prototype_dir(directory)
+            assert directory.exists()
+        finally:
+            if source.retained_cursor is not None:
+                source.retained_cursor.allow_cleanup.set()
+            owner.close()
             bootstrap._cleanup_tier_prototype_dir(directory)
-        assert directory.exists()
-        source.cursor.allow_cleanup.set()
-        owner.close()
-        assert source.cursor.close_attempts == 2
-        bootstrap._cleanup_tier_prototype_dir(directory)
+        assert source.retained_cursor is not None
+        assert source.retained_cursor.close_attempts == 2
         assert not directory.exists()

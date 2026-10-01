@@ -60,6 +60,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision_execution import apply_excision_fault_control, execute_excision
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 
@@ -241,7 +242,7 @@ class TestApplySessionExcision:
         finished = threading.Event()
 
         def excise() -> None:
-            apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
+            execute_excision(tmp_path, session_id, reason="r", actor="user:local")
             finished.set()
 
         with _archive_blob_publisher_slot(tmp_path / "source.db"):
@@ -280,23 +281,23 @@ class TestApplySessionExcision:
             return original(*args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(excision_module, "_resolve_session_excision_target", probe)
-        apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
+        apply_excision_fault_control(tmp_path, session_id, reason="r", actor="user:local")
 
         assert observed == [True]
 
     def test_apply_removes_rows_from_every_tier(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-1", with_embedding=True)
 
-        receipt = apply_session_excision(tmp_path, session_id, reason="contained a secret", actor="user:local")
-        assert receipt.found is True
-        assert receipt.counts["index_sessions"] == 1
-        assert receipt.counts["index_messages"] == 1
-        assert receipt.counts["index_blocks"] == 1
-        assert receipt.counts["source_raw_rows"] == 1
-        assert receipt.counts["source_raw_existence_changes"] == 1
-        assert receipt.counts["source_blob_refs"] == 1
-        assert receipt.counts["embeddings_vectors"] == 1
-        assert len(receipt.removed_blob_hashes) == 1
+        receipt = execute_excision(tmp_path, session_id, reason="contained a secret", actor="user:local")
+        assert receipt["found"] is True
+        assert receipt["counts"]["index_sessions"] == 1
+        assert receipt["counts"]["index_messages"] == 1
+        assert receipt["counts"]["index_blocks"] == 1
+        assert receipt["counts"]["source_raw_rows"] == 1
+        assert receipt["counts"]["source_raw_existence_changes"] == 1
+        assert receipt["counts"]["source_blob_refs"] == 1
+        assert receipt["counts"]["embeddings_vectors"] == 1
+        assert len(receipt["removed_blob_hashes"]) == 1
 
         index_conn = sqlite3.connect(tmp_path / "index.db")
         try:
@@ -339,13 +340,13 @@ class TestApplySessionExcision:
 
     def test_apply_writes_durable_audit_receipt(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-2")
-        receipt = apply_session_excision(tmp_path, session_id, reason="pii leak", actor="user:audit")
+        receipt = execute_excision(tmp_path, session_id, reason="pii leak", actor="user:audit")
 
         user_conn = sqlite3.connect(tmp_path / "user.db")
         try:
             row = user_conn.execute(
                 "SELECT kind, target_ref, author_ref, author_kind FROM assertions WHERE assertion_id = ?",
-                (receipt.receipt_assertion_id,),
+                (receipt["receipt_assertion_id"],),
             ).fetchone()
         finally:
             user_conn.close()
@@ -376,7 +377,7 @@ class TestApplySessionExcision:
         finally:
             conn.close()
 
-        apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
+        execute_excision(tmp_path, session_id, reason="r", actor="user:local")
 
         conn = sqlite3.connect(user_db)
         try:
@@ -409,7 +410,7 @@ class TestApplySessionExcision:
             )
             conn.commit()
 
-        apply_session_excision(tmp_path, session_id, reason="remove marker", actor="user:local")
+        execute_excision(tmp_path, session_id, reason="remove marker", actor="user:local")
 
         with sqlite3.connect(user_db) as conn:
             row = conn.execute(
@@ -431,10 +432,10 @@ class TestApplySessionExcision:
 
     def test_apply_is_idempotent(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-4")
-        first = apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
-        assert first.found is True
-        second = apply_session_excision(tmp_path, session_id, reason="r-again", actor="user:local")
-        assert second.found is False  # already gone; nothing left to touch
+        first = execute_excision(tmp_path, session_id, reason="r", actor="user:local")
+        assert first["found"] is True
+        second = execute_excision(tmp_path, session_id, reason="r-again", actor="user:local")
+        assert second["found"] is False  # already gone; nothing left to touch
 
     def test_unindexed_pending_marker_excision_tombstones_its_raw_revision(self, tmp_path: Path) -> None:
         """Pending carrier is the durable session-to-raw link before index commit.
@@ -461,7 +462,7 @@ class TestApplySessionExcision:
         assert tuple(raw.raw_id for raw in target.raw_targets) == (raw_id,)
         assert tuple(marker.identity for marker in target.marker_input_targets) == (pending.identity,)
 
-        receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:test", now_ms=20)
+        receipt = apply_excision_fault_control(tmp_path, session_id, reason="test", actor="user:test", now_ms=20)
         assert receipt.found is True
         assert receipt.counts["source_raw_rows"] == 1
         assert receipt.counts["source_marker_inputs_pending"] == 1
@@ -500,7 +501,7 @@ class TestApplySessionExcision:
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_user_commit)
         with pytest.raises(RuntimeError, match="simulated crash"):
-            apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
+            apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
 
         # The durable marker exists while the rebuildable lookup key remains.
         assert resolve_session_excision_target(tmp_path, session_id).found is True
@@ -510,7 +511,7 @@ class TestApplySessionExcision:
         finally:
             source_conn.close()
 
-        receipt = apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
+        receipt = apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
         assert receipt.found is True
         assert receipt.receipt_assertion_id is not None
         assert resolve_session_excision_target(tmp_path, session_id).found is False
@@ -537,7 +538,7 @@ class TestApplySessionExcision:
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_user_open)
         with pytest.raises(RuntimeError, match="source-first crash"):
-            apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
+            apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
 
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
@@ -568,7 +569,7 @@ class TestApplySessionExcision:
         assert prepared.context["source_marker_inputs_accepted"] == recovery_plan.source_marker_inputs_accepted
         assert prepared.context["marker_input_digests"] == list(recovery_plan.marker_input_digests)
 
-        receipt = apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
+        receipt = apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
         assert receipt.counts["source_marker_inputs_pending"] == 1
         assert receipt.counts["source_marker_inputs_accepted"] == 1
         assert receipt.counts["index_marker_witnesses"] == 2
@@ -596,7 +597,7 @@ class TestApplySessionExcision:
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_index_commit)
         with pytest.raises(RuntimeError, match="simulated crash"):
-            apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=20)
+            apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=20)
 
         with sqlite3.connect(tmp_path / "user.db") as conn:
             stored = conn.execute(
@@ -607,7 +608,7 @@ class TestApplySessionExcision:
             stored_value = json.loads(stored[0])
             assert stored_value["counts"]["index_marker_witnesses"] == 2
 
-        receipt = apply_session_excision(tmp_path, session_id, reason="different", actor="other", now_ms=21)
+        receipt = apply_excision_fault_control(tmp_path, session_id, reason="different", actor="other", now_ms=21)
         assert receipt.found is True
         assert receipt.reason == "crash"
         assert receipt.actor == "user:test"
@@ -623,7 +624,7 @@ class TestApplySessionExcision:
         payload = b'{"native_id": "resurrect-me", "secret": "sk-ant-abc123"}'
         session_id = _seed_session(tmp_path, native_id="resurrect-me", payload=payload)
 
-        apply_session_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
+        execute_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
 
         source_conn = sqlite3.connect(tmp_path / "source.db")
         source_conn.execute("PRAGMA foreign_keys = ON")
@@ -651,7 +652,7 @@ class TestApplySessionExcision:
         excision leaves the newly written user assertion readable.
         """
         session_id = _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":1}')
-        apply_session_excision(tmp_path, session_id, reason="first revision", actor="user:local", now_ms=10)
+        apply_excision_fault_control(tmp_path, session_id, reason="first revision", actor="user:local", now_ms=10)
         assert _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":2}') == session_id
 
         user_db = tmp_path / "user.db"
@@ -670,7 +671,7 @@ class TestApplySessionExcision:
                     now_ms=20,
                 )
 
-        apply_session_excision(tmp_path, session_id, reason="second revision", actor="user:local", now_ms=30)
+        apply_excision_fault_control(tmp_path, session_id, reason="second revision", actor="user:local", now_ms=30)
         with sqlite3.connect(user_db) as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM assertions WHERE assertion_id = 'assertion-note:new-revision'"
@@ -714,8 +715,8 @@ class TestApplySessionExcision:
             index_conn.close()
         assert row is not None
         session_id = str(row[0])
-        receipt = apply_session_excision(archive_root, session_id, reason="test", actor="user:local")
-        assert receipt.found is True
+        receipt = execute_excision(archive_root, session_id, reason="test", actor="user:local")
+        assert receipt["found"] is True
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM raw_revision_heads WHERE session_id = ?", (session_id,)
@@ -744,7 +745,7 @@ class TestApplySessionExcision:
         payload = b'{"native_id": "resurrect-blobref", "secret": "sk-ant-abc123"}'
         session_id = _seed_session(tmp_path, native_id="resurrect-blobref", payload=payload)
 
-        apply_session_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
+        execute_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
 
         blob_hash = deterministic_blob_hash(payload)
         source_conn = sqlite3.connect(tmp_path / "source.db")
@@ -787,7 +788,7 @@ class TestApplySessionExcision:
 
         excised_payload = b'{"native_id": "sibling-secret", "secret": "sk-ant-abc123"}'
         session_id = _seed_session(tmp_path, native_id="sibling-secret", payload=excised_payload)
-        apply_session_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
+        execute_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
 
         excised_hash = deterministic_blob_hash(excised_payload)
         fresh_payload = b'{"native_id": "sibling-carrier"}'
@@ -952,9 +953,9 @@ class TestLineageSafety:
         assert plan.source_marker_inputs_pending == 1
         assert plan.source_marker_inputs_accepted == 0
         assert plan.marker_input_digests == (shared.payload_sha256,)
-        receipt = apply_session_excision(tmp_path, parent_id, reason="r", actor="user:local", cascade_lineage=True)
-        assert receipt.counts["source_marker_inputs_pending"] == 1
-        assert receipt.marker_input_digests == (shared.payload_sha256,)
+        receipt = execute_excision(tmp_path, parent_id, reason="r", actor="user:local", cascade_lineage=True)
+        assert receipt["counts"]["source_marker_inputs_pending"] == 1
+        assert receipt["marker_input_digests"] == [shared.payload_sha256]
 
     def test_cascade_plan_refuses_marker_carrier_shared_outside_the_lineage(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
@@ -980,7 +981,7 @@ class TestLineageSafety:
     def test_apply_without_cascade_refuses_and_does_not_mutate(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
         with pytest.raises(LineageDependentsError) as excinfo:
-            apply_session_excision(tmp_path, parent_id, reason="r", actor="user:local")
+            execute_excision(tmp_path, parent_id, reason="r", actor="user:local")
         assert excinfo.value.dependent_session_ids == (child_id,)
 
         index_conn = sqlite3.connect(tmp_path / "index.db")
@@ -994,12 +995,12 @@ class TestLineageSafety:
 
     def test_apply_with_cascade_removes_parent_and_dependents(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
-        receipt = apply_session_excision(tmp_path, parent_id, reason="r", actor="user:local", cascade_lineage=True)
-        assert receipt.found is True
-        assert receipt.cascaded_session_ids == (child_id,)
+        receipt = execute_excision(tmp_path, parent_id, reason="r", actor="user:local", cascade_lineage=True)
+        assert receipt["found"] is True
+        assert receipt["cascaded_session_ids"] == [child_id]
         # Counts are summed across the whole cascade (parent + child).
-        assert receipt.counts["index_sessions"] == 2
-        assert receipt.counts["index_messages"] == 2
+        assert receipt["counts"]["index_sessions"] == 2
+        assert receipt["counts"]["index_messages"] == 2
 
         index_conn = sqlite3.connect(tmp_path / "index.db")
         try:
@@ -1019,9 +1020,9 @@ class TestLineageSafety:
 
     def test_apply_with_no_dependents_behaves_as_before(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="no-lineage")
-        receipt = apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
-        assert receipt.found is True
-        assert receipt.cascaded_session_ids == ()
+        receipt = execute_excision(tmp_path, session_id, reason="r", actor="user:local")
+        assert receipt["found"] is True
+        assert receipt["cascaded_session_ids"] == []
 
 
 class TestAttachmentBlobHashesAreExcisedToo:
@@ -1066,10 +1067,10 @@ class TestAttachmentBlobHashesAreExcisedToo:
         finally:
             source_conn.close()
 
-        receipt = apply_session_excision(tmp_path, session_id, reason="secret in attachment", actor="user:local")
-        assert receipt.found is True
-        assert raw_blob_hash.hex() in receipt.removed_blob_hashes
-        assert attachment_blob_hash.hex() in receipt.removed_blob_hashes
+        receipt = execute_excision(tmp_path, session_id, reason="secret in attachment", actor="user:local")
+        assert receipt["found"] is True
+        assert raw_blob_hash.hex() in receipt["removed_blob_hashes"]
+        assert attachment_blob_hash.hex() in receipt["removed_blob_hashes"]
 
         source_conn = sqlite3.connect(tmp_path / "source.db")
         try:

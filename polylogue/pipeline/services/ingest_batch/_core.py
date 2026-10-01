@@ -141,8 +141,8 @@ from polylogue.storage.sqlite.connection_profile import (
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.reference_seal import (
-    KnownSourceMutationPermit,
-    KnownSourceMutationReceipt,
+    KnownTierMutationPermit,
+    KnownTierMutationReceipt,
     PreparedIndexMutation,
     current_index_mutation_scope,
 )
@@ -3121,13 +3121,13 @@ def _publish_drive_revision_updates(
     prepared: _PreparedIngestUnit,
     archive_root: Path,
     *,
-    permit: KnownSourceMutationPermit,
-) -> KnownSourceMutationReceipt | None:
+    permit: KnownTierMutationPermit,
+) -> KnownTierMutationReceipt | None:
     if not prepared.drive_revision_updates:
         return None
     permit.require_rows("raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates)
     assignments = ",".join(f"{column}=?" for column in _DRIVE_REVISION_COLUMNS)
-    with permit.source_connection() as source:
+    with permit.mutation_connection() as source:
         with source:
             source.execute("BEGIN IMMEDIATE")
             cursor = source.executemany(
@@ -3147,14 +3147,14 @@ def _publish_prepared_drive_revision_updates(
     if not prepared.drive_revision_updates:
         return
     reference_seal.validate_observers_current()
-    permit = reference_seal.prepare_known_source_mutation(
-        "raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates, key_column="raw_id"
+    permit = reference_seal.prepare_known_tier_mutation(
+        "raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates, tier="source", key_column="raw_id"
     )
     with permit.hold_authority():
         receipt = _publish_drive_revision_updates(prepared, archive_root, permit=permit)
         if receipt is None:
             raise RuntimeError("prepared Drive source mutation returned no commit receipt")
-        reference_seal.accept_known_source_commit(receipt)
+        reference_seal.accept_known_tier_commit(receipt)
 
 
 def _process_ingest_batch_sync_owned(

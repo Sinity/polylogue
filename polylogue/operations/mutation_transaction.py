@@ -41,7 +41,8 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -1390,7 +1391,8 @@ class OperationExecutor:
             # code so work it schedules cannot inherit and replay it later.
             cleared = self._prevalidated_executions.set(())
             try:
-                return actuator.apply(plan, args)
+                with _authorized_removal_apply(plan, self._archive_root, actuator, args):
+                    return actuator.apply(plan, args)
             finally:
                 self._prevalidated_executions.reset(cleared)
         fresh_plan = actuator.prepare(args)
@@ -1400,7 +1402,41 @@ class OperationExecutor:
                 f"live state now resolves to {fresh_plan.plan_hash!r} "
                 f"({fresh_plan.target_count} target(s) vs {plan.target_count})"
             )
-        return actuator.apply(plan, args)
+        with _authorized_removal_apply(plan, self._archive_root, actuator, args):
+            return actuator.apply(plan, args)
+
+
+@contextmanager
+def _authorized_removal_apply(
+    plan: MutationPlan, archive_root: Path | None, actuator: object, args: object | None = None
+) -> Iterator[None]:
+    # Only these registered actuators intentionally remove stored sessions.
+    # Other operations may name sessions without authorizing their absence.
+    if plan.operation not in {"mutate-delete-session", "mutate-identity-reset", "mutate-session-excision"}:
+        yield
+        return
+    registered = _RECOVERY_ROUTES.get(plan.operation)
+    if registered is None or type(actuator) is not type(registered):
+        raise MutationTransactionError("session disappearance requires the registered removal actuator")
+    if archive_root is None:
+        # The registered domain actuator owns this exact argument shape.
+        # Do not import domain implementations into the transaction authority.
+        if args is None:
+            raise MutationTransactionError("session removal has no declared archive destination")
+        if plan.operation == "mutate-delete-session":
+            archive_root = cast(Any, args).archive._write_lease_archive_root
+        else:
+            archive_root = cast(Any, args).archive_root
+    from polylogue.core.write_lease import authorized_session_removal, write_lease
+
+    session_ids = tuple(ref.removeprefix("session:") for ref in plan.target_refs if ref.startswith("session:"))
+    # Library execution acquires the same existing root-bound lease; admitted
+    # daemon execution borrows that exact physical owner on its creator.
+    with (
+        write_lease("operation.authorized-removal", archive_root=archive_root),
+        authorized_session_removal(archive_root=archive_root, plan_hash=plan.plan_hash, session_ids=session_ids),
+    ):
+        yield
 
 
 class RecoverableActuator(Protocol):
@@ -1455,7 +1491,8 @@ def resolve_interrupted_operation(
         )
     plan = audit.operation_plan(operation.operation_id)
     try:
-        return actuator.recover(handles, plan)
+        with _authorized_removal_apply(plan, handles.archive_root, actuator):
+            return actuator.recover(handles, plan)
     except (SchemaRefusalError, RecoveryDeferredError, RecoveryRedrivenByOwnerError):
         raise
     except Exception as exc:

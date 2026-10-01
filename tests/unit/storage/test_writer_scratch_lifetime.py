@@ -18,7 +18,12 @@ from polylogue.storage.sqlite.connection_profile import (
     retained_native_sql_owners_for_lifetime,
     retained_native_sql_owners_on_current_thread,
 )
-from tests.infra.sqlite_settlement_handle import SettlementHandle
+from tests.infra.sqlite_cursor_settlement import (
+    SettlementConnection,
+    arm_settlement,
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+    settle_fault_connections,
+)
 
 
 @pytest.fixture(params=["duplicates", "prefix", "signatures", "union"])
@@ -78,31 +83,34 @@ def test_failed_readonly_page_close_retains_artifact_until_original_owner_retrie
     artifact: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     actual_connect = sqlite3.connect
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
 
     def fail_reader_close(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         connection = actual_connect(*args, **kwargs)
         if kwargs.get("uri") and "mode=ro" in str(args[0]):
-            handle = SettlementHandle(connection)
+            handle = arm_settlement(connection)
             handles.append(handle)
             return cast(sqlite3.Connection, handle)
         return cast(sqlite3.Connection, connection)
 
     monkeypatch.setattr(sqlite3, "connect", fail_reader_close)
     rows = artifact.rows("merged_message") if isinstance(artifact, write._UnionScratch) else artifact
-    with pytest.raises(NativeConnectionSettlementError) as failure:
-        next(iter(rows))
-    assert len(handles) == 1
-    directory = Path(artifact._scratch.name)
-    assert retained_native_sql_owners_for_lifetime(artifact) == (failure.value.owner,)
-    with pytest.raises(NativeConnectionSettlementError):
+    try:
+        with pytest.raises(NativeConnectionSettlementError) as failure:
+            next(iter(rows))
+        assert len(handles) == 1
+        directory = Path(artifact._scratch.name)
+        assert retained_native_sql_owners_for_lifetime(artifact) == (failure.value.owner,)
+        with pytest.raises(NativeConnectionSettlementError):
+            artifact.close()
+        assert directory.is_dir()
+        handles[0].allow_cleanup.set()
+        failure.value.owner.close()
         artifact.close()
-    assert directory.is_dir()
-    handles[0].allow_cleanup.set()
-    failure.value.owner.close()
-    artifact.close()
-    assert retained_native_sql_owners_for_lifetime(artifact) == ()
-    assert not directory.exists()
+        assert retained_native_sql_owners_for_lifetime(artifact) == ()
+        assert not directory.exists()
+    finally:
+        settle_fault_connections(handles)
 
 
 def test_borrowed_artifact_reader_refuses_an_inherited_task(artifact: Any) -> None:
@@ -115,7 +123,7 @@ def test_borrowed_artifact_reader_refuses_an_inherited_task(artifact: Any) -> No
 
             async def inherited() -> None:
                 with pytest.raises(RuntimeError):
-                    len(rows)
+                    next(iter(rows))
 
             await asyncio.create_task(inherited())
             assert len(rows) == 700
@@ -138,7 +146,7 @@ def test_cancelled_artifact_reader_stops_work_but_settles_its_creator_handle(art
         with scope:
             cancellation.set()
             with pytest.raises(asyncio.CancelledError):
-                len(rows)
+                next(iter(rows))
         assert retained_native_sql_owners_for_lifetime(artifact) == ()
     finally:
         compute_cancel.reset(token)
@@ -149,24 +157,26 @@ def test_cancelled_artifact_reader_stops_work_but_settles_its_creator_handle(art
 def test_scratch_constructor_registers_before_first_pragma_and_retains_failed_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
     from polylogue.storage.sqlite.connection_profile import open_scratch_connection
 
-    class ConstructionHandle(SettlementHandle):
+    class ConstructionHandle(SettlementConnection):
         def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
             assert retained_native_sql_owners_for_lifetime(tmp_path)
             raise LookupError("synthetic pragma failure")
 
-    handle = ConstructionHandle(sqlite3.connect(tmp_path / "constructor.db"))
+    handle = arm_settlement(sqlite3.connect(tmp_path / "constructor.db", factory=ConstructionHandle))
     monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: cast(sqlite3.Connection, handle))
-    with retain_native_sql_lifetimes(tmp_path), pytest.raises(NativeConnectionSettlementError) as failure:
-        open_scratch_connection(tmp_path / "constructor.db")
-    assert isinstance(failure.value.__cause__, LookupError)
-    assert isinstance(failure.value.failure, OSError)
-    assert retained_native_sql_owners_for_lifetime(tmp_path) == (failure.value.owner,)
-    handle.allow_cleanup.set()
-    failure.value.owner.close()
-    assert retained_native_sql_owners_for_lifetime(tmp_path) == ()
+    try:
+        with pytest.raises(NativeConnectionSettlementError) as failure:
+            open_scratch_connection(tmp_path / "constructor.db", lifetime_dependencies=(tmp_path,))
+        assert isinstance(failure.value.__cause__, LookupError)
+        assert isinstance(failure.value.failure, OSError)
+        assert retained_native_sql_owners_for_lifetime(tmp_path) == (failure.value.owner,)
+        handle.allow_cleanup.set()
+        failure.value.owner.close()
+        assert retained_native_sql_owners_for_lifetime(tmp_path) == ()
+    finally:
+        settle_fault_connections([handle])
 
 
 @pytest.mark.parametrize("kind", ["prefix", "signatures", "union"])
@@ -174,10 +184,10 @@ def test_settled_failed_writer_can_release_its_artifact_on_the_consumer(
     kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     actual_connect = sqlite3.connect
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
 
     def failed_close(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        handle = SettlementHandle(actual_connect(*args, **kwargs))
+        handle = arm_settlement(actual_connect(*args, **kwargs))
         handles.append(handle)
         return cast(sqlite3.Connection, handle)
 
@@ -193,16 +203,19 @@ def test_settled_failed_writer_can_release_its_artifact_on_the_consumer(
         artifact = write._UnionScratch(tmp_path)
         artifact.put("merged_message", 0, ("message",))
     directory = Path(artifact._scratch.name)
-    with pytest.raises(NativeConnectionSettlementError) as failure:
-        artifact.finish()
-    assert directory.is_dir()
-    assert retained_native_sql_owners_for_lifetime(artifact) == (failure.value.owner,)
-    handles[0].allow_cleanup.set()
-    failure.value.owner.close()
-    with ThreadPoolExecutor(max_workers=1) as consumer:
-        consumer.submit(artifact.close).result()
-    assert not directory.exists()
-    assert retained_native_sql_owners_for_lifetime(artifact) == ()
+    try:
+        with pytest.raises(NativeConnectionSettlementError) as failure:
+            artifact.finish()
+        assert directory.is_dir()
+        assert retained_native_sql_owners_for_lifetime(artifact) == (failure.value.owner,)
+        handles[0].allow_cleanup.set()
+        failure.value.owner.close()
+        with ThreadPoolExecutor(max_workers=1) as consumer:
+            consumer.submit(artifact.close).result()
+        assert not directory.exists()
+        assert retained_native_sql_owners_for_lifetime(artifact) == ()
+    finally:
+        settle_fault_connections(handles)
 
 
 @pytest.mark.parametrize(
@@ -219,17 +232,17 @@ def test_artifact_constructor_ddl_failure_settles_or_exposes_its_actual_owner(
     from polylogue.sources.prepared_message_sink import SqliteMessageStore
     from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShardBuilder
 
-    class DDLHandle(SettlementHandle):
+    class DDLHandle(SettlementConnection):
         def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
             if sql.lstrip().startswith("CREATE"):
                 raise LookupError("synthetic artifact DDL refusal")
-            return self.connection.execute(sql, *args, **kwargs)
+            return super().execute(sql, *args, **kwargs)
 
     actual_connect = sqlite3.connect
-    handles: list[DDLHandle] = []
+    handles: list[SettlementConnection] = []
 
     def constructor_connection(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        handle = DDLHandle(actual_connect(*args, **kwargs))
+        handle = arm_settlement(actual_connect(*args, **{**kwargs, "factory": DDLHandle}))
         if not failed_close:
             handle.allow_cleanup.set()
         handles.append(handle)
@@ -248,28 +261,31 @@ def test_artifact_constructor_ddl_failure_settles_or_exposes_its_actual_owner(
         "prepared": lambda: SqliteMessageStore(directory / "prepared.db"),
         "shard": lambda: SessionShardBuilder(directory / "shard.db"),
     }
-    with retain_native_sql_lifetimes(scratch):
-        if failed_close:
-            with pytest.raises(NativeConnectionSettlementError) as failure:
-                constructors[kind]()
-            owner = failure.value.owner
-            assert isinstance(failure.value.__cause__, LookupError)
-            assert retained_native_sql_owners_for_lifetime(scratch) == (owner,)
-            assert directory.is_dir()
-            handles[0].allow_cleanup.set()
-            if owner._terminal_parent is not None:
-                owner._terminal_parent.close()
+    try:
+        with retain_native_sql_lifetimes(scratch):
+            if failed_close:
+                with pytest.raises(NativeConnectionSettlementError) as failure:
+                    constructors[kind]()
+                owner = failure.value.owner
+                assert isinstance(failure.value.__cause__, LookupError)
+                assert retained_native_sql_owners_for_lifetime(scratch) == (owner,)
+                assert directory.is_dir()
+                handles[0].allow_cleanup.set()
+                if owner._terminal_parent is not None:
+                    owner._terminal_parent.close()
+                else:
+                    owner.close()
             else:
-                owner.close()
-        else:
-            with pytest.raises(LookupError):
-                constructors[kind]()
-    assert len(handles) == 1
-    with pytest.raises(sqlite3.ProgrammingError):
-        handles[0].connection.execute("SELECT 1")
-    assert retained_native_sql_owners_for_lifetime(scratch) == ()
-    scratch.cleanup()
-    assert not directory.exists()
+                with pytest.raises(LookupError):
+                    constructors[kind]()
+        assert len(handles) == 1
+        with pytest.raises(sqlite3.ProgrammingError):
+            handles[0].execute("SELECT 1")
+        assert retained_native_sql_owners_for_lifetime(scratch) == ()
+        scratch.cleanup()
+        assert not directory.exists()
+    finally:
+        settle_fault_connections(handles)
 
 
 @pytest.mark.parametrize("kind", ["duplicates", "shard_population", "shard_seal"])
@@ -279,17 +295,17 @@ def test_population_and_sealing_failure_settles_or_exposes_the_actual_scratch_ow
 ) -> None:
     from polylogue.storage.sqlite.archive_tiers.write_shard import build_session_shard
 
-    class SealHandle(SettlementHandle):
+    class SealHandle(SettlementConnection):
         def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
             if kind == "shard_seal" and sql.startswith("INSERT INTO shard_seal"):
                 raise LookupError("synthetic seal refusal")
-            return self.connection.execute(sql, *args, **kwargs)
+            return super().execute(sql, *args, **kwargs)
 
     actual_connect = sqlite3.connect
-    handles: list[SealHandle] = []
+    handles: list[SettlementConnection] = []
 
     def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        handle = SealHandle(actual_connect(*args, **kwargs))
+        handle = arm_settlement(actual_connect(*args, **{**kwargs, "factory": SealHandle}))
         if not failed_close:
             handle.allow_cleanup.set()
         handles.append(handle)
@@ -309,25 +325,28 @@ def test_population_and_sealing_failure_settles_or_exposes_the_actual_scratch_ow
         else:
             build_session_shard(tmp_path, [])
 
-    primary = AttributeError if kind == "shard_population" else LookupError
-    if failed_close:
-        with pytest.raises(NativeConnectionSettlementError) as failure:
-            build()
-        owner = failure.value.owner
-        assert isinstance(failure.value.__cause__, primary)
-        assert owner in retained_native_sql_owners_on_current_thread()
-        handles[0].allow_cleanup.set()
-        if owner._terminal_parent is not None:
-            owner._terminal_parent.close()
+    try:
+        primary = AttributeError if kind == "shard_population" else LookupError
+        if failed_close:
+            with pytest.raises(NativeConnectionSettlementError) as failure:
+                build()
+            owner = failure.value.owner
+            assert isinstance(failure.value.__cause__, primary)
+            assert owner in retained_native_sql_owners_on_current_thread()
+            handles[0].allow_cleanup.set()
+            if owner._terminal_parent is not None:
+                owner._terminal_parent.close()
+            else:
+                owner.close()
         else:
-            owner.close()
-    else:
-        with pytest.raises(primary):
-            build()
-    assert retained_native_sql_owners_on_current_thread() == ()
-    assert list(tmp_path.iterdir()) == []
-    with pytest.raises(sqlite3.ProgrammingError):
-        handles[0].connection.execute("SELECT 1")
+            with pytest.raises(primary):
+                build()
+        assert retained_native_sql_owners_on_current_thread() == ()
+        assert list(tmp_path.iterdir()) == []
+        with pytest.raises(sqlite3.ProgrammingError):
+            handles[0].execute("SELECT 1")
+    finally:
+        settle_fault_connections(handles)
 
 
 @pytest.mark.parametrize("failure_kind", ["locator", "flush"])
@@ -367,7 +386,7 @@ def test_session_event_population_failure_closes_the_disk_owner_index(tmp_path: 
 
 
 def test_file_edit_iteration_transfers_closed_pages_and_settles_abandoned_artifact(tmp_path: Path) -> None:
-    from polylogue.core.enums import BlockType
+    from polylogue.core.enums import BlockType, ToolOutcome
     from polylogue.pipeline.ids import message_content_identities
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit
     from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
@@ -384,6 +403,8 @@ def test_file_edit_iteration_transfers_closed_pages_and_settles_abandoned_artifa
                     ParsedContentBlock(type=BlockType.TOOL_USE, tool_id=tool_id, tool_name="Edit", tool_input={}),
                     ParsedContentBlock(
                         type=BlockType.TOOL_RESULT,
+                        tool_outcome=ToolOutcome.OK,
+                        is_error=False,
                         tool_id=tool_id,
                         file_edit=ParsedFileEdit(file_path="neutral.py", old_string="before", new_string="after"),
                     ),

@@ -18,6 +18,7 @@ import queue
 import threading
 import time
 import weakref
+from builtins import BaseExceptionGroup
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from concurrent.futures import Future as ConcurrentFuture
 from concurrent.futures import InvalidStateError
@@ -360,9 +361,13 @@ class _TerminalWriter:
                 try:
                     self._retire()
                 except BaseException as exc:
-                    error = error or exc
-                    pending = True
-                else:
+                    error = (
+                        BaseExceptionGroup("SQL cleanup and grant retirement failed", [error, exc])
+                        if error is not None
+                        else exc
+                    )
+                pending = self._pending()
+                if not pending:
                     with self._guard:
                         self._retired = True
             if error is not None:
@@ -452,22 +457,19 @@ class DaemonWriteCoordinator:
     async def _settle_async_backends(self) -> None:
         from polylogue.operations.sql_settlement import retained_async_sql_owners
 
-        first_error: BaseException | None = None
-        cancellation: asyncio.CancelledError | None = None
+        errors: list[BaseException] = []
         for backend in self._retained_async_backends():
             try:
                 await backend.close()
-            except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
             except BaseException as exc:
-                first_error = first_error or exc
+                errors.append(exc)
             if not any(owner is backend for owner in retained_async_sql_owners()):
                 with self._terminal_guard:
                     self._terminal_async_backends.pop(id(backend), None)
-        if first_error is not None:
-            raise DaemonWriterSettlementError("original async writer cleanup failed; retry settlement") from first_error
-        if cancellation is not None:
-            raise cancellation
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("Original async writer cleanup failed", errors)
 
     def _async_settlement_completed(self, attempt: asyncio.Task[None]) -> None:
         self._terminal_changed.set()
@@ -486,37 +488,41 @@ class DaemonWriteCoordinator:
         self._publish_telemetry()
 
     async def _settle_terminal_workers(self) -> None:
-        first_error: BaseException | None = None
+        errors: list[BaseException] = []
         for worker in self._retained_workers():
             attempt = worker.request_settlement()
             try:
-                await asyncio.shield(asyncio.wrap_future(attempt))
-            except asyncio.CancelledError:
-                # The accepted cleanup remains owned by its original worker.
-                raise
+                wrapped = asyncio.wrap_future(attempt)
+                wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+                await asyncio.wait((wrapped,))
+                wrapped.result()
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+                # Accepted cleanup retains its creator even if this waiter
+                # cancels. Request every other owned terminal child too.
+                errors.append(exc)
             if worker.retired:
                 with self._terminal_guard:
                     self._terminal_workers.discard(worker)
         if self._retained_async_backends():
+            for backend in self._retained_async_backends():
+                backend.request_sql_settlement()
             async_attempt = self._terminal_async_attempt
             if async_attempt is None or async_attempt.done():
                 async_attempt = asyncio.create_task(self._settle_async_backends())
                 self._terminal_async_attempt = async_attempt
                 async_attempt.add_done_callback(self._async_settlement_completed)
             try:
-                await asyncio.shield(async_attempt)
-            except asyncio.CancelledError:
-                raise
+                await asyncio.wait((async_attempt,))
+                async_attempt.result()
             except BaseException as exc:
-                first_error = first_error or exc
+                errors.append(exc)
         if not self._executions and not self._has_unsettled_sql():
             self._idle.set()
         self._publish_telemetry()
-        if first_error is not None:
-            raise first_error
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("Original writer cleanup failed", errors)
 
     def _sql_settlement_state(self) -> str:
         if any(worker.settling for worker in self._retained_workers()) or (
@@ -586,13 +592,15 @@ class DaemonWriteCoordinator:
         )
         self._track_execution(execution, actor=actor, on_complete=on_complete, request=request)
         try:
-            return await asyncio.shield(execution)
+            await asyncio.wait((execution,))
+            return execution.result()
         except asyncio.CancelledError:
             request.caller_cancelled = True
             if not request.acquired:
                 execution.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await asyncio.shield(execution)
+                    await asyncio.wait((execution,))
+                    execution.result()
             raise
 
     async def _execute(
@@ -738,7 +746,8 @@ class DaemonWriteCoordinator:
             name=f"polylogue-prepared-writer:{actor}",
         )
         self._track_execution(task, actor=actor)
-        return await asyncio.shield(task)
+        await asyncio.wait((task,))
+        return task.result()
 
     async def run_sync_with_completion(
         self,
@@ -1002,32 +1011,41 @@ async def _run_writer_worker(
             if custody is not None:
                 settle_cached_sql(custody)
 
+        retirement_requested = False
+
         def pending() -> bool:
-            return bool(sql_owners() or retained_async_sql_owners())
+            return bool(
+                sql_owners()
+                or retained_async_sql_owners()
+                or (retirement_requested and thread_grant is not None and not thread_grant.custody_retired)
+            )
 
         def cleanup() -> None:
-            first_error: BaseException | None = None
+            failures: list[BaseException] = []
             for owner in sql_owners():
                 try:
                     owner.close()
                 except BaseException as exc:
-                    first_error = first_error or exc
+                    failures.append(exc)
 
             async def close_async_owners() -> None:
-                nonlocal first_error
                 for backend in retained_async_sql_owners():
                     try:
                         await backend.close()
                     except BaseException as exc:
-                        first_error = first_error or exc
+                        failures.append(exc)
 
             if retained_async_sql_owners():
                 asyncio.run(close_async_owners())
-            if first_error is not None:
-                raise first_error
+            if len(failures) == 1:
+                raise failures[0]
+            if failures:
+                raise BaseExceptionGroup("Writer child cleanup failed", failures)
 
         def retire() -> None:
-            if thread_grant is not None:
+            nonlocal retirement_requested
+            retirement_requested = True
+            if thread_grant is not None and not thread_grant.custody_retired:
                 thread_grant.complete()
 
         error: BaseException | None = None
@@ -1046,7 +1064,15 @@ async def _run_writer_worker(
         try:
             context.run(reconcile_cached_handles)
         except BaseException as exc:
-            error = error or exc
+            error = BaseExceptionGroup("Writer and cache cleanup failed", [error, exc]) if error is not None else exc
+
+        if not pending():
+            try:
+                context.run(retire)
+            except BaseException as exc:
+                error = (
+                    BaseExceptionGroup("Writer and grant retirement failed", [error, exc]) if error is not None else exc
+                )
 
         terminal: _TerminalWriter | None = None
         if pending():
@@ -1057,18 +1083,12 @@ async def _run_writer_worker(
                     with contextlib.suppress(RuntimeError):
                         loop.call_soon_threadsafe(coordinator._terminal_worker_completed, terminal)
 
-            terminal = _TerminalWriter(lambda: context.run(cleanup), pending, retire, settled)
+            terminal = _TerminalWriter(lambda: context.run(cleanup), pending, lambda: context.run(retire), settled)
             coordinator._retain_terminal_worker(terminal, loop)
             refusal = DaemonWriterSettlementError("writer returned with unsettled SQL; retry terminal settlement")
             if error is not None:
                 refusal.__cause__ = error
             error = refusal
-        else:
-            try:
-                retire()
-            except BaseException as exc:
-                error = error or exc
-
         if error is not None:
             with contextlib.suppress(InvalidStateError):
                 result.set_exception(error)
@@ -1106,9 +1126,12 @@ async def _run_writer_worker(
                         result.set_exception(exc)
 
             submission.add_done_callback(submission_finished)
-    except BaseException:
+    except BaseException as primary:
         if thread_grant is not None:
-            thread_grant.complete()
+            try:
+                thread_grant.complete()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("Writer dispatch and grant cleanup failed", [primary, cleanup]) from primary
         raise
     return await asyncio.wrap_future(result, loop=loop)
 
@@ -1299,13 +1322,15 @@ class DaemonWriteThreadBridge:
             name=f"polylogue-writer-staged:{actor}",
         )
         try:
-            return await asyncio.shield(pending)
+            await asyncio.wait((pending,))
+            return pending.result()
         except asyncio.CancelledError:
             # A lifecycle cancellation is not permission to release the
             # writer or abandon the receipt of an admitted callable.
             while not pending.done():
                 try:
-                    await asyncio.shield(pending)
+                    await asyncio.wait((pending,))
+                    pending.result()
                 except asyncio.CancelledError:
                     continue
                 except Exception:

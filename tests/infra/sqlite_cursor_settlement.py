@@ -2,8 +2,9 @@
 
 import sqlite3
 import threading
+from builtins import BaseExceptionGroup
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -73,40 +74,29 @@ def control_archive_connections(monkeypatch: pytest.MonkeyPatch, *paths: str | P
         ) -> sqlite3.Connection:
             if str(database) in targets:
                 return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
-            return _original(database, *args, **kwargs)
+            return cast(sqlite3.Connection, _original(database, *args, **kwargs))
 
         monkeypatch.setattr(module, "connect_measured", controlled)
 
 
-class BackupCursorFault:
-    """Real backup plus retained native statement at the copy boundary."""
+class BackupCursorFault(_MeasuredConnection):
+    """Actual native backup owner retaining a statement at the copy boundary."""
 
-    def __init__(self, connection: sqlite3.Connection, *, on_target: bool, fail_copy: bool) -> None:
-        self.connection = connection
-        self.on_target = on_target
-        self.fail_copy = fail_copy
-        self.cursor: ControlledCursor | None = None
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.on_target = False
+        self.fail_copy = False
+        self.retained_cursor: ControlledCursor | None = None
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.connection, name)
-
-    @property
-    def row_factory(self) -> Any:
-        return self.connection.row_factory
-
-    @row_factory.setter
-    def row_factory(self, value: Any) -> None:
-        self.connection.row_factory = value
-
-    def backup(self, target: sqlite3.Connection) -> None:
-        self.connection.backup(target)
+    def backup(self, target: sqlite3.Connection, **kwargs: Any) -> None:
+        super().backup(target, **kwargs)
         if not self.on_target and any(row[2] for row in target.execute("PRAGMA database_list") if row[1] == "main"):
             return
-        connection = target if self.on_target else self.connection
-        self.cursor = connection.cursor(factory=ControlledCursor)
-        self.cursor.execute("SELECT 1 UNION ALL SELECT 2")
-        assert next(self.cursor)[0] == 1
-        self.cursor.allow_cleanup.clear()
+        connection = target if self.on_target else self
+        self.retained_cursor = connection.cursor(factory=ControlledCursor)
+        self.retained_cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        assert next(self.retained_cursor)[0] == 1
+        self.retained_cursor.allow_cleanup.clear()
         if self.fail_copy:
             raise OSError("synthetic failure after physical SQLite backup")
 
@@ -130,3 +120,80 @@ class InvalidReturnCursor(sqlite3.Cursor):
         self.execute("SELECT 1 UNION ALL SELECT 2")
         next(self)
         return 17  # type: ignore[return-value]  # Deliberate violation of Python's constructor contract.
+
+
+class SettlementConnection(_MeasuredConnection):
+    """Fault the native handle that the production factory actually registers."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.owner = threading.current_thread()
+        self.allow_cleanup = threading.Event()
+        self.allow_cleanup.set()
+        self.cleanup_started = threading.Event()
+        self.continue_cleanup: threading.Event | None = None
+        self.calls: list[tuple[str, threading.Thread]] = []
+
+    def rollback(self) -> None:
+        self.calls.append(("rollback", threading.current_thread()))
+        assert threading.current_thread() is self.owner
+        self.cleanup_started.set()
+        if self.continue_cleanup is not None:
+            self.continue_cleanup.wait()
+        if not self.allow_cleanup.is_set():
+            raise OSError("synthetic rollback remains unsettled")
+        super().rollback()
+
+    def close(self) -> None:
+        self.cleanup_started.set()
+        self.calls.append(("close", threading.current_thread()))
+        assert threading.current_thread() is self.owner
+        if not self.allow_cleanup.is_set():
+            raise OSError("synthetic close remains unsettled")
+        super().close()
+
+
+def arm_settlement(connection: sqlite3.Connection) -> SettlementConnection:
+    """Arm the factory-created connection without replacing its identity."""
+    assert isinstance(connection, SettlementConnection)
+    connection.allow_cleanup.clear()
+    return connection
+
+
+def settle_fault_connections(handles: list[SettlementConnection]) -> None:
+    """Settle only a control's actual registered handles on their creator."""
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_on_current_thread
+
+    for handle in handles:
+        handle.allow_cleanup.set()
+    identities = {id(handle) for handle in handles}
+    attempted: set[int] = set()
+    failures: list[BaseException] = []
+    for owner in retained_native_sql_owners_on_current_thread():
+        if owner._connection_identity not in identities:
+            continue
+        terminal = owner._terminal_parent or owner
+        if id(terminal) not in attempted:
+            attempted.add(id(terminal))
+            try:
+                terminal.close()
+            except BaseException as error:
+                failures.append(error)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Controlled native cleanup failed", failures)
+
+
+@pytest.fixture(autouse=True)
+def native_settlement_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use actual measured subclasses in modules with terminal fault controls."""
+    original = sqlite3.connect
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        factory = kwargs.get("factory", sqlite3.Connection)
+        if factory in (sqlite3.Connection, _MeasuredConnection):
+            kwargs["factory"] = SettlementConnection
+        return cast(sqlite3.Connection, original(*args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", connect)

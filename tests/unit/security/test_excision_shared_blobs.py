@@ -39,7 +39,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.security.excision import apply_session_excision, plan_session_excision
+from polylogue.security.excision import plan_session_excision
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
@@ -56,6 +56,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
 )
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.excision_execution import execute_excision
 from tests.infra.index_writer import write_fixture_ingest_payload
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
@@ -223,14 +224,14 @@ async def test_excising_a_forgets_the_tool_output_only_it_had(workspace_env: dic
 
     plan = plan_session_excision(archive_root, session_a[0])
     assert plan.source_sidecar_rows == 2
-    receipt = apply_session_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
+    receipt = execute_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
 
-    assert receipt.counts["source_sidecar_rows"] == 2
+    assert receipt["counts"]["source_sidecar_rows"] == 2
     assert _excised(archive_root, _sha(_A_ONLY_TEXT))
-    assert _sha(_A_ONLY_TEXT).hex() in receipt.removed_blob_hashes
+    assert _sha(_A_ONLY_TEXT).hex() in receipt["removed_blob_hashes"]
     assert _raw_hash(archive_root, tree_a["toolu_a_only"]) is None
     assert _raw_hash(archive_root, tree_a["toolu_a_shared"]) is None
-    assert _sha(_SHARED_TEXT).hex() in receipt.shared_blob_hashes
+    assert _sha(_SHARED_TEXT).hex() in receipt["shared_blob_hashes"]
     assert not _excised(archive_root, _sha(_SHARED_TEXT))
     assert _raw_hash(archive_root, tree_b["toolu_b_shared"]) == _sha(_SHARED_TEXT)
 
@@ -292,9 +293,9 @@ async def test_excising_a_parent_keeps_its_subagents_sidecar(workspace_env: dict
     assert session is not None
     assert _raw_hash(archive_root, subagent_sidecar) == _sha(_SUBAGENT_TEXT)
 
-    receipt = apply_session_excision(archive_root, session[0], reason="synthetic secret", actor="user:local")
+    receipt = execute_excision(archive_root, session[0], reason="synthetic secret", actor="user:local")
 
-    assert receipt.counts["source_sidecar_rows"] == 1
+    assert receipt["counts"]["source_sidecar_rows"] == 1
     assert _raw_hash(archive_root, parent_sidecar) is None
     assert _excised(archive_root, _sha(_PARENT_TEXT))
     assert _raw_hash(archive_root, subagent_sidecar) == _sha(_SUBAGENT_TEXT)
@@ -399,9 +400,9 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
     assert _raw_hash(archive_root, sidecar) == _sha(_GEMINI_TEXT)
     assert _raw_hash(archive_root, unclaimed) == _sha(_ORPHAN_TEXT)
 
-    receipt = apply_session_excision(archive_root, str(session_id), reason="synthetic secret", actor="user:local")
+    receipt = execute_excision(archive_root, str(session_id), reason="synthetic secret", actor="user:local")
 
-    assert receipt.counts["source_sidecar_rows"] == 1
+    assert receipt["counts"]["source_sidecar_rows"] == 1
     assert _raw_hash(archive_root, sidecar) is None
     assert _excised(archive_root, _sha(_GEMINI_TEXT))
     assert _raw_hash(archive_root, unclaimed) == _sha(_ORPHAN_TEXT)
@@ -427,15 +428,15 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
     # retained bytes.
     assert session_b[2] == _rederived_hash(archive_root, session_b[1])
 
-    receipt = apply_session_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
+    receipt = execute_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
 
-    assert receipt.found is True
+    assert receipt["found"] is True
     assert _session_row(archive_root, _SESSION_A) is None
     # A is forgotten: its transcript is marked.
     assert _excised(archive_root, a_payload_hash)
     # B keeps the blob it shares with A: unmarked, still retained, readable.
     assert not _excised(archive_root, _sha(_SHARED_TEXT))
-    assert _sha(_SHARED_TEXT).hex() not in receipt.removed_blob_hashes
+    assert _sha(_SHARED_TEXT).hex() not in receipt["removed_blob_hashes"]
     assert _raw_hash(archive_root, tree_b["toolu_b_shared"]) == _sha(_SHARED_TEXT)
     assert BlobStore(archive_root / "blob").read_all(_sha(_SHARED_TEXT).hex()) == _SHARED_TEXT.encode("utf-8")
     assert _session_row(archive_root, _SESSION_B) == session_b
@@ -551,13 +552,13 @@ def test_excising_a_keeps_the_attachment_it_shares_with_b(tmp_path: Path) -> Non
 
     shared = hashlib.sha256(_SHARED_ATTACHMENT).digest()
     own = hashlib.sha256(_A_ONLY_ATTACHMENT).digest()
-    receipt = apply_session_excision(archive_root, session_a, reason="synthetic secret", actor="user:local")
+    receipt = execute_excision(archive_root, session_a, reason="synthetic secret", actor="user:local")
 
-    assert receipt.found is True
+    assert receipt["found"] is True
     assert _excised(archive_root, hashlib.sha256(payload_a).digest())
     assert _excised(archive_root, own)
     assert not _excised(archive_root, shared)
-    assert receipt.shared_blob_hashes == (shared.hex(),)
+    assert receipt["shared_blob_hashes"] == [shared.hex()]
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         kept = conn.execute(
             "SELECT a.acquisition_status FROM attachments AS a JOIN attachment_refs AS r "
