@@ -1,7 +1,8 @@
 """A semantic read must never destroy the expensive-to-rebuild vector tier.
 
-``_ensure_tables`` runs on every semantic query through the direct CLI/API
-provider.  It used to reconcile a configured/stored dimension mismatch by
+The dimension check runs on the retained read snapshot for every semantic
+query through the direct CLI/API provider. It used to reconcile a
+configured/stored dimension mismatch by
 executing ``DROP TABLE IF EXISTS message_embeddings`` -- so editing
 ``embedding_dimension`` and then running one query physically destroyed every
 stored vector, while ``message_embeddings_meta`` survived carrying

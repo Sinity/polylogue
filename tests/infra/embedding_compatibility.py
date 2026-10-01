@@ -139,3 +139,20 @@ def clear_embedding_refs(root: Path) -> None:
             conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         store.refresh_binding_contract(binding)
+
+
+def embedding_file_header(root: Path) -> bytes:
+    """Observe the persistent SQLite journal contract without opening SQLite."""
+    with (root / "embeddings.db").open("rb") as stream:
+        return stream.read(20)
+
+
+def assert_embedding_handles_settled(root: Path) -> None:
+    """Behavior runs everywhere; physical descriptor observation requires procfs."""
+    path = (root / "embeddings.db").resolve()
+    assert not tuple(path.parent.glob("embeddings.db-*"))
+    if Path("/proc/self/fd").is_dir():
+        from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+
+        metadata = path.stat()
+        assert selected_file_descriptors((metadata.st_dev, metadata.st_ino)) == ()

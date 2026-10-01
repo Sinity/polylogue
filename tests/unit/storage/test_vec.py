@@ -33,6 +33,7 @@ class MutableSqliteVecProvider(SqliteVecProvider):
     _ensure_tables: Callable[[], None]
     _get_embeddings: EmbeddingFetcher
     _get_connection: Callable[[], sqlite3.Connection]
+    _get_read_connection: Callable[[], sqlite3.Connection]
 
 
 def make_message(
@@ -486,7 +487,6 @@ def test_query_route_contract(
     embedding_result: list[Embedding],
 ) -> None:
     """Query methods must generate query embeddings, optionally filter by provider, and close connections."""
-    mock_provider._ensure_vec_available = MagicMock()
     embedding_calls: list[tuple[list[str], str | None]] = []
     executed_queries: list[tuple[str, tuple[object, ...] | None]] = []
 
@@ -506,7 +506,7 @@ def test_query_route_contract(
     connection = MagicMock()
     connection.execute = capture_execute
     connection.close = MagicMock()
-    mock_provider._get_connection = MagicMock(return_value=connection)
+    mock_provider._get_read_connection = MagicMock(return_value=connection)
 
     result = mock_provider.query("search text", limit=10)
 
@@ -520,7 +520,7 @@ def test_query_route_contract(
         # Provider may open a connection for early existence check before
         # bailing out. The result contract is still empty, and the connection
         # should have been closed by the caller.
-        if mock_provider._get_connection.called:
+        if mock_provider._get_read_connection.called:
             assert connection.close.called
 
 
