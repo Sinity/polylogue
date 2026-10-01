@@ -1352,7 +1352,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                 archive_root=str(stack.archive_root),
                 deadline_ms=25,
             )
-            assert timed_out is not None and timed_out["outcome"] == "timed-out"
+            assert timed_out is not None and timed_out["outcome"] == "timed-out", timed_out
             assert monotonic() - started < 1.0
             assert not release_apply.is_set()
 
