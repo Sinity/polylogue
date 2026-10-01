@@ -194,24 +194,12 @@ def test_an_archive_without_a_user_tier_is_not_blocked(tmp_path: Path) -> None:
 def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: Path) -> None:
     """Receipts published before a suppression skip are still consumed with the batch.
 
-    Anti-vacuity: returning from the skip path before extending
-    ``pending_attachment_receipts`` leaves the reservation neither consumed nor
-    released, pinning the blob against GC on every suppressed replay.
+    Anti-vacuity: skipping sealed claim retirement for a suppressed session
+    leaves its actual reservation pinning the blob against GC.
     """
-    import hashlib
-
     from polylogue.pipeline.services.ingest_worker import SessionWritePayload
     from polylogue.sources.parsers.base_models import ParsedAttachment
-
-    class _Publisher:
-        def write_from_bytes(self, data: bytes) -> tuple[str, int]:
-            return hashlib.sha256(data).hexdigest(), len(data)
-
-        def receipt_id(self, blob_hash: str) -> str:
-            return f"receipt-{blob_hash[:8]}"
-
-        def flush(self) -> tuple[object, ...]:
-            return ()
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     parsed = _parsed("suppressed-attachment")
     parsed = parsed.model_copy(
@@ -230,15 +218,13 @@ def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: 
     )
     session_id = _session_id("suppressed-attachment")
     _tombstone(archive_root, session_id)
-    receipts: list[tuple[str, bytes]] = []
     conn = sqlite3.connect(_index_path(archive_root))
     conn.row_factory = sqlite3.Row
     try:
         changed, counts = write_fixture_ingest_payload(
             conn,
             SessionWritePayload(session_id=session_id, content_hash="00" * 32, parsed_session=parsed, message_count=1),
-            blob_publisher=_Publisher(),
-            pending_attachment_receipts=receipts,
+            blob_publisher=ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob"),
         )
     finally:
         conn.close()
@@ -246,4 +232,5 @@ def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: 
     assert changed is False
     assert counts["skipped_sessions"] == 1
     assert _session_rows(archive_root, session_id) == 0
-    assert receipts == [(f"receipt-{hashlib.sha256(b'abc').hexdigest()[:8]}", hashlib.sha256(b"abc").digest())]
+    with sqlite3.connect(archive_root / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)

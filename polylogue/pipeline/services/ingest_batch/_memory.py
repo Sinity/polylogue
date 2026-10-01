@@ -50,6 +50,9 @@ def discard_ingest_result_payload(ir: IngestRecordResult) -> None:
                 payload.prepared_write = None
     if failures:
         raise BaseExceptionGroup("ingest preparation cleanup remains unsettled", failures)
+    if ir.prepared_artifact is not None:
+        ir.prepared_artifact.discard()
+        ir.prepared_artifact = None
     ir.sessions.clear()
 
 

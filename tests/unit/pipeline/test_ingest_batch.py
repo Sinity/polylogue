@@ -1896,7 +1896,7 @@ def test_write_session_records_an_excised_precomputed_attachment_unavailable(tmp
     """
     payload = b"chatgpt asset bytes excised after acquisition"
     source_db = _excise_in_fresh_source_tier(tmp_path / "archive", payload)
-    with open_connection(tmp_path / "index.db") as conn, sqlite3.connect(source_db) as source_conn:
+    with open_connection(tmp_path / "archive" / "index.db") as conn, sqlite3.connect(source_db) as source_conn:
         session = _session_data(
             "chatgpt-export:conv-precomputed",
             content_hash="hash-excised-precomputed",
@@ -1958,7 +1958,9 @@ def _reservations(source_db: Path, blob_hash: str) -> list[str]:
         ]
 
 
-def test_write_session_reserves_a_worker_published_blob_until_its_reference_commits(tmp_path: Path) -> None:
+def test_write_session_reserves_a_worker_published_blob_until_its_reference_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A parse worker's already-published attachment bytes get a publication receipt.
 
     The worker holds no write lease, so the bytes are GC-eligible until the
@@ -1970,21 +1972,37 @@ def test_write_session_reserves_a_worker_published_blob_until_its_reference_comm
     initialize_active_archive_root(archive_root)
     blob_hash, size = BlobStore(archive_root / "blob").write_from_bytes(b"spilled carrier bytes")
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    receipts: list[tuple[str, bytes]] = []
-    with open_connection(tmp_path / "index.db") as conn:
+    import polylogue.storage.blob_publication as publication
+
+    original_consume = publication.consume_blob_publication_receipt
+    consumed: list[str] = []
+
+    def consume_after_reference(source: sqlite3.Connection, publication_id: str, digest: bytes) -> None:
+        assert source.execute(
+            "SELECT blob_hash FROM blob_publication_reservations WHERE publication_id=?", (publication_id,)
+        ).fetchone()[0] == bytes.fromhex(blob_hash)
+        with sqlite3.connect(archive_root / "index.db") as committed_index:
+            assert committed_index.execute(
+                "SELECT acquisition_status, lower(hex(blob_hash)) FROM attachments"
+            ).fetchone() == ("acquired", blob_hash)
+        consumed.append(publication_id)
+        original_consume(source, publication_id, digest)
+
+    monkeypatch.setattr(publication, "consume_blob_publication_receipt", consume_after_reference)
+
+    with open_connection(archive_root / "index.db") as conn:
         changed, _counts = write_fixture_ingest_payload(
             conn,
             _precomputed_blob_session(blob_hash, size),
             blob_publisher=publisher,
-            pending_attachment_receipts=receipts,
         )
         conn.commit()
         acquired = conn.execute("SELECT acquisition_status, lower(hex(blob_hash)) FROM attachments").fetchall()
 
     assert changed is True
     assert [tuple(row) for row in acquired] == [("acquired", blob_hash)]
-    assert receipts == [(publisher.receipt_id(blob_hash), bytes.fromhex(blob_hash))]
-    assert _reservations(archive_root / "source.db", blob_hash) == [receipts[0][0]]
+    assert len(consumed) == 1
+    assert _reservations(archive_root / "source.db", blob_hash) == []
 
 
 def test_write_session_refuses_a_worker_published_blob_gc_reclaimed(tmp_path: Path) -> None:
@@ -2003,7 +2021,7 @@ def test_write_session_refuses_a_worker_published_blob_gc_reclaimed(tmp_path: Pa
     blob_hash, size = store.write_from_bytes(b"reclaimed carrier bytes")
     store.blob_path(blob_hash).unlink()
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    with open_connection(tmp_path / "index.db") as conn:
+    with open_connection(tmp_path / "archive" / "index.db") as conn:
         with pytest.raises(AdoptedBlobEvictedError) as refused:
             write_fixture_ingest_payload(conn, _precomputed_blob_session(blob_hash, size), blob_publisher=publisher)
         assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0

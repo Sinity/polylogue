@@ -129,7 +129,7 @@ class _IngestBatchSummary:
             "skipped_session_events": 0,
             # polylogue-rujy AC4: bytes this batch pushed through the
             # content-addressed blob store for Claude Code tool-result
-            # sidecar text (see _preacquire_sidecar_blobs). "new" is bytes
+            # sidecar text (see PreparedSidecarLocators). "new" is bytes
             # whose hash didn't already exist in the store; "dedup" is bytes
             # whose hash was already present (the write was a free no-op).
             # "refused_excised" counts sidecars whose bytes were durably

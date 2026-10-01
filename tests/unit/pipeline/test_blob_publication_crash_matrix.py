@@ -408,7 +408,7 @@ def test_crash_after_index_commit_keeps_receipt_until_explicit_terminal_abandonm
     """Boundary 4: index commit durable, finalization (receipt consumption) crashes.
 
     The attachment row is committed through ArchiveWriteGateway before
-    ``pending_attachment_receipts`` is drained (_core.py), so a crash in that
+    the sealed attachment claims are retired (_core.py), so a crash in that
     drain leaves a referenced-but-unconsumed reservation. This is exactly the
     startup-reconciliation leak polylogue-qs0a's PR #3104 fixed: proves the
     now-fixed ``reconcile_blob_publication_reservations_under_exclusion``

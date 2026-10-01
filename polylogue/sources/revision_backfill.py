@@ -855,6 +855,7 @@ def prepare_retained_non_json_artifact(
         PreparedJsonl,
         _prepare_attachment_publications,
         _prepare_codex_state_blob,
+        _prepare_sidecar_publications,
         _write_artifact,
     )
     from polylogue.sources.prepared_message_sink import SqliteMessageStore
@@ -939,6 +940,7 @@ def prepare_retained_non_json_artifact(
             enrichment_index_path=str(Path(index_db_path).resolve()),
         )
         _prepare_attachment_publications(store, publisher, Path(directory))
+        _prepare_sidecar_publications(store, publisher, Path(directory))
         store.close()
         store = None
         artifact = PreparedJsonl.seal(

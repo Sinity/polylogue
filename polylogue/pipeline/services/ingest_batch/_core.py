@@ -10,13 +10,12 @@ from __future__ import annotations
 import builtins
 import contextlib
 import dataclasses
-import hashlib
 import io
 import json
 import re
 import sqlite3
+import sys
 import time
-import unicodedata
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
@@ -25,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, NotRequired, Protocol, TypedDict, Unpack, cast
+from typing import TYPE_CHECKING, BinaryIO, NotRequired, Protocol, TypedDict, Unpack, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
@@ -39,7 +38,7 @@ from polylogue.core.compute import (
     compute_window_length,
 )
 from polylogue.core.compute_cancel import compute_cancel_requested
-from polylogue.core.enums import BlockType, IngestOutcome, Origin, Provider
+from polylogue.core.enums import IngestOutcome, Origin, Provider
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
@@ -56,7 +55,6 @@ from polylogue.markers.preparation import (
     retired_marker_assertion_ids,
 )
 from polylogue.pipeline.ids import (
-    SIDECAR_BLOB_EVENT_TYPES,
     bound_session_content_hash,
     message_content_identity,
     session_content_hash,
@@ -95,7 +93,6 @@ from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     _archive_blob_publisher_slot,
     consume_blob_publication_receipt,
-    publication_refused,
     refuse_excised_attachment_blobs,
 )
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -117,7 +114,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ContentExcisedError,
-    is_blob_hash_excised,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
@@ -886,131 +882,6 @@ def _incoming_write_carries_distinct_messages(
         return False
 
 
-def _preacquire_sidecar_blobs(
-    session_to_write: ParsedSession,
-    blob_publisher: ArchiveBlobPublisher,
-    publication_receipts: list[tuple[str, bytes]],
-    *,
-    source_conn: sqlite3.Connection | None,
-) -> tuple[dict[str, dict[str, str]], list[tuple[str, str, int, bool]]]:
-    """Content-address + dedup acquired tool-result sidecar text (polylogue-rujy AC4).
-
-    ``apply_tool_result_sidecars`` / ``apply_gemini_tool_output_sidecars``
-    (parser-side, side-effect-free) already
-    replaced a matched, truncated ``tool_result`` block's inline preview with
-    the sidecar file's full text and recorded a bounded
-    sidecar session event per file. That leaves the
-    acquired bytes living only as an ordinary SQLite TEXT column: two
-    sessions with byte-identical tool output (a repeated build log, the same
-    lint run) each store their own full copy, and there is no record of how
-    many genuinely new bytes an ingest run added to the archive versus how
-    many were already present under the same hash.
-
-    This mirrors the existing attachment-blob path (``_acquire_attachment_blob``
-    / the ``preacquired_attachment_blobs`` loop above): it publishes the exact
-    bytes the matched block carries through the archive's content-addressed
-    blob store and returns per-run byte counts (new vs. deduplicated) for the
-    ingest batch's own accounting. It never touches ``blocks.text`` -- that
-    already carries the full text for FTS -- this only adds a deduplicated,
-    content-addressed second home for it.
-
-    The returned locators, keyed by ``tool_use_id``, are publication metadata,
-    not session content (polylogue-bgnxh): the session's identity was bound
-    over its parsed events before this runs, so this never rewrites the
-    session. The writer stores each locator beside its sidecar event
-    (``sidecar_blob_locators``). A sidecar whose bytes are durably excised is
-    not published again; its locator records the typed refusal
-    ``blob_refusal: content_excised`` and the rest of the session still
-    writes.
-
-    Returns the locators and the queued ``(tool_use_id, blob_hash, size,
-    already_present)`` publications; ``_settle_sidecar_blobs`` counts them
-    after the flush, which may still refuse excised bytes.
-
-    A no-op unless the session actually carries a matched+replaced sidecar
-    event, so a session from an origin without sidecars never pays this cost.
-    """
-    matched_tool_use_ids = {
-        tool_use_id
-        for event in session_to_write.session_events
-        if event.event_type in SIDECAR_BLOB_EVENT_TYPES
-        and event.payload.get("acquisition_status") == "matched"
-        and event.payload.get("content_replaced")
-        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
-    }
-    if not matched_tool_use_ids:
-        return {}, []
-
-    text_by_tool_use_id: dict[str, str] = {
-        block.tool_id: block.text
-        for message in session_to_write.messages
-        for block in message.blocks
-        if block.type is BlockType.TOOL_RESULT
-        and block.tool_id is not None
-        and block.tool_id in matched_tool_use_ids
-        and block.text is not None
-    }
-    if not text_by_tool_use_id:
-        return {}, []
-
-    locators: dict[str, dict[str, str]] = {}
-    queued: list[tuple[str, str, int, bool]] = []
-    for tool_use_id, text in text_by_tool_use_id.items():
-        encoded = unicodedata.normalize("NFC", text).encode("utf-8")
-        precomputed_hash = hashlib.sha256(encoded).hexdigest()
-        if source_conn is not None and is_blob_hash_excised(source_conn, bytes.fromhex(precomputed_hash)):
-            # Excision forgets whole sessions; a blob it marked had no other
-            # referencing session then. Publishing it again would put the
-            # forgotten bytes back on disk, so this sidecar alone is refused.
-            locators[tool_use_id] = {"blob_refusal": "content_excised"}
-            continue
-        already_present = blob_publisher.exists(precomputed_hash)
-        hash_hex, size = blob_publisher.write_from_bytes(encoded)
-        locators[tool_use_id] = {"blob_hash": hash_hex}
-        queued.append((tool_use_id, hash_hex, size, already_present))
-        receipt_id = blob_publisher.receipt_id(hash_hex)
-        if receipt_id is not None:
-            publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
-
-    return locators, queued
-
-
-def _settle_sidecar_blobs(
-    locators: dict[str, dict[str, str]],
-    queued: list[tuple[str, str, int, bool]],
-    blob_publisher: ArchiveBlobPublisher,
-) -> dict[str, int]:
-    """Count the sidecar blobs the flush published; record the ones it refused.
-
-    The flush reads the excision ledger in its own reservation transaction, so
-    it can refuse bytes the pre-check passed (no ``source_conn``, or an
-    excision committed in between). Such a locator gets the same typed
-    refusal as a pre-checked one instead of naming a discarded blob.
-    """
-    if not locators:
-        return {}
-    bytes_new = 0
-    bytes_dedup = 0
-    written = 0
-    for tool_use_id, hash_hex, size, already_present in queued:
-        if publication_refused(blob_publisher, hash_hex):
-            locators[tool_use_id] = {"blob_refusal": "content_excised"}
-            continue
-        written += 1
-        if already_present:
-            bytes_dedup += size
-        else:
-            bytes_new += size
-    return {
-        "sidecar_blob_bytes_new": bytes_new,
-        "sidecar_blob_bytes_dedup": bytes_dedup,
-        "sidecar_blobs_written": written,
-        "sidecar_blobs_refused_excised": sum(
-            1 for locator in locators.values() if locator.get("blob_refusal") == "content_excised"
-        ),
-    }
-
-
 # polylogue-ojjet: the Drive revision-cohort classifier
 # (``classify_historical_full_revision_streams``) deliberately re-derives
 # every cohort member's true size and content hash from its bytes rather
@@ -1333,7 +1204,6 @@ def _write_session(
     signature_cache: LineageSignatureCache | dict[str, list[tuple[str, str]]] | None = None,
     stage_timings_s: dict[str, float] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
-    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
@@ -1611,44 +1481,22 @@ def _write_session(
         counts["skipped_sessions"] = 1
         return False, counts
 
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None
-    sidecar_blob_locators: dict[str, dict[str, str]] = {}
-    publication_receipts: list[tuple[str, bytes]] = []
-    if blob_publisher is not None:
-        preacquired_attachment_blobs = {}
-        for attachment in session_to_write.attachments:
-            if attachment.inline_bytes is not None:
-                hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
-            elif attachment.precomputed_blob is not None:
-                # Bytes a parse worker already published (a streamed browser
-                # capture's spilled carriers, ChatGPT asset sidecars) are
-                # GC-eligible until referenced; reserve them like a write so
-                # the flush proves they are still present.
-                hash_hex, size = blob_publisher.adopt_published(*attachment.precomputed_blob)
-            else:
-                continue
-            receipt_id = blob_publisher.receipt_id(hash_hex)
-            blob_hash = bytes.fromhex(hash_hex)
-            preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
-            if receipt_id is not None:
-                publication_receipts.append((receipt_id, blob_hash))
-        sidecar_blob_locators, queued_sidecar_blobs = _preacquire_sidecar_blobs(
-            session_to_write, blob_publisher, publication_receipts, source_conn=source_conn
-        )
-        blob_publisher.flush()
-        counts.update(_settle_sidecar_blobs(sidecar_blob_locators, queued_sidecar_blobs, blob_publisher))
-    for attachment in session_to_write.attachments if blob_publisher is None else ():
-        # bd polylogue-8ac0: bytes for this attachment were already streamed
-        # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
-        # asset acquisition) -- record the already-known hash/size directly
-        # rather than re-hashing. With a publisher the loop above already
-        # reserved and recorded it; this covers publisher-less callers.
-        if attachment.inline_bytes is not None or attachment.precomputed_blob is None:
-            continue
-        if preacquired_attachment_blobs is None:
-            preacquired_attachment_blobs = {}
-        hash_hex, size = attachment.precomputed_blob
-        preacquired_attachment_blobs[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None
+    sidecar_blob_locators: Mapping[str, Mapping[str, str]] = {}
+    if payload.prepared_artifact is not None:
+        preacquired_attachment_blobs = payload.prepared_artifact.attachment_blobs(source_connection=source_conn)
+    elif any(
+        item.inline_bytes is not None or item.precomputed_blob is not None for item in session_to_write.attachments
+    ):
+        raise PreparedSessionWriteRefusedError("attachment publication requires its sealed canonical artifact")
+    if payload.prepared_artifact is not None and source_conn is not None:
+        from polylogue.sources.prepared_jsonl import PreparedSidecarLocators
+
+        if payload.prepared_session_ordinal is None:
+            raise PreparedSessionWriteRefusedError("sidecar publication lacks its captured artifact coordinate")
+        locators = PreparedSidecarLocators(payload.prepared_artifact, payload.prepared_session_ordinal, source_conn)
+        sidecar_blob_locators = locators
+        counts.update(locators.publication_counts())
 
     if preacquired_attachment_blobs:
         # A flush that refused excised bytes discarded them; bytes published
@@ -1713,12 +1561,6 @@ def _write_session(
         write_outcome=writer_outcomes,
         manage_transaction=manage_transaction,
     )
-    if pending_attachment_receipts is not None:
-        # Receipts are consumed with the batch commit whether or not the writer
-        # published this session: a skipped write (stale revision, tombstone
-        # suppression) never creates the referent, and an unconsumed
-        # reservation would pin its blob against GC as permanent debt.
-        pending_attachment_receipts.extend(publication_receipts)
     if writer_outcomes and (writer_outcomes[0].stale_skipped or writer_outcomes[0].suppression_skipped):
         if prepared_writes is not None and prepared_write is not None:
             prepared_writes.remove(prepared_write)
@@ -2029,7 +1871,6 @@ def _write_session_entry(
     force_write: bool = False,
     signature_cache: LineageSignatureCache | dict[str, list[tuple[str, str]]] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
-    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
@@ -2064,7 +1905,6 @@ def _write_session_entry(
                 signature_cache=signature_cache,
                 stage_timings_s=write_stage_timings,
                 blob_publisher=blob_publisher,
-                pending_attachment_receipts=pending_attachment_receipts,
                 source_conn=source_conn,
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
@@ -2288,7 +2128,6 @@ def _drain_ready_session_entries(
     materialized_ids: set[str],
     force_write: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
-    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
@@ -2322,7 +2161,6 @@ def _drain_ready_session_entries(
                 force_write=force_write,
                 signature_cache=signature_cache,
                 blob_publisher=blob_publisher,
-                pending_attachment_receipts=pending_attachment_receipts,
                 source_conn=source_conn,
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
@@ -2587,7 +2425,6 @@ def _drain_ingest_result(
     ensure_index_transaction: Callable[[], None] | None = None,
     force_write: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
-    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
@@ -2669,7 +2506,6 @@ def _drain_ingest_result(
             materialized_ids=materialized_ids,
             force_write=force_write,
             blob_publisher=blob_publisher,
-            pending_attachment_receipts=pending_attachment_receipts,
             source_conn=source_conn,
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
@@ -3087,6 +2923,50 @@ def _prepared_ingest_is_current(
     return matches
 
 
+def _prepare_ingest_payloads(
+    index: sqlite3.Connection,
+    source: sqlite3.Connection | None,
+    payloads: Sequence[SessionWritePayload],
+) -> None:
+    """Prepare the canonical session decisions before writer admission."""
+    from polylogue.storage.sqlite.write_lease import current_write_lease
+
+    if current_write_lease() is not None:
+        raise RuntimeError("session preparation requires a lease-free caller")
+    for payload in payloads:
+        pending = payload.parsed_session
+        merge_append = False
+        existing = index.execute(
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?",
+            (payload.session_id,),
+        ).fetchone()
+        payload.prepared_predecessor = tuple(existing) if existing is not None else None
+        payload.prepared_distinct_messages = (
+            _incoming_write_carries_distinct_messages(index, payload, pending) if existing is not None else True
+        )
+        if payload.append_only and existing is not None:
+            created, updated = session_evidence_timestamps(pending, fallback_timestamp=payload.fallback_timestamp)
+            incoming = updated or created
+            newer = incoming is not None and existing[2] is not None and incoming > int(existing[2])
+            replaces = newer and _append_payload_changes_existing_message(index, payload)
+            if not replaces:
+                delta, skipped = _append_delta_payload(index, payload)
+                payload.prepared_append_skipped_messages = skipped
+                if delta is None:
+                    payload.prepared_append_noop = True
+                    continue
+                pending, merge_append = delta, True
+        payload.prepared_write = prepare_session_write(
+            index,
+            pending,
+            merge_append=merge_append,
+            fallback_timestamp=payload.fallback_timestamp,
+            source_conn=source,
+            raw_id=payload.raw_id,
+            prepared_rows=payload.prepared_rows,
+        )
+
+
 def _prepare_ingest_unit_sync(
     raw_id: str,
     *,
@@ -3126,6 +3006,24 @@ def _prepare_ingest_unit_sync(
         raise RuntimeError("one raw input must produce exactly one completed ingest result")
     result = results[0]
     try:
+        import tempfile
+
+        from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+        publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+        if record.blob_hash is None:
+            raise PreparedSessionWriteRefusedError("ingest preparation requires its captured retained blob")
+        directory = Path(tempfile.mkdtemp(prefix="ingest-unit-", dir=publisher._prepared_staging_directory(None)))
+        result.prepared_artifact = PreparedJsonl.from_sessions(
+            (payload.parsed_session for payload in result.sessions),
+            blob_hash=record.blob_hash,
+            artifact_directory=directory,
+            publication_publisher=publisher,
+        )
+        for ordinal, payload in enumerate(result.sessions):
+            payload.prepared_session_ordinal = ordinal
+            payload.prepared_artifact = result.prepared_artifact
+            payload.parsed_session = result.prepared_artifact.session_by_id(payload.session_id)
         keys = tuple(sorted({payload.session_id for payload in result.sessions}))
         marks = ",".join("?" for _ in keys) or "NULL"
         with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
@@ -3193,42 +3091,7 @@ def _prepare_ingest_unit_sync(
                 index.execute("BEGIN")
                 source.execute("BEGIN")
                 try:
-                    for payload in result.sessions:
-                        pending = payload.parsed_session
-                        merge_append = False
-                        existing = index.execute(
-                            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?",
-                            (payload.session_id,),
-                        ).fetchone()
-                        payload.prepared_predecessor = tuple(existing) if existing is not None else None
-                        payload.prepared_distinct_messages = (
-                            _incoming_write_carries_distinct_messages(index, payload, pending)
-                            if existing is not None
-                            else True
-                        )
-                        if payload.append_only and existing is not None:
-                            created, updated = session_evidence_timestamps(
-                                pending, fallback_timestamp=payload.fallback_timestamp
-                            )
-                            incoming = updated or created
-                            newer = incoming is not None and existing[2] is not None and incoming > int(existing[2])
-                            replaces = newer and _append_payload_changes_existing_message(index, payload)
-                            if not replaces:
-                                delta, skipped = _append_delta_payload(index, payload)
-                                payload.prepared_append_skipped_messages = skipped
-                                if delta is None:
-                                    payload.prepared_append_noop = True
-                                    continue
-                                pending, merge_append = delta, True
-                        payload.prepared_write = prepare_session_write(
-                            index,
-                            pending,
-                            merge_append=merge_append,
-                            fallback_timestamp=payload.fallback_timestamp,
-                            source_conn=source,
-                            raw_id=payload.raw_id,
-                            prepared_rows=payload.prepared_rows,
-                        )
+                    _prepare_ingest_payloads(index, source, result.sessions)
                 except BaseException as primary:
                     for payload in result.sessions:
                         if payload.prepared_write is not None:
@@ -3346,7 +3209,6 @@ def _process_ingest_batch_sync_owned(
     summary.setup_elapsed_s = time.perf_counter() - setup_started
     materialized_ids: set[str] = set()
     blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    pending_attachment_receipts: list[tuple[str, bytes]] = []
     # polylogue-c737: read-only source.db handle used solely to consult
     # ``raw_session_memberships`` decisions during the write-precedence
     # check in ``_write_session`` (mirrors ArchiveStore's own
@@ -3399,25 +3261,21 @@ def _process_ingest_batch_sync_owned(
         def begin_prepared_transaction() -> None:
             begin_index_mutation()
 
-        try:
-            _drain_ingest_result(
-                conn,
-                prepared_unit.result,
-                summary=summary,
-                materialized_ids=materialized_ids,
-                publication_mode=publication_mode,
-                primary_publication_service=primary_publication_service,
-                ensure_index_transaction=begin_prepared_transaction,
-                force_write=force_write,
-                blob_publisher=blob_publisher,
-                pending_attachment_receipts=pending_attachment_receipts,
-                source_conn=source_conn,
-                fresh_build=fresh_build,
-                drive_plans=prepared_unit.drive_plans,
-                marker_acceptance_enabled=marker_acceptance_enabled,
-            )
-        finally:
-            discard_ingest_result_payload(prepared_unit.result)
+        _drain_ingest_result(
+            conn,
+            prepared_unit.result,
+            summary=summary,
+            materialized_ids=materialized_ids,
+            publication_mode=publication_mode,
+            primary_publication_service=primary_publication_service,
+            ensure_index_transaction=begin_prepared_transaction,
+            force_write=force_write,
+            blob_publisher=blob_publisher,
+            source_conn=source_conn,
+            fresh_build=fresh_build,
+            drive_plans=prepared_unit.drive_plans,
+            marker_acceptance_enabled=marker_acceptance_enabled,
+        )
         _flush_ingest_results(
             conn,
             summary=summary,
@@ -3469,23 +3327,6 @@ def _process_ingest_batch_sync_owned(
                 db_path=db_path,
                 changed_session_ids=tuple(fts_repair_ids),
             )
-            if pending_attachment_receipts:
-                # Receipt consumption is a real source-tier mutation and must
-                # use the same archive-bound lease as the index publication.
-                with (
-                    closing(
-                        open_isolated_write_connection(
-                            archive_root / "source.db",
-                            purpose="ingest blob publication receipt",
-                            timeout=DB_TIMEOUT,
-                            archive_root=archive_root,
-                        )
-                    ) as source_conn,
-                    source_conn,
-                ):
-                    source_conn.execute("BEGIN IMMEDIATE")
-                    for publication_id, blob_hash in pending_attachment_receipts:
-                        consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
             summary.commit_elapsed_s = time.perf_counter() - commit_started
             from polylogue.storage.sqlite.maintenance import maybe_optimize_sqlite
 
@@ -3511,6 +3352,31 @@ def _process_ingest_batch_sync_owned(
                     summary.schema_drift_observations,
                     archive_root=archive_root,
                 )
+        artifact = prepared_unit.result.prepared_artifact
+        if artifact is not None:
+
+            def completed_claims() -> Iterable[tuple[str, bytes]]:
+                for _ordinal, _attachment, claim in artifact.iter_attachment_claims():
+                    yield claim.receipt.publication_id, bytes.fromhex(claim.receipt.blob_hash)
+                for _ordinal, _tool, claim, _present in artifact.iter_sidecar_claims():
+                    yield claim.receipt.publication_id, bytes.fromhex(claim.receipt.blob_hash)
+
+            # The same artifact owns attempts for sessions skipped after
+            # admission too. Closed pages avoid a whole-input receipt list.
+            with (
+                closing(
+                    open_isolated_write_connection(
+                        archive_root / "source.db",
+                        purpose="ingest blob publication receipt",
+                        timeout=DB_TIMEOUT,
+                        archive_root=archive_root,
+                    )
+                ) as receipt_connection,
+                receipt_connection,
+            ):
+                receipt_connection.execute("BEGIN IMMEDIATE")
+                for publication_id, blob_hash in completed_claims():
+                    consume_blob_publication_receipt(receipt_connection, publication_id, blob_hash)
     except BaseException as exc:
         # polylogue-qoa75: BaseException, not Exception. The dropped-trigger
         # window is exactly the window an operator Ctrl-C (KeyboardInterrupt)
@@ -3547,15 +3413,28 @@ def _process_ingest_batch_sync_owned(
                 ) from restore_exc
         raise
     finally:
-        mutation_stack.close()
-        blob_publisher.discard_pending()
-        if suspend_fts_triggers:
-            with contextlib.suppress(Exception):
-                conn.execute("PRAGMA foreign_keys = ON")
-        conn.close()
+        primary = sys.exception()
+        cleanup_failures: list[BaseException] = []
+        cleanup_actions: list[Callable[[], object]] = [mutation_stack.close, conn.close]
         if source_conn is not None:
-            source_conn.close()
-        publisher_exclusion.close()
+            cleanup_actions.append(source_conn.close)
+        if suspend_fts_triggers:
+            cleanup_actions.insert(1, lambda: conn.execute("PRAGMA foreign_keys = ON"))
+        cleanup_actions.extend(
+            (
+                partial(discard_ingest_result_payload, prepared_unit.result),
+                blob_publisher.discard_pending,
+                publisher_exclusion.close,
+            )
+        )
+        for cleanup in cleanup_actions:
+            try:
+                cleanup()
+            except BaseException as failure:
+                cleanup_failures.append(failure)
+        if cleanup_failures:
+            failures = ([primary] if primary is not None else []) + cleanup_failures
+            raise builtins.BaseExceptionGroup("ingest publication cleanup remains unsettled", failures)
     summary.worker_progress_in_flight = len(progress.in_flight_raw_ids)
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count
@@ -3765,6 +3644,8 @@ async def process_ingest_batch(
         seal.validate_observers_current()
         if unit.drive_revision_updates:
             _publish_prepared_drive_revision_updates(unit, service.archive_root, seal)
+        if unit.result.prepared_artifact is not None:
+            unit.result.prepared_artifact.publish_blobs(reference_seal=seal)
         return cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(
             raw_artifacts,
             reference_seal=seal,

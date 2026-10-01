@@ -1395,6 +1395,7 @@ class SqliteMessageStore:
             # The schema is created inside the store's one transaction: as separate
             # autocommit statements each CREATE paid its own journal and fsync, per
             # prepared artifact, before any row was spooled.
+            self.conn.execute("PRAGMA temp_store = FILE")
             self.conn.execute("BEGIN IMMEDIATE")
             self.conn.execute(
                 "CREATE TABLE prepared_message (session_ordinal INTEGER NOT NULL, message_ordinal INTEGER NOT NULL, message_json TEXT NOT NULL, provider_id TEXT, parent_id TEXT, active_leaf INTEGER NOT NULL, PRIMARY KEY (session_ordinal, message_ordinal)) WITHOUT ROWID"

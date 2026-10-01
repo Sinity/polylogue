@@ -121,10 +121,10 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 
-_ARTIFACT_VERSION = 4
+_ARTIFACT_VERSION = 5
 
 
 class _SourceChangedDuringPreparationError(ValueError):
@@ -726,6 +726,7 @@ class PreparedJsonl:
                         enrichment_index_path=None,
                     )
                     _prepare_attachment_publications(store, publication_publisher, artifact_directory)
+                    _prepare_sidecar_publications(store, publication_publisher, artifact_directory)
                     builder.seal()
                     builder = None
                     store.close()
@@ -1045,19 +1046,52 @@ class PreparedJsonl:
                     publication_receipt_id=claim.receipt.publication_id,
                 )
 
-    def publish_blobs(self) -> None:
+    def iter_sidecar_claims(self) -> Iterator[tuple[int, str, PreparedBlobPublicationClaim, bool]]:
+        if self.sessions_path is None or self.publication_publisher is None:
+            return
+        self.verify_files(full=False)
+        after = (-1, "")
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.sessions_path) as connection:
+                rows = connection.execute(
+                    "SELECT session_ordinal,tool_use_id,claim_json,already_present FROM prepared_sidecar_publication "
+                    "WHERE claim_json IS NOT NULL AND (session_ordinal,tool_use_id)>(?,?) "
+                    "ORDER BY session_ordinal,tool_use_id LIMIT 256",
+                    after,
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0]), str(rows[-1][1])
+            for ordinal, tool_use_id, encoded, present in rows:
+                yield (
+                    int(ordinal),
+                    str(tool_use_id),
+                    _prepared_claim_from_record(str(encoded), self.publication_publisher),
+                    bool(present),
+                )
+
+    def publish_blobs(self, *, reference_seal: PreparedIndexMutation | None = None) -> None:
         """Publish exact closed-page claims before any Source transaction."""
         publisher = self.publication_publisher
         page: list[PreparedBlobPublicationClaim] = []
 
         def flush_page() -> None:
             assert publisher is not None
-            publisher.flush()
+            publisher.flush(reference_seal=reference_seal)
             for completed in page:
                 publisher.forget_completed_claim(completed)
             page.clear()
 
         for _session_ordinal, _attachment_ordinal, claim in self.iter_attachment_claims():
+            assert publisher is not None
+            publisher.queue_prepared(
+                PreparedBlob(claim.receipt.blob_hash, claim.receipt.size_bytes, claim.prepared_path), claim=claim
+            )
+            page.append(claim)
+            if len(page) == 256:
+                flush_page()
+        for _session_ordinal, _tool_use_id, claim, _present in self.iter_sidecar_claims():
             assert publisher is not None
             publisher.queue_prepared(
                 PreparedBlob(claim.receipt.blob_hash, claim.receipt.size_bytes, claim.prepared_path), claim=claim
@@ -1212,6 +1246,68 @@ class _PreparedAttachmentBlobs(Mapping[object, tuple[bytes | None, int, str]]):
         if is_blob_hash_excised(self.source_connection, blob_hash):
             return None, claim.receipt.size_bytes, "unavailable"
         return blob_hash, claim.receipt.size_bytes, "acquired"
+
+
+class PreparedSidecarLocators(Mapping[str, Mapping[str, str]]):
+    """Read the captured sidecar claim for one session without a tool map."""
+
+    def __init__(self, artifact: PreparedJsonl, ordinal: int, source_connection: sqlite3.Connection) -> None:
+        self.artifact = artifact
+        self.ordinal = ordinal
+        self.source_connection = source_connection
+
+    def __iter__(self) -> Iterator[str]:
+        for ordinal, tool_use_id, _claim, _present in self.artifact.iter_sidecar_claims():
+            if ordinal == self.ordinal:
+                yield tool_use_id
+
+    def __len__(self) -> int:
+        if self.artifact.sessions_path is None:
+            return 0
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM prepared_sidecar_publication WHERE session_ordinal=? AND claim_json IS NOT NULL",
+                    (self.ordinal,),
+                ).fetchone()[0]
+            )
+
+    def __getitem__(self, tool_use_id: str) -> Mapping[str, str]:
+        from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+        if self.artifact.sessions_path is None or self.artifact.publication_publisher is None:
+            raise KeyError(tool_use_id)
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT claim_json FROM prepared_sidecar_publication WHERE session_ordinal=? AND tool_use_id=?",
+                (self.ordinal, tool_use_id),
+            ).fetchone()
+        if row is None or row[0] is None:
+            raise KeyError(tool_use_id)
+        claim = _prepared_claim_from_record(str(row[0]), self.artifact.publication_publisher)
+        if is_blob_hash_excised(self.source_connection, bytes.fromhex(claim.receipt.blob_hash)):
+            return {"blob_refusal": "content_excised"}
+        claim.publisher.validate_published_claim(self.source_connection, claim, source_path="")
+        return {"blob_hash": claim.receipt.blob_hash}
+
+    def publication_counts(self) -> dict[str, int]:
+        counts = {
+            "sidecar_blob_bytes_new": 0,
+            "sidecar_blob_bytes_dedup": 0,
+            "sidecar_blobs_written": 0,
+            "sidecar_blobs_refused_excised": 0,
+        }
+        for ordinal, tool_use_id, claim, present in self.artifact.iter_sidecar_claims():
+            if ordinal != self.ordinal:
+                continue
+            if self[tool_use_id].get("blob_refusal"):
+                counts["sidecar_blobs_refused_excised"] += 1
+            else:
+                counts["sidecar_blobs_written"] += 1
+                counts["sidecar_blob_bytes_dedup" if present else "sidecar_blob_bytes_new"] += claim.receipt.size_bytes
+        return counts
 
 
 class PreparedSessionSequence(Sequence[ParsedSession]):
@@ -1377,6 +1473,11 @@ def _write_artifact(
 
 def _create_artifact_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
+        "CREATE TABLE prepared_sidecar_publication (session_ordinal INTEGER NOT NULL, tool_use_id TEXT NOT NULL, "
+        "claim_json TEXT, already_present INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY(session_ordinal,tool_use_id)) WITHOUT ROWID"
+    )
+    conn.execute(
         "CREATE TABLE prepared_attachment_publication (session_ordinal INTEGER NOT NULL, "
         "attachment_ordinal INTEGER NOT NULL, claim_json TEXT NOT NULL, "
         "PRIMARY KEY(session_ordinal, attachment_ordinal)) WITHOUT ROWID"
@@ -1442,6 +1543,62 @@ def _prepare_attachment_publications(
                     primary.add_note(f"attachment preparation cleanup failed: {cleanup!r}")
                 raise
         after = (int(rows[-1][0]), int(rows[-1][1]))
+    store.conn.commit()
+
+
+def _prepare_sidecar_publications(store: SqliteMessageStore, publisher: ArchiveBlobPublisher, directory: Path) -> None:
+    """Capture matched tool-result bytes on the existing sealed artifact."""
+    import unicodedata
+
+    from polylogue.pipeline.ids import SIDECAR_BLOB_EVENT_TYPES
+    from polylogue.storage.blob_publication import _prepared_claim_record
+
+    event_marks = ",".join("?" for _ in SIDECAR_BLOB_EVENT_TYPES)
+    store.conn.execute(
+        "INSERT OR IGNORE INTO prepared_sidecar_publication(session_ordinal,tool_use_id) "
+        "SELECT s.ordinal,json_extract(e.event_json,'$.payload.tool_use_id') "
+        "FROM prepared_session s JOIN prepared_event e ON e.session_ordinal=s.event_ordinal "
+        f"WHERE e.event_type IN ({event_marks}) "
+        "AND json_extract(e.event_json,'$.payload.acquisition_status')='matched' "
+        "AND json_extract(e.event_json,'$.payload.content_replaced') "
+        "AND json_type(e.event_json,'$.payload.tool_use_id')='text'",
+        tuple(SIDECAR_BLOB_EVENT_TYPES),
+    )
+    after = (-1, "")
+    while True:
+        check_compute_cancelled()
+        rows = store.conn.execute(
+            "SELECT session_ordinal,tool_use_id FROM prepared_sidecar_publication "
+            "WHERE (session_ordinal,tool_use_id)>(?,?) ORDER BY session_ordinal,tool_use_id LIMIT 256",
+            after,
+        ).fetchall()
+        if not rows:
+            break
+        for ordinal, tool_use_id in rows:
+            check_compute_cancelled()
+            # The prior dictionary selected the final matching block in parser
+            # order. Preserve that decision without a whole-session tool map.
+            row = store.conn.execute(
+                "SELECT json_extract(b.value,'$.text') FROM prepared_session s "
+                "JOIN prepared_message m ON m.session_ordinal=s.message_ordinal "
+                "JOIN json_each(m.message_json,'$.blocks') b "
+                "WHERE s.ordinal=? AND json_extract(b.value,'$.type')='tool_result' "
+                "AND json_extract(b.value,'$.tool_id')=? AND json_type(b.value,'$.text')='text' "
+                "ORDER BY m.message_ordinal DESC,CAST(b.key AS INTEGER) DESC LIMIT 1",
+                (ordinal, tool_use_id),
+            ).fetchone()
+            if row is None:
+                continue
+            blob = publisher.prepare_from_bytes(
+                unicodedata.normalize("NFC", str(row[0])).encode("utf-8"), staging_directory=directory
+            )
+            claim = publisher.prepare_claim(blob)
+            store.conn.execute(
+                "UPDATE prepared_sidecar_publication SET claim_json=?,already_present=? "
+                "WHERE session_ordinal=? AND tool_use_id=?",
+                (_prepared_claim_record(claim), int(publisher.exists(blob.hash_hex)), ordinal, tool_use_id),
+            )
+        after = int(rows[-1][0]), str(rows[-1][1])
     store.conn.commit()
 
 
@@ -2683,6 +2840,7 @@ def prepare_jsonl_blob(
             )
         if publication_publisher is not None:
             _prepare_attachment_publications(store, publication_publisher, artifact_directory)
+            _prepare_sidecar_publications(store, publication_publisher, artifact_directory)
         store.close()
         store = None
         result = PreparedJsonl.seal(

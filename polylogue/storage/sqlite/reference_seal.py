@@ -1079,6 +1079,15 @@ class PreparedIndexMutation:
             raise ReferenceSealStaleError("promotion candidate schema changed after reference preparation")
         return self._candidate_identity
 
+    def require_source_target(self, path: Path) -> None:
+        """Bind a publisher to this retained Source observer's exact target."""
+        self._require_new_work()
+        if path.resolve() != self._paths["source"].resolve():
+            raise ReferenceSealError("publisher Source path does not belong to this prepared seal")
+        if not _same_incarnation(_tier_identity(path), self._identities["source"]):
+            raise ReferenceSealStaleError("publisher Source incarnation changed after preparation")
+        self.validate_observers_current()
+
     def prepare_known_source_mutation(
         self,
         table: str,

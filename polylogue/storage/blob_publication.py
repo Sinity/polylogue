@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import IO, Any, BinaryIO
+from typing import IO, TYPE_CHECKING, Any, BinaryIO
 from uuid import uuid4
 
 from polylogue.core.prepared_file import PreparedFileSeal
@@ -28,6 +28,9 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
 from polylogue.storage.sqlite.write_lease import require_write_lease
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,7 +187,9 @@ class BlobPublicationReservationStore:
         """
         return open_source_tier_write_connection(self.source_db_path, archive_root=self.source_db_path.parent)
 
-    def reserve_many(self, receipts: Sequence[BlobPublicationReceipt]) -> frozenset[str]:
+    def reserve_many(
+        self, receipts: Sequence[BlobPublicationReceipt], *, reference_seal: PreparedIndexMutation | None = None
+    ) -> frozenset[str]:
         """Reserve ``receipts`` and return the blob hashes refused as excised.
 
         The excision ledger is read in the same write transaction, so no
@@ -196,6 +201,42 @@ class BlobPublicationReservationStore:
             return frozenset()
         now_ms = int(time.time() * 1000)
         require_write_lease(f"blob publication({self.source_db_path})", archive_root=self.source_db_path.parent)
+        if reference_seal is not None:
+            reference_seal.require_source_target(self.source_db_path)
+            reference_seal.validate_observers_current()
+            observer = reference_seal.observer("source")
+            excised = _excised_hashes(observer, {receipt.blob_hash for receipt in receipts})
+            rows: list[tuple[object, ...]] = []
+            for receipt in receipts:
+                if receipt.blob_hash in excised:
+                    continue
+                values = (bytes.fromhex(receipt.blob_hash), receipt.size_bytes, receipt.publisher_id)
+                existing = observer.execute(
+                    "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
+                    (receipt.publication_id,),
+                ).fetchone()
+                if existing is None:
+                    rows.append((*values, now_ms, receipt.publication_id))
+                elif tuple(existing) != values:
+                    raise ValueError("publication claim collides with another reservation")
+            reference_seal.validate_observers_current()
+            permit = reference_seal.prepare_known_source_mutation(
+                "blob_publication_reservations",
+                ("blob_hash", "size_bytes", "publisher_id", "reserved_at_ms"),
+                tuple(rows),
+                key_column="publication_id",
+            )
+            with permit.hold_authority(), permit.source_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.executemany(
+                    "INSERT INTO blob_publication_reservations "
+                    "(blob_hash, size_bytes, publisher_id, reserved_at_ms, publication_id) VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+                permit.allow_commit(conn)
+                conn.commit()
+                reference_seal.accept_known_source_commit(permit.committed())
+            return excised
         conn = self._open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -463,7 +504,7 @@ class ArchiveBlobPublisher(BlobStore):
         """
         return bool(self._pending or self._adoptions)
 
-    def flush(self) -> tuple[BlobPublicationReceipt, ...]:
+    def flush(self, *, reference_seal: PreparedIndexMutation | None = None) -> tuple[BlobPublicationReceipt, ...]:
         """Commit all receipts once, then expose all corresponding final paths.
 
         Adopted blobs are checked before anything is reserved, under the
@@ -474,6 +515,8 @@ class ArchiveBlobPublisher(BlobStore):
         """
         if not self._pending and not self._adoptions:
             return ()
+        if reference_seal is not None:
+            reference_seal.require_source_target(self.source_db_path)
         pending = tuple(self._pending)
         adoptions = tuple(self._adoptions)
         receipts = (*(receipt for receipt, _prepared in pending), *adoptions)
@@ -482,7 +525,9 @@ class ArchiveBlobPublisher(BlobStore):
             if missing:
                 self.discard_pending()
                 raise AdoptedBlobEvictedError(missing)
-            excised = BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
+            excised = BlobPublicationReservationStore(self.source_db_path).reserve_many(
+                receipts, reference_seal=reference_seal
+            )
             for receipt, prepared in pending:
                 if receipt.blob_hash in excised:
                     self._store.discard_prepared(prepared)

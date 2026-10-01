@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, PreparedSessionWrite
 
 
@@ -95,6 +96,8 @@ class SessionWritePayload:
     # Canonical preparation attaches sealed carriers before writer admission;
     # no SQL handle crosses the compute boundary.
     prepared_write: PreparedSessionWrite | None = None
+    prepared_artifact: PreparedJsonl | None = None
+    prepared_session_ordinal: int | None = None
     prepared_append_skipped_messages: int = 0
     prepared_append_noop: bool = False
     prepared_predecessor: tuple[object, ...] | None = None
@@ -115,6 +118,7 @@ class IngestRecordResult:
     parse_error: str | None = None
     error: str | None = None
     sessions: list[SessionWritePayload] = field(default_factory=list)
+    prepared_artifact: PreparedJsonl | None = None
     source_name: str | None = None
     serialized_size_bytes: int | None = None
     schema_drift: SchemaDriftObservation | None = None
