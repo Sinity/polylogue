@@ -76,7 +76,7 @@ from polylogue.storage.sqlite.audit_leaf import (
     open_verified_audit_connection,
     open_verified_audit_read_connection,
 )
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 
 
 @dataclass
@@ -2340,30 +2340,37 @@ async def test_paged_ingest_projection_restores_full_public_parse_result(
     from polylogue.operations import machine_receipts
 
     monkeypatch.setattr(machine_receipts, "MAX_INLINE_INGEST_SESSION_IDS", 3)
-    audit = _audit(tmp_path)
-    actuator = _IngestPageActuator()
-    executor = OperationExecutor(audit=audit, token_factory=lambda: "api-ingest-page-token")
-    preview = executor.prepare_bound(
-        _binding(actuator, operation_name=INGEST_OPERATION),
-        object(),
-        _principal(),
-        archive_instance_id="archive:api-ingest-pages",
-        archive_identity_digest="identity:api-ingest-pages",
-        parameter_digest="params:api-ingest-pages",
-    )
-    authorization = executor.authorize_bound(_binding(actuator, operation_name=INGEST_OPERATION), preview, _principal())
-    started = executor.begin_bound(
-        _binding(actuator, operation_name=INGEST_OPERATION), preview, authorization, object()
-    )
-    assert started.operation_id is not None
-    session_ids = [f"chatgpt:{index:05d}" for index in range(4)]
-    audit.append_ingest_session_id_page(started.operation_id, 0, tuple(session_ids))
+
+    def prepare() -> tuple[str, list[str]]:
+        audit = _audit(tmp_path)
+        actuator = _IngestPageActuator()
+        executor = OperationExecutor(audit=audit, token_factory=lambda: "api-ingest-page-token")
+        preview = executor.prepare_bound(
+            _binding(actuator, operation_name=INGEST_OPERATION),
+            object(),
+            _principal(),
+            archive_instance_id="archive:api-ingest-pages",
+            archive_identity_digest="identity:api-ingest-pages",
+            parameter_digest="params:api-ingest-pages",
+        )
+        authorization = executor.authorize_bound(
+            _binding(actuator, operation_name=INGEST_OPERATION), preview, _principal()
+        )
+        started = executor.begin_bound(
+            _binding(actuator, operation_name=INGEST_OPERATION), preview, authorization, object()
+        )
+        assert started.operation_id is not None
+        session_ids = [f"chatgpt:{index:05d}" for index in range(4)]
+        audit.append_ingest_session_id_page(started.operation_id, 0, tuple(session_ids))
+        return started.operation_id, session_ids
+
+    operation_id, session_ids = await run_archive_fixture_write(tmp_path, prepare)
     digest = ingest_session_ids_digest(session_ids)
     summary = {
         "enumeration_complete": True,
         "parse_projection_known": True,
         "processed_session_ids": [],
-        "processed_session_id_pages_ref": started.operation_id,
+        "processed_session_id_pages_ref": operation_id,
         "processed_session_id_page_count": 1,
         "processed_session_ids_digest": digest,
         "processed_message_count": 4,

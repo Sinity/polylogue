@@ -9,14 +9,20 @@ one publication route in :mod:`tests.infra.workload_artifacts`.
 
 from __future__ import annotations
 
+from builtins import BaseExceptionGroup
+from collections.abc import Callable
 from hashlib import sha256
+from math import inf
 from pathlib import Path
+from typing import TypeVar
 
 from tests.infra.workload_artifacts import (
     ImmutableTreeArtifact,
     clone_immutable_tree,
     seal_fixture_tree,
 )
+
+_T = TypeVar("_T")
 
 
 def finalize_archive_template(root: Path) -> None:
@@ -48,6 +54,27 @@ def bootstrap_archive_root(root: Path) -> Path:
     return root
 
 
+async def run_archive_fixture_write(root: Path, prepare: Callable[[], _T]) -> _T:
+    """Prepare an async law's archive on the real admitted writer creator."""
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriterSettlementError
+
+    root.mkdir(parents=True, exist_ok=True)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    primary: BaseException | None = None
+    try:
+        return await coordinator.run_sync("fixture.archive.prepare", prepare)
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        # Completion depends on the physical owner, without a work-duration cap.
+        if not await coordinator.shutdown(timeout=inf):
+            cleanup = DaemonWriterSettlementError("archive fixture writer remains unsettled")
+            if primary is not None:
+                raise BaseExceptionGroup("archive fixture preparation and settlement failed", [primary, cleanup])
+            raise cleanup
+
+
 def bootstrap_ready_archive_root(root: Path) -> Path:
     """Construct an empty fixture and complete its real raw-authority census."""
     from polylogue.config import Config
@@ -65,4 +92,5 @@ __all__ = [
     "bootstrap_ready_archive_root",
     "clone_archive_template",
     "finalize_archive_template",
+    "run_archive_fixture_write",
 ]

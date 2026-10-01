@@ -24,7 +24,7 @@ from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import IngestHistoricalReceiptV2
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.daemon_service_harness import ServiceHarness
 
 _DEAD_OWNER = "pid:999999999:0"
@@ -128,13 +128,12 @@ def _session_titles(archive_root: Path) -> list[str]:
         return [str(row[0]) for row in conn.execute("SELECT title FROM sessions ORDER BY title")]
 
 
-def _archive(tmp_path: Path) -> tuple[Path, Path]:
+async def _archive(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "inputs" / "export.json"
     source.parent.mkdir()
     _chatgpt_export(source)
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
-        pass
+    await run_archive_fixture_write(archive_root, lambda: bootstrap_archive_root(archive_root))
     return archive_root, source
 
 
@@ -149,7 +148,7 @@ async def test_accepted_generation_materializes_after_restart_without_its_input(
     the HTTP server, and no session appears while the request stays failed or
     indeterminate.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     assert _session_titles(archive_root) == []
     source.unlink()
@@ -201,7 +200,7 @@ async def test_stopped_request_is_not_redriven(tmp_path: Path, monkeypatch: pyte
     Anti-vacuity: drop the ``stop_reason IS NULL`` condition from the owner's
     discovery and claim, and the cancelled request's sessions materialize.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     with sqlite3.connect(archive_root / "audit.db") as audit:
         audit.execute("UPDATE machine_requests SET stop_reason = 'cancelled', stopped_at_ms = 1")
@@ -223,7 +222,7 @@ async def test_undrivable_generation_fails_instead_of_waiting(tmp_path: Path, mo
     Anti-vacuity: leave a failed re-drive at ``mark_unknown`` and the run
     stays ``interrupted`` for every later start.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     monkeypatch.setattr(
         "polylogue.operations.daemon_ingest.retained_enumeration_fingerprint", lambda: "retired-decoder"
@@ -266,7 +265,7 @@ async def test_a_transient_refusal_retries_the_claimed_run(
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.operations.daemon_ingest import IngestReprepareRequiredError
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.archive_write
     original_compute = DaemonOperationRuntime.compute_phase
@@ -308,7 +307,7 @@ async def test_a_redrive_honors_the_accepted_deadline(tmp_path: Path, monkeypatc
     Anti-vacuity (Codex P1, #5717): consult only the owner's stop and
     cancellation and the expired request completes as a mutation.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     with sqlite3.connect(archive_root / "audit.db") as audit:
         audit.execute("UPDATE machine_requests SET accepted_deadline_unix_ms = 1")
@@ -330,7 +329,7 @@ async def test_a_redrive_after_partial_publication_is_indeterminate(
     Anti-vacuity (Codex P1, #5717): finalize the re-drive as applied and its
     receipt reports zero changed sessions although this request wrote one.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
 
     async def killed(self: IngestExecution, *_args: object, **_kwargs: object) -> None:
         with sqlite3.connect(archive_root / "audit.db") as audit:
@@ -381,7 +380,7 @@ async def test_a_stopped_partial_ingest_stays_indeterminate_across_restart(
     replayable and the next startup rewrites it as failed with no effect,
     although its sessions are in the archive.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
 
     async def killed(self: IngestExecution, *_args: object, **_kwargs: object) -> None:
         with sqlite3.connect(archive_root / "audit.db") as audit:
@@ -425,7 +424,7 @@ async def test_runs_are_claimed_before_the_listeners_serve(tmp_path: Path, monke
     """
     from polylogue.operations import daemon_ingest
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original_claim = daemon_ingest.claim_interrupted_ingest
 
@@ -458,7 +457,7 @@ async def test_a_retry_after_this_attempts_materialization_still_completes(
     """
     from polylogue.core.compute import DaemonBackpressureError
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.converge_profiles
     refusals = {"left": 1}
@@ -529,7 +528,7 @@ async def test_a_transient_refusal_of_a_fresh_ingest_stays_redrivable(
     """
     from polylogue.core.compute import DaemonBackpressureError
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     original = IngestExecution.archive_write
     refusals = {"left": 1}
 
@@ -597,7 +596,7 @@ async def test_starting_the_redrive_on_its_owner_loop_does_not_block_it(
 async def _two_interrupted_ingests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     second = tmp_path / "inputs" / "second.json"
     export = json.loads(source.read_text(encoding="utf-8"))
@@ -648,7 +647,7 @@ async def test_a_cancel_committed_before_finalization_wins(tmp_path: Path, monke
     Anti-vacuity (Codex P1, #5717): finalize without rechecking the durable
     stop under the writer and the cancelled request completes as applied.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.historical_receipt
 
@@ -672,7 +671,7 @@ async def test_an_identity_moved_between_reads_retries(tmp_path: Path, monkeypat
     Anti-vacuity (Codex P1, #5717): raise the stale identity as a plain
     ``ValueError`` and the re-drive settles the accepted generation as failed.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.input_page
     moves = {"left": 1}
@@ -729,7 +728,7 @@ async def test_a_transient_storage_fault_retries_the_redrive(tmp_path: Path, mon
     Anti-vacuity (Codex P1, #5717): retry only the three typed transients and
     ``database is locked`` permanently fails the accepted generation.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.input_page
     faults = {"left": 1}
@@ -757,7 +756,7 @@ async def test_an_accepted_deadline_passing_before_finalization_wins(
     Anti-vacuity (Codex P1, #5717): recheck only a recorded ``stop_reason`` in
     the final writer and the expired request completes.
     """
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.historical_receipt
 
@@ -783,7 +782,7 @@ async def test_profile_receipts_survive_a_transient_retry(tmp_path: Path, monkey
     """
     from polylogue.core.compute import DaemonBackpressureError
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original_converge = IngestExecution.converge_profiles
     original_receipt = IngestExecution.historical_receipt
@@ -840,7 +839,7 @@ async def test_a_refusal_before_authority_loads_leaves_no_running_attempt(
     from polylogue.core.compute import DaemonBackpressureError
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     original_compute = DaemonOperationRuntime.compute_phase
     refusals = {"left": 1}
 
@@ -910,7 +909,7 @@ async def test_a_watcher_only_daemon_redrives_accepted_ingests(tmp_path: Path, m
     from polylogue.daemon.cli import compose_ingest_owner
     from polylogue.daemon.http import _StandaloneWriteRuntime
 
-    archive_root, source = _archive(tmp_path)
+    archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     source.unlink()
 
