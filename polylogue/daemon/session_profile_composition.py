@@ -182,7 +182,7 @@ def compose_session_profile_callback(
         )
         audit_reset = False
         audit_continue = True
-        if report.failed or report.pending:
+        if domain in report.cursor_unsettled_domains:
             unsettled_sweeps[domain] = True
         if report.cursor.position(domain).swept or report.failed:
             if report.pending or report.failed or unsettled_sweeps.get(domain, False):
@@ -296,4 +296,5 @@ def _merge_reports(first: DerivationReport, second: DerivationReport) -> Derivat
         counts=counts,
         work=work,
         truncated=first.truncated or second.truncated,
+        cursor_unsettled_domains=first.cursor_unsettled_domains | second.cursor_unsettled_domains,
     )

@@ -531,6 +531,7 @@ async def test_a_persistently_pending_domain_does_not_starve_later_audit_domains
             frame=cast(DerivationFrame, frame),
             counts={Outcome.PENDING: 1} if pending else {Outcome.DONE: 1},
             cursor=PassCursor({domain: DomainCursor(phase=DiscoveryPhase.DONE)}),
+            cursor_unsettled_domains=frozenset({domain}) if pending else frozenset(),
         )
 
     monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", fake_converge)
@@ -636,7 +637,12 @@ async def test_faulted_or_unchanged_audit_retains_owed_domains_and_serves_siblin
         faulted = blocked and domain == SESSION_SUMMARY_DOMAIN
         outcome = Outcome.PENDING if faulted and failure == "pending" else Outcome.FAILED if faulted else Outcome.DONE
         phase = DiscoveryPhase.REQUIRED if faulted and failure == "discovery" else DiscoveryPhase.DONE
-        return DerivationReport(frame, counts={outcome: len(visited)}, cursor=PassCursor({domain: DomainCursor(phase)}))
+        return DerivationReport(
+            frame,
+            counts={outcome: len(visited)},
+            cursor=PassCursor({domain: DomainCursor(phase)}),
+            cursor_unsettled_domains=frozenset({domain}) if faulted and phase is DiscoveryPhase.DONE else frozenset(),
+        )
 
     monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", converge)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
@@ -797,3 +803,14 @@ async def test_new_generation_resets_unsettled_sweep_facts_and_restarts_the_pref
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
+
+
+def test_promotion_report_retains_each_domains_consumed_unsettled_evidence() -> None:
+    from polylogue.daemon.session_profile_composition import _merge_reports
+
+    frame = DerivationFrame("/synthetic/archive", "generation")
+    first = DerivationReport(frame, cursor_unsettled_domains=frozenset({SESSION_SUMMARY_DOMAIN}))
+    second = DerivationReport(frame, cursor_unsettled_domains=frozenset({SESSION_MARKER_DOMAIN}))
+    assert _merge_reports(first, second).cursor_unsettled_domains == frozenset(
+        {SESSION_SUMMARY_DOMAIN, SESSION_MARKER_DOMAIN}
+    )
