@@ -26,6 +26,7 @@ from polylogue.sources.parsers.browser_capture import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
+    NativeCaptureIdentityMismatchError,
     _merge_envelope_attachments,
 )
 from polylogue.sources.parsers.browser_capture import (
@@ -65,6 +66,34 @@ def test_native_codex_capture_refuses_unsupported_records(raw: object) -> None:
     payload["raw_provider_payload"] = raw
     with pytest.raises(ValueError):
         parse_browser_capture(payload, "capture")
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI])
+def test_native_capture_refuses_foreign_declared_session_identity(provider: Provider) -> None:
+    payload = _capture_payload()
+    session = cast(dict[str, object], payload["session"])
+    session["provider"] = provider.value
+    session["provider_session_id"] = "different-declared-session"
+    fixture_root = Path(__file__).parents[2] / "fixtures"
+    if provider is Provider.CODEX:
+        raw: object = [
+            json.loads(line) for line in (fixture_root / "corpus-program-codex-native.jsonl").read_text().splitlines()
+        ]
+    else:
+        fixture = (
+            "chatgpt/native-conversation-v1.json"
+            if provider is Provider.CHATGPT
+            else "origin-capability/claude-ai-export.json"
+        )
+        raw = json.loads((fixture_root / fixture).read_text())
+    native = parse_payload(provider, raw, "native")[0]
+    assert native.messages
+    assert native.provider_session_id != session["provider_session_id"]
+    payload["raw_provider_payload"] = raw
+    with pytest.raises(NativeCaptureIdentityMismatchError) as refused:
+        parse_browser_capture(payload, "capture")
+    assert refused.value.expected_session_id == "different-declared-session"
+    assert refused.value.actual_session_id == native.provider_session_id
 
 
 def _capture_payload() -> dict[str, object]:

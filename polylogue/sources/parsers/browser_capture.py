@@ -39,6 +39,22 @@ from polylogue.sources.parsers.base_support import decode_attachment_base64, der
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 
+class NativeCaptureIdentityMismatchError(ValueError):
+    """Native content cannot be composed with another session's capture evidence."""
+
+    def __init__(self, expected_session_id: str, actual_session_id: str) -> None:
+        self.expected_session_id = expected_session_id
+        self.actual_session_id = actual_session_id
+        super().__init__("native provider session identity disagrees with the capture envelope")
+
+
+def _require_matching_native_identity(parsed: ParsedSession, provider_session_id: str) -> ParsedSession:
+    observed = legacy_browser_capture_native_id(parsed.source_name, parsed.provider_session_id)
+    if (observed or parsed.provider_session_id) != provider_session_id:
+        raise NativeCaptureIdentityMismatchError(provider_session_id, parsed.provider_session_id)
+    return parsed
+
+
 def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock]:
     """Convert a turn's typed capture blocks into the parser contract's blocks.
 
@@ -817,7 +833,12 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             raise ValueError("Codex native capture requires a supported record stream")
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
-                _merge_envelope_attachments(parse_codex(raw_provider_payload, provider_session_id), envelope),
+                _merge_envelope_attachments(
+                    _require_matching_native_identity(
+                        parse_codex(raw_provider_payload, provider_session_id), provider_session_id
+                    ),
+                    envelope,
+                ),
                 envelope,
                 provider_session_id,
                 has_native_payload=True,
@@ -830,7 +851,12 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
                 _merge_envelope_attachments(
-                    _merge_envelope_title(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+                    _merge_envelope_title(
+                        _require_matching_native_identity(
+                            parse_chatgpt(raw_provider_payload, provider_session_id), provider_session_id
+                        ),
+                        envelope,
+                    ),
                     envelope,
                 ),
                 envelope,
@@ -846,7 +872,9 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             _apply_browser_capture_session_kind(
                 _merge_envelope_attachments(
                     _merge_envelope_native_metadata(
-                        parse_claude_ai(raw_provider_payload, provider_session_id),
+                        _require_matching_native_identity(
+                            parse_claude_ai(raw_provider_payload, provider_session_id), provider_session_id
+                        ),
                         envelope,
                     ),
                     envelope,
@@ -945,6 +973,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
 
 __all__ = [
+    "NativeCaptureIdentityMismatchError",
     "COMPACT_BROWSER_CAPTURE_INGEST_FLAG",
     "DOM_FALLBACK_INGEST_FLAG",
     "NATIVE_BROWSER_CAPTURE_INGEST_FLAG",

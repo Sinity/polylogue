@@ -404,6 +404,8 @@ def _fork_payload(payload: bytes, new_session_id: str, parent_session_id: str) -
         if isinstance(value, dict):
             if value.get("type") == "session_meta" and isinstance(value.get("payload"), dict):
                 value["payload"]["forked_from_id"] = parent_session_id
+            elif value.get("id") == parent_session_id and value.get("timestamp") and not value.get("type"):
+                value["forked_from_id"] = parent_session_id
             for container in (value, value.get("payload")):
                 if not isinstance(container, dict):
                     continue
@@ -906,7 +908,7 @@ class ProductionCorpusRuntime:
         self.source_root = self.archive_root / "corpus-program-sources"
         self._raw_ids: dict[str, tuple[str, ...]] = {}
         self._source_paths: dict[str, Path] = {}
-        self._wire_hashes: dict[str, tuple[str, bytes]] = {}
+        self._raw_ids_by_wire: dict[tuple[str, bytes], tuple[str, ...]] = {}
         self._crashed = False
         self.last_results: list[object] = []
 
@@ -934,18 +936,12 @@ class ProductionCorpusRuntime:
                 result = await AcquisitionService(backend).acquire_sources([Source(name=source_name, path=path)])
                 self.last_results.append(result)
                 wire_hash = hashlib.sha256(wire_payload).digest()
-                known_ids = tuple(
-                    dict.fromkeys(
-                        raw_id
-                        for artifact_id, known_hash in self._wire_hashes.items()
-                        if known_hash == (source_name, wire_hash)
-                        for raw_id in self._raw_ids[artifact_id]
-                    )
-                )
+                wire_key = (source_name, wire_hash)
+                known_ids = self._raw_ids_by_wire.get(wire_key, ())
                 if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
                     raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
                 self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
-                self._wire_hashes[artifact.artifact_id] = (source_name, wire_hash)
+                self._raw_ids_by_wire[wire_key] = self._raw_ids[artifact.artifact_id]
                 self._source_paths[artifact.artifact_id] = path
                 return result
             finally:

@@ -237,6 +237,9 @@ Codex transcript. The parser delegates the records to the ordinary Codex parser
 and merges the envelope attachments, preserving message fields and fork lineage
 on ingestion and retained replay. Invalid Codex record streams are refused. This
 is an ingestion contract; the browser extension has no Codex page adapter.
+For Codex, ChatGPT and Claude.ai native captures, the parsed native session ID
+must match the envelope's declared session ID before attachment or lifecycle
+evidence is merged. A disagreement produces a typed refusal.
 
 DOM extraction is a compatibility fallback for pages where no provider-native
 payload has been observed yet. It still uses the provider-native conversation id

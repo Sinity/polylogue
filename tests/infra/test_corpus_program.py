@@ -517,6 +517,41 @@ def test_content_identical_duplicate_reuses_actual_raw_evidence(workspace_env: d
         assert conn.execute("SELECT native_id FROM messages").fetchall() == [("first",)]
 
 
+def test_replacement_can_reacquire_an_earlier_retained_revision(workspace_env: dict[str, Path]) -> None:
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    initial = _codex_transcript("session", "first", "authored")
+    program = CorpusProgram(
+        operations=(
+            Acquire("acquire", _artifact("session", initial)),
+            Replace("replace", "session", _codex_transcript("session", "second", "changed")),
+            Replace("restore", "session", initial),
+            Converge("converge"),
+        )
+    )
+    run = program.run(runtime)
+    assert run.state.applied_operation_ids == ("acquire", "replace", "restore", "converge")
+    with sqlite3.connect(runtime.archive_root / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("first",)]
+
+
+def test_legacy_codex_fork_retains_the_actual_parent_carrier(workspace_env: dict[str, Path]) -> None:
+    payload = (Path(__file__).parents[1] / "fixtures" / "corpus-program-codex-legacy.jsonl").read_bytes()
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    CorpusProgram(
+        operations=(
+            Acquire("acquire", _artifact("legacy-parent", payload)),
+            Fork("fork", "legacy-parent", "child", "legacy-child"),
+            Converge("converge"),
+        )
+    ).run(runtime)
+    with sqlite3.connect(runtime.archive_root / "index.db") as conn:
+        assert conn.execute(
+            "SELECT src.native_id, dst.native_id FROM session_links l "
+            "JOIN sessions src ON src.session_id = l.src_session_id "
+            "JOIN sessions dst ON dst.session_id = l.resolved_dst_session_id"
+        ).fetchall() == [("legacy-child", "legacy-parent")]
+
+
 @pytest.mark.parametrize("payload", [b"\xff", b"{}\n{bad}"])
 def test_malformed_attach_has_typed_refusal(workspace_env: dict[str, Path], payload: bytes) -> None:
     from tests.infra.corpus_program import CorpusState
