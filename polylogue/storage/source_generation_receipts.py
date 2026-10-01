@@ -9,7 +9,7 @@ raws while the supplied snapshots remain the authority for every witness.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -61,7 +61,8 @@ class SourceGenerationLogicalReceipt:
     logical_source_key: str
     expected_session_id: str
     accepted_raw_id: str | None
-    application_ids: tuple[str, ...]
+    # Consume under the enclosing raw receipt's pinned Index snapshot.
+    application_ids: Iterator[str]
     head_session_ids: tuple[str, ...]
     session_ids: tuple[str, ...]
     blockers: tuple[SourceGenerationBlocker, ...]
@@ -362,7 +363,7 @@ def _raw_receipt(
                             )
                         ) as rows:
                             membership = rows.fetchone()
-                    yield _logical_receipt(
+                    logical = _logical_receipt(
                         source_conn,
                         index_conn,
                         raw_id=raw_id,
@@ -371,7 +372,10 @@ def _raw_receipt(
                         logical_key=logical_key,
                         membership=membership,
                         parser_complete=parser_complete,
+                        check_stop=check_stop,
                     )
+                    with closing(logical.application_ids):
+                        yield logical
 
         with closing(logical_receipts()) as logicals:
             yield SourceGenerationRawReceipt(raw_id, _int_cell(raw[2]), parser_complete, parser_blockers, logicals)
@@ -446,6 +450,7 @@ def _logical_receipt(
     logical_key: str,
     membership: tuple[object, ...] | None,
     parser_complete: bool,
+    check_stop: Callable[[], None] | None = None,
 ) -> SourceGenerationLogicalReceipt:
     origin, separator, native_id = logical_key.partition(":")
     if not separator or not native_id:
@@ -453,7 +458,7 @@ def _logical_receipt(
             logical_source_key=logical_key,
             expected_session_id="",
             accepted_raw_id=None,
-            application_ids=(),
+            application_ids=iter(()),
             head_session_ids=(),
             session_ids=(),
             blockers=(SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,),
@@ -465,14 +470,17 @@ def _logical_receipt(
         None if membership is None or membership[5] is None else str(membership[5])
     )
     membership_content_hash = None if membership is None else _bytes_cell(membership[3])
-    head = index_conn.execute(
-        """
+    with closing(
+        index_conn.execute(
+            """
         SELECT session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash,
                accepted_frontier_kind, accepted_frontier, acquisition_generation
         FROM main.raw_revision_heads WHERE logical_source_key = ?
         """,
-        (logical_key,),
-    ).fetchall()
+            (logical_key,),
+        )
+    ) as rows:
+        head = rows.fetchall()
     head_session_ids = tuple(str(row[0]) for row in head if str(row[0]) == expected_session_id)
     blockers: list[SourceGenerationBlocker] = []
     accepted_raw_id: str | None = None
@@ -487,61 +495,89 @@ def _logical_receipt(
         current_head = tuple(head[0])
         accepted_raw_id = str(current_head[1])
 
-    applications = index_conn.execute(
-        """
+    application_sql = """
         SELECT decision_id, source_revision, acquisition_generation, decision,
                accepted_raw_id, accepted_source_revision, accepted_content_hash,
                accepted_frontier_kind, accepted_frontier
         FROM main.raw_revision_applications
         WHERE raw_id = ? AND logical_source_key = ? AND session_id = ?
         ORDER BY decision_id
-        """,
-        (raw_id, logical_key, expected_session_id),
-    ).fetchall()
-    application_ids = tuple(str(row[0]) for row in applications)
-    valid_applications = (
-        _current_or_prefix_applications(
-            source_conn,
-            raw_id=raw_id,
-            source_revision=source_revision,
-            acquisition_generation=acquisition_generation,
-            membership_application_decision=membership_application_decision,
-            membership_content_hash=membership_content_hash,
-            head=current_head,
-            applications=applications,
-        )
+        """
+    application_binding = (raw_id, logical_key, expected_session_id)
+    application_count = 0
+
+    def counted_applications(rows: sqlite3.Cursor) -> Iterator[tuple[object, ...]]:
+        nonlocal application_count
+        for row in rows:
+            if check_stop is not None:
+                check_stop()
+            application_count += 1
+            yield tuple(row)
+
+    with closing(index_conn.execute(application_sql, application_binding)) as applications:
+        observed = counted_applications(applications)
         if (
             current_head is not None
             and _bytes_cell(current_head[3]) is not None
             and _int_cell(current_head[5]) is not None
             and _int_cell(current_head[6]) is not None
             and (membership is None or membership_content_hash is not None)
-        )
-        else ()
-    )
-    if not application_ids:
+        ):
+            valid_application_count = _count_current_or_prefix_applications(
+                source_conn,
+                raw_id=raw_id,
+                source_revision=source_revision,
+                acquisition_generation=acquisition_generation,
+                membership_application_decision=membership_application_decision,
+                membership_content_hash=membership_content_hash,
+                head=current_head,
+                applications=observed,
+            )
+        else:
+            for _ in observed:
+                pass
+            valid_application_count = 0
+
+    def application_ids() -> Iterator[str]:
+        with closing(
+            index_conn.execute(
+                "SELECT decision_id FROM main.raw_revision_applications "
+                "WHERE raw_id=? AND logical_source_key=? AND session_id=? ORDER BY decision_id",
+                application_binding,
+            )
+        ) as rows:
+            for row in rows:
+                if check_stop is not None:
+                    check_stop()
+                yield str(row[0])
+
+    if not application_count:
         blockers.append(SourceGenerationBlocker.APPLICATION_ABSENT)
-    elif not valid_applications:
+    elif not valid_application_count:
         blockers.append(SourceGenerationBlocker.APPLICATION_STALE)
-    elif len(valid_applications) != 1:
+    elif valid_application_count != 1:
         blockers.append(SourceGenerationBlocker.APPLICATION_AMBIGUOUS)
     if not parser_complete:
         blockers.append(SourceGenerationBlocker.PARSER_CENSUS_MISMATCH)
 
     session_rows: list[tuple[object, ...]] = []
     if current_head is not None:
-        session_rows = index_conn.execute(
-            """
+        with closing(
+            index_conn.execute(
+                """
             SELECT session_id FROM main.sessions
             WHERE session_id = ? AND raw_id = ? AND content_hash = ?
             ORDER BY session_id
             """,
-            (expected_session_id, current_head[1], current_head[3]),
-        ).fetchall()
+                (expected_session_id, current_head[1], current_head[3]),
+            )
+        ) as rows:
+            session_rows = rows.fetchall()
     session_ids = tuple(str(row[0]) for row in session_rows)
-    any_session = index_conn.execute(
-        "SELECT 1 FROM main.sessions WHERE session_id = ? LIMIT 1", (expected_session_id,)
-    ).fetchone()
+    with closing(
+        index_conn.execute("SELECT 1 FROM main.sessions WHERE session_id = ? LIMIT 1", (expected_session_id,))
+    ) as rows:
+        any_session = rows.fetchone()
     if current_head is None or not session_ids:
         blockers.append(
             SourceGenerationBlocker.SESSION_STALE if any_session is not None else SourceGenerationBlocker.SESSION_ABSENT
@@ -552,14 +588,14 @@ def _logical_receipt(
         logical_source_key=logical_key,
         expected_session_id=expected_session_id,
         accepted_raw_id=accepted_raw_id,
-        application_ids=application_ids,
+        application_ids=application_ids(),
         head_session_ids=head_session_ids,
         session_ids=session_ids,
         blockers=tuple(blockers),
     )
 
 
-def _current_or_prefix_applications(
+def _count_current_or_prefix_applications(
     source_conn: sqlite3.Connection,
     *,
     raw_id: str,
@@ -568,9 +604,9 @@ def _current_or_prefix_applications(
     membership_application_decision: str | None,
     membership_content_hash: bytes | None,
     head: tuple[object, ...],
-    applications: list[tuple[object, ...]],
-) -> tuple[str, ...]:
-    """Return exact application receipts that prove this raw's current effect.
+    applications: Iterable[tuple[object, ...]],
+) -> int:
+    """Count exact application receipts that prove this raw's current effect.
 
     An immutable application can either name the current accepted head directly
     (the normal supersession/equivalent form), or record an accepted prefix in
@@ -584,7 +620,7 @@ def _current_or_prefix_applications(
     head_frontier = _int_cell(head[5])
     head_generation = _int_cell(head[6])
     raw_is_prefix = _raw_is_predecessor(source_conn, raw_id=raw_id, accepted_raw_id=head_raw_id)
-    valid: list[str] = []
+    valid = 0
     for application in applications:
         decision = str(application[3])
         application_identity = (*application[4:9], application[2])
@@ -636,8 +672,8 @@ def _current_or_prefix_applications(
             )
         )
         if names_current_head or accepted_self_prefix:
-            valid.append(str(application[0]))
-    return tuple(valid)
+            valid += 1
+    return valid
 
 
 def _raw_is_predecessor(source_conn: sqlite3.Connection, *, raw_id: str, accepted_raw_id: str) -> bool:

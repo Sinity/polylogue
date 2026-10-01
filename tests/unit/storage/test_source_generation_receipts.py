@@ -165,6 +165,36 @@ def test_parser_census_writer_preserves_inherited_duplicate_receipt_spelling() -
         index.close()
 
 
+def test_receipt_counts_all_application_witnesses_and_preserves_ambiguity() -> None:
+    """A late second current witness cannot hide behind many stale applications."""
+    source, index, _item = _connections()
+    try:
+        original = index.execute("SELECT decision_id FROM raw_revision_applications").fetchone()[0]
+        for number in range(1_024):
+            index.execute(
+                "INSERT INTO raw_revision_applications "
+                "SELECT ?, raw_id, session_id, logical_source_key, ?, acquisition_generation, decision, "
+                "accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, "
+                "accepted_frontier, ?, predecessor_raw_id, append_end_offset, detail, decided_at_ms "
+                "FROM raw_revision_applications WHERE decision_id=?",
+                (f"z-{number:05d}", f"stale-{number}", f"baseline-{number}", original),
+            )
+        receipt = observe_source_generation_receipt(
+            source, index, source_generation_id="source-43", active_generation="index-1"
+        )
+        assert receipt.complete
+        assert len(receipt.items[0].raws[0].logicals[0].application_ids) == 1_025
+        index.execute("UPDATE raw_revision_applications SET source_revision='revision-1' WHERE decision_id='z-01023'")
+        ambiguous = observe_source_generation_receipt(
+            source, index, source_generation_id="source-43", active_generation="index-1"
+        )
+        assert not ambiguous.complete
+        assert ambiguous.items[0].raws[0].logicals[0].blockers == (SourceGenerationBlocker.APPLICATION_AMBIGUOUS,)
+    finally:
+        source.close()
+        index.close()
+
+
 def test_receipt_spools_one_raws_complete_logical_denominator_without_collecting_it(tmp_path: Path) -> None:
     from polylogue.operations.ingest_inputs import spool_connection
 
