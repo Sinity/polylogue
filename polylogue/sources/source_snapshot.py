@@ -24,6 +24,7 @@ import sqlite3
 import stat
 import tempfile
 import zipfile
+from bisect import bisect_left
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
@@ -720,6 +721,22 @@ def _write_durable(path: Path, payload: str) -> None:
         os.fsync(stream.fileno())
 
 
+def _archive_member_info(archive: zipfile.ZipFile, item: CutItem) -> zipfile.ZipInfo:
+    """Select the already captured member offset, including duplicate names."""
+    try:
+        offset = int(item.identity.rsplit(":", 1)[1])
+    except (ValueError, IndexError) as exc:
+        raise SourceMutationError(f"archive member identity changed: {item.coordinate}") from exc
+    entries = archive.infolist()
+    position = bisect_left(entries, offset, key=lambda entry: entry.header_offset)
+    if position == len(entries):
+        raise SourceMutationError(f"archive member disappeared: {item.coordinate}")
+    entry = entries[position]
+    if entry.header_offset != offset or entry.is_dir() or not item.coordinate.endswith("!" + entry.filename):
+        raise SourceMutationError(f"archive member coordinate changed: {item.coordinate}")
+    return entry
+
+
 def _copy_candidates(
     binding: SourceCutBinding,
     baseline: tuple[CutItem, ...],
@@ -746,12 +763,15 @@ def _copy_bound_candidates(
         )
         try:
             with zipfile.ZipFile(destination) as archive:
+                archive.infolist().sort(key=lambda entry: entry.header_offset)
                 members = []
                 for item in baseline:
-                    member_name = item.coordinate.split("!", 1)[1]
+                    info = _archive_member_info(archive, item)
+                    if item.coordinate != f"{root.name}!{info.filename}":
+                        raise SourceMutationError(f"archive member coordinate changed: {item.coordinate}")
                     digest = hashlib.sha256()
                     size = 0
-                    with archive.open(member_name) as stream:
+                    with archive.open(info) as stream:
                         while chunk := stream.read(1024 * 1024):
                             digest.update(chunk)
                             size += len(chunk)
@@ -1333,7 +1353,7 @@ def reacquire_candidate(
     modes = dict(result.ownership_modes)
     # Keep each central directory open once, rather than reparsing a ZIP for
     # every member. The manifest names member bytes, not container bytes, and
-    # a member is read by name exactly as the cut read it.
+    # each member is selected by its captured physical header offset.
     archives: dict[Path, zipfile.ZipFile] = {}
     with ExitStack() as stack:
         for item in result.candidate_manifest.items:
@@ -1347,15 +1367,16 @@ def reacquire_candidate(
             if not path.is_relative_to(result.candidate_root):
                 raise CandidateCohortError(f"candidate path escapes published snapshot: {item.coordinate}")
             if modes[item.source_id] is SnapshotMode.ARCHIVE_MEMBER:
-                _, separator, member_name = item.coordinate.partition("!")
-                if not separator:
+                if "!" not in item.coordinate:
                     raise CandidateCohortError(f"candidate member has no archive coordinate: {item.coordinate}")
                 try:
                     if path not in archives:
                         archives[path] = stack.enter_context(zipfile.ZipFile(path))
+                        archives[path].infolist().sort(key=lambda entry: entry.header_offset)
+                    info = _archive_member_info(archives[path], item)
                     digest = hashlib.sha256()
                     size = 0
-                    with archives[path].open(member_name) as stream:
+                    with archives[path].open(info) as stream:
                         while chunk := stream.read(1024 * 1024):
                             digest.update(chunk)
                             size += len(chunk)

@@ -703,6 +703,30 @@ def test_archive_cut_reacquires_member_bytes_and_detects_member_mutation(tmp_pat
         reacquire_candidate(result)
 
 
+@pytest.mark.parametrize("container_name", ["export.zip", "export!copy.zip"])
+def test_archive_cut_preserves_distinct_duplicate_named_members(tmp_path: Path, container_name: str) -> None:
+    """Name-based reopening selects the last duplicate instead of the captured member."""
+    import zipfile
+
+    source = tmp_path / container_name
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("nested/item!part.json", "first")
+        with pytest.warns(UserWarning):
+            archive.writestr("nested/item!part.json", "second")
+    result = execute_source_cut(
+        preflight_source_cut([SourceDeclaration("export", SourceRole.ARCHIVE_MEMBER, source)]), tmp_path / "cut"
+    )
+    inputs = reacquire_candidate(result)
+    assert result.counts.conserved
+    assert result.candidate_manifest.item_count == 2
+    assert {item.content_sha256 for item in inputs} == {
+        hashlib.sha256(b"first").hexdigest(),
+        hashlib.sha256(b"second").hexdigest(),
+    }
+    assert len(inputs) == 2
+    assert reacquire_candidate(result, coordinates=[inputs[0].coordinate]) == inputs
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="Permission test requires an unprivileged reader")
 def test_frontier_refuses_whole_root_when_hidden_directory_is_unreadable(tmp_path: Path) -> None:
     """Mutation: rglob silently skips denied directories and publishes partial PRESENT."""
