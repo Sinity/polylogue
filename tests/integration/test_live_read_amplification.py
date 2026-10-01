@@ -43,6 +43,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.io_counter import ReadCounter, read_counter
 
 # ---------------------------------------------------------------------------
@@ -117,7 +118,7 @@ def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes)
     correct answer -- rather than the restart-with-a-lost-cursor case this pins.
     """
     source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     raw_id = sha256(raw_bytes).hexdigest()
     with sqlite3.connect(source_db) as conn:
         conn.execute(

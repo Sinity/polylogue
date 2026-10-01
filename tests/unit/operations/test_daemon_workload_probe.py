@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.session_profiles import write_session_profile
 
 
@@ -40,7 +41,7 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
     root = db.parent
     index_db = root / "index.db"
     source_db = root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     source_conn = sqlite3.connect(source_db)
@@ -523,7 +524,10 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
         ArchiveTier.USER,
         ArchiveTier.OPS,
     ):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             """
@@ -707,7 +711,10 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
 def test_daemon_workload_probe_reports_layout_ready_for_complete_archive(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     for tier in ArchiveTier:
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
     payload = probe(db, exact_table_counts=True)
 
@@ -734,7 +741,10 @@ def test_daemon_workload_probe_reports_layout_ready_for_complete_archive(tmp_pat
 def test_daemon_workload_probe_does_not_claim_derived_ready_on_schema_mismatch(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     for tier in ArchiveTier:
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     # The fresh format (#5551) starts every tier at user_version 1, so a
     # mismatch needs a version other than the current one.
     with sqlite3.connect(db) as conn:
@@ -790,7 +800,10 @@ def test_daemon_workload_probe_reports_archive_source_path_churn(tmp_path: Path)
         ArchiveTier.INDEX,
         ArchiveTier.OPS,
     ):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             """
@@ -862,7 +875,10 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
     source_path = tmp_path / "unmaterialized.jsonl"
     source_path.write_text('{"sessionId":"native-1"}\n', encoding="utf-8")
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             """
@@ -890,7 +906,10 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
 def test_daemon_workload_probe_reports_weighted_raw_replay_backlog(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     blob_store = BlobStore(tmp_path / "blob")
     small_hash, small_size = blob_store.write_from_bytes(b"small")
     large_hash, large_size = blob_store.write_from_bytes(b"L" * 4096)
@@ -951,7 +970,10 @@ def test_daemon_workload_probe_does_not_block_on_informational_raw_debt(
 ) -> None:
     db = tmp_path / "index.db"
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
     def fake_archive_debt_list(**_kwargs: object) -> object:
         return SimpleNamespace(totals=SimpleNamespace(actionable=0, total=3))

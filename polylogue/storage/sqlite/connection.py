@@ -107,6 +107,9 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     Connections are configured with WAL, foreign keys, busy_timeout,
     sqlite-vec, and connection-local runtime setup — all exactly once per connection.
     """
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(path)
     cache: dict[str, sqlite3.Connection] = getattr(_connection_cache, "conns", {})
     if not hasattr(_connection_cache, "conns"):
         _connection_cache.conns = cache

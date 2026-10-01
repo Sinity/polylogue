@@ -17,6 +17,8 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from devtools import repo_root
 from devtools.sqlite_degradation import census_sqlite_degradation_anchors, load_sqlite_degradation_baseline
 from devtools.verify_layering import _sqlite_degradation_findings
@@ -235,3 +237,155 @@ def test_checked_in_baseline_holds_the_current_repository() -> None:
 
     assert baseline, "the ratchet baseline must exist for the gate to hold ground"
     assert observed - baseline == Counter()
+
+
+@pytest.mark.parametrize(
+    "declaration,expression,expected",
+    [
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, outcome='failed', error=error)",
+            0,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope as envelope",
+            "envelope(request, context, outcome='rejected', error=error)",
+            0,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, outcome='failed' if retryable else 'rejected', error=error)",
+            0,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope\nfrom other_owner import *",
+            "operation_envelope(request, context, outcome='failed', error=error)",
+            1,
+        ),
+        (
+            "from other_owner import operation_envelope",
+            "operation_envelope(request, context, outcome='failed', error=error)",
+            1,
+        ),
+        (
+            "def operation_envelope(*args, **kwargs): return {}",
+            "operation_envelope(request, context, outcome='failed', error=error)",
+            1,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, outcome='failed' if retryable else 'completed', error=error)",
+            1,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, outcome=outcome, error=error)",
+            1,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, error=error)",
+            1,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, outcome='failed', error=None)",
+            1,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, outcome='failed')",
+            1,
+        ),
+        (
+            "from polylogue.operations.daemon_execution import operation_envelope",
+            "operation_envelope(request, context, outcome='failed', error=error, result={})",
+            1,
+        ),
+    ],
+)
+def test_census_recognizes_only_imported_failure_envelopes(
+    tmp_path: Path, declaration: str, expression: str, expected: int
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        f"import sqlite3\n{declaration}\ndef read(request, context):\n"
+        f"    try:\n        pass\n    except sqlite3.Error as exc:\n"
+        f"        error = {{'code': 'unavailable'}}\n        return {expression}\n"
+    )
+    assert sum(census_sqlite_degradation_anchors(tmp_path, ("pkg",)).values()) == expected
+
+
+@pytest.mark.parametrize("fallback", ["return 0", "fallback = 0\n        return fallback"])
+def test_failure_envelope_does_not_exempt_a_degrading_sibling(tmp_path: Path, fallback: str) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\nfrom polylogue.operations.daemon_execution import operation_envelope\n"
+        "def read(request, context):\n    try:\n        pass\n    except sqlite3.Error:\n"
+        "        if rejected:\n            return operation_envelope(request, context, outcome='rejected', error={})\n"
+        f"        {fallback}\n"
+    )
+    assert sum(census_sqlite_degradation_anchors(tmp_path, ("pkg",)).values()) == 1
+
+
+def test_assigned_error_returned_as_success_still_counts(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\nfrom polylogue.operations.daemon_execution import operation_envelope\n"
+        "def read(request, context):\n    error = None\n    try:\n        pass\n    except sqlite3.Error:\n"
+        "        error = {}\n        if rejected:\n            return operation_envelope(request, context, outcome='rejected', error=error)\n"
+        "    return error\n"
+    )
+    assert sum(census_sqlite_degradation_anchors(tmp_path, ("pkg",)).values()) == 1
+
+
+def test_internal_classification_loop_preserves_terminal_failure_boundary(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\n"
+        "def read(request, context):\n"
+        "    from polylogue.operations.daemon_execution import operation_envelope as envelope\n"
+        "    try:\n        pass\n    except sqlite3.Error as exc:\n"
+        "        cause = exc\n        while cause is not None:\n"
+        "            if retryable:\n                break\n            cause = cause.__cause__\n"
+        "        error = {'code': 'unavailable'}\n"
+        "        return envelope(request, context, outcome='failed' if retryable else 'rejected', error=error)\n"
+    )
+    assert not census_sqlite_degradation_anchors(tmp_path, ("pkg",))
+
+
+@pytest.mark.parametrize(
+    "shadow", ["operation_envelope = replacement", "def operation_envelope(*args, **kwargs): return {}"]
+)
+def test_local_shadow_cannot_claim_imported_failure_boundary(tmp_path: Path, shadow: str) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\nfrom polylogue.operations.daemon_execution import operation_envelope\n"
+        f"def read(request, context):\n    {shadow}\n"
+        "    try:\n        pass\n    except sqlite3.Error:\n"
+        "        return operation_envelope(request, context, outcome='failed', error={})\n"
+    )
+    assert sum(census_sqlite_degradation_anchors(tmp_path, ("pkg",)).values()) == 1
+
+
+@pytest.mark.parametrize(
+    "loop",
+    [
+        "while waiting:\n            break",
+        "for item in rows:\n            break",
+        "for item in rows:\n            continue",
+    ],
+)
+def test_internal_loop_without_terminal_failure_remains_censused(tmp_path: Path, loop: str) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\ndef read():\n    try:\n        pass\n    except sqlite3.Error:\n"
+        f"        {loop}\n    return 0\n"
+    )
+    assert sum(census_sqlite_degradation_anchors(tmp_path, ("pkg",)).values()) == 1

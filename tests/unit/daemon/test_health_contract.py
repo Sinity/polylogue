@@ -43,6 +43,7 @@ from polylogue.daemon.health import (
     _run_medium_checks,
     check_health,
 )
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -769,10 +770,7 @@ class TestArchiveHealthRouteRawFailureLifecycle:
         elif source_state == "unreadable":
             source_db.mkdir()
         elif source_state == "unexplained":
-            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-            from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-            initialize_archive_database(source_db, ArchiveTier.SOURCE)
+            initialize_runtime_source_fixture(source_db)
             with sqlite3.connect(source_db) as conn:
                 conn.execute(
                     """
@@ -799,10 +797,8 @@ class TestArchiveHealthRouteRawFailureLifecycle:
     ) -> None:
         root = tmp_path / "archive"
         root.mkdir()
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-        initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(root / "source.db")
         self._patch_route_checks(monkeypatch)
 
         with patch("polylogue.daemon.status.archive_root", return_value=root):

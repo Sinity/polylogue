@@ -24,6 +24,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _attribute(key: str, value: object) -> dict[str, object]:
@@ -530,8 +531,11 @@ def test_retained_otlp_export_uses_streamed_replay_route(tmp_path: Path, monkeyp
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
     _refuse_whole_document(monkeypatch)
     artifact = revision_backfill.prepare_retained_jsonl_artifact(
         "synthetic-raw",

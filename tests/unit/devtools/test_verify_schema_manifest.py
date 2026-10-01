@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.migration_runner import (
     durable_migration_claim_for_sql,
     durable_migration_claims,
 )
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def test_schema_manifest_checks_all_canonical_tiers() -> None:
@@ -34,7 +35,10 @@ def test_schema_manifest_rejects_a_target_file_with_schema_drift(tmp_path: Path)
     for tier in ArchiveTier:
         if tier is ArchiveTier.EMBEDDINGS:
             continue
-        initialize_archive_database(root / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(root / f"{tier.value}.db")
+        else:
+            initialize_archive_database(root / f"{tier.value}.db", tier)
     with sqlite3.connect(root / "index.db") as conn:
         conn.execute("DROP INDEX idx_sessions_origin_sort")
         conn.commit()
@@ -53,7 +57,7 @@ def test_schema_manifest_read_uri_encodes_legal_path_characters(tmp_path: Path) 
     root = tmp_path / "archive?copy#1"
     root.mkdir()
     path = root / "source.db"
-    initialize_archive_database(path, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(path)
     result = verify_schema_manifest._check_tier(ArchiveTier.SOURCE, path)
     assert result["ok"] is True
 

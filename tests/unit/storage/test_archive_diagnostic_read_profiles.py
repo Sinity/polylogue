@@ -41,16 +41,16 @@ def test_diagnostic_routes_keep_stale_tiers_readable_through_named_profile(
     monkeypatch.setattr(archive_verification, "open_readonly_connection", audited_open)
     monkeypatch.setattr("polylogue.readiness.open_readonly_connection", audited_open)
 
-    assert archive_plan._read_user_version(source) == 999999
     assert archive_plan._tier_schema_fingerprint(source)
     with closing(schema_inventory._open_read_only(source, tier=ArchiveTier.SOURCE)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 999999
         assert connection.execute("SELECT value FROM specimen").fetchone()[0] == 7
     check = archive_verification._check_tier_schema(tmp_path, 1)
     assert check.evidence["tiers"]["source"]["actual_version"] == 999999
     with _open_readiness_probe_connection(source) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
-    assert opened == [source] * 5
+    assert opened == [source] * 4
 
 
 def test_schema_census_reader_rejects_writes_and_writable_attach(tmp_path: Path) -> None:
@@ -81,7 +81,6 @@ def test_schema_census_reader_rejects_writes_and_writable_attach(tmp_path: Path)
 
 def test_diagnostic_missing_tier_remains_a_missing_tier(tmp_path: Path) -> None:
     missing = tmp_path / "source.db"
-    assert archive_plan._read_user_version(missing) is None
     with pytest.raises(schema_inventory.SchemaCensusError, match="tier file is missing"):
         schema_inventory._open_read_only(missing, tier=ArchiveTier.SOURCE)
     with pytest.raises(sqlite3.Error):

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 __all__ = ["reset_source_fixture_to_version"]
@@ -35,6 +36,21 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
     that would delete a table the fixture must still have.
     """
     migrations = Path(__file__).parents[2] / "polylogue" / "storage" / "sqlite" / "migrations" / "source"
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_DDL_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    # Numbered steps may replace baseline indexes without introducing them.
+    # Reconstruct their exact requested definition from immutable baseline DDL
+    # and its installed prefix, rather than deleting the preexisting index.
+    with closing(sqlite3.connect(":memory:")) as historical:
+        historical.executescript(ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE])
+        for migration in sorted(migrations.glob("*.sql")):
+            if int(migration.name.split("_", 1)[0]) <= version:
+                historical.executescript(migration.read_text(encoding="utf-8"))
+        historical_indexes = {
+            str(row[0]): str(row[1])
+            for row in historical.execute("SELECT name, sql FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL")
+        }
     table_pattern = re.compile(r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     index_pattern = re.compile(r"CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     view_pattern = re.compile(r"CREATE VIEW (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
@@ -43,7 +59,7 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
         r"|ALTER TABLE ([A-Za-z_][A-Za-z0-9_]*)\s+RENAME)",
         re.I,
     )
-    below: set[str] = set()
+    below: set[str] = set(historical_indexes)
     above: list[tuple[str, str]] = []
     for path in sorted(migrations.glob("*.sql")):
         slot = int(path.name.split("_", 1)[0])
@@ -75,6 +91,10 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
             columns_above.extend(found)
 
     seen: set[str] = set()
+    replaced_indexes = {name for kind, name in above if kind == "index" and name in historical_indexes}
+    for name in sorted(replaced_indexes):
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+        conn.execute(historical_indexes[name])
     # A later migration may replace a view introduced by an earlier
     # migration.  Drop that current definition before removing columns it
     # references, then restore the latest historical definition below the

@@ -473,7 +473,6 @@ from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_t
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
-    initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
@@ -482,6 +481,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -2872,7 +2872,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
         "raw_provider_payload": native_payload,
         "session": {
             "provider": "chatgpt",
-            "provider_session_id": "dom-fallback",
+            "provider_session_id": "native-large",
             "title": "DOM fallback title",
             "updated_at": "2026-04-24T00:00:01+00:00",
             "turns": [{"provider_turn_id": "dom-u1", "role": "user", "text": "DOM fallback", "ordinal": 0}],
@@ -4122,7 +4122,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4200,7 +4200,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4287,7 +4287,7 @@ def test_codex_append_identity_rejects_mixed_origins_at_same_path(
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4327,7 +4327,7 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         wrong_owner_raw_id = write_source_raw_session(
             conn,
@@ -4383,7 +4383,7 @@ def test_codex_append_identity_rejects_global_fallback_when_ownership_query_erro
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         unrelated_raw_id = write_source_raw_session(
             conn,
@@ -4434,7 +4434,7 @@ def test_latest_raw_fingerprint_ignores_archive_source_row_with_missing_blob(tmp
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     blob_hash = b"a" * 32
     with sqlite3.connect(source_db) as conn:
         conn.execute(
@@ -5804,7 +5804,7 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
     sqlite3.connect(index_db).close()
     (archive_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
     source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     path = archive_root / "sessions" / "terminal.jsonl"
     path.parent.mkdir()
     path.write_bytes(b'{"type":"session_meta"')
@@ -10154,3 +10154,43 @@ def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.M
     assert frontier.prefix_size == len(record) * 4000
     assert frontier.incomplete_tail and not frontier.malformed_record
     assert read < 4 * 4096
+
+
+@pytest.mark.parametrize("chunk_bytes", [1, 3, 7, 1 << 20])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        b"",
+        b'{"a":1}\n',
+        b'{"a":1}\n{"b":2}\n',
+        b'{"a":1}\n\n   \n{"b":2}\n',
+        b'\n\n{"a":1}\n \t\r\n{"b":2}\n',
+        b'{"long":"' + b"x" * 40 + b'"}\n{"b":2}\n',
+    ],
+)
+def test_the_streamed_prefix_record_count_matches_the_in_memory_count(
+    monkeypatch: pytest.MonkeyPatch, prefix: bytes, chunk_bytes: int
+) -> None:
+    """A partial admission's record count is the complete records of its prefix, blank lines excluded.
+
+    Anti-vacuity: counting newlines counts the blank lines; carrying a line's
+    content across a chunk boundary wrongly counts a record twice or not at all.
+    """
+    import io
+
+    from polylogue.sources.live import batch_support
+
+    monkeypatch.setattr(batch_support, "_JSONL_TAIL_READ_BYTES", chunk_bytes)
+    tail = b'{"cut":'
+    counted = batch_support.jsonl_prefix_record_count(io.BytesIO(prefix + tail), len(prefix))
+    assert counted == batch_support._jsonl_record_count(prefix)
+
+
+def test_partial_prefix_count_observes_owner_cancellation() -> None:
+    import io
+
+    from polylogue.sources.live.batch_support import jsonl_prefix_record_count
+    from polylogue.sources.prepared_jsonl import VerificationCancelledError
+
+    with pytest.raises(VerificationCancelledError):
+        jsonl_prefix_record_count(io.BytesIO(b'{"a":1}\n'), 8, stop=lambda: True)

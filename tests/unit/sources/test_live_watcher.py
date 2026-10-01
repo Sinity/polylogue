@@ -403,11 +403,24 @@ async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> N
     watcher.stop()
 
 
+@pytest.mark.parametrize("partial", [False, True])
 def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
     monkeypatch: pytest.MonkeyPatch,
+    partial: bool,
 ) -> None:
     logger = MagicMock()
     monkeypatch.setattr(live_watcher, "logger", logger)
+    from polylogue.core.raw_failure_evidence import PartialAdmission
+
+    partial_paths = (
+        {
+            "synthetic.jsonl": PartialAdmission(
+                reason="truncated_tail", complete_record_count=2, complete_prefix_bytes=72, source_bytes=100
+            )
+        }
+        if partial
+        else {}
+    )
     metrics = LiveBatchMetrics(
         queued_file_count=2,
         needed_file_count=2,
@@ -428,6 +441,7 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         convergence_time_s=0.25,
         total_time_s=1.0,
         stage_timings_s={"full_parse": 0.45, "fts": 0.05, "derived": 0.2},
+        partial_admission_paths=partial_paths,
     )
 
     live_watcher._log_ingest_metrics("live.watcher: changed-file batch", metrics)
@@ -444,10 +458,9 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         2,
         0,
     ]
-    # succeeded, failed, excluded: a planned path lands in exactly one, so the
-    # three counts are reported together.
-    assert args[6:9] == [2, 0, 0]
-    assert args[11:] == ["full_parse:0.450,derived:0.200,fts:0.050", False]
+    # Partial admissions qualify success without hiding the refused tail.
+    assert args[6:12] == [2, int(partial), "truncated_tail x1" if partial else "none", 28 if partial else 0, 0, 0]
+    assert args[14:] == ["full_parse:0.450,derived:0.200,fts:0.050", False]
 
 
 def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:
@@ -3736,7 +3749,6 @@ def test_browser_capture_spool_is_default_json_source(
 @pytest.mark.asyncio
 async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progress(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """polylogue-11cg9: watcher.catch_up.chunk / watcher.live_ingest.full held
     the sole archive writer for however long a batch's full-ingest records
@@ -3745,8 +3757,8 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
     no wall-clock bound -- de2a's own incident was an in-size-bounds 7 MB
     chunk that held the writer for 860s. A single session write cannot be
     split mid-transaction, so the checkpoint this budget can safely offer is
-    *between* records/groups, never inside one: with a synthetic slow clock
-    that clears any small budget immediately after the first record, exactly
+    *between* records/groups, never inside one: a zero budget still admits
+    the first record to guarantee forward progress, so exactly
     one of three small same-progress-group codex sessions should be written
     this pass, the other two must be left as ordinary un-recorded backlog
     (not succeeded, not failed -- no cursor written, no retry backoff), and a
@@ -3779,14 +3791,9 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
         parser_fingerprint="test-parser",
     )
 
-    # A monotonic clock that establishes the pass start on its first read,
-    # then jumps far past any small budget on every later read -- the same
-    # deterministic shape as de2a's own
-    # ``test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_progress``.
-    elapsed = iter(float(step) * 1000.0 for step in range(1000))
-    monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
-
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=1.0)
+    # The zero-budget law admits the first item, then leaves its siblings
+    # retryable. Keep asyncio and worker settlement on the real host clock.
+    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.succeeded_file_count == 1
     assert bounded.failed_file_count == 0
@@ -3796,7 +3803,6 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
     unrecorded = [path for path in paths if path not in recorded]
     assert len(unrecorded) == 2
 
-    monkeypatch.undo()
     remainder = await processor.ingest_files(unrecorded, emit_event=False)
 
     assert remainder.succeeded_file_count == 2
@@ -4354,7 +4360,6 @@ def test_stale_deferral_escalates_when_recorded_byte_size_lags_the_file(
 @pytest.mark.asyncio
 async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A pass that settles one no-session file and leaves the rest unattempted
     is not a whole-attempt UNSUPPORTED_SHAPE refusal.
@@ -4390,10 +4395,7 @@ async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-    elapsed = iter(float(step) * 1000.0 for step in range(1000))
-    monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
-
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=1.0)
+    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.time_budget_exceeded is True
     assert set(bounded.settled_exclusion_paths.values()) == {REFUSED_NO_SESSIONS}

@@ -38,6 +38,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.daemon_operations import cli_daemon_archive
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 class _ArchiveTierResult(TypedDict):
@@ -844,7 +845,7 @@ class TestArchiveReadinessCounts:
         db_path = tmp_path / "test.db"
         source_path = tmp_path / "source.db"
         initialize_archive_database(db_path, ArchiveTier.INDEX)
-        initialize_archive_database(source_path, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_path)
         conn = sqlite3.connect(db_path)
         source_conn = sqlite3.connect(source_path)
         try:

@@ -724,6 +724,9 @@ class ArchiveStore:
         active_cold_build: bool = False,
         durable_writer: bool = False,
     ) -> None:
+        from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+        assert_population_admitted(archive_root)
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
         if source_tier_acquisition and read_only:
@@ -911,6 +914,9 @@ class ArchiveStore:
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
     ) -> None:
+        from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+        assert_population_admitted(archive_root)
         self.archive_root = archive_root
         from polylogue.storage.archive_identity import ArchiveIdentity
 
@@ -963,9 +969,13 @@ class ArchiveStore:
                 with closing(open_readonly_connection(path, timeout=read_timeout, validate_schema=False)) as vconn:
                     current = int(vconn.execute("PRAGMA user_version").fetchone()[0])
                 if current != spec.version:
-                    raise RuntimeError(
-                        f"source-tier acquisition refused: durable tier {spec.filename} "
-                        f"user_version {current} != expected {spec.version}"
+                    from polylogue.core.errors import SchemaSkew
+
+                    raise SchemaSkew(
+                        tier=tier.value,
+                        expected=spec.version,
+                        found=current,
+                        remedy="daemon must admit the declared durable train before acquisition",
                     )
             self._conn = cast(sqlite3.Connection, _SourceTierOnlyIndexConnection())
             self._user_tier_attached = False
@@ -1027,6 +1037,12 @@ class ArchiveStore:
                 # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
                 else connect_measured(self.index_db_path, uri=True)
             )
+            from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
+
+            # Bootstrap may reuse a file-stat certificate while another
+            # connection has committed an identity change in WAL. Admit the
+            # actual writer handle before pragmas, attachments or index DDL.
+            assert_tier_schema_supported(self._conn, self.index_db_path, ArchiveTier.INDEX)
             write_profile = BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             if active_cold_build and not bulk_build_profile:
                 _assert_active_cold_build_index_only(
@@ -5799,11 +5815,14 @@ class ArchiveStore:
         if not resolved_session_ids:
             return 0
         conn = connect_measured(self.index_db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
         deleted = 0
         deleted_session_ids: list[str] = []
         try:
+            from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
+
+            assert_tier_schema_supported(conn, self.index_db_path, ArchiveTier.INDEX)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
             # This recovery path uses executescript(), which commits implicitly.
             # Restore missing triggers before the delete transaction so a later
             # trigger-install failure cannot commit the destructive work early.

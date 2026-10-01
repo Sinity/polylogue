@@ -14,13 +14,12 @@ from pathlib import Path
 
 from polylogue.core.enums import Origin
 from polylogue.sources.codex_state_projection import latest_retained_state_exports
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     upsert_raw_artifact,
     write_source_raw_session,
 )
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _observe(conn: sqlite3.Connection, *, origin: str, source_path: str, payload: bytes, acquired_at_ms: int) -> str:
@@ -39,7 +38,7 @@ def test_retained_state_export_follows_receipt_order_across_a_clock_rollback(tmp
     outranks A's returned receipt (250)."""
     source_db = tmp_path / "source.db"
     state_path = str(tmp_path / "install" / "state_5.sqlite")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with closing(sqlite3.connect(source_db)) as conn:
         origin = Origin.CODEX_SESSION.value
         raw_a = _observe(conn, origin=origin, source_path=state_path, payload=b"state A", acquired_at_ms=200)
@@ -58,7 +57,7 @@ def test_artifact_carrier_follows_receipt_order_across_a_clock_rollback(tmp_path
     was observed after it."""
     source_db = tmp_path / "source.db"
     source_path = str(tmp_path / "journal.jsonl")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     origin = "claude-code-session"
 
     def _artifact(reason: str, observed_at_ms: int) -> ArchiveSourceArtifact:

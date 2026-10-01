@@ -22,6 +22,7 @@ from polylogue.storage.index_generation import (
     rebuild_lease_status,
     source_revision_snapshot,
 )
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 # A pid guaranteed to never correspond to a running process: it exceeds any
 # realistic pid_max (Linux defaults to <= 4194304 even with 64-bit pids).
@@ -43,7 +44,10 @@ def _archive_template(tmp_path_factory: pytest.TempPathFactory) -> Generator[Non
     global _ARCHIVE_TEMPLATE
     template = tmp_path_factory.mktemp("index-generation-template") / "archive"
     for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS, ArchiveTier.INDEX):
-        initialize_archive_database(template / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(template / f"{tier.value}.db")
+        else:
+            initialize_archive_database(template / f"{tier.value}.db", tier)
     finalize_archive_template(template)
     _ARCHIVE_TEMPLATE = template
     try:
@@ -671,7 +675,10 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
     configured.mkdir()
     canonical.mkdir()
     for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS):
-        initialize_archive_database(canonical / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(canonical / f"{tier.value}.db")
+        else:
+            initialize_archive_database(canonical / f"{tier.value}.db", tier)
         (configured / f"{tier.value}.db").symlink_to(canonical / f"{tier.value}.db")
     initialize_archive_database(canonical / "index.db", ArchiveTier.INDEX)
     (configured / "index.db").symlink_to(canonical / "index.db")

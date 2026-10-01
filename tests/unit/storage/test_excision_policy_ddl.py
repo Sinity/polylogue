@@ -24,9 +24,8 @@ from polylogue.security.excision_policy import (
     ExcisionPolicySnapshot,
     read_excision_policy_projection,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 PROJECTION_TABLE = "excision_policy_projections"
 
@@ -77,7 +76,7 @@ def _publish(conn: sqlite3.Connection, generation_id: str) -> None:
 def fresh_source(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     """A source tier built by the production bootstrap route and nothing else."""
     path = tmp_path / "source.db"
-    initialize_archive_database(path, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(path)
     connection = sqlite3.connect(path)
     try:
         yield connection

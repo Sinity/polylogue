@@ -29,6 +29,7 @@ from polylogue.schemas.validation.requests import (
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _empty_archive(tmp_path: Path, *, with_index: bool = True) -> tuple[Path, ArchiveLocation]:
@@ -38,7 +39,7 @@ def _empty_archive(tmp_path: Path, *, with_index: bool = True) -> tuple[Path, Ar
 
     root = tmp_path / "archive"
     root.mkdir()
-    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(root / "source.db")
     if with_index:
         initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
     return root / "index.db", ArchiveLocation.resolve(root)

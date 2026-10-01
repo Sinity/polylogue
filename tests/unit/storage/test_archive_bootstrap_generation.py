@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
+from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -70,7 +73,12 @@ def test_replaced_durable_tier_revalidates(tmp_path: Path) -> None:
     assert replacement.stat().st_ino != source.stat().st_ino
     os.replace(replacement, source)
 
-    assert _validations(lambda: initialize_active_archive_root(root)) == 1
+    from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
+
+    before = active_archive_bootstrap_validation_count()
+    with pytest.raises(DurableChangeTrainError):
+        initialize_active_archive_root(root)
+    assert active_archive_bootstrap_validation_count() == before + 1
 
 
 def test_durable_train_manifest_change_revalidates(tmp_path: Path) -> None:
@@ -162,3 +170,26 @@ def test_failed_bootstrap_is_not_memoized(tmp_path: Path) -> None:
         # Each attempt ran the body: a memoized failure would raise nothing
         # the second time, or raise without doing the work that proves it.
         assert active_archive_bootstrap_validation_count() - before == 1
+
+
+@pytest.mark.parametrize("row_factory", [None, sqlite3.Row])
+@pytest.mark.parametrize("text_factory", [str, bytes])
+def test_supplied_lineage_handle_preserves_literal_schema_fingerprint(
+    tmp_path: Path, row_factory: Any, text_factory: Any
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import (
+        _assert_archive_format_tier_lineage,
+        _read_archive_format_birth,
+    )
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    birth = _read_archive_format_birth(root)
+    with closing(sqlite3.connect(root / "user.db")) as conn:
+        conn.row_factory = row_factory
+        conn.text_factory = text_factory
+        _assert_archive_format_tier_lineage(root, ArchiveTier.USER, conn, birth)
+    with closing(sqlite3.connect(root / "source.db")) as other:
+        with pytest.raises(RuntimeError, match="connection does not own"):
+            _assert_archive_format_tier_lineage(root, ArchiveTier.USER, other, birth)

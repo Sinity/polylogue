@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict, TypeVar
 
+from polylogue.core.raw_failure_evidence import PartialAdmission
+
 _T = TypeVar("_T")
 
 #: Typed reasons a batch offered a file and ingested none of it. Every byte
@@ -55,6 +57,7 @@ def split_offered_bytes(
     path_sizes: Mapping[Path, int],
     *,
     succeeded: Iterable[Path],
+    partial_admissions: Mapping[Path, PartialAdmission] | None = None,
     failed: Iterable[Path],
     excluded: Mapping[Path, str],
     deferred: Iterable[Path],
@@ -71,19 +74,28 @@ def split_offered_bytes(
     """
     remaining = dict(path_sizes)
     ingested_bytes = 0
+    refused: dict[str, int] = {}
     for path in succeeded:
-        ingested_bytes += remaining.pop(path, 0)
+        size = remaining.pop(path, 0)
+        partial = (partial_admissions or {}).get(path)
+        if partial is None:
+            ingested_bytes += size
+            continue
+        admitted = min(size, max(0, partial.complete_prefix_bytes))
+        ingested_bytes += admitted
+        left_out = size - admitted
+        if left_out:
+            refused[partial.reason] = refused.get(partial.reason, 0) + left_out
     failed_bytes = 0
     for path in failed:
         failed_bytes += remaining.pop(path, 0)
-    refused: dict[str, int] = {}
     for path, reason in excluded.items():
-        size = remaining.pop(path, None)
-        if size is not None:
+        if path in remaining:
+            size = remaining.pop(path)
             refused[reason] = refused.get(reason, 0) + size
     for path in deferred:
-        size = remaining.pop(path, None)
-        if size is not None:
+        if path in remaining:
+            size = remaining.pop(path)
             refused[REFUSED_DEFERRED_PENDING_AUTHORITY] = refused.get(REFUSED_DEFERRED_PENDING_AUTHORITY, 0) + size
     if remaining:
         refused[unattempted_reason] = refused.get(unattempted_reason, 0) + sum(remaining.values())
@@ -172,6 +184,9 @@ class LiveBatchMetrics:
     #: admissible, with their ``SETTLED_EXCLUSION_REASONS`` reason. They are
     #: counted and listed as excluded, never as succeeded.
     settled_exclusion_paths: dict[str, str] = field(default_factory=dict)
+    #: Succeeded paths that were admitted only in part, with what was left
+    #: out. Still admitted (their complete records are), never a plain success.
+    partial_admission_paths: dict[str, PartialAdmission] = field(default_factory=dict)
     # Identity-scoped session touches for this batch (polylogue-20d.13):
     # ``new_sessions`` are session ids materialized for the first time via
     # the full-ingest route; ``updated_sessions`` are session ids that grew
@@ -196,6 +211,14 @@ class LiveBatchMetrics:
     def deferred_file_count(self) -> int:
         """Planned paths this batch deliberately deferred. Never a failure."""
         return len(self.deferred_paths)
+
+    @property
+    def partial_reasons(self) -> dict[str, int]:
+        """Partial admissions of this batch, counted by reason."""
+        counts: dict[str, int] = {}
+        for partial in self.partial_admission_paths.values():
+            counts[partial.reason] = counts.get(partial.reason, 0) + 1
+        return counts
 
     @property
     def refused_bytes(self) -> int:
@@ -253,6 +276,15 @@ class LiveBatchMetrics:
             # nothing had been offered.
             "excluded_file_count": self.excluded_file_count,
             "excluded_reasons": dict(self.excluded_reasons),
+            # Admitted in part (a stable capture with a truncated final
+            # record): counted beside the successes they are part of, so a
+            # partial admission is visible rather than a plain success.
+            "partial_file_count": len(self.partial_admission_paths),
+            "partial_reasons": self.partial_reasons,
+            "partial_left_out_bytes": sum(
+                partial.source_bytes - partial.complete_prefix_bytes
+                for partial in self.partial_admission_paths.values()
+            ),
             "detection_fallback_count": len(self.detection_fallback_paths),
             "source_group_count": self.source_group_count,
             "input_bytes": self.input_bytes,

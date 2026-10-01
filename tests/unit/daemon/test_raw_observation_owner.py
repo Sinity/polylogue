@@ -10,13 +10,13 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.write_lease import coordinator_write_lease_active
 from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
-    daemon_write_lease_active,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -170,7 +170,7 @@ async def test_paused_raw_preparation_does_not_hold_writer_for_unrelated_publica
     release = threading.Event()
 
     def paused_compute(frame: DerivationFrame, key: str) -> ReplacementLike:
-        assert not daemon_write_lease_active()
+        assert not coordinator_write_lease_active()
         started.set()
         assert release.wait(timeout=2.0)
         return original_compute(frame, key)

@@ -17,6 +17,7 @@ import pytest
 from polylogue.daemon.health import HealthSeverity, _check_capture_coverage_medium
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import DEFAULT_FROZEN_EPOCH
 
 GRACE_MS = 15 * 60 * 1000
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.frozen_clock_modules("polylogue.daemon.health")
 @pytest.fixture
 def coverage_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: object) -> Path:
     archive = tmp_path / "archive"
-    initialize_archive_database(archive / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(archive / "source.db")
     initialize_archive_database(archive / "index.db", ArchiveTier.INDEX)
     monkeypatch.setattr("polylogue.daemon.health.archive_root", lambda: archive)
     monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: archive / "index.db")

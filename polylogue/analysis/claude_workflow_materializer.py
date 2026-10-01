@@ -38,6 +38,7 @@ from polylogue.sources.parsers.claude.orchestration import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 logger = get_logger(__name__)
 
@@ -555,6 +556,7 @@ def _corpus_snapshot(
 
 
 def _replace_graph_family(index_db: Path, graphs: Sequence[WorkEvidenceGraph]) -> None:
+    assert_population_admitted(index_db)
     conn = sqlite3.connect(index_db)
     try:
         conn.execute("PRAGMA foreign_keys = ON")

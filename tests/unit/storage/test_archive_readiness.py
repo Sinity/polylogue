@@ -27,6 +27,7 @@ from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
@@ -937,7 +938,7 @@ def test_lost_source_evidence_samples_include_generated_session_identity(tmp_pat
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(
@@ -1336,7 +1337,7 @@ def _pinned_index_over(tmp_path: Path) -> sqlite3.Connection:
     """An index reader with the source tier attached, as an operation pins it."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     conn = sqlite3.connect(tmp_path / "index.db")
     conn.execute("ATTACH DATABASE ? AS source_tier", (str(tmp_path / "source.db"),))

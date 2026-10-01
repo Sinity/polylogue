@@ -108,3 +108,19 @@ lowering, then the provider parser and its fixture. Follow the parsed object
 into `polylogue/storage/sqlite/archive_tiers/write.py`; do not infer the
 durable contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
+
+## Settled decode and partial admission
+
+Live intake and retained census share `terminal_decode_evidence`: a known-provider
+JSON document or complete JSONL record that cannot decode settles as
+`terminal_corrupt_input`. Unknown-provider decode failures retain their distinct
+terminal token. Wrapped source I/O failures and parser defects remain retryable.
+Changed source bytes form a new observation rather than retrying the same refusal.
+
+A stable JSONL capture with an unfinished final record admits its complete prefix.
+`PartialAdmission` records `truncated_tail`, the complete-record count, the prefix
+byte offset and the full acquired size. Acquisition seals the count before writer
+entry. Intake, batch byte accounting and dispatcher events expose the partial;
+the attempt carries `batch:partial_admission` and its event is degraded. No-session
+and settled corrupt observations remain excluded. The literal raw retains the
+unfinished tail so a later completed observation can advance normally.

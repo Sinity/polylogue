@@ -18,6 +18,7 @@ from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFault
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection, open_source_tier_write_connection
+from polylogue.storage.sqlite.population_admission import assert_population_admitted
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
@@ -884,6 +885,7 @@ def abandon_blob_publication_receipts(
             source_conn.execute("BEGIN IMMEDIATE")
             if not resolved_index.exists():
                 raise RuntimeError("index tier is unavailable")
+            assert_population_admitted(resolved_index)
             index_conn = sqlite3.connect(resolved_index)
             index_conn.execute("BEGIN IMMEDIATE")
             rows = source_conn.execute(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from importlib import resources
 
 from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL, EMBEDDINGS_SCHEMA_VERSION
@@ -20,20 +21,33 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 # This format lineage begins with all six tiers at version one. Future durable
 # changes advance the relevant tier through a numbered migration.
 ARCHIVE_FORMAT_FLOOR_VERSION = 1
-SOURCE_TIER_VERSION = 1
+ARCHIVE_BASELINE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = dict.fromkeys(ArchiveTier, 1)
+SOURCE_TIER_VERSION = 2
 USER_TIER_VERSION = 1
 AUDIT_TIER_VERSION = 1
 
 AUDIT_COLUMN_DISPOSITIONS = audit_column_dispositions()
 assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
-ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
+ARCHIVE_BASELINE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
     ArchiveTier.SOURCE: SOURCE_DDL,
     ArchiveTier.INDEX: INDEX_DDL,
     ArchiveTier.EMBEDDINGS: EMBEDDINGS_DDL,
     ArchiveTier.USER: USER_DDL,
     ArchiveTier.OPS: OPS_DDL,
     ArchiveTier.AUDIT: AUDIT_DDL,
+}
+
+
+def _source_runtime_ddl() -> str:
+    """Current Source schema is its immutable baseline plus numbered steps."""
+    directory = resources.files("polylogue.storage.sqlite.migrations.source")
+    return SOURCE_DDL + "\n" + directory.joinpath("002_raw_artifact_failure_identity.sql").read_text(encoding="utf-8")
+
+
+ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
+    **ARCHIVE_BASELINE_DDL_BY_TIER,
+    ArchiveTier.SOURCE: _source_runtime_ddl(),
 }
 
 ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
@@ -51,13 +65,15 @@ ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
 
 
 def archive_ddl_for_tier(tier: ArchiveTier) -> str:
-    """Return the fresh-create DDL script for one archive durability tier."""
+    """Return the current schema, including numbered durable additions."""
     return ARCHIVE_DDL_BY_TIER[tier]
 
 
 __all__ = [
     "AUDIT_COLUMN_DISPOSITIONS",
     "ARCHIVE_DDL_BY_TIER",
+    "ARCHIVE_BASELINE_DDL_BY_TIER",
+    "ARCHIVE_BASELINE_VERSION_BY_TIER",
     "ARCHIVE_FORMAT_FLOOR_VERSION",
     "ARCHIVE_VERSION_BY_TIER",
     "AUDIT_TIER_VERSION",

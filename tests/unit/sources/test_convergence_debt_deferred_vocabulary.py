@@ -28,6 +28,7 @@ from polylogue.sources.live.convergence_outcome import record_convergence_outcom
 from polylogue.sources.live.cursor import ConvergenceDebtBatchEntry, ConvergenceDebtWrite, CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def test_convergence_debt_lookups_follow_the_active_index_generation(tmp_path: Path) -> None:
@@ -36,7 +37,7 @@ def test_convergence_debt_lookups_follow_the_active_index_generation(tmp_path: P
     source_db = tmp_path / "source.db"
     shadow_index = tmp_path / "index.db"
     active_index = tmp_path / "generations" / "active" / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(shadow_index, ArchiveTier.INDEX)
     initialize_archive_database(active_index, ArchiveTier.INDEX)
     source_path = tmp_path / "active.jsonl"
