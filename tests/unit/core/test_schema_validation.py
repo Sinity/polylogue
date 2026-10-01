@@ -15,6 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas import ValidationResult
+from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validation.corpus import verify_raw_corpus
@@ -146,50 +147,6 @@ def test_validation_samples_record_mode_skips_non_record_documents() -> None:
     )
 
     assert validator.validation_samples({"version": 1, "entries": []}, max_samples=16) == []
-
-
-def test_schema_validator_prefers_registry_latest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Latest registry schemas should override packaged fallback files."""
-    fake_schema = {
-        "type": "object",
-        "properties": {"from_registry": {"type": "string"}},
-        "additionalProperties": False,
-    }
-
-    class _FakeRegistry:
-        def get_schema(self, provider: str, version: str = "latest") -> dict[str, object] | None:
-            if provider == "chatgpt" and version == "latest":
-                return fake_schema
-            return None
-
-    monkeypatch.setattr("polylogue.schemas.validator.SchemaRegistry", _FakeRegistry)
-    SchemaValidator._cache.clear()
-
-    validator = SchemaValidator.for_provider("chatgpt")
-    assert "from_registry" in json_document(validator.schema["properties"])
-
-
-def test_schema_validator_payload_resolution_supports_lightweight_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Lightweight registries with only get_schema still support payload validation."""
-    fake_schema = {
-        "type": "object",
-        "properties": {"from_default": {"type": "string"}},
-        "additionalProperties": True,
-    }
-
-    class _FakeRegistry:
-        def get_schema(self, provider: str, version: str = "latest") -> dict[str, object] | None:
-            if provider == "chatgpt" and version == "default":
-                return fake_schema
-            return None
-
-    monkeypatch.setattr("polylogue.schemas.validator.SchemaRegistry", _FakeRegistry)
-    SchemaValidator._cache.clear()
-
-    validator = SchemaValidator.for_payload("chatgpt", {"from_default": "ok"})
-    assert "from_default" in json_document(validator.schema["properties"])
 
 
 def test_schema_validator_preserves_empty_arrays_when_schema_expects_array() -> None:
@@ -1352,3 +1309,59 @@ def test_verify_raw_corpus_honors_record_limit_and_offset(
     assert report.record_offset == 1
     assert stats.total_records == 1
     assert stats.valid_records == 1
+
+
+def test_schema_validator_uses_registry_default_package(mock_schema_dir: Path) -> None:
+    """Package identity, not a get_schema-only alternate registry, owns selection."""
+    registry = SchemaRegistry(storage_root=mock_schema_dir)
+    registry.write_schema_version(
+        "chatgpt",
+        "v2",
+        {
+            "type": "object",
+            "properties": {"from_registry": {"type": "string"}},
+            "required": ["from_registry"],
+            "additionalProperties": False,
+        },
+    )
+    with _patch_validator_registry(mock_schema_dir):
+        SchemaValidator._cache.clear()
+        validator = SchemaValidator.for_provider("chatgpt")
+    assert validator.schema["required"] == ["from_registry"]
+    assert validator.validate({"from_registry": "value"}).is_valid
+
+
+def test_payload_validation_preserves_explicit_package_refusal(mock_schema_dir: Path) -> None:
+    """An explicit rejecting package must not be replaced by a permissive default."""
+    registry = SchemaRegistry(storage_root=mock_schema_dir)
+    registry.write_schema_version(
+        "chatgpt",
+        "v2",
+        {
+            "type": "object",
+            "properties": {"from_default": {"type": "string"}},
+            "required": ["from_default"],
+            "additionalProperties": True,
+        },
+    )
+    resolution = SchemaResolution(
+        provider="chatgpt",
+        package_version="v1",
+        element_kind="session_document",
+        exact_structure_id=None,
+        bundle_scope=None,
+        reason="package_default",
+    )
+    with _patch_validator_registry(mock_schema_dir):
+        SchemaValidator._cache.clear()
+        default = SchemaValidator.validate_payload("chatgpt", {"from_default": "ok"})
+        explicit = SchemaValidator.validate_payload(
+            "chatgpt",
+            {"from_default": "ok"},
+            schema_resolution=resolution,
+        )
+    assert default.results and all(result.is_valid for result in default.results)
+    assert explicit.results and not all(result.is_valid for result in explicit.results)
+    assert explicit.schema_resolution is not None
+    assert explicit.schema_resolution.package_version == "v1"
+    assert explicit.validator.schema["required"] == ["id"]

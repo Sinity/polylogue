@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -20,7 +20,6 @@ from polylogue.archive.session.repo_identity import (
     normalize_repo_paths,
 )
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
-from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
@@ -503,7 +502,7 @@ def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
     assert attribution.languages_detected == ()
 
 
-def test_day_summary_preserves_repo_names() -> None:
+def test_session_profile_preserves_repo_names() -> None:
     profile = SessionProfile.from_dict(
         {
             "session_id": "conv-day-normalize",
@@ -521,6 +520,5 @@ def test_day_summary_preserves_repo_names() -> None:
         }
     )
 
-    summary = summarize_day([profile], date(2026, 3, 24))
-    assert summary.repos_active == ("polylogue",)
-    assert summary.to_dict()["repos_active"] == ["polylogue"]
+    assert profile.repo_names == ("polylogue",)
+    assert profile.to_dict()["repo_names"] == ["polylogue"]
