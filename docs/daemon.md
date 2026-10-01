@@ -111,6 +111,12 @@ machine API remains at `--api-port`. The ports must differ. A specific
 non-loopback API bind cannot be used with `--browser-port` because it has no
 loopback upstream; wildcard API binds use the corresponding loopback address.
 
+## Operation read lifetime
+
+Declared `READ` operations expose `deadline_s: null` in operation discovery. Reads wait for their valid result or cancellation; archive-scan classification reserves the appropriate compute capacity without imposing a shorter execution lifetime. A caller can supply a positive `deadline_ms` to request a bounded execution. The client forwards that value and leaves enough socket time for its typed terminal response. An omitted read deadline also leaves the socket wait unbounded. Mutation and control execution deadlines, durable acceptance, and receipt recovery keep their declared contracts.
+
+The periodic session audit continues bounded pages while its domain cursors advance. An unreadable output relation stays a typed failed pass, rotates to the next owed domain, and remains owed for the next scheduled tick. A pending domain whose cursor has already been visited in the same backlog invocation also waits for the next tick. Changed counts alone do not justify an immediate retry. This applies during fresh schema bootstrap as well as faults after startup; absence of a relation never certifies readiness or drops the obligation. Productive large sweeps continue through their pages without a key-count limit. Rotation preserves each domain's advancing kernel cursor. Budget-deferred keys remain ahead of the cursor and continue in the same invocation. An unchanged discovery fault has no consumed prefix to recheck once its relation is readable. A healthy tail does not settle a faulted or pending prefix that the cursor passed: the completed unsettled sweep yields to the next tick, remains owed, and clears only after a full clean sweep. Archive-generation or recipe changes reset those sweep facts together with cursor scheduling.
+
 ## HTTP API Endpoints
 
 The HTTP API server runs by default. Pass `--no-api` to disable it. The endpoints below are exposed under the configured `--api-host:--api-port`.
@@ -1027,6 +1033,8 @@ dimension = 1024
 max_cost_usd = 1.00
 voyage_api_key = "va-..."
 ```
+
+Existing-session similarity reads retained vectors without an API key or provider call. Missing or unreadable vector evidence produces an unavailable state; only a successful count can establish that a session has no vectors. Text-query embedding and acquisition still require credentials.
 
 Without a `voyage_api_key`, the embedding stage reports "disabled" in daemon
 status — this is not an error.

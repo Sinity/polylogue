@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from polylogue.config import Config, active_archive_root
-from polylogue.core.errors import PolylogueError
+from polylogue.core.errors import PolylogueError, SessionNotFoundError
 from polylogue.operations.mutation_transaction import (
     MutationActuator,
     MutationPlan,
@@ -17,12 +17,6 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _Args = TypeVar("_Args")
-
-
-class SessionNotFoundError(PolylogueError):
-    """A requested session does not exist in the archive."""
-
-    http_status_code = 404
 
 
 class MutationBlockedError(PolylogueError):
@@ -125,7 +119,6 @@ def execute_archive_mutation(
 __all__ = [
     "MutationBlockedError",
     "MutationTargetVanishedError",
-    "SessionNotFoundError",
     "execute_archive_mutation",
     "require_archive_write_authority",
 ]

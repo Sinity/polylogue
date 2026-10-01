@@ -5395,6 +5395,9 @@ class TestBooleanQueryExpression:
             def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
                 raise NotImplementedError
 
+            async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+                raise AssertionError("this fixture does not perform retained-session reads")
+
         archive_root = workspace_env["archive_root"]
         index_db = archive_root / "index.db"
         (

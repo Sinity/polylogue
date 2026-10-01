@@ -5169,3 +5169,63 @@ def test_session_profile_audit_resumes_the_promoted_audit_each_tick(monkeypatch:
 
     asyncio.run(exercise())
     assert budgets == [daemon_cli._SESSION_PROFILE_BACKLOG_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_no_watch_fresh_audit_fault_returns_to_its_periodic_cadence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The installed no-watch startup service must yield after one unavailable audit pass."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.periodic import PeriodicRunner
+    from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+    archive_root = tmp_path / "fresh"
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    tick_finished = asyncio.Event()
+    delays: list[float] = []
+    calls = 0
+
+    async def scheduled_wait(delay: float) -> None:
+        delays.append(delay)
+        tick_finished.set()
+        await asyncio.Event().wait()
+
+    runner = PeriodicRunner(jitter_ratio=0, sleep=scheduled_wait)
+    monkeypatch.setattr(daemon_cli, "daemon_periodic_runner", lambda: runner)
+    profiles = compose_session_profile_callback(
+        archive_root,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        now=lambda: 0.0,
+    )
+    real_pass = profiles.audit_pass
+    assert real_pass is not None
+    failures: list[DerivationReport] = []
+
+    async def audit(deadline: float) -> DerivationReport | None:
+        nonlocal calls
+        calls += 1
+        assert calls == 1, "bootstrap fault repeated before the next periodic tick"
+        report = await real_pass(deadline)
+        assert report is not None
+        failures.append(report)
+        return report
+
+    profiles = dataclasses.replace(profiles, audit_pass=audit)
+    task = asyncio.create_task(daemon_cli._periodic_session_profile_audit(profiles, watcher_registered=None))
+    try:
+        await tick_finished.wait()
+        state = runner.state("session_profile_audit")
+        assert state is not None and state.runs == 1 and state.failures == 0
+        assert calls == 1 and failures[0].failed == 1
+        assert profiles.audit_pending()
+        assert delays == [daemon_cli._SESSION_PROFILE_AUDIT_INTERVAL_SECONDS]
+        assert not archive_root.exists()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

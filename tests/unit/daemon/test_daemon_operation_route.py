@@ -1352,7 +1352,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                 archive_root=str(stack.archive_root),
                 deadline_ms=25,
             )
-            assert timed_out is not None and timed_out["outcome"] == "timed-out"
+            assert timed_out is not None and timed_out["outcome"] == "timed-out", timed_out
             assert monotonic() - started < 1.0
             assert not release_apply.is_set()
 
@@ -1630,7 +1630,16 @@ def test_control_result_metadata_comes_from_the_durable_receipt_read(
         assert recovered["result"]["reference"] == accepted["accepted_reference"]
 
 
-def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "operation,payload",
+    [
+        ("mutation.session.delete.preview", {"session_ids": ["codex:absent"]}),
+        ("query.aggregate", {"mode": "count"}),
+    ],
+)
+def test_cancelled_queued_operation_reports_cancelled_not_failed(
+    tmp_path: Path, operation: str, payload: dict[str, object]
+) -> None:
     """A pre-acceptance cancellation is a cancellation, not an operation failure.
 
     The scheduler cancels a queued, unstarted task by completing its future
@@ -1660,7 +1669,7 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
         # its early exit would let the queued task start and void the test.
         assert release.wait(timeout=60)
 
-    request_id = "cancelled-queued-control"
+    request_id = "cancelled-queued-operation"
     principal = MutationPrincipal(
         actor_ref=f"daemon:unix:uid:{os.getuid()}",
         capabilities=frozenset(spec.capability for spec in DAEMON_OPERATION_SPECS),
@@ -1673,8 +1682,8 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
         assert all(entered.acquire(timeout=2) for _ in blockers)
 
         request = DaemonOperationRequest(
-            "mutation.session.delete.preview",
-            {"session_ids": ["codex:absent"]},
+            operation,
+            payload,
             request_id=request_id,
             archive_root=str(stack.archive_root),
         )
@@ -1694,6 +1703,10 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
             assert exchange.future is not None
             assert not exchange.future.done(), "the operation must still be queued or this test is vacuous"
             assert not exchange.acceptance_started
+            if operation == "query.aggregate":
+                assert exchange.deadline is None
+                assert exchange.context.read_control is not None
+                assert exchange.context.read_control.deadline_monotonic is None
 
             disconnect.cancel()
             caller.join(timeout=5)
@@ -1904,7 +1917,7 @@ def test_annotation_import_that_outlives_its_deadline_never_commits(
                 + "\n",
                 "batch_id": "late-batch",
                 "schema_id": "seed.activity",
-                "schema_version": 1,
+                "schema_version": 2,
                 "target_ref": f"session:{session_id}",
                 "source_result_ref": "result-set:late",
                 "actor_ref": "agent:labeler",
@@ -1996,3 +2009,115 @@ def test_shutdown_waits_for_a_cancelled_staged_operation_to_finish_its_cleanup(
             release.set()
             releaser.cancel()
             caller.join(timeout=10)
+
+
+@pytest.mark.parametrize("route", ["uds", "execution"])
+@pytest.mark.parametrize("deadline_ms", [None, 1_000])
+def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, deadline_ms: int | None
+) -> None:
+    """Advance the controlled clock inside real aggregate SQL, without a sleep."""
+    from time import monotonic
+    from types import SimpleNamespace
+
+    from polylogue.archive.query.execution_control import QueryExecutionContext
+    from polylogue.operations import daemon_execution
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+    from polylogue.operations.operation_context import OperationContext
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    clock = {"now": monotonic()}
+    actual_count = ArchiveStore.count_sessions
+    counted: list[int] = []
+
+    def slow_count(self: ArchiveStore, **kwargs: Any) -> int:
+        clock["now"] += 1_000.0
+        count = actual_count(self, **kwargs)
+        counted.append(count)
+        return count
+
+    def deadline_exceeded(self: QueryExecutionContext) -> bool:
+        return self.deadline_monotonic is not None and clock["now"] > self.deadline_monotonic
+
+    def seed(root: Path) -> None:
+        _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        monkeypatch.setattr(ArchiveStore, "count_sessions", slow_count)
+        monkeypatch.setattr(QueryExecutionContext, "deadline_exceeded", deadline_exceeded)
+        monkeypatch.setattr("polylogue.daemon.operation_runtime.monotonic", lambda: clock["now"])
+        monkeypatch.setattr(daemon_execution, "monotonic", lambda: clock["now"])
+        if route == "uds":
+            envelope = stack.client.operation("query.aggregate", {"mode": "count"}, deadline_ms=deadline_ms)
+        else:
+            # The direct executor still pins a real controlled archive view;
+            # this runtime only supplies publication exclusion and observation.
+            context = OperationContext(
+                stack.archive_root,
+                MutationPrincipal("synthetic-read", frozenset({"read"}), "daemon"),
+                "daemon",
+                SimpleNamespace(
+                    publication_guard=stack.runtime.publication_guard, observe_snapshot=lambda *_args: None
+                ),
+            )
+            request = DaemonOperationRequest(
+                "query.aggregate", {"mode": "count"}, request_id="slow-direct-read", deadline_ms=deadline_ms
+            )
+            envelope = daemon_execution.execute_operation(request, context).to_dict()
+        assert envelope is not None
+        if deadline_ms is None:
+            assert envelope["outcome"] == "completed"
+            assert envelope["result"]["count"] == 1
+            assert counted == [1]
+        else:
+            assert envelope["outcome"] == "timed-out"
+            assert envelope["result"] is None
+
+
+@pytest.mark.parametrize("lane", ["semantic", "hybrid"])
+@pytest.mark.parametrize("vector_fault", ["missing", "unreadable", "runtime_unavailable"])
+def test_keyless_text_read_skips_vector_snapshot_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane: str, vector_fault: str
+) -> None:
+    """Text acquisition is disabled before any retained-vector handle is admitted."""
+    from unittest.mock import MagicMock
+
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, VectorReadBinding
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecUnavailableError
+    from tests.infra.vector_archive import seed_vector_archive
+
+    faults = {
+        "missing": FileNotFoundError("synthetic missing vector tier"),
+        "unreadable": sqlite3.DatabaseError("synthetic unreadable vector tier"),
+        "runtime_unavailable": SqliteVecUnavailableError("synthetic unavailable vector runtime"),
+    }
+    admit = MagicMock(side_effect=faults[vector_fault])
+    acquire = MagicMock(side_effect=AssertionError("keyless text cannot acquire vectors"))
+    monkeypatch.setattr("polylogue.storage.search_providers.sqlite_vec_runtime.open_vector_read_snapshot", admit)
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", acquire)
+
+    def seed(root: Path) -> None:
+        seed_vector_archive(root, [("seed", "m1", "Synthetic needle prose.", [1.0] + [0.0] * 1023)])
+
+    with running_daemon_operations(
+        tmp_path / "archive",
+        seed_archive=seed,
+        read_dependencies=DaemonReadDependencies(vector_binding=VectorReadBinding(None, "voyage-4", 1024)),
+    ) as stack:
+        envelope = stack.client.operation(
+            "cli.query",
+            {"params": {"query": ("needle",), "retrieval_lane": lane}},
+            archive_root=str(stack.archive_root),
+        )
+    assert envelope is not None
+    if lane == "semantic":
+        assert envelope["error"]["code"] == "EmbeddingRetrievalNotReadyError", envelope
+    else:
+        result = envelope["result"]
+        assert result["outcome"]["state"] == "degraded", envelope
+        assert result["unavailable_lanes"] == ["vector"], envelope
+        assert result["failed_lanes"] == [], envelope
+    admit.assert_not_called()
+    acquire.assert_not_called()

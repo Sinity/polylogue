@@ -10,6 +10,8 @@
 .cache
 .local
 .agent
+.agentctl
+**/node_modules
 .mypy_cache
 .pytest_cache
 .ruff_cache

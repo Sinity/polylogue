@@ -1263,3 +1263,70 @@ def test_prerequisite_reads_do_not_starve_a_full_page_of_dependants() -> None:
 
     assert report.done == 2
     assert dependant.output == {"d0": "b0", "d1": "b0"}
+
+
+@pytest.mark.parametrize("kind", ["quiet", "fault", "binding_moved", "blocked"])
+def test_cursor_unsettled_evidence_survives_an_empty_outcome_sample(kind: str) -> None:
+    """Only actual consumed unsettled work obliges a clean wrapped sweep."""
+    adapter = RecordingDerivation(
+        "d",
+        required=("first", "tail"),
+        quiet_keys=frozenset({"first"}) if kind == "quiet" else frozenset(),
+        poison=frozenset({"first"}) if kind == "fault" else frozenset(),
+        publish_refuses=frozenset({"first"}) if kind == "binding_moved" else frozenset(),
+    )
+    if kind == "blocked":
+        adapter.prerequisites = ("up",)
+        adapter._bindings = {"first": (("up", "missing"),)}
+        registry = DerivationRegistry([RecordingDerivation("up", required=()), adapter])
+    else:
+        registry = DerivationRegistry([adapter])
+    report = converge(registry, FRAME, budget=Budget(retained_outcomes=0))
+    assert report.outcomes == () and report.truncated
+    assert report.cursor.position("d").swept
+    assert report.cursor_unsettled_domains == frozenset({"d"})
+
+
+def test_cursor_evidence_excludes_budget_suffix_even_when_its_inspection_failed() -> None:
+    """An inspected suffix still lies ahead of the cursor stopped at the budget."""
+
+    class PoisonedSuffix(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            if "poison" in keys:
+                raise ValueError("synthetic suffix inspection fault")
+            return super().inspect(frame, keys)
+
+    adapter = PoisonedSuffix("d", required=("published", "budget", "poison"))
+    report = converge(DerivationRegistry([adapter]), FRAME, budget=Budget(publication=1, retained_outcomes=0))
+    assert report.failed == 1 and report.pending == 1 and report.done == 1
+    assert report.cursor.position("d").offset == 1
+    assert report.cursor_unsettled_domains == frozenset()
+
+
+def test_unchanged_discovery_fault_has_no_consumed_unsettled_prefix() -> None:
+    class Unreadable(RecordingDerivation):
+        def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+            raise ValueError("synthetic unreadable relation")
+
+    report = converge(DerivationRegistry([Unreadable("d", required=())]), FRAME, budget=Budget(retained_outcomes=0))
+    assert report.failed == 1 and not report.cursor.position("d").swept
+    assert report.cursor_unsettled_domains == frozenset()
+
+
+def test_deadline_reached_during_compute_keeps_the_unattempted_suffix_ahead_of_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("polylogue.daemon.derivation._pass_clock", lambda: clock["now"])
+
+    class SlowCompute(RecordingDerivation):
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            result = super().compute(frame, key)
+            clock["now"] = 2.0
+            return result
+
+    adapter = SlowCompute("d", required=("published", "deferred"))
+    report = converge(DerivationRegistry([adapter]), FRAME, budget=Budget(deadline_at=1.0, retained_outcomes=0))
+    assert report.done == 1 and report.pending == 1
+    assert report.cursor.position("d").offset == 1
+    assert report.cursor_unsettled_domains == frozenset()

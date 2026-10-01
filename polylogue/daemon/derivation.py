@@ -370,6 +370,8 @@ class DerivationReport:
     work: WorkCounters = WorkCounters()
     cursor: PassCursor = PassCursor()
     truncated: bool = False
+    #: Domains whose returned cursor passed an unsettled key, excluding budget-deferred suffixes.
+    cursor_unsettled_domains: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         # Preserve the positional constructor while deriving totals when the
@@ -624,6 +626,7 @@ class _Pass:
         self.unreadable_domains: set[str] = set()
         #: Domains this pass observed holding at least one non-valid key.
         self.unconverged_domains: set[str] = set()
+        self.cursor_unsettled_domains: set[str] = set()
         self.prerequisite_cache: dict[DerivationKey, str | None] = {}
         self.coarse_domain_cache: dict[str, str | None] = {}
 
@@ -1221,6 +1224,15 @@ class _Pass:
                     continue
                 self.process(adapter, key, retiring=position.phase is DiscoveryPhase.EXCESS)
 
+            # Only the consumed prefix lies behind the returned cursor. Budget
+            # suffixes remain ahead of it, even if inspection classified a
+            # blocked or failed sibling there. This evidence survives outcome
+            # sample truncation without retaining another per-key ledger.
+            consumed = keys if stopped_at is None else keys[:stopped_at]
+            if any(
+                self.verdicts.get(DerivationKey(domain, key)) in {Outcome.PENDING, Outcome.FAILED} for key in consumed
+            ):
+                self.cursor_unsettled_domains.add(domain)
             if stopped_at is not None:
                 return DomainCursor(position.phase, position.page_cursor, position.offset + stopped_at)
             position = self.advance(position, page)
@@ -1278,4 +1290,5 @@ def converge(
         work=state.counters(),
         cursor=PassCursor(positions),
         truncated=state.truncated,
+        cursor_unsettled_domains=frozenset(state.cursor_unsettled_domains),
     )

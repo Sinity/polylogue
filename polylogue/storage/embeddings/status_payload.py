@@ -733,7 +733,7 @@ def _next_action(
         return {
             "code": "set_voyage_key",
             "command": "polylogue ops embed enable --voyage-api-key ...",
-            "reason": "Semantic retrieval needs a Voyage API key before embedding can run.",
+            "reason": "Embedding acquisition needs a Voyage API key before it can run.",
         }
     if config_enabled is None:
         return {

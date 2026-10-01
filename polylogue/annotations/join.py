@@ -11,7 +11,13 @@ from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from polylogue.annotations.schema import ANNOTATION_SCHEMA_REGISTRY, validate_annotation_row
+from polylogue.annotations.schema import (
+    ANNOTATION_SCHEMA_REGISTRY,
+    RETIRED_ANNOTATION_TARGET_KINDS,
+    normalize_annotation_target_ref,
+    validate_annotation_row,
+    validate_annotation_value,
+)
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import ObjectRef
@@ -356,6 +362,29 @@ async def join_typed_annotations(
             )
             continue
         value = _typed_value(assertion.value)
+        target_kind = assertion.target_ref.partition(":")[0]
+        if target_kind in RETIRED_ANNOTATION_TARGET_KINDS and target_kind in schema.target_ref_kinds:
+            try:
+                normalize_annotation_target_ref(assertion.target_ref)
+            except ValueError:
+                pass  # The ordinary validator reports malformed provenance below.
+            else:
+                errors = (
+                    ["annotation value is not a JSON object"]
+                    if value is None
+                    else validate_annotation_value(schema, value)
+                )
+                if schema.evidence_policy == "required" and not assertion.evidence_refs:
+                    errors.append("schema requires evidence_refs and none were provided")
+                if not errors:
+                    missing_count += 1
+                    diagnose(
+                        "missing_target",
+                        assertion_ref,
+                        assertion.target_ref,
+                        f"target kind {target_kind!r} is retired; structural resolution is unsupported",
+                    )
+                    continue
         errors = (
             ["annotation value is not a JSON object"]
             if value is None

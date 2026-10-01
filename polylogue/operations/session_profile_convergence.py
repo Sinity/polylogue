@@ -6,8 +6,8 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from polylogue.daemon.convergence_stages import _archive_hot_insight_session_ids
 from polylogue.daemon.derivation import DerivationFrame
+from polylogue.operations.session_source_membership import hot_insight_session_ids
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.derived.session.derivation import (
     SESSION_PROFILE_DOMAIN,
@@ -130,7 +130,7 @@ def _hot_session_quiet_key(
         del frame
         conn = read_connection()
         try:
-            return session_id in _archive_hot_insight_session_ids(
+            return session_id in hot_insight_session_ids(
                 conn,
                 (session_id,),
                 now=now(),

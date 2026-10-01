@@ -5630,14 +5630,10 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         from polylogue.daemon.operation_runtime import DaemonOperationRuntime
         from polylogue.operations.daemon_reads import DaemonReadDependencies, VectorReadBinding
 
-        vector_binding = (
-            VectorReadBinding(
-                operation_settings.voyage_api_key,
-                operation_settings.embedding_model,
-                operation_settings.embedding_dimension,
-            )
-            if operation_settings.voyage_api_key
-            else None
+        vector_binding = VectorReadBinding(
+            operation_settings.voyage_api_key,
+            operation_settings.embedding_model,
+            operation_settings.embedding_dimension,
         )
 
         from polylogue.daemon.session_profile_composition import compose_session_profile_callback

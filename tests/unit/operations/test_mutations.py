@@ -21,6 +21,7 @@ from polylogue.surfaces.payloads import (
     MetadataMutationResult,
     validate_metadata_key,
 )
+from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -73,10 +74,11 @@ class TestValidateMetadataKey:
 class TestSetMetadataValidated:
     async def test_set_then_unchanged_then_overwrite(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env)
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            first = await poly.set_metadata(_native("conv-mut"), "status", "ready")
-            second = await poly.set_metadata(_native("conv-mut"), "status", "ready")
-            third = await poly.set_metadata(_native("conv-mut"), "status", "shipped")
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                first = await poly.set_metadata(_native("conv-mut"), "status", "ready")
+                second = await poly.set_metadata(_native("conv-mut"), "status", "ready")
+                third = await poly.set_metadata(_native("conv-mut"), "status", "shipped")
 
         assert isinstance(first, MetadataMutationResult)
         assert first.outcome == "set"
@@ -96,19 +98,21 @@ class TestSetMetadataValidated:
 
     async def test_missing_session_raises(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env)
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            with pytest.raises(SessionNotFoundError):
-                await poly.set_metadata("missing-id", "status", "ready")
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                with pytest.raises(SessionNotFoundError):
+                    await poly.set_metadata("missing-id", "status", "ready")
 
 
 @pytest.mark.asyncio
 class TestDeleteMetadataValidated:
     async def test_deleted_then_not_found(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env)
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            await poly.set_metadata(_native("conv-mut"), "status", "ready")
-            deleted = await poly.delete_metadata(_native("conv-mut"), "status")
-            second = await poly.delete_metadata(_native("conv-mut"), "status")
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                await poly.set_metadata(_native("conv-mut"), "status", "ready")
+                deleted = await poly.delete_metadata(_native("conv-mut"), "status")
+                second = await poly.delete_metadata(_native("conv-mut"), "status")
 
         assert deleted.outcome == "deleted"
         assert deleted.session_id == _native("conv-mut")
@@ -124,9 +128,10 @@ class TestDeleteMetadataValidated:
 
     async def test_missing_session_raises(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env)
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            with pytest.raises(SessionNotFoundError):
-                await poly.delete_metadata("missing-id", "status")
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                with pytest.raises(SessionNotFoundError):
+                    await poly.delete_metadata("missing-id", "status")
 
 
 # ---------------------------------------------------------------------------
@@ -138,11 +143,12 @@ class TestDeleteMetadataValidated:
 class TestDeleteSessionSafe:
     async def test_delete_then_not_found(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env, session_id="conv-del")
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            preview = await poly.prepare_delete_session(_native("conv-del"))
-            assert preview.preview_ref is not None
-            first = await poly.delete_session_safe(_native("conv-del"), preview_ref=preview.preview_ref)
-            second = await poly.delete_session_safe(_native("conv-del"), preview_ref=preview.preview_ref)
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                preview = await poly.prepare_delete_session(_native("conv-del"))
+                assert preview.preview_ref is not None
+                first = await poly.delete_session_safe(_native("conv-del"), preview_ref=preview.preview_ref)
+                second = await poly.delete_session_safe(_native("conv-del"), preview_ref=preview.preview_ref)
 
         assert isinstance(first, DeleteSessionResult)
         assert first.outcome == "deleted"
@@ -163,11 +169,12 @@ class TestDeleteSessionSafe:
 
     async def test_bool_wrapper_still_returns_bool(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env, session_id="conv-bool")
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            preview = await poly.prepare_delete_session(_native("conv-bool"))
-            assert preview.preview_ref is not None
-            assert await poly.delete_session(_native("conv-bool"), preview_ref=preview.preview_ref) is True
-            assert await poly.delete_session(_native("conv-bool"), preview_ref=preview.preview_ref) is False
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                preview = await poly.prepare_delete_session(_native("conv-bool"))
+                assert preview.preview_ref is not None
+                assert await poly.delete_session(_native("conv-bool"), preview_ref=preview.preview_ref) is True
+                assert await poly.delete_session(_native("conv-bool"), preview_ref=preview.preview_ref) is False
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +191,11 @@ class TestBulkTagSessions:
                 message_id=f"{cid}-msg",
                 text="x",
             ).save()
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            first = await poly.bulk_tag_sessions([_native("conv-a"), _native("conv-b")], ["important"])
-            # Re-applying the same tag should report zero affected.
-            second = await poly.bulk_tag_sessions([_native("conv-a"), _native("conv-b")], ["important"])
+        with daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                first = await poly.bulk_tag_sessions([_native("conv-a"), _native("conv-b")], ["important"])
+                # Re-applying the same tag should report zero affected.
+                second = await poly.bulk_tag_sessions([_native("conv-a"), _native("conv-b")], ["important"])
 
         assert isinstance(first, BulkTagMutationResult)
         assert first.session_count == 2
