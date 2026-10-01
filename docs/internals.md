@@ -1209,8 +1209,9 @@ polylogue ops diagnostics workload --compare before.json after.json --json > dif
 The report has a stable top-level shape carrying its `report_version`,
 `captured_at`, and structured sections that compare diffs arithmetically:
 
-- `attempt_counts` — total/running/completed/failed `live_ingest_attempt`
-  rows plus `stale_cursor_writes` and overlapping running source paths.
+- `attempt_counts` — total/running/completed/failed `ingest_attempts`
+  rows plus overlapping running source paths. `stale_cursor_writes` remains
+  null because the current ops authority does not measure that counter.
 - `recent_attempts` — most recent attempts with read amplification,
   parse/convergence timings, and source-path bundles.
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
@@ -1223,7 +1224,7 @@ The report has a stable top-level shape carrying its `report_version`,
   planner-estimated counts only where exact counting would scan large derived
   tables (`blocks`, `messages_fts_docsize`, `message_embeddings`,
   `session_events`, `session_links`, `repos`, `session_repos`,
-  `session_commits`, `live_ingest_attempt`, `convergence_debt`).
+  `session_commits`, `ingest_attempts`, `convergence_debt`).
   Missing tables surface as `-1` and expensive tables without SQLite planner
   statistics surface as `-2` rather than crashing the probe. Pass
   `--exact-derived-counts` when a before/after evidence run needs exact
@@ -1268,7 +1269,7 @@ The report has a stable top-level shape carrying its `report_version`,
   FTS index drift risk (suspended during bulk operations and not
   restored, for example).
 - `daemon_resource_signal` — RSS / cgroup memory / worker-progress fields
-  pulled from the most recent `live_ingest_attempt` row (these are the
+  pulled from current `daemon_stage_events` payloads (these are the
   only daemon-RSS signals readable without IPC).
 - `source_path_churn`, `convergence_debt`, `query_plans` — source-path
   churn/read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
@@ -1293,9 +1294,9 @@ surfaces share the same unauthenticated posture (scrapers cannot supply
 credentials; the daemon binds to loopback by default).
 
 Series are derived from existing daemon state tables via
-`open_readonly_connection` — `live_ingest_attempt` (totals by status,
+`open_readonly_connection` — `ingest_attempts` (totals by status,
 in-flight gauge, recent-attempt duration min/mean/max), unresolved
-`live_convergence_debt` grouped by stage, and the expected FTS sync triggers
+ops `convergence_debt` grouped by stage, and the expected FTS sync triggers
 from `storage/fts/derivation.py:active_fts_triggers_sync`. The same scrape
 also exposes embedding
 backlog counts and the latest `embedding_catchup_runs` progress row so

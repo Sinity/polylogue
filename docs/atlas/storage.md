@@ -255,3 +255,11 @@ branch path. These are evidence refusals, not loss of the underlying blocks.
 Reingesting complete evidence recomputes the relation at its ordinary write
 boundary. The decision does not depend on row insertion order or on whether
 a reader uses the materialized or directly computed relation.
+
+Facade settings and context-delivery reads distinguish an absent row in a
+readable tier from unavailable authority. Required user state, source events
+for Hermes delivery correlation, and the ops injection ledger refuse with
+`ArchiveTierUnavailableError` when their tier cannot be inspected. Read calls
+never create missing tiers. Named-source freshness reads current cursor progress
+only from ops `ingest_cursor`; a missing offset remains unknown, and successful
+empty canonical state cannot inherit progress from a retired index table.

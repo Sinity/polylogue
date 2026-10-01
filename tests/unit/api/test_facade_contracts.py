@@ -1648,39 +1648,19 @@ def _unreadable_events(records: list[dict[str, object]], route: str) -> list[dic
     ]
 
 
-async def test_correlate_hermes_context_deliveries_distinguishes_corruption_from_absence(
-    tmp_path: Path,
-) -> None:
-    """Review fix: 'archive not initialized' and 'archive present but corrupt' both
-    return an empty tuple (unchanged, backward-compatible contract) but must not be
-    silently indistinguishable -- only the corruption case emits an event."""
+async def test_correlate_hermes_context_deliveries_refuses_unavailable_authority(tmp_path: Path) -> None:
+    from polylogue.core.errors import ArchiveTierUnavailableError
 
     archive = _archive(tmp_path)
-    route = "hermes_context_deliveries"
+    never_initialized = Polylogue(archive_root=tmp_path / "never-initialized", db_path=tmp_path / "unused.db")
     try:
-        with capture() as records:
-            # Not-yet-initialized case: no user.db at all for a *different* fresh root.
-            never_initialized = Polylogue(archive_root=tmp_path / "never-initialized", db_path=tmp_path / "unused.db")
-            try:
-                absent = await never_initialized.correlate_hermes_context_deliveries("hermes-conv-1")
-                assert absent == ()
-            finally:
-                await never_initialized.close()
-        assert _unreadable_events(records, route) == []
-
-        # Present-but-corrupt case: source.db exists but is not a valid sqlite file
-        # (the correlation's first read touches source.db unconditionally, before
-        # it ever reaches user.db, so this is the tier whose corruption reproduces
-        # the finding).
+        with pytest.raises(ArchiveTierUnavailableError):
+            await never_initialized.correlate_hermes_context_deliveries("hermes-conv-1")
         (tmp_path / "source.db").write_bytes(b"not a sqlite file")
-        with capture() as records:
-            corrupted = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
-        assert corrupted == ()
-        emitted = _unreadable_events(records, route)
-        assert len(emitted) == 1
-        assert emitted[0]["outcome"] == "degraded"
-        assert emitted[0]["reason"] == "archive_present_but_unreadable"
+        with pytest.raises(ArchiveTierUnavailableError):
+            await archive.correlate_hermes_context_deliveries("hermes-conv-1")
     finally:
+        await never_initialized.close()
         await archive.close()
 
 

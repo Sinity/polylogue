@@ -376,5 +376,5 @@ def test_ledger_reader_returns_bounded_decisions_and_filters_context() -> None:
     conn.execute("PRAGMA ignore_check_constraints = ON")
     conn.execute("UPDATE context_injection_ledger SET decision = 'skipped'")
     conn.execute("PRAGMA ignore_check_constraints = OFF")
-    with pytest.raises(ValueError, match="stored context injection decision"):
+    with pytest.raises(sqlite3.DatabaseError):
         read_context_ledger(conn)

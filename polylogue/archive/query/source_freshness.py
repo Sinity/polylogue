@@ -78,11 +78,13 @@ class NamedSourceOperationalReason(str, Enum):
     PENDING_BYTES = "pending-bytes"
     CAUGHT_UP = "caught-up"
     CURSOR_MISSING = "cursor-missing"
+    CURSOR_UNKNOWN = "cursor-unknown"
+    CURSOR_UNAVAILABLE = "cursor-unavailable"
     NO_EVIDENCE = "no-evidence"
 
 
 ParseState = Literal["unseen", "pending", "failed", "parsed"]
-CursorState = Literal["unseen", "excluded", "retrying", "ahead", "behind", "idle"]
+CursorState = Literal["unseen", "excluded", "retrying", "ahead", "behind", "idle", "unknown", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,27 +745,17 @@ def _load_cursor(
     receipt: _ReceiptBuilder,
     errors: list[str],
 ) -> CursorEvidence:
-    for db_path, db_label, table in (
-        (archive_root / "ops.db", "ops.db", "ingest_cursor"),
-        (archive_root / "index.db", "index.db", "live_cursor"),
-    ):
-        if not db_path.exists():
-            continue
-        try:
-            with _ReadonlyDatabase(db_path, label=db_label, limits=limits, receipt=receipt) as db:
-                if not db.table_exists(table):
-                    continue
-                columns = db.columns(table)
-                row = _exact_cursor_row(db, table, columns, source_key)
-                if row is not None:
-                    return _cursor_from_mapping(
-                        dict(row),
-                        source=db_label,
-                        source_stat=source_stat,
-                        observed=observed,
-                    )
-        except sqlite3.Error as exc:
-            errors.append(f"{db_label} cursor read failed: {exc}")
+    db_path = archive_root / "ops.db"
+    try:
+        with _ReadonlyDatabase(db_path, label="ops.db", limits=limits, receipt=receipt) as db:
+            if not db.table_exists("ingest_cursor"):
+                raise sqlite3.OperationalError("required ingest_cursor table is missing")
+            row = _exact_cursor_row(db, "ingest_cursor", source_key)
+            if row is not None:
+                return _cursor_from_mapping(dict(row), source="ops.db", source_stat=source_stat, observed=observed)
+            return CursorEvidence(present=False, state="unseen", source="ops.db")
+    except (sqlite3.Error, OSError) as exc:
+        errors.append(f"ops.db cursor read failed: {exc}")
 
     if cursor_export is not None:
         exported = _cursor_from_export(
@@ -777,40 +769,17 @@ def _load_cursor(
         )
         if exported is not None:
             return exported
-    return CursorEvidence(present=False, state="unseen")
+    return CursorEvidence(present=False, state="unavailable", source="ops.db")
 
 
 def _exact_cursor_row(
     db: _ReadonlyDatabase,
     table: str,
-    columns: frozenset[str],
     source_key: str,
 ) -> sqlite3.Row | None:
-    if "source_path" not in columns:
-        return None
-    names = (
-        "source_path",
-        "stat_size" if "stat_size" in columns else "byte_size",
-        "byte_offset",
-        "failure_count",
-        "excluded",
-        "next_retry_at",
-        "updated_at_ms" if "updated_at_ms" in columns else "updated_at",
-    )
-    aliases = (
-        "source_path",
-        "observed_size",
-        "byte_offset",
-        "failure_count",
-        "excluded",
-        "next_retry_at",
-        "updated_at",
-    )
-    selected = [
-        (f"{_quote_identifier(name)} AS {_quote_identifier(alias)}" if name in columns else f"NULL AS {alias}")
-        for name, alias in zip(names, aliases, strict=True)
-    ]
-    sql = f"SELECT {', '.join(selected)} FROM {_quote_identifier(table)} WHERE source_path = ? LIMIT 1"
+    sql = f"""SELECT source_path, stat_size AS observed_size, byte_offset,
+              failure_count, excluded, next_retry_at, updated_at_ms AS updated_at
+              FROM {_quote_identifier(table)} WHERE source_path = ? LIMIT 1"""
     rows = db.exact_rows(
         label=f"{table}-by-source-path",
         sql=sql,
@@ -844,7 +813,9 @@ def _cursor_from_mapping(
         state = "retrying"
     elif (cursor_ahead or 0) > 0 or (observed_size_ahead or 0) > 0:
         state = "ahead"
-    elif pending_bytes is not None and pending_bytes > 0:
+    elif pending_bytes is None:
+        state = "unknown"
+    elif pending_bytes > 0:
         state = "behind"
     else:
         state = "idle"
@@ -891,7 +862,9 @@ def _cursor_from_export(
     if isinstance(payload, dict):
         direct = payload.get(source_key)
         if isinstance(direct, dict):
-            candidates.append(cast(dict[str, object], direct))
+            bound = dict(direct)
+            bound.setdefault("source_path", source_key)
+            candidates.append(cast(dict[str, object], bound))
         records = payload.get("records")
         if isinstance(records, list):
             candidates.extend(
@@ -910,7 +883,7 @@ def _cursor_from_export(
             )
         )
     for candidate in candidates:
-        if candidate.get("source_path") not in (None, source_key):
+        if candidate.get("source_path") != source_key:
             continue
         normalized = dict(candidate)
         if "observed_size" not in normalized:
@@ -984,7 +957,7 @@ def _exact_attempt_row(
     limit: int,
 ) -> sqlite3.Row | None:
     if "source_path" not in columns:
-        return None
+        raise sqlite3.OperationalError("required ingest_attempts source_path is missing")
     selected = []
     for name in (
         "attempt_id",
@@ -1717,8 +1690,12 @@ def _classify_operational_state(
             NamedSourceOperationalState.DEGRADED,
             NamedSourceOperationalReason.BROKEN_HEAD,
         )
+    if cursor.state == "unavailable":
+        return (NamedSourceOperationalState.DEGRADED, NamedSourceOperationalReason.CURSOR_UNAVAILABLE)
     if cursor.present:
-        if cursor.pending_bytes is not None and cursor.pending_bytes > 0:
+        if cursor.pending_bytes is None:
+            return (NamedSourceOperationalState.DEGRADED, NamedSourceOperationalReason.CURSOR_UNKNOWN)
+        if cursor.pending_bytes > 0:
             return (
                 NamedSourceOperationalState.ACTIVE,
                 NamedSourceOperationalReason.PENDING_BYTES,
