@@ -1962,13 +1962,16 @@ def test_fresh_bootstrap_receipt_rejects_recorded_version_tampering(
 
 def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.write_lease import write_lease
 
     source_path = tmp_path / "source.db"
-    initialize_archive_database(source_path, ArchiveTier.SOURCE, expected_version=1)
+    with write_lease("test.source-baseline-bootstrap", archive_root=tmp_path):
+        initialize_archive_database(source_path, ArchiveTier.SOURCE, expected_version=1)
     with sqlite3.connect(source_path) as conn:
         before = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
 
-    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with write_lease("test.late-user-baseline-bootstrap", archive_root=tmp_path):
+        initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER, expected_version=1)
     with sqlite3.connect(source_path) as conn:
         after = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
 
@@ -3042,3 +3045,55 @@ def test_source004_indexes_actual_dependency_reader_and_preserves_populated_sour
     assert train.proof is not None
     assert all(result.passed for result in train.proof.runtime_consumers)
     bootstrap.initialize_active_archive_root(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("drop_sql", "accepted"),
+    [
+        ("DROP INDEX items_kind; CREATE UNIQUE INDEX items_kind ON items(kind) WHERE kind IN ('new');", True),
+        ("DROP INDEX items_kind;", False),
+        ("DROP INDEX items_kind; CREATE INDEX other_kind ON items(kind) WHERE kind IN ('new');", False),
+        ("DROP TABLE items;", False),
+        ("DROP VIEW item_view;", False),
+        ("DROP TRIGGER item_trigger;", False),
+    ],
+)
+def test_backup_required_mixed_train_classifies_each_drop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drop_sql: str, accepted: bool
+) -> None:
+    package = f"fixture_mixed_drop_{tmp_path.name.replace('-', '_')}"
+    directory = tmp_path / package / "source"
+    directory.mkdir(parents=True)
+    (directory.parent / "__init__.py").write_text("")
+    (directory / "__init__.py").write_text("")
+    sql = "CREATE TABLE receipts(id TEXT PRIMARY KEY) STRICT; ALTER TABLE items ADD COLUMN receipt_id TEXT; " + drop_sql
+    name = "002_mixed_index_replacement.sql"
+    claim = durable_migration_claim_for_sql(ArchiveTier.SOURCE, name, sql, owner_ref="owner:mixed-drops")
+    assert claim.requires_backup
+    train = declare_durable_change_train(
+        train_id="source-mixed-index-replacement",
+        tier=ArchiveTier.SOURCE,
+        current_version=1,
+        target_version=2,
+        slot=2,
+        owner_ref="owner:mixed-drops",
+        migration=claim,
+        riders=(_production_rider(),),
+        backup_plan_ref="proof:mixed-train-backup",
+        declared_at_ms=1,
+    )
+    (directory / "002.train.json").write_text(json.dumps(migration_runner.durable_change_train_to_payload(train)))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(durable_change_train_module, "_migration_package", lambda _tier: f"{package}.source")
+    if accepted:
+        result = validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((name, sql),))
+        assert result[0].train.migration.requires_backup
+        with pytest.raises(migration_runner.MigrationError):
+            durable_migration_claim_for_sql(
+                ArchiveTier.SOURCE,
+                name,
+                "-- migration-safety: row-preserving-index-replacement\n" + sql,
+            )
+    else:
+        with pytest.raises(DurableChangeTrainError, match="unapproved drop"):
+            validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((name, sql),))

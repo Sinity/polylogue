@@ -242,7 +242,12 @@ def _validate_sidecar_binding(
     # The canonical classifier separately proves paired index replacement;
     # destructive drops still require their declared copy-forward constraints.
     if _DROP_SQL_RE.search(sql) is not None and expected_claim.requires_backup and not train.drop_constraints:
-        raise DurableChangeTrainError(f"durable migration sidecar forbids an unapproved drop: {sidecar.resource_name}")
+        try:
+            _migration_runner._index_replacement_pairs(Path(migration_name), sql, allow_other_statements=True)
+        except _migration_runner.MigrationError as exc:
+            raise DurableChangeTrainError(
+                f"durable migration sidecar forbids an unapproved drop: {sidecar.resource_name}"
+            ) from exc
 
 
 def validate_durable_migration_sidecars(

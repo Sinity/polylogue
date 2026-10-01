@@ -250,12 +250,19 @@ def _requires_migration_backup(path: Path, sql: str) -> bool:
     return False
 
 
-def _index_replacement_pairs(path: Path, sql: str) -> tuple[str, ...]:
-    """Admit only complete same-name index replacement pairs, not their effect."""
+def _index_replacement_pairs(path: Path, sql: str, *, allow_other_statements: bool = False) -> tuple[str, ...]:
+    """Classify every drop as an adjacent same-name index replacement.
+
+    The no-backup marker admits only pairs. A backup-required migration may
+    also create tables or add columns, without changing the classification of
+    its individual index drops. Neither mode proves the replacement effect.
+    """
     statements = iter(_iter_migration_statements(sql))
     names: list[str] = []
     identifier = r"[A-Za-z_][A-Za-z_0-9]*"
     for drop in statements:
+        if allow_other_statements and not re.match(r"DROP\b", drop, re.IGNORECASE):
+            continue
         match = re.fullmatch(rf"DROP\s+INDEX\s+({identifier})\s*;", drop, re.IGNORECASE)
         create = next(statements, None)
         replacement = re.fullmatch(
