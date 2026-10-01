@@ -1350,7 +1350,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
             after_sequence = status["result"]["sequence"]
             after_progress_sequence = status["result"].get("progress_sequence", 0)
             while True:
-                timed_out = stack.client.operation(
+                waited = stack.client.operation(
                     "operation.await",
                     {
                         "request_id": execute_request_id,
@@ -1361,20 +1361,23 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                     archive_root=str(stack.archive_root),
                     deadline_ms=max(1, int((deadline_at - monotonic()) * 1000)),
                 )
-                assert timed_out is not None, timed_out
-                if timed_out["outcome"] != "completed":
+                assert waited is not None, waited
+                assert waited["outcome"] == "completed", waited
+                # Poll expiry returns its actual accepted lifecycle. Earlier
+                # progress is consumed only within the original wait budget.
+                state = waited["result"]
+                assert state["outcome"] in {"accepted", "running"}, waited
+                assert state["reference"] == accepted["accepted_reference"], waited
+                if monotonic() >= deadline_at:
+                    after_sequence = state["sequence"]
+                    after_progress_sequence = state.get("progress_sequence", after_progress_sequence)
                     break
-                # An await may return a new running observation before its
-                # deadline. Consume that cursor before testing an idle wait.
-                state = timed_out["result"]
-                assert state["outcome"] in {"accepted", "running"}, timed_out
                 assert (state["sequence"], state.get("progress_sequence", after_progress_sequence)) != (
                     after_sequence,
                     after_progress_sequence,
-                ), timed_out
+                ), waited
                 after_sequence = state["sequence"]
                 after_progress_sequence = state.get("progress_sequence", after_progress_sequence)
-            assert timed_out is not None and timed_out["outcome"] == "timed-out", timed_out
             assert monotonic() - started < 1.0
             assert not release_apply.is_set()
 
@@ -1651,6 +1654,75 @@ def test_control_result_metadata_comes_from_the_durable_receipt_read(
         assert recovered["generation"]["id"] == accepted["generation"]["id"]
         assert recovered["schema_versions"] == {tier: accepted["schema_versions"][tier] for tier in ("source", "audit")}
         assert recovered["result"]["reference"] == accepted["accepted_reference"]
+
+
+def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(tmp_path: Path) -> None:
+    """Skipping the lifecycle read on poll expiry loses a real accepted receipt."""
+    from time import monotonic
+
+    from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+    ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal ids
+        ids = _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        accepted = stack.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(ids)},
+            archive_root=str(stack.archive_root),
+            request_id="expired-poll-receipt",
+        )
+        assert accepted is not None and accepted["outcome"] == "completed", accepted
+        reference = accepted["accepted_reference"]
+        principal = _all_capabilities_principal()
+        request = DaemonOperationRequest(
+            "operation.await",
+            {"request_id": "expired-poll-receipt", "timeout_ms": 1},
+            deadline_ms=1,
+        )
+        # Model a poll whose budget was spent before its handler ran; the
+        # accepted lifecycle is real Audit data, not a patched receipt.
+        recovered = stack.runtime.call(request, principal, started_at=monotonic() - 1)
+        assert recovered["outcome"] == "completed", recovered
+        assert recovered["result"]["outcome"] == "completed", recovered
+        assert recovered["result"]["reference"] == reference
+        assert recovered["schema_versions"] == {tier: accepted["schema_versions"][tier] for tier in ("source", "audit")}
+        for target, peer in (
+            ("unknown-expired-poll", principal),
+            ("expired-poll-receipt", replace(principal, actor_ref="synthetic-unrelated")),
+        ):
+            refused = stack.runtime.call(
+                replace(request, payload={**request.payload, "request_id": target}),
+                peer,
+                started_at=monotonic() - 1,
+            )
+            assert refused["outcome"] == "rejected", refused
+            assert refused["error"]["code"] == "operation_reference_unknown", refused
+        stale = stack.runtime.call(
+            replace(request, expected_archive_identity="synthetic-other-archive"),
+            principal,
+            started_at=monotonic() - 1,
+        )
+        assert stale["outcome"] == "rejected" and stale["error"]["code"] == "archive_identity_stale", stale
+        cancelled = QueryExecutionContext(
+            call_id="disconnected-expired-poll", query_ref=request.fingerprint, deadline_monotonic=monotonic() - 1
+        )
+        cancelled.cancel()
+        with pytest.raises(QueryCancelledError):
+            stack.runtime.control(request, principal, reference["archive_identity"], execution_context=cancelled)
+        for operation in ("operation.status", "operation.cancel"):
+            expired = stack.runtime.call(
+                replace(request, operation=operation, payload={"request_id": "expired-poll-receipt"}),
+                principal,
+                started_at=monotonic() - 1,
+            )
+            assert expired["outcome"] == "timed-out", expired
+            assert expired["error"]["code"] == "QueryTimeoutError", expired
+        assert stack.session_exists(ids[0])
 
 
 def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -> None:

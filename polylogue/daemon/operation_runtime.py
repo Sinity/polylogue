@@ -1142,8 +1142,11 @@ class DaemonOperationRuntime:
         if execution_context is not None:
             if execution_context.cancelled:
                 raise QueryCancelledError("operation control exchange disconnected")
-            if execution_context.deadline_exceeded():
+            if request.operation != "operation.await" and execution_context.deadline_exceeded():
                 raise QueryTimeoutError("operation control exchange deadline expired")
+        # Await's deadline limits waiting, not the one lifecycle read owed to
+        # an accepted operation. Even an already-expired poll authenticates
+        # its reference and reads the actual state before returning below.
         # Set only when *this* request cancelled a live, pre-acceptance
         # exchange. The scheduler completes a queued task's future
         # synchronously inside ``cancel()`` and the runtime's ``settled``
@@ -1261,7 +1264,7 @@ class DaemonOperationRuntime:
                 if execution_context is not None and request.operation != "operation.cancel":
                     if execution_context.cancelled:
                         raise QueryCancelledError("operation control exchange disconnected")
-                    if execution_context.deadline_exceeded():
+                    if request.operation != "operation.await" and execution_context.deadline_exceeded():
                         raise QueryTimeoutError("operation control exchange deadline expired")
                 if self._closing:
                     raise QueryCancelledError("operation runtime is stopping")

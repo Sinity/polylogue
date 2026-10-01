@@ -406,6 +406,9 @@ shutdown drains workers before removing its result scratch. These files are not 
 not grant restart authority.
 An await may return a running observation or progress frame first; consumers
 follow its state and progress cursors until the terminal outcome.
+An expired await poll still authenticates the reference and reads its actual
+lifecycle once. Expiry ends the wait and returns that snapshot; it does not
+turn an accepted mutation into a failed operation or cancel its work.
 This unbound filesystem operation does not mint an Audit machine-request
 receipt. After a daemon crash, an unfinished destination therefore remains
 fenced evidence, not a claim of durable terminal success.
