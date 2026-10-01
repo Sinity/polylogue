@@ -132,6 +132,7 @@ class RepositoryRawMixin:
         self,
         source_path: str,
         *,
+        canonical_source_path: str | None = None,
         st_dev: int | None = None,
         st_ino: int | None = None,
         st_size: int | None = None,
@@ -143,6 +144,7 @@ class RepositoryRawMixin:
             await _upsert(
                 conn,
                 source_path,
+                canonical_source_path=canonical_source_path,
                 st_dev=st_dev,
                 st_ino=st_ino,
                 st_size=st_size,

@@ -13,6 +13,12 @@ from enum import StrEnum
 from polylogue.core.enums import ArtifactSupportStatus
 
 
+class MissingProfileIdentityError(ValueError):
+    """Retained Hermes bytes have no acquisition-bound profile qualifier."""
+
+    outcome_code = "missing_profile_identity"
+
+
 class RawFailureEvidenceKind(StrEnum):
     """Durable lifecycle evidence attached to a retained raw artifact."""
 
@@ -24,10 +30,14 @@ class RawFailureEvidenceKind(StrEnum):
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
+    TERMINAL_MISSING_PROFILE_IDENTITY = "terminal_missing_profile_identity"
 
     @property
     def support_status(self) -> ArtifactSupportStatus:
-        if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
+        if self in {
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+            RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY,
+        }:
             return ArtifactSupportStatus.UNKNOWN
         if self in {
             RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,

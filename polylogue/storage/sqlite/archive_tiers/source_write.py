@@ -12,7 +12,6 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Literal, cast, get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
@@ -511,6 +510,9 @@ def _assert_existing_raw_identity(
     origin: str,
     native_id: str | None,
     source_path: str,
+    canonical_source_path: str | None,
+    captured_profile_key: str | None,
+    new_profile_receipt: bool = False,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -522,7 +524,7 @@ def _assert_existing_raw_identity(
                logical_source_key, revision_kind, source_revision,
                predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                append_start_offset, append_end_offset, acquisition_generation,
-               revision_authority
+               revision_authority, canonical_source_path
         FROM raw_sessions WHERE raw_id = ?
         """,
         (raw_id,),
@@ -537,7 +539,10 @@ def _assert_existing_raw_identity(
     # as evidence made those routes mutually exclusive over identical bytes. A
     # refinement away from ``unknown-export`` is admitted; two confident but
     # different origins remain a genuine contradiction.
-    if values[1:6] != (native_id, source_path, source_index, blob_hash, blob_size):
+    if (
+        values[1:6] != (native_id, source_path, source_index, blob_hash, blob_size)
+        or values[-1] != canonical_source_path
+    ):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
     stored_origin = values[0]
     unknown_origin = Origin.UNKNOWN_EXPORT.value
@@ -545,8 +550,44 @@ def _assert_existing_raw_identity(
         raise ValueError(
             f"raw id is already bound to a conflicting origin: {raw_id} (stored={stored_origin!r}, incoming={origin!r})"
         )
-    if revision is not None and values[6:] != _revision_values(revision):
+    if revision is not None and values[6:-1] != _revision_values(revision):
         raise ValueError(f"raw id is already bound to a different revision envelope: {raw_id}")
+    record_raw_profile_identity(
+        conn, raw_id=raw_id, profile_key=captured_profile_key, allow_new_receipt=new_profile_receipt
+    )
+
+
+def require_profile_identity_key(value: str) -> str:
+    """Validate the existing Hermes profile qualifier at its durable boundary."""
+    if len(value) != 12 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("profile identity must be a 12-character lowercase hexadecimal qualifier")
+    return value
+
+
+def record_raw_profile_identity(
+    conn: sqlite3.Connection, *, raw_id: str, profile_key: str | None, allow_new_receipt: bool = False
+) -> None:
+    """Retain acquisition's qualifier without changing an existing raw receipt."""
+    if profile_key is None:
+        return
+    profile_key = require_profile_identity_key(profile_key)
+    existing = conn.execute(
+        "SELECT profile_key FROM raw_profile_identity_receipts WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    if existing is not None and existing[0] != profile_key:
+        raise ValueError(f"raw id is already bound to a different profile identity: {raw_id}")
+    if existing is None and not allow_new_receipt:
+        raise ValueError(f"retained raw is missing its original profile identity receipt: {raw_id}")
+    conn.execute(
+        "INSERT INTO raw_profile_identity_receipts(raw_id, profile_key) VALUES (?, ?) ON CONFLICT(raw_id) DO NOTHING",
+        (raw_id, profile_key),
+    )
+
+
+def read_raw_profile_identity(conn: sqlite3.Connection, raw_id: str) -> str | None:
+    """Read only the retained receipt; absence never permits path discovery."""
+    row = conn.execute("SELECT profile_key FROM raw_profile_identity_receipts WHERE raw_id = ?", (raw_id,)).fetchone()
+    return None if row is None else require_profile_identity_key(row[0])
 
 
 def _backfill_raw_file_mtime(conn: sqlite3.Connection, *, raw_id: str, file_mtime_ms: int | None) -> None:
@@ -684,6 +725,8 @@ def write_source_raw_session(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     source_index: int,
     payload: bytes,
     acquired_at_ms: int,
@@ -733,7 +776,7 @@ def write_source_raw_session(
     )
 
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        raw_insert = conn.execute(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
@@ -751,7 +794,7 @@ def write_source_raw_session(
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
-                str(Path(source_path).resolve()),
+                canonical_source_path,
                 source_index,
                 blob_hash,
                 blob_size,
@@ -790,6 +833,9 @@ def write_source_raw_session(
             origin=origin_value,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            new_profile_receipt=raw_insert.rowcount == 1,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=blob_size,
@@ -1074,6 +1120,8 @@ def write_source_raw_session_blob_ref(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -1110,7 +1158,7 @@ def write_source_raw_session_blob_ref(
         native_id,
     )
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        raw_insert = conn.execute(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
@@ -1126,7 +1174,7 @@ def write_source_raw_session_blob_ref(
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
-                str(Path(source_path).resolve()),
+                canonical_source_path,
                 source_index,
                 blob_hash,
                 blob_size,
@@ -1153,6 +1201,9 @@ def write_source_raw_session_blob_ref(
             origin=origin_value,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            new_profile_receipt=raw_insert.rowcount == 1,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=blob_size,

@@ -50,7 +50,7 @@ from .decoder_zip import (
 from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
 from .parsers.base import RawSessionData
-from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
+from .sqlite_snapshot import SQLiteSourceBinding, bind_sqlite_source, is_sqlite_path, snapshot_sqlite_to_blob
 
 _ZIP_SNIFF_MEMBER_LIMIT = 64
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
@@ -269,6 +269,10 @@ def observe_acquisition(
 def raw_data_record(
     *,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_profile_source_path: str | None = None,
+    captured_file_observation: tuple[int, int, int, int, int] | None = None,
     file_mtime: str | None,
     provider_hint: Provider,
     blob_hash: str,
@@ -281,6 +285,10 @@ def raw_data_record(
     return RawSessionData(
         raw_bytes=b"",
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
+        captured_profile_source_path=captured_profile_source_path,
+        captured_file_observation=captured_file_observation,
         source_index=source_index,
         file_mtime=file_mtime,
         provider_hint=provider_hint,
@@ -356,6 +364,13 @@ def make_split_entry_raw_data(
 
 
 def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
+    if is_sqlite_path(context.path) and context.retained_blob is None:
+        with bind_sqlite_source(context.path) as binding:
+            return _read_plain_source_file(context, binding)
+    return _read_plain_source_file(context, None)
+
+
+def _read_plain_source_file(context: SourceReadContext, binding: SQLiteSourceBinding | None) -> RawSessionData:
     """Stream one non-ZIP source file into the blob store.
 
     This is the real per-file production acquisition entry point for the
@@ -377,9 +392,11 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
 
     stage_timings = AcquisitionStageTimings()
     sqlite_path = is_sqlite_path(context.path)
-    original_source_path = (
-        original_sqlite_source_path(context.path) if sqlite_path and context.retained_blob is None else None
-    )
+    canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
+    captured_profile_source_path: str | None = None
+    captured_file_observation: tuple[int, int, int, int, int] | None = None
+    original_source_path = binding.source_path if binding is not None and binding.staged else None
     if (
         context.retained_blob is None
         and (context.provider_hint is Provider.HERMES or original_source_path is not None)
@@ -392,16 +409,24 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         )
         # A declared database of another origin (Codex ``state_5.sqlite`` under
         # the broad Hermes root) is refused by declaration before snapshotting.
-        refuse_declared_foreign(context.path.name, context.provider_hint)
+        refuse_declared_foreign(
+            (binding.source_path if binding is not None else context.path).name, context.provider_hint
+        )
         with stage_timings.stage("detect"):
-            snapshot = snapshot_sqlite_to_blob(context.path, context.blob_store, heartbeat=heartbeat)
+            snapshot = snapshot_sqlite_to_blob(
+                context.path, context.blob_store, heartbeat=heartbeat, source_binding=binding
+            )
+            original_source_path = snapshot.source_path
+            canonical_source_path = str(snapshot.identity_path)
+            captured_profile_key = snapshot.captured_profile_key
+            captured_profile_source_path = str(snapshot.captured_profile_source_path)
             blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
             publication_id = snapshot.blob_publication_receipt_id
             detected_provider = Provider.HERMES
             detection_evidence = "sqlite_snapshot.snapshot_sqlite_to_blob (Hermes sqlite state/sidecar)"
     else:
         if context.retained_blob is None:
-            blob_hash, blob_size = capture_bound_path(
+            capture = capture_bound_path(
                 context.blob_store,
                 context.path,
                 context.provider_hint,
@@ -411,6 +436,11 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
                     source_path=str(context.path),
                 ),
             )
+            blob_hash, blob_size = capture.blob_hash, capture.blob_size
+            canonical_source_path = capture.canonical_source_path
+            captured_profile_key = capture.captured_profile_key
+            captured_profile_source_path = capture.captured_profile_source_path
+            captured_file_observation = capture.file_observation
         else:
             # The path is acquisition identity only after acceptance. Every
             # byte read below comes from the retained content-addressed input,
@@ -467,6 +497,10 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
     )
     return raw_data_record(
         source_path=str(original_source_path or context.path),
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key if detected_provider is Provider.HERMES else None,
+        captured_profile_source_path=captured_profile_source_path if detected_provider is Provider.HERMES else None,
+        captured_file_observation=captured_file_observation,
         file_mtime=context.file_mtime,
         provider_hint=detected_provider,
         blob_hash=blob_hash,

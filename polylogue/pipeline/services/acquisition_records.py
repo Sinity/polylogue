@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 
 from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.sources.parsers.base import RawSessionData
@@ -99,10 +100,14 @@ def make_raw_record(
     if capture_mode is Provider.UNKNOWN:
         capture_mode = Provider.from_string(source_name)
     if source_name == "hermes":
+        if raw_data.captured_profile_source_path is None or raw_data.captured_profile_key is None:
+            raise MissingProfileIdentityError("Hermes acquisition is missing its captured profile identity")
         raw_id = hermes_profile_raw_id(
             raw_data.source_path,
             raw_data.source_index or 0,
             _hermes_content_revision(blob_hash, blob_root=blob_root, blob_store=blob_store),
+            identity_path=Path(raw_data.captured_profile_source_path),
+            profile_identity=raw_data.captured_profile_key,
         )
     else:
         raw_id = deterministic_raw_session_id(
@@ -122,6 +127,9 @@ def make_raw_record(
         capture_mode=capture_mode,
         source_name=source_name,
         source_path=raw_data.source_path,
+        canonical_source_path=raw_data.canonical_source_path,
+        captured_profile_key=raw_data.captured_profile_key,
+        captured_file_observation=raw_data.captured_file_observation,
         source_index=raw_data.source_index,
         addressing_mode=raw_data.addressing_mode,
         content_identity=raw_data.content_identity,
@@ -160,6 +168,8 @@ def pending_pre_parse_raw_admission_request(
         origin=origin,
         capture_mode=record.capture_mode,
         source_path=record.source_path,
+        canonical_source_path=record.canonical_source_path,
+        captured_profile_key=record.captured_profile_key,
         source_index=record.source_index or 0,
         blob_hash=blob_hash,
         blob_size=record.blob_size,

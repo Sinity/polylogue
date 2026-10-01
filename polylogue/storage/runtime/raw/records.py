@@ -17,6 +17,9 @@ class RawSessionRecord(BaseModel):
     capture_mode: Provider | None = None
     source_name: str | None = None
     source_path: str
+    # Frozen by acquisition; publication never resolves a mutable source alias.
+    canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
     source_index: int | None = None
     # Container-member address kind, carried from acquisition so the source
     # tier records how this payload is addressed rather than inferring it

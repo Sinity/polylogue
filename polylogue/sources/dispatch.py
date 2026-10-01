@@ -1925,7 +1925,9 @@ def parse_generic_messages_stream(
     return _generic_messages_session_from_messages(provider, envelope, fallback_id, message_sink)
 
 
-def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
+def _parse_lowered_spec(
+    spec: LoweredPayloadSpec, resolver: SidecarResolver, *, profile_identity: str | None = None
+) -> list[ParsedSession]:
     """Parse one lowered spec through the shared admission boundary.
 
     Every production route passes here, including the ones that reach an
@@ -1933,7 +1935,7 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
     markdown, Codex streams); their single-session results get the same
     outer-record ledger the decorated leaf parsers attach.
     """
-    sessions = _parse_lowered_spec_unadmitted(spec, resolver)
+    sessions = _parse_lowered_spec_unadmitted(spec, resolver, profile_identity=profile_identity)
     return admit_parsed_sessions(
         spec.provider.value.replace("-", "_"),
         spec.payload,
@@ -1946,7 +1948,9 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
     )
 
 
-def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
+def _parse_lowered_spec_unadmitted(
+    spec: LoweredPayloadSpec, resolver: SidecarResolver, *, profile_identity: str | None = None
+) -> list[ParsedSession]:
     if spec.mode == "browser_capture":
         record = _payload_record(spec.payload)
         return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
@@ -2011,6 +2015,7 @@ def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarRe
             hermes_spans.parse_atof_stream(
                 payloads,
                 spec.fallback_id,
+                profile_identity=profile_identity,
                 profile_root=(
                     hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
                 ),
@@ -2033,7 +2038,11 @@ def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarRe
                 )
             ]
         if spec.provider is Provider.HERMES:
-            return [local_agent.parse_hermes(record, spec.fallback_id, source_path=spec.source_path)]
+            return [
+                local_agent.parse_hermes(
+                    record, spec.fallback_id, source_path=spec.source_path, profile_identity=profile_identity
+                )
+            ]
         return []
 
     if spec.mode == "local_artifact_document":
@@ -2041,11 +2050,14 @@ def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarRe
         if record is None:
             return []
         if spec.provider is Provider.HERMES and hermes_state.looks_like_state_db_payload(record):
-            return hermes_state.parse_state_db_payload(record, spec.fallback_id, source_path=spec.source_path)
+            return hermes_state.parse_state_db_payload(
+                record, spec.fallback_id, source_path=spec.source_path, profile_identity=profile_identity
+            )
         if spec.provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_payload(record):
             return hermes_verification.parse_verification_evidence_db_payload(
                 record,
                 spec.fallback_id,
+                profile_identity=profile_identity,
                 profile_root=(
                     hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
                 ),
@@ -2055,6 +2067,7 @@ def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarRe
             return hermes_spans.parse_atif_document(
                 record,
                 spec.fallback_id,
+                profile_identity=profile_identity,
                 profile_root=(
                     hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
                 ),
@@ -2141,6 +2154,7 @@ def parse_payload(
     *,
     schema_resolution: SchemaResolution | None = None,
     source_path: str | None = None,
+    profile_identity: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
 ) -> list[ParsedSession]:
     """Dispatch parsed payload to the appropriate provider parser.
@@ -2167,7 +2181,7 @@ def parse_payload(
     resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
     sessions: list[ParsedSession] = []
     for spec in lowered_specs:
-        sessions.extend(_parse_lowered_spec(spec, resolver))
+        sessions.extend(_parse_lowered_spec(spec, resolver, profile_identity=profile_identity))
     return sessions
 
 
@@ -2216,6 +2230,7 @@ def bundle_member_sessions(
     all_browser_captures: bool,
     drift: BundleCandidateDrift,
     source_path: str | None = None,
+    profile_identity: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
 ) -> list[ParsedSession]:
     """Parse one decoded bundle member through the ordinary lowering rules."""
@@ -2227,6 +2242,7 @@ def bundle_member_sessions(
             [record],
             fallback_id,
             source_path=source_path,
+            profile_identity=profile_identity,
             sidecar_resolver=resolver,
         )
     if all_browser_captures:
@@ -2235,6 +2251,7 @@ def bundle_member_sessions(
             record,
             f"{fallback_id}-{index}",
             source_path=source_path,
+            profile_identity=profile_identity,
             sidecar_resolver=resolver,
         )
     # Reuse the same bundle normalization, including ChatGPT fragment
@@ -2250,7 +2267,11 @@ def bundle_member_sessions(
         drift.matched += len(specs)
     sessions: list[ParsedSession] = []
     for spec in specs:
-        sessions.extend(_parse_lowered_spec(replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver))
+        sessions.extend(
+            _parse_lowered_spec(
+                replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver, profile_identity=profile_identity
+            )
+        )
     return sessions
 
 
@@ -2429,6 +2450,7 @@ def parse_stream_payload(
     fallback_id: str,
     *,
     source_path: str | None = None,
+    profile_identity: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
@@ -2488,6 +2510,7 @@ def parse_stream_payload(
             stream,
             fallback_id,
             profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
+            profile_identity=profile_identity,
         )
         parsed = True
         AdmissionObserver.drain(stream)

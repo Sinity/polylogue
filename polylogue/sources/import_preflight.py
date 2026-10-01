@@ -1,6 +1,6 @@
 """Import-source preflight classification for truthful scheduling.
 
-This module intentionally does not parse full sessions.  It answers the
+This module answers the
 admission-time question: does the staged artifact contain at least one
 payload shape that Polylogue knows how to parse, and are there caveats the
 operator should see before the daemon claims the import is pending?
@@ -26,11 +26,10 @@ from polylogue.sources.decoder_zip import (
     open_bounded_zip_entry,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.sources.dispatch import detect_provider, require_positive_conversational_evidence
-from polylogue.sources.parsers import antigravity
+from polylogue.sources.dispatch import detect_provider
+from polylogue.sources.sqlite_inspection import inspect_sqlite_source
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
-_MAX_SQLITE_PROBE_SESSIONS = 8
 _MAX_DIRECTORY_CANDIDATES = 256
 _MAX_STREAM_RECORDS = 32
 
@@ -212,41 +211,16 @@ def _preflight_file(path: Path, acc: _PreflightAccumulator, *, label: str) -> No
 def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
     """Classify a SQLite import by its provider schema, never by its suffix."""
     try:
-        if antigravity.looks_like_trajectory_db_path(path):
-            # Preflight answers an admissibility question, so it pays for a
-            # bounded probe rather than for the whole file. ``parse_trajectory_db``
-            # is a generator that runs one steps query per ``trajectory_meta``
-            # row, so ``list()`` made the cost of asking scale with a crafted
-            # file. The unexamined remainder is a counted caveat -- never a
-            # silently partial "supported".
-            probe = list(
-                islice(antigravity.parse_trajectory_db(path, fallback_id=path.stem), _MAX_SQLITE_PROBE_SESSIONS + 1)
-            )
-            unexamined = len(probe) > _MAX_SQLITE_PROBE_SESSIONS
-            sessions = probe[:_MAX_SQLITE_PROBE_SESSIONS]
-            if unexamined:
-                acc._caveat(
-                    f"{label}: classified from the first {_MAX_SQLITE_PROBE_SESSIONS} trajectories; "
-                    "the remainder was not inspected"
-                )
-            # Preflight promises what production import does, so the probed
-            # sessions pass the same evidence gate every production write path
-            # applies. An empty trajectory, or one of only unsupported step
-            # formats, is refused there, and so it is refused here.
-            admitted = require_positive_conversational_evidence(
-                sessions, provider=Provider.ANTIGRAVITY, source_path=str(path)
-            )
-            if admitted:
+        inspection = inspect_sqlite_source(path, preflight=True)
+        if inspection.domain == "antigravity_trajectory_db":
+            if inspection.admitted:
                 acc.supported(label, Provider.ANTIGRAVITY)
-                if any(session.ingest_flags for session in sessions) or len(admitted) < len(sessions):
+                if inspection.degraded:
                     acc._caveat(f"{label}: trajectory contains unsupported, degraded or empty steps")
             else:
                 acc.unsupported(label, "Antigravity trajectory schema contains no materialized messages")
             return
     except Exception as exc:
-        # The parser adapter classifies SQLite read failures at its storage
-        # seam; this boundary turns any failed inspection into a typed
-        # preflight outcome without adding a new hand-written sqlite policy.
         acc.malformed(label, f"could not inspect SQLite trajectory: {type(exc).__name__}: {exc}")
         return
     acc.unsupported(label, "SQLite schema is not a supported Antigravity trajectory store")

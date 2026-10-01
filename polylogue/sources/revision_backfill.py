@@ -58,6 +58,7 @@ from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
+from polylogue.core.raw_failure_evidence import MissingProfileIdentityError, RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
@@ -90,7 +91,7 @@ from polylogue.sources.live.batch_support import (
     jsonl_parse_prefix_size_of_handle,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import (
     DecodeFailure,
@@ -892,7 +893,7 @@ class _RevisionCensusState:
 #: cannot see that divergence, since path-independent providers deliberately
 #: ignore ``source_path`` too -- would incorrectly fan the SAME parsed
 #: session identity out to both raw_ids.
-_ParseDedupKey = tuple[Provider, str, str, str | None]
+_ParseDedupKey = tuple[Provider, str, str, str | None, str | None]
 
 
 class RetainedPreparationRetryableError(RuntimeError):
@@ -914,12 +915,15 @@ class RetainedParseFailure:
 
     detail: str
     decode_failure: DecodeFailure | None = None
+    missing_profile_identity: bool = False
 
     @classmethod
     def of(cls, error: BaseException) -> RetainedParseFailure:
-        return cls(str(error), classify_decode_failure(error))
+        return cls(str(error), classify_decode_failure(error), isinstance(error, MissingProfileIdentityError))
 
     def as_exception(self) -> Exception:
+        if self.missing_profile_identity:
+            return MissingProfileIdentityError(self.detail)
         return retained_parse_exception(self.detail, self.decode_failure)
 
 
@@ -969,6 +973,8 @@ class PreparedRetainedInput:
     #: Which decode boundary refused the bytes when ``parser_error`` is a
     #: decode refusal; the census turns that into a terminal outcome.
     parser_decode_failure: DecodeFailure | None = None
+    missing_profile_identity: bool = False
+    captured_profile_key: str | None = None
     enriched: bool = False
     # The disk-backed carrier is the retained worker's publication boundary.
     # Legacy sessions_path remains accepted for old direct callers until their
@@ -1265,6 +1271,17 @@ def prepare_retained_jsonl_artifact(
             index_conn = index_frame.connection
             source_conn.execute("BEGIN")
             index_conn.execute("BEGIN")
+            from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_profile_identity
+
+            profile_identity = read_raw_profile_identity(source_conn, raw_id)
+            if provider is Provider.HERMES and profile_identity is None:
+                return PreparedJsonl(
+                    blob_hash,
+                    None,
+                    None,
+                    "retained Hermes input has no captured profile identity receipt",
+                    missing_profile_identity=True,
+                )
             evidence_digest: str | None = None
 
             def capture_evidence(value: object) -> None:
@@ -1399,6 +1416,7 @@ def prepare_retained_jsonl_artifact(
                 provider.value,
                 fallback_id,
                 is_stream=is_stream_record_provider(source_path, provider),
+                profile_identity=profile_identity,
                 shard_directory=directory,
                 # Live intake refuses a complete JSONL record that does not
                 # decode; replay of the same bytes must refuse it too.
@@ -1498,7 +1516,7 @@ def prepare_retained_non_json_artifact(
         outcome = _enrich_retained_parse_outcome(
             archive,
             raw_id,
-            descriptor=(provider, blob_hash, source_path, kind, _size, native_id),
+            descriptor=(provider, blob_hash, source_path, kind, _size, native_id, archive.raw_profile_identity(raw_id)),
             outcome=(sessions, _size, kind),
         )
         if isinstance(outcome, Exception):
@@ -1552,7 +1570,13 @@ def prepare_retained_non_json_artifact(
     except Exception as exc:
         if parsed:
             raise RetainedPreparationRetryableError(f"retained worker artifact failed for raw {raw_id}") from exc
-        return PreparedJsonl(blob_hash, None, None, f"{type(exc).__name__}: {exc}"[:500])
+        return PreparedJsonl(
+            blob_hash,
+            None,
+            None,
+            f"{type(exc).__name__}: {exc}"[:500],
+            missing_profile_identity=isinstance(exc, MissingProfileIdentityError),
+        )
     finally:
         if store is not None:
             store.close()
@@ -1581,6 +1605,7 @@ def _prepared_retained_outcome(
         ("source_path", prepared.source_path, source_path),
         ("payload_bytes", prepared.payload_bytes, size),
         ("native_id", prepared.native_id, native_id),
+        ("profile_identity", prepared.captured_profile_key, archive.raw_profile_identity(raw_id)),
         ("parser_fingerprint", prepared.parser_fingerprint, RAW_AUTHORITY_PARSER_FINGERPRINT),
         ("fallback_timestamp", prepared.fallback_timestamp, fallback_timestamp),
     )
@@ -1606,6 +1631,8 @@ def _prepared_retained_outcome(
     if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash, stop=stop):
         raise RetainedPreparationRetryableError(f"prepared retained blob changed for raw {raw_id}")
     if prepared.parser_error is not None:
+        if prepared.missing_profile_identity:
+            return MissingProfileIdentityError(prepared.parser_error)
         return retained_parse_exception(prepared.parser_error, prepared.parser_decode_failure)
     if prepared.prepared_artifact is not None:
         artifact = prepared.prepared_artifact
@@ -1642,7 +1669,7 @@ def _prepared_retained_outcome(
         raise RetainedPreparationRetryableError(f"prepared retained carrier is invalid for raw {raw_id}")
     if prepared.enriched:
         return sessions, size, kind
-    descriptor = (provider, blob_hash, source_path, kind, size, native_id)
+    descriptor = (provider, blob_hash, source_path, kind, size, native_id, archive.raw_profile_identity(raw_id))
     outcome = _enrich_retained_parse_outcome(archive, raw_id, descriptor=descriptor, outcome=(sessions, size, kind))
     if isinstance(outcome, Exception):
         raise RetainedPreparationRetryableError(f"prepared retained enrichment failed for raw {raw_id}") from outcome
@@ -2020,7 +2047,7 @@ def _census_historical_revision_evidence(
             commit_unit()
             return
         outcome = outcomes[raw_id]
-        if isinstance(outcome, Exception) and _settle_terminal_decode_refusal(
+        if isinstance(outcome, Exception) and _settle_terminal_raw_refusal(
             archive, raw_id, outcome, source_index=source_index, manage_transaction=not batched
         ):
             # A complete record that does not decode is a permanent property
@@ -4407,6 +4434,7 @@ def census_parse_worker(
     source_db_path_str: str,
     kind_token: str,
     native_id: str | None,
+    profile_identity: str | None = None,
 ) -> tuple[str, list[ParsedSession] | None, RetainedParseFailure | None]:
     """Parse one retained raw's already-published blob bytes.
 
@@ -4461,6 +4489,7 @@ def census_parse_worker(
                         source_path,
                         fallback_id_override=fallback_id_override,
                         archive_root=Path(blob_root_str).parent,
+                        profile_identity=profile_identity,
                     )
                 return raw_id, sessions, None
             _require_bounded_provider(provider, source_path)
@@ -4475,6 +4504,7 @@ def census_parse_worker(
                 source_path,
                 payload_path=payload_path,
                 archive_root=Path(blob_root_str).parent,
+                profile_identity=profile_identity,
                 fallback_id_override=fallback_id_override,
             )
             return raw_id, sessions, None
@@ -4486,6 +4516,7 @@ def census_parse_worker(
                     source_path,
                     fallback_id_override=fallback_id_override,
                     archive_root=Path(blob_root_str).parent,
+                    profile_identity=profile_identity,
                 )
         else:
             payload_path = None
@@ -4498,6 +4529,7 @@ def census_parse_worker(
                 source_path,
                 payload_path=payload_path,
                 archive_root=Path(blob_root_str).parent,
+                profile_identity=profile_identity,
                 fallback_id_override=fallback_id_override,
             )
         return raw_id, sessions, None
@@ -4616,7 +4648,7 @@ class _OrderedUniqueParse:
         archive: ArchiveStore,
         order: Sequence[str],
         *,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]],
         ingest_workers: int,
     ) -> None:
         self._archive = archive
@@ -4662,7 +4694,7 @@ class _OrderedUniqueParse:
     def _submit_next(self) -> None:
         raw_id = self._order[self._dispatched]
         self._dispatched += 1
-        provider, blob_hash, source_path, kind, _payload_size, native_id = self._descriptors[raw_id]
+        provider, blob_hash, source_path, kind, _payload_size, native_id, profile_identity = self._descriptors[raw_id]
         assert self._pool is not None
         self._futures[raw_id] = self._pool.submit(
             census_parse_worker,
@@ -4675,6 +4707,7 @@ class _OrderedUniqueParse:
             self._source_db_path,
             kind.value,
             native_id,
+            profile_identity,
         )
         self._peak_inflight = max(self._peak_inflight, len(self._futures))
 
@@ -4700,7 +4733,9 @@ class _OrderedUniqueParse:
             return exc
         if error is not None:
             return error.as_exception()
-        _provider, _blob_hash, _source_path, kind, payload_size, _native_id = self._descriptors[raw_id]
+        _provider, _blob_hash, _source_path, kind, payload_size, _native_id, profile_identity = self._descriptors[
+            raw_id
+        ]
         return (sessions or [], payload_size, kind)
 
     def close(self) -> None:
@@ -4733,7 +4768,7 @@ class _OrderedParseOutcomes(Mapping[str, "tuple[list[ParsedSession], int, RawRev
         archive: ArchiveStore,
         raw_ids: Sequence[str],
         *,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]],
         key_by_raw_id: dict[str, _ParseDedupKey],
         pending_by_key: dict[_ParseDedupKey, int],
         representative_by_key: dict[_ParseDedupKey, str],
@@ -4787,7 +4822,7 @@ class _OrderedParseOutcomes(Mapping[str, "tuple[list[ParsedSession], int, RawRev
         if isinstance(group_outcome, Exception):
             return group_outcome
         sessions, _rep_size, _rep_kind = group_outcome
-        _provider, _blob_hash, _source_path, kind, size, _native_id = self._descriptors[raw_id]
+        _provider, _blob_hash, _source_path, kind, size, _native_id, profile_identity = self._descriptors[raw_id]
         return _enrich_retained_parse_outcome(
             self._archive, raw_id, descriptor=self._descriptors[raw_id], outcome=(sessions, size, kind)
         )
@@ -4829,7 +4864,7 @@ def stream_retained_raws(
 
         yield cast("_OrderedParseOutcomes", PreparedOutcomes())
         return
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]] = {}
     for raw_id in raw_ids:
         provider, blob_hash, source_path, kind, size = archive.raw_revision_descriptor(raw_id)
         # polylogue-6lyh1: resolve the same APPEND fallback-identity hint the
@@ -4837,15 +4872,23 @@ def stream_retained_raws(
         # calling thread, so every parallel dispatch path below can apply the
         # identical fallback -- see ``census_parse_worker``'s docstring.
         native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
-        descriptors[raw_id] = (provider, blob_hash, source_path, kind, size, native_id)
+        descriptors[raw_id] = (
+            provider,
+            blob_hash,
+            source_path,
+            kind,
+            size,
+            native_id,
+            archive.raw_profile_identity(raw_id),
+        )
 
     key_by_raw_id: dict[str, _ParseDedupKey] = {}
     pending_by_key: dict[_ParseDedupKey, int] = {}
     representative_by_key: dict[_ParseDedupKey, str] = {}
     for raw_id in raw_ids:
-        provider, blob_hash, source_path, _kind, _size, native_id = descriptors[raw_id]
+        provider, blob_hash, source_path, _kind, _size, native_id, profile_identity = descriptors[raw_id]
         dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
-        key = (provider, blob_hash, dedup_path, native_id)
+        key = (provider, blob_hash, dedup_path, native_id, profile_identity)
         key_by_raw_id[raw_id] = key
         pending_by_key[key] = pending_by_key.get(key, 0) + 1
         representative_by_key.setdefault(key, raw_id)
@@ -4872,7 +4915,7 @@ def stream_retained_raws(
 def _enrich_retained_parse_results(
     archive: ArchiveStore,
     *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]],
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
 ) -> None:
     """Apply replay-safe provider assembly to decoded retained raws.
@@ -4903,7 +4946,7 @@ def _enrich_retained_parse_outcome(
     archive: ArchiveStore,
     raw_id: str,
     *,
-    descriptor: tuple[Provider, str, str, RawRevisionKind, int, str | None],
+    descriptor: tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None],
     outcome: tuple[list[ParsedSession], int, RawRevisionKind] | Exception,
 ) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
     """Enrich one decoded raw -- the per-raw body of enrichment.
@@ -4921,7 +4964,7 @@ def _enrich_retained_parse_outcome(
     # enrichment is an ArchiveStore production concern.
     if not isinstance(archive, ArchiveStore):
         return outcome
-    provider, _blob_hash, descriptor_source_path, _descriptor_kind, _size, _native_id = descriptor
+    provider, _blob_hash, descriptor_source_path, _descriptor_kind, _size, _native_id, profile_identity = descriptor
     sessions, payload_bytes, kind = outcome
     source_conn = archive._ensure_source_conn()
     sessions = _normalize_retained_parse_sessions(source_conn, raw_id, sessions)
@@ -5344,7 +5387,7 @@ def _parse_unique_retained_raws_via_threads(
     archive: ArchiveStore,
     raw_ids: list[str],
     *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]],
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
     """Thread-parallel parse over every raw, regardless of size.
@@ -5387,7 +5430,7 @@ def _parse_unique_retained_raws_via_threads(
     with ThreadPoolExecutor(max_workers=min(ingest_workers, len(raw_ids))) as pool:
         future_to_raw_id = {}
         for raw_id in raw_ids:
-            provider, blob_hash, source_path, kind, _payload_size, native_id = descriptors[raw_id]
+            provider, blob_hash, source_path, kind, _payload_size, native_id, profile_identity = descriptors[raw_id]
             future = pool.submit(
                 census_parse_worker,
                 raw_id,
@@ -5399,6 +5442,7 @@ def _parse_unique_retained_raws_via_threads(
                 source_db_path_str,
                 kind.value,
                 native_id,
+                profile_identity,
             )
             future_to_raw_id[future] = raw_id
         for future in as_completed(future_to_raw_id):
@@ -5411,7 +5455,7 @@ def _parse_unique_retained_raws_via_threads(
             if error is not None:
                 results[raw_id] = error.as_exception()
                 continue
-            _provider, _blob_hash, _source_path, kind, payload_size, _native_id = descriptors[raw_id]
+            _provider, _blob_hash, _source_path, kind, payload_size, _native_id, profile_identity = descriptors[raw_id]
             results[raw_id] = (sessions or [], payload_size, kind)
     return results
 
@@ -5420,7 +5464,7 @@ def _parse_unique_retained_raws(
     archive: ArchiveStore,
     raw_ids: list[str],
     *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]],
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
     """Parse already-deduplicated raws, optionally in parallel.
@@ -5487,6 +5531,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     for Codex/Claude JSONL evidence.
     """
     provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    profile_identity = archive.raw_profile_identity(raw_id)
     fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
 
     # Work events have their own durable envelope.  They are not provider
@@ -5566,6 +5611,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
                         stream_path,
                         fallback_id_override=fallback_id_override,
                         archive_root=archive.archive_root,
+                        profile_identity=profile_identity,
                     )
                 )
         _require_bounded_provider(provider, source_path)
@@ -5578,6 +5624,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
                 source_path,
                 payload_path=payload_path,
                 archive_root=archive.archive_root,
+                profile_identity=profile_identity,
                 fallback_id_override=fallback_id_override,
             )
         )
@@ -5590,6 +5637,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
                     stream_path,
                     fallback_id_override=fallback_id_override,
                     archive_root=archive.archive_root,
+                    profile_identity=profile_identity,
                 )
             )
     _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
@@ -5601,6 +5649,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             source_path,
             payload_path=payload_path,
             archive_root=archive.archive_root,
+            profile_identity=profile_identity,
             fallback_id_override=fallback_id_override,
         )
     )
@@ -6039,7 +6088,9 @@ class _ReplaySpillPrefetcher:
         source_conn: sqlite3.Connection,
         keys: tuple[str, ...],
         extra_members: dict[str, frozenset[str]],
-    ) -> tuple[list[tuple[int, str]], dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]]]:
+    ) -> tuple[
+        list[tuple[int, str]], dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]]
+    ]:
         """Resolve (seq, raw_id) decode order plus per-raw parse descriptors.
 
         Durable membership comes from source.db on this thread's own
@@ -6077,14 +6128,15 @@ class _ReplaySpillPrefetcher:
             # equals the next key's, which is exactly what enter_key needs.
         with self._lock:
             self._key_start_seq = key_start_seq
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]] = {}
         planned = [raw_id for _seq, raw_id in plan]
         for start in range(0, len(planned), 500):
             chunk = planned[start : start + 500]
             placeholders = ",".join("?" for _ in chunk)
             for row in source_conn.execute(
                 "SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, "
-                "blob_size, native_id "
+                "blob_size, native_id, (SELECT profile_key FROM raw_profile_identity_receipts AS receipt "
+                "WHERE receipt.raw_id = raw_sessions.raw_id) "
                 f"FROM raw_sessions WHERE raw_id IN ({placeholders})",
                 chunk,
             ):
@@ -6102,7 +6154,15 @@ class _ReplaySpillPrefetcher:
                     and raw_native_id_value.strip()
                     else None
                 )
-                descriptors[str(row[0])] = (provider, str(row[3]), str(row[4]), kind, int(row[6]), native_id)
+                descriptors[str(row[0])] = (
+                    provider,
+                    str(row[3]),
+                    str(row[4]),
+                    kind,
+                    int(row[6]),
+                    native_id,
+                    None if row[8] is None else str(row[8]),
+                )
         return plan, descriptors
 
     def _decode(
@@ -6111,7 +6171,7 @@ class _ReplaySpillPrefetcher:
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection | None,
         raw_id: str,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None, str | None]],
     ) -> tuple[list[ParsedSession], int, bool, bool] | None:
         started = time.perf_counter()
         rows = spill_conn.execute(
@@ -6129,7 +6189,7 @@ class _ReplaySpillPrefetcher:
         descriptor = descriptors.get(raw_id)
         if descriptor is None:
             return None
-        provider, blob_hash, source_path, kind, payload_bytes, native_id = descriptor
+        provider, blob_hash, source_path, kind, payload_bytes, native_id, profile_identity = descriptor
         if payload_bytes > self._budget // 4:
             # Oversized decode: leave it to the writer's inline path so one
             # in-flight tree can never balloon far past the buffer budget.
@@ -6144,6 +6204,7 @@ class _ReplaySpillPrefetcher:
             str(self._source_db_path),
             kind.value,
             native_id,
+            profile_identity,
         )
         if error is not None or sessions_or_none is None:
             # Do not buffer failures: the writer's inline decode raises the
@@ -6606,7 +6667,7 @@ def _retained_page_image_raw(archive: ArchiveStore, raw_id: str) -> bool:
     return blob_path is not None and is_sqlite_page_image(blob_path)
 
 
-def _settle_terminal_decode_refusal(
+def _settle_terminal_raw_refusal(
     archive: ArchiveStore,
     raw_id: str,
     error: Exception,
@@ -6614,7 +6675,7 @@ def _settle_terminal_decode_refusal(
     source_index: int,
     manage_transaction: bool,
 ) -> bool:
-    """Record a retained decode refusal as the terminal outcome live intake records.
+    """Record a typed retained refusal beside its unchanged source bytes.
 
     Returns ``False`` when ``error`` is not a decode refusal that earns
     terminal evidence (``terminal_decode_evidence``). Otherwise the raw
@@ -6625,7 +6686,11 @@ def _settle_terminal_decode_refusal(
     passes settle it without parsing it again.
     """
     provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-    evidence = terminal_decode_evidence(error, provider=provider)
+    evidence = (
+        RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY
+        if isinstance(error, MissingProfileIdentityError)
+        else terminal_decode_evidence(error, provider=provider)
+    )
     if evidence is None:
         return False
     conn = archive._ensure_source_conn()
@@ -6718,6 +6783,7 @@ def _parse_one(
     payload: bytes,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     payload_path: Path | None = None,
     archive_root: Path | None = None,
     fallback_id_override: str | None = None,
@@ -6735,6 +6801,7 @@ def _parse_one(
             source_path,
             payload_path=payload_path,
             archive_root=archive_root,
+            profile_identity=profile_identity,
             fallback_id_override=fallback_id_override,
         ),
         provider=provider,
@@ -6747,10 +6814,14 @@ def _parse_one_raw(
     payload: bytes,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     payload_path: Path | None = None,
     archive_root: Path | None = None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
+    if provider is Provider.HERMES and profile_identity is None:
+        raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+
     if provider is Provider.ANTIGRAVITY and Path(source_path).suffix.lower() == ".pb":
         trajectory_path = Path(source_path)
         root = trajectory_path.parent.parent
@@ -6802,14 +6873,14 @@ def _parse_one_raw(
                 return hermes_state.parse_state_db(
                     sqlite_path,
                     fallback_id=fallback_id,
-                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    profile_identity=profile_identity,
                     immutable=True,
                 )
             if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
                 return hermes_verification.parse_verification_evidence_db(
                     sqlite_path,
                     fallback_id=fallback_id,
-                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    profile_identity=profile_identity,
                     immutable=True,
                 )
     if provider is Provider.ANTIGRAVITY and looks_like_logical_source_bytes(payload):
@@ -6852,6 +6923,7 @@ def _parse_one_raw(
             records,
             fallback_id,
             source_path=source_path,
+            profile_identity=profile_identity,
             sidecar_resolver=sidecar_resolver,
         )
     records = _retained_jsonl_records(payload, source_name, source_path)
@@ -6864,6 +6936,7 @@ def _parse_one_raw(
         records,
         fallback_id,
         source_path=source_path,
+        profile_identity=profile_identity,
         sidecar_resolver=sidecar_resolver,
     )
 
@@ -6916,6 +6989,7 @@ def _parse_stream(
     payload: BinaryIO,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     fallback_id_override: str | None = None,
     archive_root: Path | None = None,
 ) -> list[ParsedSession]:
@@ -6928,6 +7002,7 @@ def _parse_stream(
             source_path,
             fallback_id_override=fallback_id_override,
             archive_root=archive_root,
+            profile_identity=profile_identity,
         ),
         provider=provider,
         source_path=source_path,
@@ -6939,9 +7014,13 @@ def _parse_stream_raw(
     payload: BinaryIO,
     source_path: str,
     *,
+    profile_identity: str | None = None,
     fallback_id_override: str | None = None,
     archive_root: Path | None = None,
 ) -> list[ParsedSession]:
+    if provider is Provider.HERMES and profile_identity is None:
+        raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
     stream = _retained_jsonl_stream(payload, source_name, source_path)
@@ -6950,6 +7029,7 @@ def _parse_stream_raw(
         stream,
         fallback_id,
         source_path=source_path,
+        profile_identity=profile_identity,
         sidecar_resolver=_retained_sidecar_resolver(archive_root),
     )
 

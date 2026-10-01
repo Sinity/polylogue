@@ -9,7 +9,6 @@ cursor fields (byte offsets, fingerprints, record counts) the daemon manages.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -50,6 +49,7 @@ async def upsert_source_file_cursor(
     conn: aiosqlite.Connection,
     source_path: str,
     *,
+    canonical_source_path: str | None = None,
     st_dev: int | None = None,
     st_ino: int | None = None,
     st_size: int | None = None,
@@ -69,7 +69,7 @@ async def upsert_source_file_cursor(
             mtime_ns = COALESCE(EXCLUDED.mtime_ns, ingest_cursor.mtime_ns),
             updated_at_ms = EXCLUDED.updated_at_ms
         """,
-        (source_path, str(Path(source_path).resolve()), st_dev, st_ino, st_size, mtime_ns, _now_ms()),
+        (source_path, canonical_source_path, st_dev, st_ino, st_size, mtime_ns, _now_ms()),
     )
     if transaction_depth == 0:
         await conn.commit()

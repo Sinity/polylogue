@@ -236,6 +236,8 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
         capture_mode=Provider.from_string(capture_mode) if capture_mode is not None else None,
         source_name=acquisition_provider.value,
         source_path=row["source_path"],
+        canonical_source_path=_row_text(row, "canonical_source_path"),
+        captured_profile_key=_row_text(row, "captured_profile_key"),
         source_index=row["source_index"],
         blob_size=row["blob_size"],
         acquired_at=_ms_to_iso(row["acquired_at_ms"]) or "",

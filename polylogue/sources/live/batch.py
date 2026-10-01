@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path, strong_path_classification
 from polylogue.archive.ingest_flags import (
-    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
@@ -94,7 +93,7 @@ from polylogue.pipeline.ingest_outcomes import (
     transient_error_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
-from polylogue.sources.acquisition_boundary import admit_bound_bytes, capture_bound_path
+from polylogue.sources.acquisition_boundary import admit_bound_bytes, capture_bound_path, captured_path_coordinate
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_zip import (
@@ -230,7 +229,6 @@ from polylogue.sources.source_acquisition_components import (
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
-    original_sqlite_source_path,
     snapshot_sqlite_to_blob,
     sqlite_snapshot_failure_as_oserror,
     sqlite_source_revision,
@@ -1788,6 +1786,7 @@ class LiveBatchProcessor:
                                     "source_revision": full_result.raw_source_revisions.get(path),
                                     "source_fingerprint": full_result.raw_source_fingerprints.get(path),
                                     "captured_content_hash": full_result.captured_content_hashes.get(path),
+                                    "canonical_source_path": full_result.captured_canonical_source_paths.get(path),
                                     "captured_file_observation": full_result.captured_file_observations.get(path),
                                     "captured_observed_at_ns": full_result.captured_observation_times_ns.get(path),
                                 },
@@ -2359,6 +2358,7 @@ class LiveBatchProcessor:
         self,
         path: Path,
         *,
+        canonical_source_path: str | None = None,
         raw_fingerprint: str | None = None,
         raw_byte_size: int | None = None,
         frontier_byte_size: int | None = None,
@@ -2524,6 +2524,7 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             path,
             byte_size,
+            canonical_source_path=canonical_source_path,
             byte_offset=last_nl,
             last_complete_newline=last_nl,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -3262,6 +3263,9 @@ class LiveBatchProcessor:
         retained_preparations_by_raw_id: dict[str, PreparedLiveRetainedRaw] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
+        raw_sqlite_source_paths: dict[Path, Path] = {}
+        raw_canonical_source_paths: dict[Path, str] = {}
+        raw_profile_keys: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
         captured_content_hashes: dict[Path, str] = {}
         captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = {}
@@ -3427,6 +3431,8 @@ class LiveBatchProcessor:
                 raw_byte_sizes[path] = raw_data.blob_size
                 raw_source_names[path] = Provider.ANTIGRAVITY.value
                 captured_content_hashes[path] = raw_id
+                if raw_data.canonical_source_path is not None:
+                    raw_canonical_source_paths[path] = raw_data.canonical_source_path
                 raw_records.append(
                     RawSessionRecord(
                         raw_id=raw_id,
@@ -3434,6 +3440,7 @@ class LiveBatchProcessor:
                         capture_mode=Provider.ANTIGRAVITY,
                         source_name=Provider.ANTIGRAVITY.value,
                         source_path=str(path),
+                        canonical_source_path=raw_data.canonical_source_path,
                         source_index=0,
                         blob_size=raw_data.blob_size,
                         blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
@@ -3605,8 +3612,12 @@ class LiveBatchProcessor:
                         )
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
-                    source_path = original_sqlite_source_path(path) or path
-                    raw_id = antigravity.trajectory_raw_id(source_path, snapshot.source_revision)
+                    source_path = snapshot.source_path
+                    raw_sqlite_source_paths[path] = source_path
+                    raw_canonical_source_paths[path] = str(snapshot.identity_path)
+                    raw_id = antigravity.trajectory_raw_id(
+                        source_path, snapshot.source_revision, identity_path=snapshot.identity_path
+                    )
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
                     retained_path = blob_store.blob_path(blob_hash)
@@ -3662,8 +3673,17 @@ class LiveBatchProcessor:
                         )
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
-                    source_path = original_sqlite_source_path(path) or path
-                    raw_id = hermes_profile_raw_id(source_path, 0, snapshot.source_revision)
+                    source_path = snapshot.source_path
+                    raw_sqlite_source_paths[path] = source_path
+                    raw_canonical_source_paths[path] = str(snapshot.identity_path)
+                    raw_profile_keys[path] = snapshot.captured_profile_key
+                    raw_id = hermes_profile_raw_id(
+                        source_path,
+                        0,
+                        snapshot.source_revision,
+                        identity_path=snapshot.captured_profile_source_path,
+                        profile_identity=snapshot.captured_profile_key,
+                    )
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
                 except OSError as exc:
@@ -3722,8 +3742,12 @@ class LiveBatchProcessor:
                         )
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
-                    source_path = original_sqlite_source_path(path) or path
-                    raw_id = codex_state_raw_id(source_path, snapshot.source_revision)
+                    source_path = snapshot.source_path
+                    raw_sqlite_source_paths[path] = source_path
+                    raw_canonical_source_paths[path] = str(snapshot.identity_path)
+                    raw_id = codex_state_raw_id(
+                        source_path, snapshot.source_revision, identity_path=snapshot.identity_path
+                    )
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
                 except OSError as exc:
@@ -3765,7 +3789,7 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = capture_bound_path(
+                    capture = capture_bound_path(
                         blob_store,
                         path,
                         fallback_provider,
@@ -3775,6 +3799,8 @@ class LiveBatchProcessor:
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
+                    raw_id, blob_size = capture.blob_hash, capture.blob_size
+                    raw_canonical_source_paths[path] = capture.canonical_source_path
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3803,7 +3829,7 @@ class LiveBatchProcessor:
                 provider = fallback_provider
                 source_name = provider.value
                 try:
-                    raw_id, blob_size = capture_bound_path(
+                    capture = capture_bound_path(
                         blob_store,
                         path,
                         fallback_provider,
@@ -3813,6 +3839,8 @@ class LiveBatchProcessor:
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
+                    raw_id, blob_size = capture.blob_hash, capture.blob_size
+                    raw_canonical_source_paths[path] = capture.canonical_source_path
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3849,7 +3877,7 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = capture_bound_path(
+                    capture = capture_bound_path(
                         blob_store,
                         path,
                         fallback_provider,
@@ -3859,6 +3887,8 @@ class LiveBatchProcessor:
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
+                    raw_id, blob_size = capture.blob_hash, capture.blob_size
+                    raw_canonical_source_paths[path] = capture.canonical_source_path
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3905,7 +3935,7 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = capture_bound_path(
+                    capture = capture_bound_path(
                         blob_store,
                         path,
                         fallback_provider,
@@ -3915,6 +3945,8 @@ class LiveBatchProcessor:
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
+                    raw_id, blob_size = capture.blob_hash, capture.blob_size
+                    raw_canonical_source_paths[path] = capture.canonical_source_path
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -4036,9 +4068,9 @@ class LiveBatchProcessor:
                     payload_provider=provider,
                     capture_mode=acquisition_capture_mode,
                     source_name=source_name,
-                    source_path=(
-                        str(original_sqlite_source_path(path) or path) if path in raw_source_revisions else str(path)
-                    ),
+                    source_path=(str(raw_sqlite_source_paths[path]) if path in raw_source_revisions else str(path)),
+                    canonical_source_path=raw_canonical_source_paths.get(path),
+                    captured_profile_key=raw_profile_keys.get(path),
                     source_index=0,
                     blob_size=blob_size,
                     blob_publication_receipt_id=blob_publication_receipt_id,
@@ -4263,6 +4295,7 @@ class LiveBatchProcessor:
             raw_source_revisions=raw_source_revisions,
             raw_source_fingerprints=raw_source_fingerprints,
             captured_content_hashes=captured_content_hashes,
+            captured_canonical_source_paths=raw_canonical_source_paths,
             captured_file_observations=captured_file_observations,
             captured_observation_times_ns=captured_observation_times_ns,
             summary=summary,
@@ -4542,6 +4575,8 @@ class LiveBatchProcessor:
                                 blob_hash_hex=blob_hash,
                                 blob_size=record.blob_size,
                                 source_path=record.source_path,
+                                canonical_source_path=record.canonical_source_path,
+                                captured_profile_key=record.captured_profile_key,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
                                 file_mtime_ms=timestamp_millis(record.file_mtime),
@@ -4554,6 +4589,8 @@ class LiveBatchProcessor:
                                 provider=acquisition_provider,
                                 payload=payload,
                                 source_path=record.source_path,
+                                canonical_source_path=record.canonical_source_path,
+                                captured_profile_key=record.captured_profile_key,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
                                 file_mtime_ms=timestamp_millis(record.file_mtime),
@@ -4586,6 +4623,8 @@ class LiveBatchProcessor:
                             blob_hash_hex=blob_hash,
                             blob_size=record.blob_size,
                             source_path=record.source_path,
+                            canonical_source_path=record.canonical_source_path,
+                            captured_profile_key=record.captured_profile_key,
                             source_index=record.source_index or 0,
                             # A populated ``blob_hash`` field means this
                             # record already has a durable blob reference.
@@ -4608,6 +4647,8 @@ class LiveBatchProcessor:
                             capture_mode=record.capture_mode,
                             payload=payload,
                             source_path=record.source_path,
+                            canonical_source_path=record.canonical_source_path,
+                            captured_profile_key=record.captured_profile_key,
                             source_index=record.source_index or 0,
                             acquired_at_ms=acquired_at_ms,
                             file_mtime_ms=timestamp_millis(record.file_mtime),
@@ -4807,6 +4848,7 @@ class LiveBatchProcessor:
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=hermes_identity.profile_root_for_artifact(Path(record.source_path)),
+                            profile_identity=record.captured_profile_key,
                             immutable=True,
                         )
                     elif provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_path(
@@ -4816,6 +4858,7 @@ class LiveBatchProcessor:
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=hermes_identity.profile_root_for_artifact(Path(record.source_path)),
+                            profile_identity=record.captured_profile_key,
                             immutable=True,
                         )
                     elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
@@ -5660,9 +5703,7 @@ class LiveBatchProcessor:
                     member_sessions[member_raw_id] = retained_session
                     projections[member_raw_id] = projection
                     browser_snapshot_fidelity: Literal["dom", "native"] | None = None
-                    if NATIVE_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags or (
-                        COMPACT_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags
-                    ):
+                    if NATIVE_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags:
                         browser_snapshot_fidelity = "native"
                     elif DOM_FALLBACK_INGEST_FLAG in retained_session.ingest_flags:
                         browser_snapshot_fidelity = "dom"
@@ -6761,6 +6802,7 @@ class LiveBatchProcessor:
         try:
             with path.open("rb") as handle:
                 stat = os.fstat(handle.fileno())
+                canonical_source_path = captured_path_coordinate(path, handle.fileno())
                 if claude_frontier is None and stat.st_size <= cursor.byte_offset:
                     return None
                 if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
@@ -6881,6 +6923,7 @@ class LiveBatchProcessor:
             return None
         return _AppendPlan(
             path=path,
+            canonical_source_path=canonical_source_path,
             source_name=self._source_name_for(path),
             start_offset=start_offset,
             last_complete_newline=last_complete_newline,
@@ -7478,6 +7521,7 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             plan.path,
             cursor_stat_size,
+            canonical_source_path=plan.canonical_source_path,
             byte_offset=publication_end,
             last_complete_newline=publication_end,
             parser_fingerprint=plan.parser_fingerprint or self._current_parser_fingerprint(),

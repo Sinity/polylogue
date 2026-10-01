@@ -191,18 +191,8 @@ def test_preflight_rejects_oversized_json_before_open(tmp_path: Path, monkeypatc
     assert result.malformed_count == 1
 
 
-def test_preflight_bounds_a_large_trajectory_store_and_says_so(tmp_path: Path) -> None:
-    """polylogue-sifoy: preflight fully materialized an untrusted trajectory DB.
-
-    ``parse_trajectory_db`` is a generator running one ``steps`` query per
-    ``trajectory_meta`` row, and preflight wrapped it in ``list()``, so the
-    cost of the admissibility question scaled with the crafted file rather
-    than with the question. It now probes a bounded prefix and reports the
-    unexamined remainder as a counted caveat.
-
-    Anti-vacuity: restore the ``list(...)`` and no caveat is emitted -- the
-    result claims "supported" on a full inspection it never bounded.
-    """
+def test_preflight_inspects_conversational_evidence_after_the_former_prefix(tmp_path: Path) -> None:
+    """An empty first eight trajectories cannot hide a later admitted session."""
     source = tmp_path / "wide-trajectory.sqlite"
     with sqlite3.connect(source) as connection:
         connection.executescript(
@@ -216,16 +206,23 @@ def test_preflight_bounds_a_large_trajectory_store_and_says_so(tmp_path: Path) -
                 "INSERT INTO trajectory_meta VALUES (?, ?)",
                 (f"trajectory-{index:03d}", f"cascade-{index:03d}"),
             )
-            connection.execute(
-                'INSERT INTO steps VALUES (?, 0, \'message\', \'v1\', \'{"role":"user","text":"hello"}\')',
-                (f"trajectory-{index:03d}",),
-            )
+            if index == 39:
+                connection.execute(
+                    'INSERT INTO steps VALUES (?, 0, \'message\', \'v1\', \'{"role":"user","text":"hello"}\')',
+                    (f"trajectory-{index:03d}",),
+                )
 
     result = preflight_import_source(source)
 
     assert result.status is ImportPreflightStatus.DEGRADED
     assert result.providers == (Provider.ANTIGRAVITY,)
-    assert any("the remainder was not inspected" in caveat for caveat in result.caveats)
+    assert result.supported_count == 1
+    from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+    inspection = inspect_sqlite_source(source, preflight=True)
+    assert inspection.produced["sessions"] == 40
+    assert inspection.admitted == 1
+    assert inspection.produced["session_refs"] == []
 
 
 def test_several_unidentified_trajectory_rows_are_refused(tmp_path: Path) -> None:

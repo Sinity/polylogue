@@ -25,11 +25,6 @@ from polylogue.core.content_identity import structural_content_identity, structu
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_container, zip_member_coordinate
-from polylogue.operations.zip_acquisition_replay import (
-    MemberCandidate,
-    resolve_member_candidate,
-    zip_reacquired_unit,
-)
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
@@ -37,6 +32,11 @@ from polylogue.sources.source_acquisition_components import (
     stream_preserved_zip_entry_raw_data,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.source_zip_replay import (
+    MemberCandidate,
+    resolve_member_candidate,
+    zip_reacquired_unit,
+)
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 

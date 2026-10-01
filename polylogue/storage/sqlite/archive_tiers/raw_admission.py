@@ -182,6 +182,8 @@ class PendingPreParseRawAdmissionRequest:
     blob_hash: bytes
     blob_size: int
     acquired_at_ms: int
+    canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
     addressing_mode: str | None = None
     content_identity: str | None = None
     file_mtime_ms: int | None = None
@@ -303,6 +305,8 @@ def execute_raw_admission_plan_sync(
         origin=request.origin,
         native_id=request.native_id,
         source_path=request.source_path,
+        canonical_source_path=request.canonical_source_path,
+        captured_profile_key=request.captured_profile_key,
         source_index=request.source_index,
         blob_hash=request.blob_hash,
         blob_size=request.blob_size,
@@ -314,6 +318,8 @@ def execute_raw_admission_plan_sync(
         origin=request.origin,
         capture_mode=request.capture_mode,
         source_path=request.source_path,
+        canonical_source_path=request.canonical_source_path,
+        captured_profile_key=request.captured_profile_key,
         source_index=request.source_index,
         blob_hash=request.blob_hash,
         blob_size=request.blob_size,
@@ -438,6 +444,8 @@ def _assert_existing_raw_observation_identity(
     origin: Origin | str,
     native_id: str | None,
     source_path: str,
+    canonical_source_path: str | None,
+    captured_profile_key: str | None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -461,14 +469,17 @@ def _assert_existing_raw_observation_identity(
     confident origins is fatal.
     """
     row = conn.execute(
-        "SELECT origin, native_id, source_path, source_index, blob_hash, blob_size FROM raw_sessions WHERE raw_id = ?",
+        "SELECT origin, native_id, source_path, source_index, blob_hash, blob_size, canonical_source_path FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
     ).fetchone()
     if row is None:
         return False
     stored_origin = row[0]
-    if tuple(row[1:]) != (native_id, source_path, source_index, blob_hash, blob_size):
+    if tuple(row[1:]) != (native_id, source_path, source_index, blob_hash, blob_size, canonical_source_path):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_profile_identity
+
+    record_raw_profile_identity(conn, raw_id=raw_id, profile_key=captured_profile_key)
 
     incoming_origin = _enum_value(origin)
     if stored_origin == incoming_origin:
@@ -499,6 +510,8 @@ def admit_raw_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     source_index: int = 0,
     payload: bytes,
     acquired_at_ms: int,
@@ -582,6 +595,8 @@ def admit_raw_observation(
             origin=origin,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=len(payload),
@@ -593,6 +608,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -621,6 +638,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -639,6 +658,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -659,6 +680,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -713,6 +736,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
@@ -749,6 +774,8 @@ def admit_raw_observation(
             origin=origin,
             capture_mode=capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
@@ -792,6 +819,8 @@ def admit_raw_observation(
         origin=origin,
         capture_mode=capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=resolved_payload,
         acquired_at_ms=acquired_at_ms,
@@ -825,6 +854,8 @@ def admit_raw_blob_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -843,6 +874,8 @@ def admit_raw_blob_observation(
                 origin=origin,
                 capture_mode=capture_mode,
                 source_path=source_path,
+                canonical_source_path=canonical_source_path,
+                captured_profile_key=captured_profile_key,
                 source_index=source_index,
                 blob_hash=blob_hash,
                 blob_size=blob_size,
@@ -863,6 +896,8 @@ def admit_raw_artifact_blob_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -888,6 +923,8 @@ def admit_raw_artifact_blob_observation(
         origin=origin,
         capture_mode=capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         blob_hash=blob_hash,
         blob_size=blob_size,
@@ -921,6 +958,8 @@ def _admit_artifact(
     origin: Origin | str,
     capture_mode: Provider | str | None,
     source_path: str,
+    canonical_source_path: str | None,
+    captured_profile_key: str | None,
     source_index: int,
     payload: bytes,
     acquired_at_ms: int,
@@ -943,6 +982,8 @@ def _admit_artifact(
         origin=origin,
         capture_mode=capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,

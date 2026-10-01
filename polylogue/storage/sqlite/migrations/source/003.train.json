@@ -1,0 +1,82 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "proof:authenticated-source-pre-migration-package",
+  "current_version": 2,
+  "declared_at_ms": 1,
+  "drop_constraints": [],
+  "failure": null,
+  "manifest_format": "polylogue.durable-change-train.v2",
+  "manifest_sha256": "a9c51a72a2631e7da89b61517cecebd088af235d0a93569acd2f9ad1496bd24a",
+  "migration": {
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/003_captured_profile_identity.sql",
+    "path": "003_captured_profile_identity.sql",
+    "requires_backup": true,
+    "slot": 3,
+    "sql_sha256": "c484c4a17050133444b11b4614cbb1cb21b4d0022a7b7dff0681cb45b20ddf96",
+    "target_version": 3,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "sinnix://projects/polylogue/beads/polylogue-lssl6",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:profile-receipt-admission",
+        "proof:profile-receipt-replay",
+        "proof:missing-profile-disposition"
+      ],
+      "owner_ref": "sinnix://projects/polylogue/beads/polylogue-lssl6",
+      "rider_id": "source-captured-profile-identity",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:profile-receipt-admission",
+          "consumer_id": "profile-receipt-write",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_write.py:record_raw_profile_identity",
+          "roles": [
+            "write"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:profile-receipt-replay",
+          "consumer_id": "profile-receipt-read",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_write.py:read_raw_profile_identity",
+          "roles": [
+            "read"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:missing-profile-disposition",
+          "consumer_id": "raw-failure-lifecycle",
+          "production_ref": "polylogue/storage/raw_failure_lifecycle.py:read_raw_failure_lifecycle",
+          "roles": [
+            "read"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:raw_profile_identity_receipts",
+        "index:idx_raw_artifacts_source_identity",
+        "index:idx_raw_artifacts_failure_identity"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "schema_replay_proof": null,
+  "slot": 3,
+  "state": "declared",
+  "target_version": 3,
+  "tier": "source",
+  "train_id": "source-captured-profile-identity-v3"
+}

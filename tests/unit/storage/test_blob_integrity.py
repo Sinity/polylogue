@@ -744,7 +744,7 @@ def test_a_candidate_whose_identity_is_refused_is_not_a_match(monkeypatch: pytes
     unit carries digests only; its refusal is raised by the replay itself.
     """
     from polylogue.core import content_identity
-    from polylogue.operations.archive_backup import _payload_matches_reference
+    from polylogue.storage.backup_package import _payload_matches_reference
 
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
     refused = b'{"n": 1.' + b"2" * 64 + b"}"

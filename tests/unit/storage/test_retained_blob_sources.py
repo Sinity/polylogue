@@ -20,8 +20,8 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.operations import archive_backup
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
+from polylogue.storage import backup_package as archive_backup
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

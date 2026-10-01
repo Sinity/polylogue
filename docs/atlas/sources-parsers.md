@@ -8,6 +8,78 @@ parsed sessions before the storage writer lowers them
 (`polylogue/sources/dispatch.py:1-80`; `polylogue/sources/detection.py:76-104`;
 `polylogue/pipeline/services/ingest_batch/_core.py:1179-1243`).
 
+## Source observation and SQLite reads
+
+`source_snapshot.py` publishes a declared root's complete member inventory or
+an unavailable result. Byte members and candidate copies read an anchored,
+no-follow descriptor matching the enumerated inode; captured append prefixes
+keep that descriptor's size, hash and identity together. A spool handoff binds
+the new active generation at its creation and observes that exact generation
+for carry-forward arrivals.
+
+`sqlite_export.py` owns canonical logical exports, SQLite shape reads and
+existing staged-import backups and live Antigravity/Hermes import previews.
+Each runs in a fresh reader process. The
+parent anchors source-directory metadata and forwards the existing no-follow
+walk parent for directory members. The reader uses that descriptor as its
+working directory, opens SQLite and sidecars by relative URI, and proves the actual
+main descriptor before SQL, binds WAL/SHM descriptors after the first schema
+read and rechecks every source descriptor before closing the transaction.
+Initially absent sidecars bind only when their opened descriptor matches the
+current anchored name. Unknown or unlinked regular descriptors are refused;
+no database guard descriptor is opened and closed in the caller's process.
+
+`sqlite_snapshot.py` owns a source binding that keeps staged provenance,
+declaration, logical-table scope and routing with the accepted main identity.
+A narrow fresh-process operation reads provenance before opening SQLite;
+the parent never reads an ordinary metadata descriptor that could have been
+substituted with a database held by another reader. Present unreadable,
+invalid or mismatched provenance refuses acquisition. Only absence permits
+the ordinary source route. The actual reader proves the same main descriptor
+before SQL and checks the bound metadata before the operation and at its end.
+Acquisition results carry the accepted source coordinate through attribution
+and profile identity; retained exports use that durable coordinate directly.
+
+Staging publishes provenance and database through separate replacements.
+The provenance includes the backup owner's actual destination identity, so
+readers refuse the intermediate mismatch and a failed second replacement.
+A retry publishes a newly proved pair. Explicit stable root aliases resolve
+once to the accepted actual root; aliases inside enumerated directories are
+refused.
+
+Exports retain their canonical bytes and declared logical-table scope. Pipe
+frames stream to the existing sink, with each callback acknowledged before the
+reader advances. A failed callback or final binding check leaves an unfinished
+operation: the blob writer discards its private staging file, digest callers
+raise, and a staged backup is not published. Transport memory is bounded by
+chunks; the existing canonical emitter still allocates an individual row and
+its encoded cells. No whole-export transport buffer or input limit is added.
+
+The descriptor census uses `/proc/self/fd` where present and otherwise scans
+the finite OS descriptor bound. Every regular reader descriptor belongs to
+an explicitly bound source role or backup destination. A VFS that opens an
+additional regular lock file needs that file's identity bound before the read
+can complete. Native Darwin VFS/proxy-lock qualification has not been run;
+no unknown descriptor is exempted as a guessed platform lock file.
+
+Import explain and SQLite preflight detect and parse on the same proved
+connection and read transaction. Named domain operations return counts,
+session references and fidelity evidence only after the final binding proof;
+they do not transport another transcript representation. Native live reads
+preserve the source's collation, affinity, views and rowid semantics. Retained
+logical exports use their existing private untyped reconstruction, streamed
+from the accepted export descriptor. SQLite preflight aggregates every
+trajectory through the production positive-conversational evidence gate;
+empty/degraded evidence remains a caveat, and a prefix cannot hide a later
+admitted session. Hermes verification reads every event/state row without a
+consumer row-count refusal. Its preview validates each row through the parser's
+existing transforms and aggregates fidelity counters, spilling Python session
+keys into a private BINARY-collated grouping database. It does not instantiate
+the ledger's parsed-event list. The public parser still returns its declared
+session list; the preview transports only its declared references and counts.
+Explicit low-level connection-return readers retain their existing semantics;
+this guarantee covers the actual acquisition and import-preview operations.
+
 ## Detection and parse route
 
 1. Acquisition records raw bytes and source metadata in `source.db`.

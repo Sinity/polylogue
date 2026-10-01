@@ -18,9 +18,9 @@ from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
-from polylogue.operations import archive_backup as backup_mod
 from polylogue.operations.archive_backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.storage import backup_package as backup_mod
 from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.backup_blob_closure import (
     SOURCE_DECLARED_ABSENT_AUTHORITY,
@@ -2202,7 +2202,7 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
             conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
 
     monkeypatch.setattr(
-        "polylogue.operations.archive_backup._verify_archive_file_set_backup",
+        "polylogue.storage.backup_package._verify_archive_file_set_backup",
         lambda _path: {"ok": False, "error": "bad"},
     )
 

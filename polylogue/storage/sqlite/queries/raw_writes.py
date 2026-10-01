@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import aiosqlite
 
 from polylogue.archive.revision_authority import RawRevisionAuthority
@@ -14,7 +12,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionPlan,
     RawAdmissionResult,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, require_profile_identity_key
 
 
 def _revision_values(plan: RawAdmissionPlan) -> tuple[object, ...]:
@@ -77,21 +75,36 @@ async def execute_raw_admission_plan_async(
                logical_source_key, revision_kind, source_revision,
                predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                append_start_offset, append_end_offset, acquisition_generation,
-               revision_authority
+               revision_authority, canonical_source_path
         FROM raw_sessions WHERE raw_id = ?
         """,
         (plan.raw_id,),
     )
     retained = await cursor.fetchone()
+    profile_key = request.captured_profile_key
+    if profile_key is not None:
+        profile_key = require_profile_identity_key(profile_key)
+        profile_cursor = await conn.execute(
+            "SELECT profile_key FROM raw_profile_identity_receipts WHERE raw_id = ?", (plan.raw_id,)
+        )
+        profile_receipt = await profile_cursor.fetchone()
+        if profile_receipt is not None and profile_receipt[0] != profile_key:
+            raise ValueError(f"raw id is already bound to a different profile identity: {plan.raw_id}")
+        if retained is not None and profile_receipt is None:
+            raise ValueError(f"retained raw is missing its original profile identity receipt: {plan.raw_id}")
     inserted = retained is None
     if retained is not None:
         retained_values = tuple(retained)
-        if retained_values[1:6] != (
-            request.native_id,
-            request.source_path,
-            request.source_index,
-            request.blob_hash,
-            request.blob_size,
+        if (
+            retained_values[1:6]
+            != (
+                request.native_id,
+                request.source_path,
+                request.source_index,
+                request.blob_hash,
+                request.blob_size,
+            )
+            or retained_values[-1] != request.canonical_source_path
         ):
             raise ValueError(f"raw id is already bound to different acquisition evidence: {plan.raw_id}")
         incoming_origin = origin_value
@@ -111,7 +124,7 @@ async def execute_raw_admission_plan_async(
         # typed revision envelope.  Re-acquiring the same observation after
         # that bind is idempotent; only an unrelated non-pending conflict is
         # fatal.
-        retained_revision = retained_values[6:]
+        retained_revision = retained_values[6:-1]
         pending_revision = _revision_values(plan)
         if retained_revision != pending_revision and plan.revision.authority is not RawRevisionAuthority.QUARANTINED:
             raise ValueError(f"raw id is already bound to a different revision envelope: {plan.raw_id}")
@@ -133,7 +146,7 @@ async def execute_raw_admission_plan_async(
                 capture_mode_value,
                 request.native_id,
                 request.source_path,
-                str(Path(request.source_path).resolve()),
+                request.canonical_source_path,
                 request.source_index,
                 request.blob_hash,
                 request.blob_size,
@@ -148,6 +161,11 @@ async def execute_raw_admission_plan_async(
             # the exact same validation path before mutable side effects.
             return await execute_raw_admission_plan_async(conn, plan, transaction_depth)
 
+    if profile_key is not None:
+        await conn.execute(
+            "INSERT INTO raw_profile_identity_receipts(raw_id, profile_key) VALUES (?, ?) ON CONFLICT(raw_id) DO NOTHING",
+            (plan.raw_id, profile_key),
+        )
     if request.capture_mode is not None:
         capture_mode = capture_mode_value
         await conn.execute(

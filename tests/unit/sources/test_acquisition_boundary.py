@@ -493,3 +493,58 @@ def test_no_route_reads_source_bytes_around_the_boundary() -> None:
     sites = _sink_call_sites()
     assert sites - _DECLARED_NON_ACQUISITION_SITES.keys() == set()
     assert _DECLARED_NON_ACQUISITION_SITES.keys() - sites == set()
+
+
+def test_path_capture_freezes_coordinate_before_alias_retargets(tmp_path: Path) -> None:
+    original = tmp_path / "original.jsonl"
+    replacement = tmp_path / "replacement.jsonl"
+    original.write_bytes(_jsonl(_CLAUDE))
+    replacement.write_bytes(_jsonl(_CODEX))
+    alias = tmp_path / "declared.jsonl"
+    alias.symlink_to(original)
+    store = BlobStore(tmp_path / "blobs")
+
+    def retarget() -> None:
+        if alias.resolve() == original:
+            alias.unlink()
+            alias.symlink_to(replacement)
+
+    capture = capture_bound_path(store, alias, Provider.CLAUDE_CODE, heartbeat=retarget)
+    assert capture.canonical_source_path == str(original)
+    assert capture.file_observation[:2] == (original.stat().st_dev, original.stat().st_ino)
+    with store.open(capture.blob_hash) as retained:
+        assert retained.read() == original.read_bytes()
+    assert alias.resolve() == replacement
+
+
+def test_hermes_snapshot_uses_opened_profile_after_parent_alias_retargets(tmp_path: Path) -> None:
+    """A parser-side resolve would qualify captured A bytes with profile B."""
+    from polylogue.sources.acquisition_boundary import bound_profile_identity, open_bound_path
+    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+
+    first = tmp_path / "profile-a"
+    second = tmp_path / "profile-b"
+    for directory in (first, second):
+        (directory / "sessions").mkdir(parents=True)
+    document = {"session_id": "shared-session", "messages": [{"role": "user", "content": "captured"}]}
+    (first / "sessions" / "session_shared.json").write_text(json.dumps(document), encoding="utf-8")
+    (second / "sessions" / "session_shared.json").write_text(json.dumps(document), encoding="utf-8")
+    alias = tmp_path / "profile"
+    alias.symlink_to(first, target_is_directory=True)
+    source = alias / "sessions" / "session_shared.json"
+    with open_bound_path(source, Provider.HERMES) as stream:
+        receipt = bound_profile_identity(stream)
+        assert receipt is not None
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        captured = json.loads(stream.read())
+    sessions = parse_payload(
+        Provider.HERMES, captured, "fallback", source_path=str(source), profile_identity=receipt.key
+    )
+    assert receipt.key == profile_key(first)
+    assert receipt.source_path == first / "sessions" / "session_shared.json"
+    assert [session.provider_session_id for session in sessions] == [
+        qualified_session_id("shared-session", profile_key(first))
+    ]
+    assert receipt.key != profile_key(second)

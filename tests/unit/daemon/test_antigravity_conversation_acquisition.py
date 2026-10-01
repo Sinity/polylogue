@@ -346,13 +346,13 @@ def test_vendor_conversion_cannot_publish_a_later_protobuf_revision(
     from hashlib import sha256
 
     from polylogue.sources import source_parsing
-    from polylogue.sources.acquisition_boundary import capture_bound_path
+    from polylogue.sources.acquisition_boundary import BoundPathCapture, capture_bound_path
 
     processor, paths, exported = _live_vendor_cohort(tmp_path, monkeypatch)
     converted_digest = sha256(paths[0].read_bytes()).hexdigest()
     original_capture = capture_bound_path
 
-    def replace_between_conversion_and_capture(store: Any, path: Path, provider: Provider) -> tuple[str, int]:
+    def replace_between_conversion_and_capture(store: Any, path: Path, provider: Provider) -> BoundPathCapture:
         if path == paths[0]:
             path.write_bytes(b"different protobuf after the successful conversion")
         return original_capture(store, path, provider)

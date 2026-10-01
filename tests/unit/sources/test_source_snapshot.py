@@ -19,7 +19,7 @@ from polylogue.maintenance.source_manifest_continuity import (
     SourceRole,
     build_source_frontier,
 )
-from polylogue.sources import source_snapshot, sqlite_export, sqlite_snapshot
+from polylogue.sources import source_snapshot, sqlite_export
 from polylogue.sources.source_snapshot import (
     CandidateCohortError,
     SnapshotMode,
@@ -316,7 +316,7 @@ def test_sqlite_cut_refuses_a_commit_during_logical_export(tmp_path: Path, monke
         conn.execute("CREATE TABLE state (value TEXT)")
         conn.commit()
 
-    original_export = sqlite_export.write_logical_export
+    original_export = sqlite_export._write_logical_export_bound
 
     def export_then_commit(source: Path, handle: sqlite_export.BinaryWriteSink, **kwargs: Any) -> None:
         original_export(source, handle, **kwargs)
@@ -324,7 +324,7 @@ def test_sqlite_cut_refuses_a_commit_during_logical_export(tmp_path: Path, monke
             conn.execute("INSERT INTO state VALUES ('after-cut')")
             conn.commit()
 
-    monkeypatch.setattr("polylogue.sources.source_snapshot.write_logical_export", export_then_commit)
+    monkeypatch.setattr("polylogue.sources.source_snapshot._write_logical_export_bound", export_then_commit)
     with pytest.raises(SourceMutationError, match="SQLite source changed during logical export"):
         execute_source_cut(
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
@@ -349,10 +349,11 @@ def test_sqlite_cut_refuses_a_logical_export_with_a_different_logical_revision(
         conn.commit()
 
     def export_different_content(_source: Path, handle: sqlite_export.BinaryWriteSink, **kwargs: Any) -> None:
+        kwargs.pop("expected_identity", None)
         logical_export = logical_export_bytes(different, **kwargs)
         handle.write(logical_export)
 
-    monkeypatch.setattr("polylogue.sources.source_snapshot.write_logical_export", export_different_content)
+    monkeypatch.setattr("polylogue.sources.source_snapshot._write_logical_export_bound", export_different_content)
     with pytest.raises(SourceMutationError, match="logical export does not match source logical revision"):
         execute_source_cut(
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
@@ -822,14 +823,14 @@ def test_sqlite_frontier_refuses_persistent_symlink_substitution_during_logical_
         with sqlite3.connect(path) as conn:
             conn.execute("CREATE TABLE state (value TEXT)")
             conn.execute("INSERT INTO state VALUES (?)", (value,))
-    original = sqlite_snapshot.sqlite_member_revision
+    original = sqlite_export._logical_export_digest_bound
 
-    def substitute(path: Path) -> str:
+    def substitute(path: Path, **kwargs: Any) -> str:
         database.rename(tmp_path / "original.sqlite")
         database.symlink_to(external)
-        return original(path)
+        return original(path, **kwargs)
 
-    monkeypatch.setattr(source_snapshot, "sqlite_member_revision", substitute)
+    monkeypatch.setattr(source_snapshot, "_logical_export_digest_bound", substitute)
     frontier = build_source_frontier([SourceDeclaration("database", SourceRole.MUTABLE_SQLITE, database, True)])
     assert frontier.root_states["database"] is FrontierState.UNAVAILABLE
     assert frontier.members == ()
@@ -883,7 +884,8 @@ def test_substituted_declared_parent_alias_cannot_publish_external_members(
 
 
 @pytest.mark.uses_real_clock("SQLite process locks are verified by an external writer")
-def test_sqlite_observation_preserves_another_connections_process_locks(tmp_path: Path) -> None:
+@pytest.mark.parametrize("operation", ["frontier", "shape", "export"])
+def test_sqlite_observation_preserves_another_connections_process_locks(tmp_path: Path, operation: str) -> None:
     """Mutation: closing an ordinary SQLite guard fd releases a concurrent reader's POSIX lock."""
     database = tmp_path / "declared.sqlite"
     with sqlite3.connect(database) as conn:
@@ -893,8 +895,13 @@ def test_sqlite_observation_preserves_another_connections_process_locks(tmp_path
     try:
         reader.execute("BEGIN")
         assert reader.execute("SELECT value FROM state").fetchone() == ("declared",)
-        frontier = build_source_frontier([SourceDeclaration("database", SourceRole.MUTABLE_SQLITE, database, True)])
-        assert frontier.complete
+        if operation == "frontier":
+            frontier = build_source_frontier([SourceDeclaration("database", SourceRole.MUTABLE_SQLITE, database, True)])
+            assert frontier.complete
+        elif operation == "shape":
+            assert sqlite_export.logical_source_shape(database) == {"state": ("value",)}
+        else:
+            assert b"declared" in sqlite_export.logical_export_bytes(database)
         writer = subprocess.run(
             [
                 sys.executable,

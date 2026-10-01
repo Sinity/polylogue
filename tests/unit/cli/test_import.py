@@ -214,7 +214,7 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     from polylogue.config import Source
     from polylogue.sources.parsers import hermes_state
     from polylogue.sources.source_parsing import iter_source_sessions_with_raw
-    from polylogue.sources.sqlite_snapshot import original_sqlite_source_path
+    from polylogue.sources.sqlite_snapshot import bind_sqlite_source
 
     source = tmp_path / "state.db"
     with sqlite3.connect(source) as conn:
@@ -289,7 +289,8 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     with sqlite3.connect(staged) as conn:
         assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
         assert conn.execute("SELECT content FROM messages ORDER BY id DESC LIMIT 1").fetchone()[0] == "WAL turn"
-    assert original_sqlite_source_path(staged) == source.resolve()
+    with bind_sqlite_source(staged) as binding:
+        assert binding.source_path == source.resolve()
     assert submit.payload == {
         "path": str(staged),
         "source_path": str(source.resolve()),
@@ -435,7 +436,7 @@ def test_failed_restage_keeps_the_earlier_snapshot_provenance(tmp_path: Path, wo
     """
     from polylogue.cli.commands import import_command
     from polylogue.sources.sqlite_snapshot import (
-        original_sqlite_source_path,
+        bind_sqlite_source,
         sqlite_staging_metadata_path,
         stage_sqlite_snapshot,
     )
@@ -466,7 +467,8 @@ def test_failed_restage_keeps_the_earlier_snapshot_provenance(tmp_path: Path, wo
 
     assert staged.read_bytes() == earlier
     assert sqlite_staging_metadata_path(staged).exists()
-    assert original_sqlite_source_path(staged) == first.resolve()
+    with bind_sqlite_source(staged) as binding:
+        assert binding.source_path == first.resolve()
 
 
 def test_restage_keeps_snapshot_provenance_for_the_whole_copy(tmp_path: Path, workspace_env: dict[str, Path]) -> None:

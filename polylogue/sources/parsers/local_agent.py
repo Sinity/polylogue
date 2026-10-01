@@ -392,6 +392,7 @@ def parse_hermes(
     fallback_id: str,
     *,
     source_path: str | Path | None = None,
+    profile_identity: str | None = None,
 ) -> ParsedSession:
     """Parse one ``<hermes_root>/sessions/session_*.json`` snapshot.
 
@@ -403,7 +404,7 @@ def parse_hermes(
     assertable, so identity stays unqualified rather than inventing a key.
     """
     raw_session_id = _string(payload.get("session_id")) or fallback_id
-    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     system_prompt = _string(payload.get("system_prompt"))
@@ -457,10 +458,11 @@ def parse_hermes_snapshot_stream(
     messages: MutableSequence[ParsedMessage],
     session_events: MutableSequence[ParsedSessionEvent],
     source_path: str | Path | None = None,
+    profile_identity: str | None = None,
 ) -> ParsedSession:
     """Lower one validated snapshot with disk-backed message and event rows."""
     raw_session_id = _string(envelope.get("session_id")) or fallback_id
-    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
     model = _string(envelope.get("model"))
     system_prompt = _string(envelope.get("system_prompt"))
     if system_prompt:
@@ -516,7 +518,11 @@ def parse_hermes_snapshot_stream(
     )
 
 
-def _hermes_qualified_session_id(raw_session_id: str, source_path: str | Path | None) -> str:
+def _hermes_qualified_session_id(
+    raw_session_id: str, source_path: str | Path | None, profile_identity: str | None
+) -> str:
+    if profile_identity is not None:
+        return _qualified_session_id(raw_session_id, profile_identity)
     if source_path is None:
         return raw_session_id
     return _qualified_session_id(

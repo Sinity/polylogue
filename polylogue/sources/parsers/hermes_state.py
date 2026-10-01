@@ -219,6 +219,7 @@ def parse_state_db_payload(
     fallback_id: str,
     *,
     source_path: str | None = None,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Parse a ``state_db_path`` marker payload from its own declared export.
 
@@ -243,6 +244,7 @@ def parse_state_db_payload(
         Path(path_value),
         fallback_id=fallback_id,
         profile_root=profile_root,
+        profile_identity=profile_identity,
         immutable=payload.get("sqlite_immutable") is True,
     )
 
@@ -253,43 +255,48 @@ def parse_state_db(
     fallback_id: str | None = None,
     profile_root: Path | None = None,
     immutable: bool = False,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Parse every session revision from a Hermes ``state.db`` file."""
     del fallback_id
-    # ``closing``, not a bare ``with``: a sqlite3 connection's own context
-    # manager commits or rolls back and never closes, so returning from here
-    # would leave the unlinked reconstruction backed by an open handle.
     with closing(_connect_readonly(path, immutable=immutable)) as conn:
-        if not _has_required_tables(conn):
-            raise ValueError(f"{path} is not a Hermes state.db file")
-        session_columns = _columns(conn, "sessions")
-        message_columns = _columns(conn, "messages")
-        schema_version = _schema_version(conn)
-        resolved_profile_root = profile_root or profile_root_for_artifact(path)
-        session_rows = list(
-            conn.execute(
-                """
-                SELECT *
-                FROM sessions
-                ORDER BY COALESCE(started_at, 0), id
-                """
-            ).fetchall()
+        return _parse_state_connection(conn, path, profile_root=profile_root, profile_identity=profile_identity)
+
+
+def _parse_state_connection(
+    conn: sqlite3.Connection, path: Path, *, profile_root: Path | None = None, profile_identity: str | None = None
+) -> list[ParsedSession]:
+    """Parse on the caller-owned read transaction without reopening its source."""
+    conn.row_factory = sqlite3.Row
+    if not _has_required_tables(conn):
+        raise ValueError(f"{path} is not a Hermes state.db file")
+    session_columns = _columns(conn, "sessions")
+    message_columns = _columns(conn, "messages")
+    schema_version = _schema_version(conn)
+    resolved_profile_root = profile_root or profile_root_for_artifact(path)
+    session_rows = list(
+        conn.execute(
+            """
+            SELECT *
+            FROM sessions
+            ORDER BY COALESCE(started_at, 0), id
+            """
+        ).fetchall()
+    )
+    rows_by_id = {str(row["id"]): row for row in session_rows}
+    sessions = [
+        _parse_session_row(
+            conn,
+            row,
+            parent_row=rows_by_id.get(str(row["parent_session_id"])) if row["parent_session_id"] is not None else None,
+            profile_root=resolved_profile_root,
+            profile_identity=profile_identity,
+            schema_version=schema_version,
+            session_columns=session_columns,
+            message_columns=message_columns,
         )
-        rows_by_id = {str(row["id"]): row for row in session_rows}
-        sessions = [
-            _parse_session_row(
-                conn,
-                row,
-                parent_row=rows_by_id.get(str(row["parent_session_id"]))
-                if row["parent_session_id"] is not None
-                else None,
-                profile_root=resolved_profile_root,
-                schema_version=schema_version,
-                session_columns=session_columns,
-                message_columns=message_columns,
-            )
-            for row in session_rows
-        ]
+        for row in session_rows
+    ]
     segmented = _segment_compression_continuations(sessions)
     return _without_unreferenced_empty_sessions(segmented)
 
@@ -727,12 +734,13 @@ def _parse_session_row(
     *,
     parent_row: sqlite3.Row | None,
     profile_root: Path,
+    profile_identity: str | None,
     schema_version: int | None,
     session_columns: set[str],
     message_columns: set[str],
 ) -> ParsedSession:
     raw_session_id = str(row["id"])
-    profile_key = _profile_key(profile_root)
+    profile_key = profile_identity if profile_identity is not None else _profile_key(profile_root)
     session_id = _qualified_session_id(raw_session_id, profile_key)
     messages: list[ParsedMessage] = []
     state_events: list[ParsedSessionEvent] = []

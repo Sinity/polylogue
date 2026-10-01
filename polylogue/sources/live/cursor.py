@@ -82,6 +82,7 @@ class CursorRecord:
     last_complete_newline: int
     record_count: int
     updated_at: str
+    canonical_source_path: str | None = None
     last_record_ts: str | None = None
     parser_fingerprint: str | None = None
     content_fingerprint: str | None = None
@@ -303,6 +304,7 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         next_retry_at=_optional_str(row[13]),
         excluded=bool(row[16]) if row[16] is not None else False,
         deferred_end_offset=_optional_int(row[17]),
+        canonical_source_path=_optional_str(row[18]),
     )
 
 
@@ -698,6 +700,7 @@ class CursorStore:
         upsert_archive_ingest_cursor(
             conn,
             source_path=record.source_path,
+            canonical_source_path=record.canonical_source_path,
             updated_at_ms=_required_epoch_ms(record.updated_at),
             origin=origin,
             stat_size=record.byte_size,
@@ -1476,7 +1479,8 @@ class CursorStore:
                 origin,
                 updated_at_ms,
                 excluded,
-                deferred_end_offset
+                deferred_end_offset,
+                canonical_source_path
             FROM ingest_cursor
             WHERE source_path = ?
             """,
@@ -1516,7 +1520,8 @@ class CursorStore:
                         origin,
                         updated_at_ms,
                         excluded,
-                        deferred_end_offset
+                        deferred_end_offset,
+                        canonical_source_path
                     FROM ingest_cursor
                     WHERE source_path IN ({placeholders})
                     """,
@@ -1547,6 +1552,7 @@ class CursorStore:
         failure_count: int | None = None,
         next_retry_at: str | None = None,
         excluded: bool | None = None,
+        canonical_source_path: str | None = None,
         allow_backward: bool = False,
         deferred_end_offset: int | None = None,
     ) -> bool:
@@ -1566,6 +1572,7 @@ class CursorStore:
         return self._sync_cursor_record_to_ops(
             CursorRecord(
                 source_path=str(path),
+                canonical_source_path=canonical_source_path,
                 byte_size=byte_size,
                 byte_offset=offset,
                 last_complete_newline=newline_offset,
@@ -1958,7 +1965,8 @@ class CursorStore:
                         origin,
                         updated_at_ms,
                     excluded,
-                    deferred_end_offset
+                    deferred_end_offset,
+                    canonical_source_path
                 FROM ingest_cursor
                 WHERE excluded = 0
                   AND (

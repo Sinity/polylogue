@@ -23,12 +23,16 @@ outside this module without a declared reason.
 
 from __future__ import annotations
 
+import errno
 import io
+import os
+import stat
 import zipfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, BinaryIO
+from typing import IO, TYPE_CHECKING, BinaryIO
 
 import ijson
 
@@ -43,6 +47,9 @@ from .dispatch import (
     is_jsonl_source_path,
     same_origin,
 )
+
+if TYPE_CHECKING:
+    from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
 
 _READ_CHUNK_BYTES = 1 << 20
 
@@ -322,11 +329,24 @@ class BoundStream(io.RawIOBase):
     End of stream completes validation of a trailing unterminated record.
     """
 
-    def __init__(self, raw: IO[bytes], name: str, location: Provider | str | None, *, admitted: bool = False) -> None:
+    def __init__(
+        self,
+        raw: IO[bytes],
+        name: str,
+        location: Provider | str | None,
+        *,
+        admitted: bool = False,
+        canonical_source_path: str | None = None,
+        file_observation: tuple[int, int, int, int, int] | None = None,
+        profile_identity: CapturedHermesProfile | None = None,
+    ) -> None:
         super().__init__()
         if not admitted:
             refuse_declared_foreign(name, location)
         self._raw = raw
+        self.canonical_source_path = canonical_source_path
+        self.file_observation = file_observation
+        self.profile_identity = profile_identity
         self.name = name
         self.location = bound_location_provider(location)
         self._validator = BoundRecordValidator(name, None if admitted else location)
@@ -382,11 +402,29 @@ class BoundStream(io.RawIOBase):
         self._validated_to = end
 
 
-def bind_stream(handle: IO[bytes], name: str, location: Provider | str | None) -> BinaryIO:
+def bind_stream(
+    handle: IO[bytes],
+    name: str,
+    location: Provider | str | None,
+    *,
+    canonical_source_path: str | None = None,
+    file_observation: tuple[int, int, int, int, int] | None = None,
+    profile_identity: CapturedHermesProfile | None = None,
+) -> BinaryIO:
     """Route an open source handle through the boundary (idempotent)."""
     if is_bound(handle):
         return handle  # type: ignore[return-value]
-    return io.BufferedReader(BoundStream(handle, name, location), buffer_size=_READ_CHUNK_BYTES)
+    return io.BufferedReader(
+        BoundStream(
+            handle,
+            name,
+            location,
+            canonical_source_path=canonical_source_path,
+            file_observation=file_observation,
+            profile_identity=profile_identity,
+        ),
+        buffer_size=_READ_CHUNK_BYTES,
+    )
 
 
 def is_bound(handle: object) -> bool:
@@ -394,13 +432,64 @@ def is_bound(handle: object) -> bool:
     return isinstance(handle, io.BufferedReader) and isinstance(handle.raw, BoundStream)
 
 
+def bound_source_observation(stream: IO[bytes]) -> tuple[str | None, tuple[int, int, int, int, int] | None]:
+    """Return only provenance captured by this stream's actual open owner."""
+    if not isinstance(stream, io.BufferedReader) or not isinstance(stream.raw, BoundStream):
+        raise TypeError("source observation needs an acquisition-bound stream")
+    return stream.raw.canonical_source_path, stream.raw.file_observation
+
+
+def bound_profile_identity(stream: IO[bytes]) -> CapturedHermesProfile | None:
+    """Return the namespace captured alongside this actual opened input."""
+    if not isinstance(stream, io.BufferedReader) or not isinstance(stream.raw, BoundStream):
+        raise TypeError("profile identity needs an acquisition-bound stream")
+    return stream.raw.profile_identity
+
+
 @contextmanager
 def open_bound_path(path: Path | str, location: Provider | str | None) -> Iterator[BinaryIO]:
-    """Open a source file at ``location`` through the boundary."""
-    source = Path(path)
+    """Open and bind the source coordinate to the same descriptor as its bytes."""
+    source = Path(path).absolute()
     refuse_declared_foreign(source.name, location)
-    with bind_stream(source.open("rb"), str(source), location) as stream:
-        yield stream
+    with ExitStack() as namespace:
+        from polylogue.sources.parsers.hermes_identity import capture_profile_namespace
+
+        directory_flags = getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = os.open(source.parent.resolve(strict=True), directory_flags)
+        namespace.callback(os.close, parent)
+        profile = namespace.enter_context(capture_profile_namespace(source, parent))
+        physical = source.resolve(strict=True)
+        accepted_parent = os.fstat(parent)
+        current_parent = source.parent.stat()
+        if (accepted_parent.st_dev, accepted_parent.st_ino) != (current_parent.st_dev, current_parent.st_ino):
+            raise OSError(errno.ESTALE, "source declared parent changed before opening", str(source))
+        physical_parent = os.open(physical.parent, directory_flags)
+        namespace.callback(os.close, physical_parent)
+        expected = os.stat(physical.name, dir_fd=physical_parent, follow_symlinks=False)
+        descriptor = os.open(physical.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=physical_parent)
+        raw = namespace.enter_context(os.fdopen(descriptor, "rb"))
+        observed = os.fstat(raw.fileno())
+        if not stat.S_ISREG(observed.st_mode) or (observed.st_dev, observed.st_ino) != (
+            expected.st_dev,
+            expected.st_ino,
+        ):
+            raise OSError(errno.ESTALE, "source differs from its accepted input", str(source))
+        canonical = str(physical)
+        with bind_stream(
+            raw,
+            str(source),
+            location,
+            canonical_source_path=canonical,
+            profile_identity=profile,
+            file_observation=(
+                observed.st_dev,
+                observed.st_ino,
+                observed.st_size,
+                observed.st_mtime_ns,
+                observed.st_ctime_ns,
+            ),
+        ) as stream:
+            yield stream
 
 
 @contextmanager
@@ -467,16 +556,52 @@ def capture_bound_stream(
     return blob_store.write_from_fileobj(stream, heartbeat=heartbeat)
 
 
+def captured_path_coordinate(path: Path | str, descriptor: int) -> str:
+    """Freeze the physical coordinate of the already opened input."""
+    source = Path(path)
+    observed = os.fstat(descriptor)
+    canonical = source.resolve(strict=True)
+    named = canonical.stat(follow_symlinks=False)
+    if not stat.S_ISREG(observed.st_mode) or (observed.st_dev, observed.st_ino, stat.S_IFMT(observed.st_mode)) != (
+        named.st_dev,
+        named.st_ino,
+        stat.S_IFMT(named.st_mode),
+    ):
+        raise OSError(errno.ESTALE, "source coordinate differs from its opened file", str(source))
+    return str(canonical)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundPathCapture:
+    blob_hash: str
+    blob_size: int
+    canonical_source_path: str
+    file_observation: tuple[int, int, int, int, int]
+    captured_profile_key: str | None = None
+    captured_profile_source_path: str | None = None
+
+
 def capture_bound_path(
     blob_store: BlobStore,
     path: Path | str,
     location: Provider | str | None,
     *,
     heartbeat: Heartbeat | None = None,
-) -> tuple[str, int]:
-    """Retain one source file at ``location`` through the boundary."""
+) -> BoundPathCapture:
+    """Retain bytes and their physical coordinate from the same opened file."""
     with open_bound_path(path, location) as stream:
-        return capture_bound_stream(blob_store, stream, heartbeat=heartbeat)
+        canonical, observed = bound_source_observation(stream)
+        assert canonical is not None and observed is not None
+        blob_hash, blob_size = capture_bound_stream(blob_store, stream, heartbeat=heartbeat)
+        profile = bound_profile_identity(stream)
+        return BoundPathCapture(
+            blob_hash,
+            blob_size,
+            canonical,
+            observed,
+            None if profile is None else profile.key,
+            None if profile is None else str(profile.source_path),
+        )
 
 
 def release_refused_capture(blob_store: BlobStore, blob_hash: str, receipt_id: str | None) -> None:

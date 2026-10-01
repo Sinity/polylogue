@@ -248,6 +248,7 @@ class _AppendPlan:
     bytes_read: int
     # Historical fixture/replay callers can preserve a source ordering index;
     # live watcher plans retain the legacy sentinel when no index is known.
+    canonical_source_path: str | None = None
     source_index: int = -1
     accepted_tail_hash: str | None = None
     ctime_ns: int | None = None
@@ -321,6 +322,7 @@ class _FullIngestResult:
     raw_source_revisions: dict[Path, str] = field(default_factory=dict)
     raw_source_fingerprints: dict[Path, str] = field(default_factory=dict)
     captured_content_hashes: dict[Path, str] = field(default_factory=dict)
+    captured_canonical_source_paths: dict[Path, str] = field(default_factory=dict)
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = field(default_factory=dict)
     #: Wall-clock ns taken just before each captured observation's ``stat``.
     captured_observation_times_ns: dict[Path, int] = field(default_factory=dict)
@@ -368,6 +370,7 @@ def _full_ingest_result_from_summary(
     raw_source_revisions: dict[Path, str] | None = None,
     raw_source_fingerprints: dict[Path, str] | None = None,
     captured_content_hashes: dict[Path, str] | None = None,
+    captured_canonical_source_paths: dict[Path, str] | None = None,
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     captured_observation_times_ns: dict[Path, int] | None = None,
     summary: object | None,
@@ -392,6 +395,7 @@ def _full_ingest_result_from_summary(
         raw_source_revisions=raw_source_revisions or {},
         raw_source_fingerprints=raw_source_fingerprints or {},
         captured_content_hashes=captured_content_hashes or {},
+        captured_canonical_source_paths=captured_canonical_source_paths or {},
         captured_file_observations=captured_file_observations or {},
         captured_observation_times_ns=captured_observation_times_ns or {},
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,

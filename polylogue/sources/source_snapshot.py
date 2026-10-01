@@ -32,8 +32,8 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
-from polylogue.sources.sqlite_export import BinaryWriteSink, write_logical_export
-from polylogue.sources.sqlite_snapshot import member_export_scope, sqlite_member_revision
+from polylogue.sources.sqlite_export import BinaryWriteSink, _logical_export_digest_bound, _write_logical_export_bound
+from polylogue.sources.sqlite_snapshot import bind_sqlite_source, member_export_scope
 
 _FICLONE = 0x40049409
 _MANIFEST_VERSION = 2
@@ -358,7 +358,7 @@ def _sha256_path(path: Path) -> str:
 
 
 @contextmanager
-def _open_source_root(binding: SourceCutBinding) -> Iterator[tuple[int, os.stat_result]]:
+def _open_source_root(binding: SourceCutBinding) -> Iterator[tuple[int, os.stat_result, Path]]:
     """Resolve accepted parent aliases once and bind the actual declared root."""
     descriptor: int | None = None
     root = Path(binding.source.root)
@@ -368,7 +368,8 @@ def _open_source_root(binding: SourceCutBinding) -> Iterator[tuple[int, os.stat_
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
         if binding.root_identity.kind == "directory":
             flags |= os.O_DIRECTORY
-        descriptor = os.open(root.resolve(strict=True), flags)
+        physical_root = root.resolve(strict=True)
+        descriptor = os.open(physical_root, flags)
         info = os.fstat(descriptor)
         kind = "directory" if stat.S_ISDIR(info.st_mode) else "file" if stat.S_ISREG(info.st_mode) else "other"
         if (info.st_dev, info.st_ino, kind) != (
@@ -377,7 +378,7 @@ def _open_source_root(binding: SourceCutBinding) -> Iterator[tuple[int, os.stat_
             binding.root_identity.kind,
         ):
             raise SourceMutationError(f"source root identity changed: {root}")
-        yield descriptor, info
+        yield descriptor, info, physical_root
     except OSError as exc:
         raise SourceSnapshotError(f"source root is unreadable: {root}") from exc
     finally:
@@ -479,11 +480,13 @@ def _identity(info: os.stat_result) -> str:
     return f"dev:{info.st_dev}:ino:{info.st_ino}:ctime:{info.st_ctime_ns}"
 
 
-def _walk_files(root: Path, anchor: int, root_info: os.stat_result) -> Iterator[tuple[str, Path, os.stat_result]]:
+def _walk_files(
+    root: Path, anchor: int, root_info: os.stat_result, physical_root: Path
+) -> Iterator[tuple[str, Path, os.stat_result, int | None, Path]]:
     """Enumerate every member, propagating scan and stat faults to the root owner."""
     try:
         if stat.S_ISREG(root_info.st_mode):
-            yield root.name, root, root_info
+            yield root.name, root, root_info, None, physical_root.parent
             return
         if not stat.S_ISDIR(root_info.st_mode):
             raise SourceSnapshotError(f"source root is not a directory: {root}")
@@ -507,7 +510,13 @@ def _walk_files(root: Path, anchor: int, root_info: os.stat_result) -> Iterator[
                     if stat.S_ISDIR(info.st_mode):
                         directories.append((path, info))
                     elif stat.S_ISREG(info.st_mode):
-                        yield path.relative_to(root).as_posix(), path, info
+                        yield (
+                            path.relative_to(root).as_posix(),
+                            path,
+                            info,
+                            descriptor,
+                            (physical_root / path.relative_to(root)).parent,
+                        )
                     else:
                         raise SourceSnapshotError(f"source member is not a regular file: {path}")
     except OSError as exc:
@@ -520,42 +529,54 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
         if _root_identity(root) != binding.root_identity:
             raise SourceMutationError(f"source root identity changed: {root}")
         if binding.root_identity.kind == "directory":
-            with _open_source_root(binding) as (anchor, root_info):
-                result = _observe_sqlite_members(binding, _walk_files(root, anchor, root_info))
+            with _open_source_root(binding) as (anchor, root_info, physical_root):
+                result = _observe_sqlite_members(binding, _walk_files(root, anchor, root_info, physical_root))
         else:
-            result = _observe_sqlite_members(binding, ((root.name, root, root.lstat()),))
+            result = _observe_sqlite_members(binding, ((root.name, root, root.stat(), None, root.parent),))
         if _root_identity(root) != binding.root_identity:
             raise SourceMutationError(f"source root identity changed: {root}")
         return result
-    with _open_source_root(binding) as (anchor, root_info):
-        result = _observe_root(binding, anchor, root_info)
+    with _open_source_root(binding) as (anchor, root_info, physical_root):
+        result = _observe_root(binding, anchor, root_info, physical_root)
         if _root_identity(root) != binding.root_identity:
             raise SourceMutationError(f"source root identity changed: {root}")
         return result
 
 
 def _observe_sqlite_members(
-    binding: SourceCutBinding, members: Iterable[tuple[str, Path, os.stat_result]]
+    binding: SourceCutBinding, members: Iterable[tuple[str, Path, os.stat_result, int | None, Path]]
 ) -> tuple[CutItem, ...]:
     result = []
-    for coordinate, path, before in members:
+    for coordinate, path, before, parent_anchor, semantic_parent in members:
         expected = before.st_dev, before.st_ino
-        for info in (before, path.lstat()):
+        for info in (before, path.stat() if parent_anchor is None else path.lstat()):
             if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != expected:
                 raise SourceMutationError(f"source database identity changed: {path}")
-        # SQLite owns its WAL-aware connection and all database descriptors.
-        # Closing an ordinary guard fd could release another same-process
-        # SQLite connection's POSIX locks. Metadata guards detect persistent
-        # substitution, but cannot bind SQLite's internal pathname open.
-        identity = sqlite_member_revision(path)
-        after = path.lstat()
+        # The isolated export owner binds SQLite's actual descriptors to
+        # this enumerated identity without closing any guard database fd.
+        try:
+            with bind_sqlite_source(
+                path, parent_anchor=parent_anchor, semantic_parent=semantic_parent
+            ) as source_binding:
+                identity = _logical_export_digest_bound(
+                    path,
+                    scope=member_export_scope(source_binding.source_path),
+                    expected_identity=expected,
+                    parent_anchor=source_binding.parent_anchor,
+                    source_binding=source_binding,
+                )
+        except sqlite3.Error as exc:
+            raise SourceSnapshotError(f"SQLite source observation failed: {path}") from exc
+        after = path.stat() if parent_anchor is None else path.lstat()
         if not stat.S_ISREG(after.st_mode) or (after.st_dev, after.st_ino) != expected:
             raise SourceMutationError(f"source database identity changed: {path}")
         result.append(CutItem(binding.source.source_id, coordinate, identity, identity, before.st_size))
     return tuple(sorted(result, key=lambda item: item.coordinate))
 
 
-def _observe_root(binding: SourceCutBinding, anchor: int, root_info: os.stat_result) -> tuple[CutItem, ...]:
+def _observe_root(
+    binding: SourceCutBinding, anchor: int, root_info: os.stat_result, physical_root: Path
+) -> tuple[CutItem, ...]:
     root = Path(binding.source.root)
     mode = binding.policy.mode
     if mode is SnapshotMode.ARCHIVE_MEMBER:
@@ -593,7 +614,9 @@ def _observe_root(binding: SourceCutBinding, anchor: int, root_info: os.stat_res
         except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
     result: list[CutItem] = []
-    for coordinate, path, member_info in _walk_files(root, anchor, root_info):
+    for coordinate, path, member_info, _parent_anchor, _semantic_parent in _walk_files(
+        root, anchor, root_info, physical_root
+    ):
         content_sha256, captured_size, identity = _snapshot_regular_file(
             path,
             member_info,
@@ -701,7 +724,7 @@ def _copy_candidates(
     baseline: tuple[CutItem, ...],
     destination: Path,
 ) -> tuple[CutItem, ...]:
-    with _open_source_root(binding) as (anchor, _root_info):
+    with _open_source_root(binding) as (anchor, _root_info, _physical_root):
         return _copy_bound_candidates(binding, baseline, destination, anchor)
 
 
@@ -809,9 +832,16 @@ class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
         if root.is_dir():
             raise SourceSnapshotError("mutable-sqlite declarations must name one database")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("xb") as raw_handle:
+        with bind_sqlite_source(root) as source_binding, destination.open("xb") as raw_handle:
             handle = _BoundedSnapshotWriter(raw_handle, capacity_bytes=binding.policy.capacity_bytes)
-            write_logical_export(root, handle, scope=member_export_scope(root))
+            _write_logical_export_bound(
+                root,
+                handle,
+                scope=member_export_scope(source_binding.source_path),
+                parent_anchor=source_binding.parent_anchor,
+                source_binding=source_binding,
+                expected_identity=(binding.root_identity.device, binding.root_identity.inode),
+            )
             raw_handle.flush()
             os.fsync(raw_handle.fileno())
         if not destination.exists():
@@ -819,8 +849,18 @@ class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
         digest = _sha256_path(destination)
         if digest != baseline[0].identity:
             raise SourceMutationError(f"SQLite logical export does not match source logical revision: {root}")
-        if sqlite_member_revision(root) != baseline[0].identity:
-            raise SourceMutationError(f"SQLite source changed during logical export: {root}")
+        with bind_sqlite_source(root) as source_binding:
+            if (
+                _logical_export_digest_bound(
+                    root,
+                    scope=member_export_scope(source_binding.source_path),
+                    parent_anchor=source_binding.parent_anchor,
+                    source_binding=source_binding,
+                    expected_identity=(binding.root_identity.device, binding.root_identity.inode),
+                )
+                != baseline[0].identity
+            ):
+                raise SourceMutationError(f"SQLite source changed during logical export: {root}")
         size = destination.stat().st_size
         return SourceSnapshotResult(
             tuple(

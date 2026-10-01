@@ -668,6 +668,7 @@ class PreparedJsonl:
     #: For a terminal failure, which decode boundary refused the bytes, or
     #: ``None`` when the failure was not a decode failure.
     decode_failure: DecodeFailure | None = None
+    missing_profile_identity: bool = False
 
     @classmethod
     def seal(
@@ -1062,6 +1063,7 @@ def prepare_jsonl_blob(
     fallback_id: str,
     *,
     is_stream: bool,
+    profile_identity: str | None = None,
     shard_directory: str,
     sidecar_resolver: SidecarResolver | None = None,
     prepare_sessions: Callable[[list[ParsedSession]], list[ParsedSession]] | None = None,
@@ -1511,6 +1513,7 @@ def prepare_jsonl_blob(
                         messages=store.new_sink(),
                         session_events=store.new_event_sink(),
                         source_path=source_path,
+                        profile_identity=profile_identity,
                     )
             session_count = 0
             if session is not None and require_positive_conversational_evidence(
@@ -1822,6 +1825,7 @@ def prepare_jsonl_blob(
                     _atif_subagents(store.conn) if atif_has_subagents else (),
                     fallback_id,
                     profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    profile_identity=profile_identity,
                     new_events=store.new_event_sink,
                 )
                 if atif_sessions:
@@ -2101,6 +2105,7 @@ def prepare_jsonl_blob(
                         records,
                         fallback_id,
                         source_path=source_path,
+                        profile_identity=profile_identity,
                         message_sink_factory=store.new_sink,
                         event_sink_factory=store.new_event_sink,
                         sidecar_resolver=sidecar_resolver,
@@ -2111,6 +2116,7 @@ def prepare_jsonl_blob(
                         list(records),
                         fallback_id,
                         source_path=source_path,
+                        profile_identity=profile_identity,
                         sidecar_resolver=sidecar_resolver,
                     )
             after_hash = _source_digest(source)

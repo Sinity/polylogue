@@ -741,7 +741,16 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
                             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
-                            artifact_key = (provider, blob_hash, path, kind, native_id, fallback_timestamp)
+                            profile_identity = archive.raw_profile_identity(raw_id)
+                            artifact_key = (
+                                provider,
+                                blob_hash,
+                                path,
+                                kind,
+                                native_id,
+                                fallback_timestamp,
+                                profile_identity,
+                            )
                             artifact = prepared_artifacts.get(artifact_key)
                             if artifact is None:
                                 try:
@@ -816,6 +825,8 @@ class RawObservationDerivation:
                                 None,
                                 artifact.error,
                                 parser_decode_failure=artifact.decode_failure,
+                                missing_profile_identity=artifact.missing_profile_identity,
+                                captured_profile_key=profile_identity,
                                 prepared_artifact=artifact if artifact.error is None else None,
                             )
                         if needs_source_census and not planned_accepted_raw_ids:
@@ -1115,7 +1126,7 @@ class RawObservationDerivation:
                     stop=compute_cancel_requested,
                 )
             else:
-                from polylogue.operations.zip_acquisition_replay import zip_reacquired_unit
+                from polylogue.storage.source_zip_replay import zip_reacquired_unit
 
                 # The resolved unit streams from its member again: a preserved
                 # member can be gigabytes, so its bytes are never held whole.

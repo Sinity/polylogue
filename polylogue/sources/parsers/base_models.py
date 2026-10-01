@@ -830,6 +830,11 @@ class RawSessionData(BaseModel):
 
     raw_bytes: bytes = b""
     source_path: str
+    # Frozen by acquisition; publication never resolves a mutable source alias.
+    canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
+    captured_profile_source_path: str | None = Field(default=None, exclude=True)
+    captured_file_observation: tuple[int, int, int, int, int] | None = Field(default=None, exclude=True)
     source_index: int | None = None
     # The address kind this payload was acquired under. ``source_index`` is a
     # position inside a container member and cannot express "the member

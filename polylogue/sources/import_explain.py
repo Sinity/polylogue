@@ -33,10 +33,11 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.parsers import antigravity, hermes_identity, hermes_spans, hermes_state, hermes_verification
+from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_acquisition_components import sniff_zip_provider
 from polylogue.sources.source_walk import _resolve_source_paths
+from polylogue.sources.sqlite_inspection import SQLiteInspection, inspect_sqlite_source
 from polylogue.storage.sqlite.archive_tiers.source_write import read_capture_mode_resolution
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import read_frame
@@ -436,14 +437,17 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
     # pre-JSON-decode consumers (e.g. schema sampling) from raw SQLite bytes,
     # not to gate the SQLite-specific parse routes, which have their own
     # structural admission check (looks_like_*_path).
-    if antigravity.looks_like_trajectory_db_path(path):
-        return _explain_antigravity_trajectory(path, provider_hint=provider_hint)
-
-    if hermes_state.looks_like_state_db_path(path):
-        return _explain_hermes_state_db(path, provider_hint=provider_hint)
-
-    if hermes_verification.looks_like_verification_evidence_db_path(path):
-        return _explain_hermes_verification_evidence_db(path, provider_hint=provider_hint)
+    try:
+        inspection = inspect_sqlite_source(path)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return _skipped_entry(
+            path,
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"SQLite inspection failure: {type(exc).__name__}: {exc}",
+        )
+    if inspection.domain is not None:
+        return _explain_sqlite_inspection(path, inspection, provider_hint=provider_hint)
 
     path_classification = classify_artifact_path(path, provider=provider_hint)
     if path_classification is not None and not path_classification.parse_as_session:
@@ -476,130 +480,60 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
     )
 
 
-def _explain_antigravity_trajectory(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
-    """Inspect the Antigravity trajectory parser without staging or writing."""
-    try:
-        sessions = list(antigravity.parse_trajectory_db(path, fallback_id=path.stem))
-    except Exception as exc:
-        # SQLite-specific degradation is classified by the parser/storage
-        # adapter; this surface only turns a failed inspection into explain
-        # evidence and must not grow another degradation site.
-        return _skipped_entry(
-            path,
-            provider_hint=provider_hint,
-            artifact=None,
-            reason=f"Antigravity trajectory parser failure: {type(exc).__name__}: {exc}",
-            detected_provider=Provider.ANTIGRAVITY,
-            detector_evidence=(
-                _evidence("antigravity_trajectory.signature", matched=True, reason="trajectory_meta and steps tables"),
-            ),
-        )
-    caveats = [
-        "dry-run inspected the SQLite trajectory read-only; import snapshots a consistent logical export before parsing."
-    ]
-    if not sessions or not any(session.messages for session in sessions):
-        caveats.append("trajectory contains no materialized messages; empty evidence remains attributable.")
-    if any(session.ingest_flags for session in sessions):
-        caveats.append("trajectory contains typed unsupported or degraded steps; coverage is not complete.")
+def _explain_sqlite_inspection(
+    path: Path, inspection: SQLiteInspection, *, provider_hint: Provider
+) -> ImportExplainEntryPayload:
+    """Adapt domain evidence proved on one bound connection to the public payload."""
+    domain = inspection.domain
+    assert domain is not None
+    fidelity = inspection.fidelity
+    produced = ImportProducedRowsPayload(**inspection.produced)
+    if domain == "antigravity_trajectory_db":
+        provider = Provider.ANTIGRAVITY
+        artifact_kind = "sqlite_trajectory_database"
+        signature = "antigravity_trajectory.signature"
+        reason = "trajectory_meta and steps tables"
+        caveats = [
+            "dry-run inspected the SQLite trajectory read-only; import snapshots a consistent logical export before parsing."
+        ]
+        if not produced.messages:
+            caveats.append("trajectory contains no materialized messages; empty evidence remains attributable.")
+        if inspection.degraded:
+            caveats.append("trajectory contains typed unsupported or degraded steps; coverage is not complete.")
+        parser_version = None
+    else:
+        provider = Provider.HERMES
+        assert fidelity is not None
+        if domain == "hermes_state_db":
+            artifact_kind = "sqlite_state_database"
+            signature = "hermes_state_db.signature"
+            reason = "required Hermes tables and signature columns"
+            version_prefix = "state-db"
+        else:
+            artifact_kind = "sqlite_verification_evidence_database"
+            signature = "hermes_verification_evidence_db.signature"
+            reason = "required verification_events/verification_state tables and columns"
+            version_prefix = "verification-evidence-db"
+        parser_version = None if fidelity.schema_version is None else f"{version_prefix}-v{fidelity.schema_version}"
+        caveats = [
+            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
+            *fidelity.caveats,
+        ]
     return ImportExplainEntryPayload(
         source_path=str(path),
-        artifact_kind="sqlite_trajectory_database",
+        artifact_kind=artifact_kind,
         provider_hint=provider_hint.value,
-        detected_origin=_origin_value(Provider.ANTIGRAVITY),
-        detected_provider=Provider.ANTIGRAVITY.value,
-        detector="antigravity_trajectory_db",
-        detector_evidence=(
-            _evidence("antigravity_trajectory.signature", matched=True, reason="trajectory_meta and steps tables"),
-        ),
-        parser="antigravity_trajectory_db",
+        detected_origin=_origin_value(provider),
+        detected_provider=provider.value,
+        detector=domain,
+        detector_evidence=(_evidence(signature, matched=True, reason=reason),),
+        parser=domain,
+        parser_version=parser_version,
         parser_mode="logical_export",
-        produced=_produced_rows(sessions),
+        produced=produced,
         caveats=tuple(caveats),
         raw_evidence_refs=(),
-    )
-
-
-def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
-    """Inspect the real Hermes SQLite parser path without writing a raw blob."""
-
-    try:
-        sessions = hermes_state.parse_state_db(
-            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
-        )
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        return _skipped_entry(
-            path,
-            provider_hint=provider_hint,
-            artifact=None,
-            reason=f"Hermes state.db parser failure: {type(exc).__name__}: {exc}",
-            detected_provider=Provider.HERMES,
-        )
-    fidelity = hermes_state.import_fidelity_declaration(sessions, acquisition_method="logical_export")
-    return ImportExplainEntryPayload(
-        source_path=str(path),
-        artifact_kind="sqlite_state_database",
-        provider_hint=provider_hint.value,
-        detected_origin=_origin_value(Provider.HERMES),
-        detected_provider=Provider.HERMES.value,
-        detector="hermes_state_db",
-        detector_evidence=(
-            _evidence("hermes_state_db.signature", matched=True, reason="required Hermes tables and signature columns"),
-        ),
-        parser="hermes_state_db",
-        parser_version=None if fidelity.schema_version is None else f"state-db-v{fidelity.schema_version}",
-        parser_mode="logical_export",
-        produced=_produced_rows(sessions),
-        caveats=(
-            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
-            *fidelity.caveats,
-        ),
-        raw_evidence_refs=(),
-        fidelity=_fidelity_payload(fidelity),
-    )
-
-
-def _explain_hermes_verification_evidence_db(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
-    """Inspect the real Hermes verification-ledger SQLite parser path without writing a raw blob."""
-
-    try:
-        sessions = hermes_verification.parse_verification_evidence_db(
-            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
-        )
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        return _skipped_entry(
-            path,
-            provider_hint=provider_hint,
-            artifact=None,
-            reason=f"Hermes verification_evidence.db parser failure: {type(exc).__name__}: {exc}",
-            detected_provider=Provider.HERMES,
-        )
-    fidelity = hermes_verification.import_fidelity_declaration(sessions)
-    return ImportExplainEntryPayload(
-        source_path=str(path),
-        artifact_kind="sqlite_verification_evidence_database",
-        provider_hint=provider_hint.value,
-        detected_origin=_origin_value(Provider.HERMES),
-        detected_provider=Provider.HERMES.value,
-        detector="hermes_verification_evidence_db",
-        detector_evidence=(
-            _evidence(
-                "hermes_verification_evidence_db.signature",
-                matched=True,
-                reason="required verification_events/verification_state tables and columns",
-            ),
-        ),
-        parser="hermes_verification_evidence_db",
-        parser_version=None
-        if fidelity.schema_version is None
-        else f"verification-evidence-db-v{fidelity.schema_version}",
-        parser_mode="logical_export",
-        produced=_produced_rows(sessions),
-        caveats=(
-            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
-            *fidelity.caveats,
-        ),
-        raw_evidence_refs=(),
-        fidelity=_fidelity_payload(fidelity),
+        fidelity=None if fidelity is None else _fidelity_payload(fidelity),
     )
 
 

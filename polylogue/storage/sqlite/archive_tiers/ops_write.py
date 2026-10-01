@@ -10,7 +10,6 @@ import sqlite3
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from polylogue.core.enums import (
     IngestOutcome,
@@ -635,6 +634,7 @@ def upsert_ingest_cursor(
     conn: sqlite3.Connection,
     *,
     source_path: str,
+    canonical_source_path: str | None = None,
     updated_at_ms: int,
     origin: Origin | str | None = None,
     stat_size: int | None = None,
@@ -706,7 +706,7 @@ def upsert_ingest_cursor(
         """,
         (
             source_path,
-            str(Path(source_path).resolve()),
+            canonical_source_path,
             _origin_value(origin),
             stat_size,
             byte_offset,

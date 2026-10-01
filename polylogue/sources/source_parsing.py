@@ -36,7 +36,7 @@ from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recogn
 from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
-from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
+from .sqlite_snapshot import SQLiteSourceBinding, bind_sqlite_source, is_sqlite_path, snapshot_sqlite_to_blob
 
 logger = get_logger(__name__)
 _cursor.logger = logger
@@ -264,7 +264,8 @@ def _antigravity_raw_snapshot(
         require_published,
     )
 
-    blob_hash, blob_size = capture_bound_path(resolved_store, pb_path, Provider.ANTIGRAVITY)
+    capture = capture_bound_path(resolved_store, pb_path, Provider.ANTIGRAVITY)
+    blob_hash, blob_size = capture.blob_hash, capture.blob_size
     receipt_id = publication_receipt_id(resolved_store, blob_hash)
     if blob_hash != source_sha256:
         release_refused_capture(resolved_store, blob_hash, receipt_id)
@@ -274,6 +275,8 @@ def _antigravity_raw_snapshot(
     return RawSessionData(
         raw_bytes=b"",
         source_path=str(pb_path),
+        canonical_source_path=capture.canonical_source_path,
+        captured_file_observation=capture.file_observation,
         source_index=None,
         file_mtime=_cursor._get_file_mtime(pb_path),
         provider_hint=Provider.ANTIGRAVITY,
@@ -294,6 +297,45 @@ def _antigravity_source_root(path: Path) -> Path:
 def parse_one_source_path(
     path_str: str,
     *,
+    file_mtime: str | None,
+    source_name: str,
+    sidecar_data: SidecarData,
+    capture_raw: bool,
+    cursor_state: CursorStatePayload | None = None,
+    blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
+) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+    if is_sqlite_path(Path(path_str)):
+        with bind_sqlite_source(Path(path_str)) as binding:
+            yield from _parse_one_source_path_bound(
+                path_str,
+                source_binding=binding,
+                file_mtime=file_mtime,
+                source_name=source_name,
+                sidecar_data=sidecar_data,
+                capture_raw=capture_raw,
+                cursor_state=cursor_state,
+                blob_root=blob_root,
+                blob_store=blob_store,
+            )
+    else:
+        yield from _parse_one_source_path_bound(
+            path_str,
+            source_binding=None,
+            file_mtime=file_mtime,
+            source_name=source_name,
+            sidecar_data=sidecar_data,
+            capture_raw=capture_raw,
+            cursor_state=cursor_state,
+            blob_root=blob_root,
+            blob_store=blob_store,
+        )
+
+
+def _parse_one_source_path_bound(
+    path_str: str,
+    *,
+    source_binding: SQLiteSourceBinding | None,
     file_mtime: str | None,
     source_name: str,
     sidecar_data: SidecarData,
@@ -337,7 +379,7 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store, source_binding=source_binding)
         from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
@@ -347,7 +389,9 @@ def parse_one_source_path(
         if capture_raw:
             raw_data = RawSessionData(
                 raw_bytes=b"",
-                source_path=str(original_sqlite_source_path(path) or path),
+                source_path=str(snapshot.source_path),
+                canonical_source_path=str(snapshot.identity_path),
+                captured_profile_key=snapshot.captured_profile_key if provider_hint is Provider.HERMES else None,
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,
@@ -396,7 +440,7 @@ def parse_one_source_path(
         )
         return
 
-    original_source_path = original_sqlite_source_path(path) if is_sqlite_path(path) else None
+    original_source_path = source_binding.source_path if source_binding is not None and source_binding.staged else None
     if (provider_hint is Provider.HERMES or original_source_path is not None) and hermes_state.looks_like_state_db_path(
         path
     ):
@@ -405,7 +449,7 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store, source_binding=source_binding)
         from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
@@ -415,7 +459,10 @@ def parse_one_source_path(
         if capture_raw:
             raw_data = RawSessionData(
                 raw_bytes=b"",
-                source_path=str(original_source_path or path),
+                source_path=str(snapshot.source_path),
+                canonical_source_path=str(snapshot.identity_path),
+                captured_profile_key=snapshot.captured_profile_key,
+                captured_profile_source_path=str(snapshot.captured_profile_source_path),
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,
@@ -426,7 +473,8 @@ def parse_one_source_path(
         for session in hermes_state.parse_state_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=hermes_identity.profile_root_for_artifact(original_source_path or path),
+            profile_root=hermes_identity.profile_root_for_artifact(snapshot.source_path),
+            profile_identity=snapshot.captured_profile_key,
             immutable=True,
         ):
             yield (raw_data, session)
@@ -440,7 +488,7 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store, source_binding=source_binding)
         from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
@@ -450,7 +498,10 @@ def parse_one_source_path(
         if capture_raw:
             raw_data = RawSessionData(
                 raw_bytes=b"",
-                source_path=str(original_source_path or path),
+                source_path=str(snapshot.source_path),
+                canonical_source_path=str(snapshot.identity_path),
+                captured_profile_key=snapshot.captured_profile_key,
+                captured_profile_source_path=str(snapshot.captured_profile_source_path),
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,
@@ -461,7 +512,8 @@ def parse_one_source_path(
         for session in hermes_verification.parse_verification_evidence_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=hermes_identity.profile_root_for_artifact(original_source_path or path),
+            profile_root=hermes_identity.profile_root_for_artifact(snapshot.source_path),
+            profile_identity=snapshot.captured_profile_key,
             immutable=True,
         ):
             yield (raw_data, session)
@@ -488,7 +540,8 @@ def parse_one_source_path(
         # Grouped files are published whole before the emitter sees their
         # records; the boundary capture refuses a foreign record before the
         # flush reserves them.
-        blob_hash, blob_size = capture_bound_path(resolved_store, path, provider_hint)
+        capture = capture_bound_path(resolved_store, path, provider_hint)
+        blob_hash, blob_size = capture.blob_hash, capture.blob_size
         from polylogue.storage.blob_publication import (
             flush_blob_publications,
             publication_receipt_id,
@@ -501,6 +554,12 @@ def parse_one_source_path(
         raw_data = RawSessionData(
             raw_bytes=b"",
             source_path=str(path),
+            canonical_source_path=capture.canonical_source_path,
+            captured_profile_key=capture.captured_profile_key if provider_hint is Provider.HERMES else None,
+            captured_profile_source_path=(
+                capture.captured_profile_source_path if provider_hint is Provider.HERMES else None
+            ),
+            captured_file_observation=capture.file_observation,
             source_index=None,
             file_mtime=file_mtime,
             provider_hint=provider_hint,

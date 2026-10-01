@@ -24,7 +24,13 @@ of inventing a second, incompatible scheme.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
+import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
@@ -41,8 +47,59 @@ def profile_key(profile_root: Path) -> str:
     Raw profile paths are never exposed in archive identity -- only this
     truncated SHA-256 digest of the normalized (expanded, resolved) path.
     """
-    normalized = str(profile_root.expanduser().resolve(strict=False))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return _captured_profile_key(profile_root.expanduser().resolve(strict=False))
+
+
+def _captured_profile_key(profile_root: Path) -> str:
+    normalized = str(profile_root)
+    return hashlib.sha256(normalized.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedHermesProfile:
+    """Accepted profile namespace; physical file aliases do not change it."""
+
+    root: Path
+    key: str
+    source_path: Path
+
+
+@contextmanager
+def capture_profile_namespace(artifact_path: Path, declared_parent: int) -> Iterator[CapturedHermesProfile]:
+    """Bind the existing declared-profile convention to its directory input.
+
+    Bind each declared directory alias once and keep its actual directory FD.
+    The resulting parent must be the same directory already accepted by the
+    acquisition owner; a nested alias does not change the declared profile.
+    """
+    declared_root = profile_root_for_artifact(artifact_path)
+    root = declared_root.expanduser().resolve(strict=True)
+    flags = getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW
+    anchor = os.open(root, flags)
+    walked = anchor
+    components: list[tuple[int, str, int]] = []
+    try:
+        for component in artifact_path.parent.relative_to(declared_root).parts:
+            next_descriptor = os.open(component, flags & ~os.O_NOFOLLOW, dir_fd=walked)
+            components.append((walked, component, next_descriptor))
+            current = os.stat(component, dir_fd=walked)
+            opened = os.fstat(next_descriptor)
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise OSError(errno.ESTALE, "Hermes profile subtree changed", str(artifact_path))
+            walked = next_descriptor
+        expected = os.fstat(declared_parent)
+        actual = os.fstat(walked)
+        if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+            raise OSError(errno.ESTALE, "Hermes declared profile parent changed", str(artifact_path))
+        accepted = os.fstat(anchor)
+        named = declared_root.stat()
+        if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (accepted.st_dev, accepted.st_ino):
+            raise OSError(errno.ESTALE, "Hermes declared profile namespace changed", str(artifact_path))
+        yield CapturedHermesProfile(root, _captured_profile_key(root), root / artifact_path.relative_to(declared_root))
+    finally:
+        for _, _, descriptor in reversed(components):
+            os.close(descriptor)
+        os.close(anchor)
 
 
 #: Directory names Hermes interposes between its install root and a raw
