@@ -880,15 +880,21 @@ def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() ->
         assert retired_ident in lease.authorized_threads()
 
         def impostor() -> None:
-            with patch.object(threading, "get_ident", return_value=retired_ident):
+            from types import SimpleNamespace
+
+            import polylogue.storage.sqlite.write_lease as lease_owner
+
+            actual_thread = threading.current_thread()
+            observation = SimpleNamespace(get_ident=lambda: retired_ident, current_thread=lambda: actual_thread)
+            # Simulate reuse at the admission owner only. Real Thread teardown
+            # must retain its actual ident and threading._active registration.
+            with patch.object(lease_owner, "threading", observation):
                 try:
                     require_write_lease("write from a thread that reused a retired ident")
                 except UnleasedWriteError:
                     observed["outcome"] = "refused"
                 else:
                     observed["outcome"] = "admitted"
-                finally:
-                    threading._active.pop(retired_ident, None)  # type: ignore[attr-defined]
 
         thread = threading.Thread(target=impostor, name="ident-reuse-impostor")
         thread.start()

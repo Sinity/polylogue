@@ -2872,7 +2872,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
         "raw_provider_payload": native_payload,
         "session": {
             "provider": "chatgpt",
-            "provider_session_id": "dom-fallback",
+            "provider_session_id": "native-large",
             "title": "DOM fallback title",
             "updated_at": "2026-04-24T00:00:01+00:00",
             "turns": [{"provider_turn_id": "dom-u1", "role": "user", "text": "DOM fallback", "ordinal": 0}],

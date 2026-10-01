@@ -47,6 +47,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.source_builders import ChatGPTExportBuilder
 
 
@@ -814,8 +815,11 @@ def test_retained_hermes_extracted_transcript_is_not_a_session(tmp_path: Path) -
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
     artifact = revision_backfill.prepare_retained_jsonl_artifact(
         "synthetic-extract",
         Provider.HERMES.value,
@@ -1268,8 +1272,11 @@ def test_retained_gemini_sidecar_replay_uses_sealed_preparation(
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl._iter_json_stream", lambda *_a, **_k: pytest.fail("whole-object replay")
     )
@@ -1549,8 +1556,11 @@ def test_retained_generic_object_uses_streamed_replay_route(tmp_path: Path, monk
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
 
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained replay decoded the complete object")
@@ -1822,8 +1832,11 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
 
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Grok object decoded as a whole document")
@@ -1989,8 +2002,11 @@ def test_retained_grok_corrupt_suffix_leaves_no_publishable_artifact(tmp_path: P
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
     directory = tmp_path / "prepared"
     artifact = revision_backfill.prepare_retained_jsonl_artifact(
         "synthetic-corrupt-grok",
@@ -2027,8 +2043,11 @@ def test_retained_grok_future_wire_keeps_parser_admission_event(tmp_path: Path) 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
     artifact = revision_backfill.prepare_retained_jsonl_artifact(
         "synthetic-future-grok",
         Provider.GROK.value,
@@ -2069,8 +2088,11 @@ def test_retained_grok_hook_overlap_keeps_artifact_taxonomy(tmp_path: Path) -> N
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
     artifact = revision_backfill.prepare_retained_jsonl_artifact(
         "synthetic-ambiguous-grok",
         Provider.GROK.value,
@@ -2189,8 +2211,11 @@ def test_retained_top_level_chatgpt_object_keeps_fallback_and_sidecar_evidence(
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
 
     evidence_providers: list[Provider] = []
     asset_index = ChatGPTAssetIndex.build(
@@ -2505,8 +2530,11 @@ def test_retained_chatgpt_simple_mapping_replays_sealed_messages(tmp_path: Path)
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
     artifact = revision_backfill.prepare_retained_jsonl_artifact(
         "synthetic-raw",
         Provider.CHATGPT.value,
@@ -3138,8 +3166,11 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
-        with sqlite3.connect(path) as conn:
-            initialize_archive_tier(conn, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(path)
+        else:
+            with sqlite3.connect(path) as conn:
+                initialize_archive_tier(conn, tier)
 
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Design object decoded as a whole document")
@@ -3319,8 +3350,7 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
     source_db = tmp_path / "source.db"
-    with sqlite3.connect(source_db) as conn:
-        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     blob_root = tmp_path / "blob"
     store = BlobStore(blob_root)
     session_dir = tmp_path / "project" / "session-1"
@@ -3408,8 +3438,7 @@ def test_a_historical_append_does_not_extend_a_reselected_baseline(tmp_path: Pat
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
     source_db = tmp_path / "source.db"
-    with sqlite3.connect(source_db) as conn:
-        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     blob_root = tmp_path / "blob"
     store = BlobStore(blob_root)
     session_dir = tmp_path / "project" / "session-1"
@@ -3480,8 +3509,7 @@ def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> 
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
     source_db = tmp_path / "source.db"
-    with sqlite3.connect(source_db) as conn:
-        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     blob_root = tmp_path / "blob"
     store = BlobStore(blob_root)
     session_dir = tmp_path / "project" / "session-1"
