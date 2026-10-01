@@ -620,6 +620,7 @@ class ParsedSessionEvent(BaseModel):
         default=None,
         validation_alias=AliasChoices("source_message_provider_id", "source_message_id"),
     )
+    owner_coordinate: MessageOwnerCoordinate | None = Field(default=None, exclude=True, repr=False)
     boundary_start_position: int | None = None
     boundary_end_position: int | None = None
     boundary_message_position: int | None = Field(default=None, exclude=True)

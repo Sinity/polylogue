@@ -26,13 +26,10 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveSessionEnvelope,
-    read_archive_session_envelope,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope, read_archive_session_envelope
 from polylogue.storage.sqlite.schema import _ensure_schema
 from tests.infra.identity import archive_message_id
+from tests.infra.prepared_session import write_prepared_session
 
 
 @dataclass
@@ -356,7 +353,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
                 for index, text in enumerate(texts)
             ],
         )
-        return write_parsed_session_to_archive(
+        return write_prepared_session(
             self._conn,
             parsed,
             content_hash=session_content_hash(parsed),
@@ -534,8 +531,8 @@ def test_repository_get_messages_composes_prefix_sharing_child() -> None:
                     ParsedMessage(provider_message_id="child-2", role=Role.USER, text="child tail", position=2),
                 ],
             )
-            write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
-            child_id = write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
+            write_prepared_session(conn, parent, content_hash=session_content_hash(parent))
+            child_id = write_prepared_session(conn, child, content_hash=session_content_hash(child))
         finally:
             conn.close()
 
@@ -597,11 +594,9 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
                     ParsedMessage(provider_message_id="gc-3", role=Role.ASSISTANT, text="grandchild tail", position=3),
                 ],
             )
-            write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
-            write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
-            grandchild_id = write_parsed_session_to_archive(
-                conn, grandchild, content_hash=session_content_hash(grandchild)
-            )
+            write_prepared_session(conn, parent, content_hash=session_content_hash(parent))
+            write_prepared_session(conn, child, content_hash=session_content_hash(child))
+            grandchild_id = write_prepared_session(conn, grandchild, content_hash=session_content_hash(grandchild))
 
             branch_row = conn.execute(
                 "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
@@ -658,8 +653,8 @@ def test_session_link_resolver_quarantines_cycle() -> None:
                 branch_type=BranchType.FORK,
                 messages=[ParsedMessage(provider_message_id="child-0", role=Role.USER, text="child", position=0)],
             )
-            parent_id = write_parsed_session_to_archive(conn, parent_v1, content_hash=session_content_hash(parent_v1))
-            write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
+            parent_id = write_prepared_session(conn, parent_v1, content_hash=session_content_hash(parent_v1))
+            write_prepared_session(conn, child, content_hash=session_content_hash(child))
 
             # Re-ingest the parent now claiming the child as ITS parent --
             # closing a two-node cycle parent -> child -> parent. This must
@@ -673,9 +668,7 @@ def test_session_link_resolver_quarantines_cycle() -> None:
                     ParsedMessage(provider_message_id="parent-1", role=Role.ASSISTANT, text="revised", position=1),
                 ],
             )
-            write_parsed_session_to_archive(
-                conn, parent_v2, content_hash=session_content_hash(parent_v2), force_replace=True
-            )
+            write_prepared_session(conn, parent_v2, content_hash=session_content_hash(parent_v2), force_replace=True)
             conn.commit()
         finally:
             conn.close()

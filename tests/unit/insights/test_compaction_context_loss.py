@@ -25,7 +25,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 
 _SESSION_ID = "codex-session:compaction-pathology"
 # Positions 0..2 are replaced; position 3 is the summary that stands in for them.
@@ -68,7 +68,7 @@ def _seed(db_path: Path) -> None:
             )
         ],
     )
-    write_parsed_session_to_archive(conn, session)
+    write_prepared_session(conn, session)
     conn.commit()
     conn.close()
 
@@ -178,7 +178,7 @@ async def test_compaction_snapshot_includes_parent_prefix_evidence(workspace_env
         provider_session_id="compaction-parent",
         messages=[_message("p0", Role.USER, "parent prefix"), _message("p1", Role.ASSISTANT, "parent answer")],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="compaction-child",
@@ -193,7 +193,7 @@ async def test_compaction_snapshot_includes_parent_prefix_evidence(workspace_env
             )
         ],
     )
-    write_parsed_session_to_archive(conn, child)
+    write_prepared_session(conn, child)
     conn.commit()
     try:
         row = conn.execute(

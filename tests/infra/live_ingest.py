@@ -15,8 +15,9 @@ from pathlib import Path
 
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.prepared_session import write_prepared_session
 
 
 def write_session_sync(
@@ -35,7 +36,7 @@ def write_session_sync(
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        return write_parsed_session_to_archive(
+        return write_prepared_session(
             conn,
             session,
             content_hash=content_hash if content_hash is not None else session_content_hash(session),
@@ -57,7 +58,7 @@ def write_session_counts_sync(
     outcomes: list[ArchiveWriteOutcome] = []
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             session,
             content_hash=content_hash if content_hash is not None else session_content_hash(session),
@@ -146,7 +147,7 @@ def write_index_session(
         )
         publisher.flush()
         try:
-            session_id = write_parsed_session_to_archive(
+            session_id = write_prepared_session(
                 connection,
                 session,
                 content_hash=content_hash if content_hash is not None else session_content_hash(session),

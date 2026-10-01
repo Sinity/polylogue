@@ -20,6 +20,7 @@ from polylogue.operations.daemon_reads import (
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.prepared_session import write_prepared_session
 
 
 def test_sampled_and_moving_date_queries_are_not_cached() -> None:
@@ -488,7 +489,6 @@ def _seed_lineage_child(root: Path) -> str:
     from polylogue.archive.session.branch_type import BranchType
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
         return ParsedMessage(provider_message_id=pid, role=role, text=text, position=position)
@@ -498,7 +498,7 @@ def _seed_lineage_child(root: Path) -> str:
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -510,7 +510,7 @@ def _seed_lineage_child(root: Path) -> str:
                 ],
             ),
         )
-        child_id = write_parsed_session_to_archive(
+        child_id = write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

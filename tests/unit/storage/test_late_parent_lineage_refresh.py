@@ -20,8 +20,8 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
+from tests.infra.prepared_session import write_prepared_session
 
 _DISPATCH_TOOL_ID = "toolu_dispatch_survey"
 
@@ -103,7 +103,7 @@ def test_late_parent_refreshes_the_child_dispatch_cohort(tmp_path: Path, foreign
     deleted block, since no cascade removes it.
     """
     conn = _connect(tmp_path / "index.db")
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         _session(
             "child",
@@ -132,11 +132,11 @@ def test_late_parent_refreshes_the_child_dispatch_cohort(tmp_path: Path, foreign
         ],
     )
     if foreign_keys:
-        parent_id = write_parsed_session_to_archive(conn, parent)
+        parent_id = write_prepared_session(conn, parent)
     else:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("BEGIN IMMEDIATE")
-        parent_id = write_parsed_session_to_archive(conn, parent, manage_transaction=False)
+        parent_id = write_prepared_session(conn, parent, manage_transaction=False)
 
     stored = conn.execute(
         "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
@@ -195,8 +195,8 @@ def test_materialized_prefix_joins_the_child_dispatch_cohort(tmp_path: Path) -> 
         _dispatch("p1", 1),
         _text("p2", Role.USER, "parent continues alone", 2),
     ]
-    write_parsed_session_to_archive(conn, _session("parent", parent_messages))
-    child_id = write_parsed_session_to_archive(
+    write_prepared_session(conn, _session("parent", parent_messages))
+    child_id = write_prepared_session(
         conn,
         _session(
             "child",
@@ -216,7 +216,7 @@ def test_materialized_prefix_joins_the_child_dispatch_cohort(tmp_path: Path) -> 
     )
 
     # The rewrite drops the child's branch point (the dispatch turn).
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn, _session("parent", [parent_messages[0], _text("p3", Role.USER, "parent rewritten", 1)])
     )
 
@@ -245,7 +245,7 @@ def test_late_parent_moves_every_descendant_to_its_root(tmp_path: Path) -> None:
     thread with two sessions and a second thread holding only the grandchild.
     """
     conn = _connect(tmp_path / "index.db")
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         _session(
             "child",
@@ -253,7 +253,7 @@ def test_late_parent_moves_every_descendant_to_its_root(tmp_path: Path) -> None:
             parent="parent",
         ),
     )
-    grandchild_id = write_parsed_session_to_archive(
+    grandchild_id = write_prepared_session(
         conn,
         _session(
             "grandchild",
@@ -264,7 +264,7 @@ def test_late_parent_moves_every_descendant_to_its_root(tmp_path: Path) -> None:
     roots = dict(conn.execute("SELECT session_id, root_session_id FROM sessions").fetchall())
     assert roots[grandchild_id] == child_id, "before the parent arrives the child is the thread root"
 
-    parent_id = write_parsed_session_to_archive(
+    parent_id = write_prepared_session(
         conn,
         _session(
             "parent",

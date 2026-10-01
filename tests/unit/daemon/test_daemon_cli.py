@@ -23,11 +23,11 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.config import Config
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.derivation import DerivationReport, Outcome
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.daemon.lineage_startup import LineageStartupCensus
 from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
@@ -1989,9 +1989,9 @@ def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path:
 @pytest.mark.parametrize("configured_drive", [False, True])
 def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path, configured_drive: bool) -> None:
     from polylogue.config import Source
+    from polylogue.core.compute import BoundedComputeAdapter, reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.execution import BoundedComputeAdapter, reset_daemon_compute_adapter
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     events: list[str] = []
@@ -2100,7 +2100,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             self.execution_kernel.shutdown(wait=False, cancel_futures=True)
             return None
 
-    reset_daemon_compute_adapter()
+    reset_compute_adapter()
     api_server = FakeAPIServer()
 
     def make_api_server(*_args: object, **_kwargs: object) -> FakeAPIServer:
@@ -2114,7 +2114,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         lifecycle_payloads.append(cast(dict[str, object], kwargs["payload"]))
 
     with contextlib.ExitStack() as stack:
-        stack.callback(reset_daemon_compute_adapter)
+        stack.callback(reset_compute_adapter)
         stack.enter_context(
             patch(
                 "polylogue.config.get_config",
@@ -2254,9 +2254,9 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
     restart, and the recorded ``None`` scope or repaired durable profile fails.
     """
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon import session_profile_composition
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.services import ServiceProfile
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
@@ -2407,7 +2407,7 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
 
             await run_until_observed_sweep()
     finally:
-        reset_daemon_compute_adapter()
+        reset_compute_adapter()
 
     assert observed_scopes == [None, None]
     assert profile_exists()
@@ -2435,9 +2435,9 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
     from polylogue.archive.session_revision_membership import MembershipDecision
     from polylogue.browser_capture.models import BrowserCaptureEnvelope
     from polylogue.browser_capture.receiver import write_capture_envelope
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake import FairIntakeDispatcher
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
@@ -2575,7 +2575,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
         await asyncio.Event().wait()
 
     coordinator = DaemonWriteCoordinator(archive_root=archive_root)
-    reset_daemon_compute_adapter()
+    reset_compute_adapter()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -2735,7 +2735,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=10)
     finally:
-        reset_daemon_compute_adapter()
+        reset_compute_adapter()
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
@@ -2958,7 +2958,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
 
     browser_server = BlockingServer()
     api_server = APIBlockingServer()
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.core.compute import reset_compute_adapter
 
     api_server.execution_kernel = BoundedComputeAdapter(
         max_workers=1,
@@ -3032,11 +3032,11 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     with contextlib.ExitStack() as stack:
         for scoped_patch in patches:
             stack.enter_context(scoped_patch)
-        reset_daemon_compute_adapter()
+        reset_compute_adapter()
         try:
             asyncio.run(exercise())
         finally:
-            reset_daemon_compute_adapter()
+            reset_compute_adapter()
 
     assert browser_server.shutdown_called is True
     assert browser_server.close_called is True
@@ -3398,9 +3398,9 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
     pass that publishes anyway fails the zero-session check, and one that
     leaves the raw terminal fails the next pass's session and FTS checks.
     """
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.core.enums import Provider
     from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
-    from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import (
         DaemonWriteCoordinator,
@@ -3587,9 +3587,9 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
     tmp_path: Path, fault: str, expected_reason: str
 ) -> None:
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live.cold_build import ColdBuildGeneration, active_cold_build_generation
@@ -3648,7 +3648,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
             raise cantopen.value
         real_verify(self, source_db)
 
-    reset_daemon_compute_adapter()
+    reset_compute_adapter()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -3710,7 +3710,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=10)
     finally:
-        reset_daemon_compute_adapter()
+        reset_compute_adapter()
 
 
 def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
@@ -3774,9 +3774,9 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_path: Path) -> None:
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live.cold_build import active_cold_build_generation
@@ -3800,7 +3800,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
         verifications += 1
         raise ProductionBaselineError("missing retained revision")
 
-    reset_daemon_compute_adapter()
+    reset_compute_adapter()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -3849,7 +3849,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
             assert candidate.discarded
             assert not candidate.generation_root.exists()
     finally:
-        reset_daemon_compute_adapter()
+        reset_compute_adapter()
 
 
 @pytest.mark.asyncio
@@ -3873,9 +3873,9 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     the active index loses ``codex-session:cold-imported``.
     """
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live.batch import LiveBatchProcessor
@@ -3929,7 +3929,7 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     else:
         imported_file.unlink()
 
-    reset_daemon_compute_adapter()
+    reset_compute_adapter()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -3990,7 +3990,7 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=10)
     finally:
-        reset_daemon_compute_adapter()
+        reset_compute_adapter()
 
 
 @pytest.mark.asyncio
@@ -4022,9 +4022,9 @@ async def test_cold_baseline_observation_cancel_stops_owned_worker() -> None:
 @pytest.mark.asyncio
 async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: Path) -> None:
     from polylogue import Polylogue as RealPolylogue
+    from polylogue.core.compute import reset_compute_adapter
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live import production_baseline
@@ -4082,7 +4082,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
         )
         return production_baseline._seal(baseline.operation_id, baseline.source_signature, rows)
 
-    reset_daemon_compute_adapter()
+    reset_compute_adapter()
     try:
         with contextlib.ExitStack() as stack:
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
@@ -4153,7 +4153,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, timeout=10)
     finally:
-        reset_daemon_compute_adapter()
+        reset_compute_adapter()
 
 
 #: Task-name prefixes the daemon may create outside the supervisor, with the

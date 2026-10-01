@@ -30,9 +30,9 @@ from polylogue.storage.derived.session.rebuild import rebuild_session_insights_a
 from polylogue.storage.derived.session.threads import load_thread_profile_records_by_root_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.prepared_session import write_prepared_session
 
 _CHILD_ID = "codex-session:child"
 _PARENT_ID = "codex-session:parent"
@@ -117,13 +117,13 @@ async def test_thread_read_reports_a_stale_profile_as_written_not_as_recovered(t
     index_db = archive_root / "index.db"
 
     with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _subagent_child())
+        write_prepared_session(conn, _subagent_child())
         conn.commit()
     await _materialize_child(index_db)
     assert _stored_profile_lineage(index_db) == (None, False)
 
     with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _parent())
+        write_prepared_session(conn, _parent())
         conn.commit()
         assert (
             conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
@@ -162,11 +162,11 @@ async def test_reconvergence_is_what_makes_the_profile_lineage_current(tmp_path:
     index_db = archive_root / "index.db"
 
     with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _subagent_child())
+        write_prepared_session(conn, _subagent_child())
         conn.commit()
     await _materialize_child(index_db)
     with open_connection(index_db) as conn:
-        write_parsed_session_to_archive(conn, _parent())
+        write_prepared_session(conn, _parent())
         conn.commit()
         root_id = str(
             conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]

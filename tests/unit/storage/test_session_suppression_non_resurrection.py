@@ -39,10 +39,8 @@ from polylogue.storage.sqlite.archive_tiers.session_suppression import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
-from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveWriteOutcome,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
+from tests.infra.prepared_session import write_prepared_session
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +99,7 @@ def _replay(archive_root: Path, session: ParsedSession) -> ArchiveWriteOutcome:
     conn = sqlite3.connect(_index_path(archive_root))
     conn.row_factory = sqlite3.Row
     try:
-        write_parsed_session_to_archive(conn, session, write_outcome=outcomes)
+        write_prepared_session(conn, session, write_outcome=outcomes)
     finally:
         conn.close()
     assert len(outcomes) == 1
@@ -194,7 +192,7 @@ def test_an_archive_without_a_user_tier_is_not_blocked(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     try:
         outcomes: list[ArchiveWriteOutcome] = []
-        write_parsed_session_to_archive(conn, _parsed("bare-one"), write_outcome=outcomes)
+        write_prepared_session(conn, _parsed("bare-one"), write_outcome=outcomes)
     finally:
         conn.close()
     assert outcomes[0].wrote is True

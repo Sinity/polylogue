@@ -25,7 +25,8 @@ from polylogue.sources.parsers.base import (
 from polylogue.storage.derived.session.usage_rollup import reconcile_session_usage_rollups
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -86,7 +87,7 @@ def _write(
         prepared = prepare_session_write(conn, session, merge_append=merge_append, raw_id=raw_id)
         assert prepared.cross_acquisition_union is not None, "the prepared route must carry a union"
         try:
-            return write_parsed_session_to_archive(
+            return write_prepared_session(
                 conn,
                 session,
                 content_hash=prepared.input_content_hash.hex(),
@@ -96,7 +97,7 @@ def _write(
             )
         finally:
             prepared.close()
-    return write_parsed_session_to_archive(conn, session, raw_id=raw_id, merge_append=merge_append)
+    return write_prepared_session(conn, session, raw_id=raw_id, merge_append=merge_append)
 
 
 def _usage_rows(conn: sqlite3.Connection, session_id: str) -> list[tuple[object, ...]]:
@@ -150,7 +151,7 @@ def test_usage_rollup_reconciliation_keeps_a_declared_model_and_its_unnamed_usag
     """
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(conn, _declared_only_session("declared-only"))
+        session_id = write_prepared_session(conn, _declared_only_session("declared-only"))
         assert _usage_rows(conn, session_id) == [("declared-model", 40, 10)]
 
         reconcile_session_usage_rollups(conn, [session_id])
@@ -173,7 +174,7 @@ def test_usage_rollup_reconciliation_still_retires_an_undeclared_renamed_model(t
             provider_session_id="renamed-model",
             messages=[_message("a0", "answer", model_name="model-before", input_tokens=12, output_tokens=3)],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_prepared_session(conn, session)
         conn.execute("UPDATE messages SET model_name = 'model-after' WHERE session_id = ?", (session_id,))
 
         reconcile_session_usage_rollups(conn, [session_id])
@@ -212,10 +213,10 @@ def test_late_parent_reextraction_keeps_a_declared_model_and_its_unnamed_usage(t
             updated_at="2026-01-01T00:00:01+00:00",
             messages=[_message("shared", "shared prefix", role=Role.USER)],
         )
-        child_id = write_parsed_session_to_archive(conn, child)
+        child_id = write_prepared_session(conn, child)
         assert _usage_rows(conn, child_id) == [("declared-model", 40, 10)]
 
-        write_parsed_session_to_archive(conn, parent)
+        write_prepared_session(conn, parent)
 
         inheritance = conn.execute(
             "SELECT inheritance FROM session_links WHERE src_session_id = ?", (child_id,)
@@ -253,7 +254,7 @@ def test_union_drops_usage_whose_message_the_union_removed(tmp_path: Path, route
                 _delta_usage(40, 10, message="p2", model="usage-model"),
             ],
         )
-        parent_id = write_parsed_session_to_archive(conn, full_parent, raw_id="parent-acquisition-1")
+        parent_id = write_prepared_session(conn, full_parent, raw_id="parent-acquisition-1")
         child = ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id="union-child",
@@ -265,7 +266,7 @@ def test_union_drops_usage_whose_message_the_union_removed(tmp_path: Path, route
                 _message("cx", "child diverges", role=Role.USER),
             ],
         )
-        write_parsed_session_to_archive(conn, child)
+        write_prepared_session(conn, child)
         assert _usage_rows(conn, parent_id) == [("usage-model", 140, 30)]
 
         shorter_parent = full_parent.model_copy(
@@ -306,7 +307,7 @@ def test_union_matches_unresolved_usage_to_its_resolved_form(tmp_path: Path, rou
             messages=[_message("m0", "question", role=Role.USER)],
             session_events=[event],
         )
-        session_id = write_parsed_session_to_archive(conn, before, raw_id="usage-acquisition-1")
+        session_id = write_prepared_session(conn, before, raw_id="usage-acquisition-1")
         assert _usage_events(conn, session_id) == [(None, "m1", "unresolved", 40, 10)]
 
         after = before.model_copy(update={"messages": [*before.messages, _message("m1", "answer")]})
@@ -337,7 +338,7 @@ def test_union_keeps_the_resolved_message_when_a_later_acquisition_loses_it(tmp_
             messages=[_message("m0", "question", role=Role.USER), _message("m1", "answer")],
             session_events=[event],
         )
-        session_id = write_parsed_session_to_archive(conn, rich, raw_id="usage-acquisition-1")
+        session_id = write_prepared_session(conn, rich, raw_id="usage-acquisition-1")
         poorer = rich.model_copy(update={"messages": rich.messages[:1]})
         _write(conn, poorer, route=route, raw_id="usage-acquisition-2")
 
@@ -386,8 +387,8 @@ def test_append_model_switch_returns_the_old_model_to_its_message_totals(
                 "session_events": [_cumulative_usage(500, message="m2", model="model-b")],
             }
         )
-        session_id = write_parsed_session_to_archive(conn, first)
-        write_parsed_session_to_archive(conn, second, merge_append=True)
+        session_id = write_prepared_session(conn, first)
+        write_prepared_session(conn, second, merge_append=True)
         appended = _usage_rows(conn, session_id)
 
         whole = first.model_copy(
@@ -397,7 +398,7 @@ def test_append_model_switch_returns_the_old_model_to_its_message_totals(
                 "session_events": [*first.session_events, *second.session_events],
             }
         )
-        whole_id = write_parsed_session_to_archive(conn, whole)
+        whole_id = write_prepared_session(conn, whole)
 
         assert appended == [("model-a", model_a_message_tokens, 0), ("model-b", 500, 0)]
         assert appended == _usage_rows(conn, whole_id)

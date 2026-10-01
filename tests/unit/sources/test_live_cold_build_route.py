@@ -20,6 +20,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _codex_session(native_id: str, text: str) -> bytes:
@@ -202,7 +203,6 @@ def test_a_second_write_of_one_session_under_fresh_mode_is_refused(tmp_path: Pat
 
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -213,6 +213,6 @@ def test_a_second_write_of_one_session_under_fresh_mode_is_refused(tmp_path: Pat
     with ArchiveStore.open_active_cold_build(tmp_path) as archive:
         assert archive.active_cold_build_engaged is True
         batch: set[str] = set()
-        write_parsed_session_to_archive(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
+        write_prepared_session(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
         with pytest.raises(AssertionError, match="fresh_build requires an absent session_id"):
-            write_parsed_session_to_archive(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
+            write_prepared_session(archive._conn, session, fresh_build=True, fresh_build_batch=batch)

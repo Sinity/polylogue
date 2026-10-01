@@ -61,11 +61,8 @@ from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    prepare_session_write,
-    raw_source_path,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, raw_source_path
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.thread_state import seed_spawn_edges
 
 _CHILD = "child-thread"
@@ -152,9 +149,9 @@ def test_contradiction_resolves_to_the_hook_parent(tmp_path: Path) -> None:
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
 
     links = _links(index, child_id)
     assert set(links) == {_HOOK_PARENT, _PARSER_PARENT}, "both evidence sources must be retained"
@@ -196,13 +193,13 @@ def test_reparse_cannot_downgrade_authoritative_evidence(tmp_path: Path) -> None
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
     assert _links(index, child_id)[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
 
     # Re-parse with NO hook evidence available at all.
-    write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=None)
+    write_prepared_session(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=None)
 
     after = _links(index, child_id)
     assert after[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD, (
@@ -227,9 +224,9 @@ def test_conflict_state_is_queryable_by_typed_status_and_method(tmp_path: Path) 
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
-    write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_PARSER_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
 
     conflicts = index.execute(
         """
@@ -252,8 +249,8 @@ def test_hook_only_edge_is_written_when_inference_found_none(tmp_path: Path) -> 
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD), source_conn=source)
 
     links = _links(index, child_id)
     assert set(links) == {_HOOK_PARENT}
@@ -269,15 +266,15 @@ def test_hook_only_classification_survives_merge_append(tmp_path: Path) -> None:
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD), source_conn=source)
     appended = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id=_CHILD,
         title=_CHILD,
         messages=[_msg(f"{_CHILD}-append", Role.USER, "appended content", 1)],
     )
-    write_parsed_session_to_archive(index, appended, source_conn=source, merge_append=True)
+    write_prepared_session(index, appended, source_conn=source, merge_append=True)
 
     assert (
         index.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (child_id,)).fetchone()[0] == "subagent"
@@ -290,8 +287,8 @@ def test_agreeing_evidence_upgrades_the_single_edge(tmp_path: Path) -> None:
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD, parent=_HOOK_PARENT), source_conn=source)
 
     links = _links(index, child_id)
     assert set(links) == {_HOOK_PARENT}
@@ -318,8 +315,8 @@ def test_no_state_evidence_is_byte_identical_to_the_parser_only_path(
     rows stop matching the parser-only baseline.
     """
     baseline_index = _index_conn(tmp_path / "baseline.db")
-    write_parsed_session_to_archive(baseline_index, _session(_PARSER_PARENT))
-    baseline_child = write_parsed_session_to_archive(baseline_index, _session(_CHILD, parent=_PARSER_PARENT))
+    write_prepared_session(baseline_index, _session(_PARSER_PARENT))
+    baseline_child = write_prepared_session(baseline_index, _session(_CHILD, parent=_PARSER_PARENT))
     baseline = dict(_links(baseline_index, baseline_child)[_PARSER_PARENT])
 
     index = _index_conn(tmp_path / "index.db")
@@ -328,8 +325,8 @@ def test_no_state_evidence_is_byte_identical_to_the_parser_only_path(
         # Evidence exists, but about a completely unrelated child.
         _write_spawn_edge(index, parent="unrelated-parent", child="unrelated-child")
 
-    write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
     observed = dict(_links(index, child_id)[_PARSER_PARENT])
 
     assert observed == baseline
@@ -359,9 +356,9 @@ def test_contradicted_edge_is_excluded_from_composition(tmp_path: Path) -> None:
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
 
     links = _links(index, child_id)
     assert links[_PARSER_PARENT]["resolved_dst_session_id"] is None, (
@@ -388,15 +385,15 @@ def test_revised_hook_claim_supersedes_the_previous_authoritative_edge(tmp_path:
     source = _source_conn(tmp_path / "source.db")
     _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(index, _session("revised-hook-parent"), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session("revised-hook-parent"), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD), source_conn=source)
     assert _links(index, child_id)[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
 
     # The projection revises itself: a newer export names a different parent.
     _write_spawn_edge(index, parent="revised-hook-parent", child=_CHILD, observed_at_ms=1_770_000_000_000)
 
-    write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+    write_prepared_session(index, _session(_CHILD), source_conn=source)
 
     links = _links(index, child_id)
     authoritative = [name for name, row in links.items() if row["method"] == HOOK_AUTHORITATIVE_LINK_METHOD]
@@ -500,16 +497,14 @@ def test_state_export_after_the_child_reaches_the_same_topology(tmp_path: Path, 
     state_first = _index_conn(tmp_path / "state-first.db")
     source = _source_conn(tmp_path / "source.db")
     _project_state_export(state_first, parent=_HOOK_PARENT, child=_CHILD)
-    write_parsed_session_to_archive(state_first, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(state_first, _session(_PARSER_PARENT), source_conn=source)
-    expected_child = write_parsed_session_to_archive(
-        state_first, _session(_CHILD, parent=parser_parent), source_conn=source
-    )
+    write_prepared_session(state_first, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(state_first, _session(_PARSER_PARENT), source_conn=source)
+    expected_child = write_prepared_session(state_first, _session(_CHILD, parent=parser_parent), source_conn=source)
 
     child_first = _index_conn(tmp_path / "child-first.db")
-    write_parsed_session_to_archive(child_first, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(child_first, _session(_PARSER_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(child_first, _session(_CHILD, parent=parser_parent), source_conn=source)
+    write_prepared_session(child_first, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(child_first, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_prepared_session(child_first, _session(_CHILD, parent=parser_parent), source_conn=source)
     before = _edge_decisions(child_first, child_id)
     _project_state_export(child_first, parent=_HOOK_PARENT, child=_CHILD)
 
@@ -531,9 +526,9 @@ def test_revised_state_export_moves_an_already_archived_child(tmp_path: Path) ->
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
     _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD)
-    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
-    write_parsed_session_to_archive(index, _session("revised-hook-parent"), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session(_HOOK_PARENT), source_conn=source)
+    write_prepared_session(index, _session("revised-hook-parent"), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD, parent=_HOOK_PARENT), source_conn=source)
     assert _links(index, child_id)[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
 
     _project_state_export(index, parent="revised-hook-parent", child=_CHILD, raw_id="state-raw-2", observed_at_ms=2_000)
@@ -557,8 +552,8 @@ def test_export_returning_to_an_earlier_parent_moves_the_child_back(tmp_path: Pa
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
     for parent in (_HOOK_PARENT, "second-hook-parent"):
-        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
-    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+        write_prepared_session(index, _session(parent), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD), source_conn=source)
 
     _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-a", observed_at_ms=1_000)
     _project_state_export(index, parent="second-hook-parent", child=_CHILD, raw_id="state-b", observed_at_ms=2_000)
@@ -583,11 +578,9 @@ def test_rederivation_uses_the_current_parser_parent_not_a_retired_one(tmp_path:
     source = _source_conn(tmp_path / "source.db")
     _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-h", observed_at_ms=1_000)
     for parent in (_HOOK_PARENT, _PARSER_PARENT, revised_parser_parent, "moved-hook-parent"):
-        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
-    write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
-    child_id = write_parsed_session_to_archive(
-        index, _session(_CHILD, parent=revised_parser_parent), source_conn=source
-    )
+        write_prepared_session(index, _session(parent), source_conn=source)
+    write_prepared_session(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    child_id = write_prepared_session(index, _session(_CHILD, parent=revised_parser_parent), source_conn=source)
     links = _links(index, child_id)
     assert links[revised_parser_parent]["method"] == HOOK_CONTRADICTED_LINK_METHOD
     assert _PARSER_PARENT not in links
@@ -617,7 +610,7 @@ def test_rederiving_a_deep_chain_projects_each_session_once(tmp_path: Path, monk
     source = _source_conn(tmp_path / "source.db")
     chain = ["chain-root", *(f"chain-{position:02d}" for position in range(1, depth + 1))]
     for native_id in chain:
-        write_parsed_session_to_archive(index, _session(native_id), source_conn=source)
+        write_prepared_session(index, _session(native_id), source_conn=source)
 
     calls: list[str] = []
     original = write_module._refresh_session_projection
@@ -663,7 +656,7 @@ def _two_roots_naming_one_child(tmp_path: Path) -> tuple[sqlite3.Connection, sql
     )
     source.commit()
     for parent in ("a-parent", "b-parent"):
-        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
+        write_prepared_session(index, _session(parent), source_conn=source)
     return index, source
 
 
@@ -708,7 +701,7 @@ def test_a_child_reads_its_parent_in_its_own_rollouts_install_root(tmp_path: Pat
     index, source = _two_roots_naming_one_child(tmp_path)
     if state_first:
         _project_both_roots(index, source)
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         index,
         _session(_CHILD),
         source_conn=source,
@@ -738,7 +731,7 @@ def test_a_prepared_child_publishes_under_the_root_it_was_prepared_in(tmp_path: 
     _project_both_roots(index, source)
     child = _session(_CHILD)
     prepared = prepare_session_write(index, child, merge_append=False, source_conn=source, raw_id="child-rollout")
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         index,
         child,
         content_hash=str(session_content_hash(child)),

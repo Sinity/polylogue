@@ -6,7 +6,6 @@ import json
 import os
 import sqlite3
 from collections.abc import AsyncIterator, Callable
-from concurrent.futures import Future
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
@@ -33,12 +32,9 @@ from polylogue.pipeline.services.ingest_batch import (
     _drain_ready_session_entries,
     _failed_raw_state_update,
     _IngestBatchSummary,
-    _IngestWorkerRequest,
-    _iter_ingest_results_sync,
     _persist_batch_raw_state_updates,
     _process_ingest_batch_sync,
     _RawIngestOutcome,
-    _select_ingest_worker_count,
     _successful_raw_state_update,
     _topo_sort_session_entries,
     _unattributed_batch_elapsed_s,
@@ -79,12 +75,13 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     upsert_raw_artifact,
     write_source_raw_session,
 )
-from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.storage_records import admit_raw_record
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
@@ -160,7 +157,7 @@ def test_stale_observation_repair_derives_created_time_from_session_event(tmp_pa
                 )
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_prepared_session(conn, session)
         candidate = session.model_copy(
             update={
                 "session_events": [
@@ -3249,62 +3246,6 @@ def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Pat
         ).fetchone() == (1,)
 
 
-def test_iter_ingest_results_sync_runs_inline_for_single_worker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw_artifacts = [
-        RawSessionRecord(
-            raw_id="raw-1",
-            source_name="codex",
-            source_path="/tmp/raw-1.jsonl",
-            blob_size=12,
-            acquired_at="2026-04-02T00:00:00Z",
-        ),
-        RawSessionRecord(
-            raw_id="raw-2",
-            source_name="codex",
-            source_path="/tmp/raw-2.jsonl",
-            blob_size=12,
-            acquired_at="2026-04-02T00:00:00Z",
-        ),
-    ]
-    seen: list[str] = []
-
-    def fake_ingest_record(
-        raw_record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str = "strict",
-        measure_ingest_result_size: bool = False,
-        *,
-        blob_root_str: str | None = None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        seen.append(raw_record.raw_id)
-        return IngestRecordResult(raw_id=raw_record.raw_id)
-
-    def fail_process_pool_executor(*, max_workers: int) -> NoReturn:
-        raise AssertionError(f"process pool should not be used for single-worker batches: {max_workers}")
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fail_process_pool_executor)
-
-    results = list(
-        _iter_ingest_results_sync(
-            raw_artifacts,
-            request=_IngestWorkerRequest(
-                archive_root_str="/tmp/archive",
-                blob_root_str="/tmp/blob-store",
-                validation_mode="strict",
-                measure_ingest_result_size=False,
-            ),
-            worker_count=1,
-        )
-    )
-
-    assert seen == ["raw-1", "raw-2"]
-    assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
-
-
 async def test_process_ingest_batch_uses_archive_root_blob_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3379,283 +3320,6 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
     assert seen["blob_root_str"] == str(expected_blob_root)
     assert seen["blob_root_str"] != str(ambient_blob_root)
     assert seen["publication_mode"] == "off"
-
-
-def test_iter_ingest_results_sync_bounds_in_flight_process_results(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw_artifacts = [
-        RawSessionRecord(
-            raw_id=f"raw-{index}",
-            source_name="codex",
-            source_path=f"/tmp/raw-{index}.jsonl",
-            blob_size=12,
-            acquired_at="2026-04-02T00:00:00Z",
-        )
-        for index in range(10)
-    ]
-    pending_sizes: list[int] = []
-
-    class FakeExecutor:
-        def __enter__(self) -> FakeExecutor:
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            return None
-
-        def submit(
-            self,
-            fn: object,
-            raw_record: RawSessionRecord,
-            request: _IngestWorkerRequest,
-        ) -> Future[IngestRecordResult]:
-            del fn, request
-            future: Future[IngestRecordResult] = Future()
-            future.set_result(IngestRecordResult(raw_id=raw_record.raw_id))
-            return future
-
-    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
-        assert max_workers == 2
-        return FakeExecutor()
-
-    def fake_wait(
-        futures: object,
-        *,
-        timeout: float | None = None,
-        return_when: object | None = None,
-    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
-        del timeout, return_when
-        pending = list(futures) if isinstance(futures, tuple) else []
-        pending_sizes.append(len(pending))
-        return set(pending[:1]), set(pending[1:])
-
-    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
-    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
-
-    results = list(
-        _iter_ingest_results_sync(
-            raw_artifacts,
-            request=_IngestWorkerRequest(
-                archive_root_str="/tmp/archive",
-                blob_root_str="/tmp/blob-store",
-                validation_mode="strict",
-                measure_ingest_result_size=False,
-            ),
-            worker_count=2,
-        )
-    )
-
-    assert [result.raw_id for result in results] == [record.raw_id for record in raw_artifacts]
-    assert max(pending_sizes) == 2
-
-
-def test_iter_ingest_results_sync_emits_heartbeat_while_workers_are_pending(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw_artifacts = [
-        RawSessionRecord(
-            raw_id="raw-1",
-            source_name="codex",
-            source_path="/tmp/raw-1.jsonl",
-            blob_size=12,
-            acquired_at="2026-04-02T00:00:00Z",
-        )
-    ]
-    future: Future[IngestRecordResult] = Future()
-    wait_calls = 0
-    heartbeat_count = 0
-
-    class FakeExecutor:
-        def __enter__(self) -> FakeExecutor:
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            return None
-
-        def submit(
-            self,
-            fn: object,
-            raw_record: RawSessionRecord,
-            request: _IngestWorkerRequest,
-        ) -> Future[IngestRecordResult]:
-            del fn, raw_record, request
-            return future
-
-    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
-        assert max_workers == 2
-        return FakeExecutor()
-
-    def fake_wait(
-        futures: object,
-        *,
-        timeout: float | None = None,
-        return_when: object | None = None,
-    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
-        nonlocal wait_calls
-        del timeout, return_when
-        pending = set(futures) if isinstance(futures, tuple) else set()
-        wait_calls += 1
-        if wait_calls == 1:
-            return set(), pending
-        future.set_result(IngestRecordResult(raw_id="raw-1"))
-        return {future}, set()
-
-    def heartbeat() -> None:
-        nonlocal heartbeat_count
-        heartbeat_count += 1
-
-    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
-    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
-
-    results = list(
-        _iter_ingest_results_sync(
-            raw_artifacts,
-            request=_IngestWorkerRequest(
-                archive_root_str="/tmp/archive",
-                blob_root_str="/tmp/blob-store",
-                validation_mode="strict",
-                measure_ingest_result_size=False,
-            ),
-            worker_count=2,
-            heartbeat=heartbeat,
-        )
-    )
-
-    assert [result.raw_id for result in results] == ["raw-1"]
-    assert heartbeat_count == 1
-
-
-def test_iter_ingest_results_sync_refuses_zero_completion_pool_at_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw_artifacts = [
-        RawSessionRecord(
-            raw_id="raw-stalled",
-            source_name="codex",
-            source_path="/tmp/raw-stalled.jsonl",
-            blob_size=12,
-            acquired_at="2026-04-02T00:00:00Z",
-        )
-    ]
-    future: Future[IngestRecordResult] = Future()
-    progress = ingest_batch_core._WorkerProgress()
-    shutdown_calls: list[dict[str, object]] = []
-    clock = iter((0.0, 0.0, 301.0))
-
-    class FakeExecutor:
-        def submit(
-            self,
-            fn: object,
-            raw_record: RawSessionRecord,
-            request: _IngestWorkerRequest,
-        ) -> Future[IngestRecordResult]:
-            del fn, raw_record, request
-            return future
-
-        def shutdown(self, **kwargs: object) -> None:
-            shutdown_calls.append(kwargs)
-
-    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
-        assert max_workers == 2
-        return FakeExecutor()
-
-    def fake_wait(
-        futures: object,
-        *,
-        timeout: float | None = None,
-        return_when: object | None = None,
-    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
-        del futures, timeout, return_when
-        return set(), {future}
-
-    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
-    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.time.monotonic", lambda: next(clock))
-
-    results = list(
-        _iter_ingest_results_sync(
-            raw_artifacts,
-            request=_IngestWorkerRequest(
-                archive_root_str="/tmp/archive",
-                blob_root_str="/tmp/blob-store",
-                validation_mode="strict",
-                measure_ingest_result_size=False,
-            ),
-            worker_count=2,
-            progress=progress,
-        )
-    )
-
-    assert [result.raw_id for result in results] == ["raw-stalled"]
-    assert results[0].error == "worker progress deadline exceeded; retryable stalled/refused result"
-    assert future.cancelled()
-    assert progress.in_flight_raw_ids == []
-    assert shutdown_calls == [{"wait": False, "cancel_futures": True}]
-
-
-def test_iter_ingest_results_sync_keeps_completion_racing_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw_artifacts = [
-        RawSessionRecord(
-            raw_id="raw-raced",
-            source_name="codex",
-            source_path="/tmp/raw-raced.jsonl",
-            blob_size=12,
-            acquired_at="2026-04-02T00:00:00Z",
-        )
-    ]
-    future: Future[IngestRecordResult] = Future()
-    shutdown_calls: list[dict[str, object]] = []
-    clock = iter((0.0, 0.0, 301.0, 301.0))
-
-    class FakeExecutor:
-        def submit(
-            self,
-            fn: object,
-            raw_record: RawSessionRecord,
-            request: _IngestWorkerRequest,
-        ) -> Future[IngestRecordResult]:
-            del fn, raw_record, request
-            return future
-
-        def shutdown(self, **kwargs: object) -> None:
-            shutdown_calls.append(kwargs)
-
-    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
-        assert max_workers == 2
-        return FakeExecutor()
-
-    def fake_wait(
-        futures: object,
-        *,
-        timeout: float | None = None,
-        return_when: object | None = None,
-    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
-        del futures, timeout, return_when
-        future.set_result(IngestRecordResult(raw_id="raw-raced"))
-        return set(), {future}
-
-    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
-    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.time.monotonic", lambda: next(clock))
-
-    results = list(
-        _iter_ingest_results_sync(
-            raw_artifacts,
-            request=_IngestWorkerRequest(
-                archive_root_str="/tmp/archive",
-                blob_root_str="/tmp/blob-store",
-                validation_mode="strict",
-                measure_ingest_result_size=False,
-            ),
-            worker_count=2,
-        )
-    )
-
-    assert [result.raw_id for result in results] == ["raw-raced"]
-    assert results[0].error is None
-    assert shutdown_calls == [{"wait": True, "cancel_futures": True}]
 
 
 def test_process_ingest_batch_sync_indexes_changed_session_and_invalidates_search_cache(
@@ -3972,40 +3636,6 @@ def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
             == 1
         )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-
-
-def test_select_ingest_worker_count_uses_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=16 * 1024 * 1024) for _ in range(6)]
-    worker_count = _select_ingest_worker_count(raw_artifacts, None)
-    # min(max(6,1), 16, 8) = 6 — uses all available artifacts
-    assert worker_count == 6
-
-
-def test_select_ingest_worker_count_avoids_process_pool_for_tiny_batches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=512 * 1024) for _ in range(10)]
-    worker_count = _select_ingest_worker_count(raw_artifacts, None)
-    assert worker_count == 1
-
-
-def test_select_ingest_worker_count_caps_small_batches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(10)]
-    worker_count = _select_ingest_worker_count(raw_artifacts, None)
-    assert worker_count == 4
-
-
-def test_select_ingest_worker_count_respects_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
-    raw_artifacts = [SimpleNamespace(blob_size=16 * 1024 * 1024) for _ in range(60)]
-    worker_count = _select_ingest_worker_count(raw_artifacts, ingest_workers=4)
-    # min(max(60,1), 16, 4) = 4 — respects explicit limit
-    assert worker_count == 4
 
 
 def test_drain_ready_session_entries_writes_missing_parent_without_buffering(tmp_path: Path) -> None:

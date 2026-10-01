@@ -595,7 +595,7 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     Anti-vacuity: a legacy fake server without ``operation_runtime`` turns this
     current conflict contract into an internal server error instead.
     """
-    from polylogue.daemon.execution import CancellationHandle
+    from polylogue.core.compute import CancellationHandle
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -1020,7 +1020,7 @@ def test_coordinated_mutation_uses_control_admission_without_the_read_timeout() 
     detach a request whose writer lease is still held.
     """
 
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
 
     kernel = BoundedComputeAdapter(max_workers=2, queue_units=2)
     handler = object.__new__(DaemonAPIHandler)
@@ -1070,7 +1070,7 @@ def _loop_owned_bridge() -> tuple[object, object, Callable[[], None]]:
 
 
 def _gated_handler(bridge: object) -> DaemonAPIHandler:
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
 
     handler = object.__new__(DaemonAPIHandler)
 

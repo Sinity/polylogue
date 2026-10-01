@@ -14,7 +14,7 @@ from time import monotonic, time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
-from polylogue.daemon.execution import (
+from polylogue.core.compute import (
     BoundedComputeAdapter,
     CancellationHandle,
     DaemonBackpressureError,

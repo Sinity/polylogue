@@ -11,7 +11,7 @@ from time import monotonic
 
 import pytest
 
-from polylogue.daemon.execution import (
+from polylogue.core.compute import (
     ADMISSION_CLASSES,
     BACKGROUND_CLASSES,
     MAX_BACKGROUND_STARVATION_S,

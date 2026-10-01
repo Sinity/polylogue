@@ -344,9 +344,19 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
+    def prepare_from_bytes(self, data: bytes, *, staging_directory: Path | None = None) -> PreparedBlob:
         """Stage in-memory bytes without exposing their final hash path."""
         staging_root = self._ensure_private_staging_root()
+        if staging_directory is not None:
+            candidate = staging_directory.absolute()
+            candidate.relative_to(staging_root.absolute())
+            cursor = candidate
+            while cursor != staging_root.absolute():
+                info = cursor.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                    raise ValueError("prepared blob directory must be owned private staging")
+                cursor = cursor.parent
+            staging_root = candidate
         fd: int | None = None
         temporary_path: Path | None = None
         try:

@@ -26,11 +26,11 @@ from polylogue.archive.raw_payload.decode import (
     _sample_jsonl_payload_with_detail,
     jsonl_session_artifact,
 )
+from polylogue.core.compute import compute_window_length
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
-from polylogue.pipeline.services.process_pool import select_ingest_worker_count
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
     ForeignOriginContentError,
@@ -832,7 +832,7 @@ def _append_plan_group_ready(plans: list[_AppendPlan]) -> bool:
 
 def _full_ingest_worker_count(records: list[RawSessionRecord]) -> int:
     """Return the worker count for daemon live full-ingest batches."""
-    return select_ingest_worker_count(records, _live_full_ingest_worker_limit())
+    return compute_window_length(len(records), _live_full_ingest_worker_limit())
 
 
 def _live_full_ingest_worker_limit() -> int:

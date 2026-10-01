@@ -28,13 +28,13 @@ from typing import TypeVar, cast
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
 from polylogue.daemon.derivation import DerivationReport
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.maintenance.archive_verification import (
     ArchiveVerificationReport,
@@ -66,9 +66,9 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blo
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.source_composer import (
     ComposedSources,
     compose_append_revision_chain,
@@ -1028,7 +1028,7 @@ def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, sourc
             ),
         )
         source_conn.commit()
-    return write_parsed_session_to_archive(
+    return write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,

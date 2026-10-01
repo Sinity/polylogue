@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.daemon import cli as daemon_cli
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.raw_observation_derivation import converge_raw_observations

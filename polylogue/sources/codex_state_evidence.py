@@ -3,38 +3,25 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from polylogue.core.enums import Origin, Provider
-from polylogue.logging import DEBUG, emit
+from polylogue.core.enums import Provider
+from polylogue.logging import emit
 from polylogue.sources import codex_state_projection
 from polylogue.sources.parsers import codex_state
-from polylogue.sources.sqlite_snapshot import is_declared_logical_export
-from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.materials import admit_material, link_material
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import read_frame
+from polylogue.storage.materials import PreparedMaterial, admit_material, link_material
+
+if TYPE_CHECKING:
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
 
 CODEX_STATE_CENSUS_DETAIL = "retained Codex state evidence applied"
 
 
-def _upsert_codex_material(
-    archive: Any,
-    *,
-    raw_id: str,
-    source_path: str,
-    thread_id: str,
-    kind: str,
-    item_id: str,
-    encoded: bytes,
-    observed_at_ms: int,
-) -> None:
-    """Retain one generated Codex record through the shared material route."""
-    conn = archive.source_connection
+def codex_material_coordinate(source_path: str, thread_id: str, kind: str, item_id: str) -> tuple[str, str]:
     # A Codex install is the scope of state-database observations.  Names in
     # different installs are not competing revisions: R3 requires each to
     # remain independently readable.  The thread is part of the logical
@@ -46,6 +33,19 @@ def _upsert_codex_material(
         f"?scope={quote(source_scope, safe='')}"
     )
     referrer_ref = f"codex-session:{thread_id}"
+    return source_uri, referrer_ref
+
+
+def _upsert_codex_material(
+    archive: Any,
+    *,
+    raw_id: str,
+    prepared: PreparedMaterial,
+    observed_at_ms: int,
+) -> None:
+    """Retain one generated Codex record through the shared material route."""
+    conn = archive.source_connection
+    source_uri, referrer_ref = prepared.source_uri, prepared.referrer_ref
     previous = conn.execute(
         "SELECT m.material_id FROM material_evidence_links AS l "
         "JOIN material_observations AS m USING(material_id) "
@@ -56,14 +56,8 @@ def _upsert_codex_material(
     ).fetchone()
     material = admit_material(
         conn,
-        blob_store=BlobStore(archive.archive_root / "blob"),
-        source_uri=source_uri,
-        referrer_ref=referrer_ref,
+        prepared=prepared,
         observed_at_ms=observed_at_ms,
-        payload=encoded,
-        media_type="application/json",
-        filename=f"{kind}-{item_id}.json",
-        privacy_classification="private",
         supersedes_material_id=str(previous[0]) if previous is not None else None,
         commit=False,
     )
@@ -79,7 +73,7 @@ def _upsert_codex_material(
         relation="acquired_from",
         authority="provider",
         observed_at_ms=observed_at_ms,
-        source_diagnostic=f"Codex {kind} retained export {raw_id}",
+        source_diagnostic=f"Codex state retained export {raw_id}",
         commit=False,
     )
     link_material(
@@ -153,61 +147,49 @@ def materialize_codex_state_content(
     archive: Any,
     raw_id: str,
     *,
-    state_path: Path,
+    prepared_state: PreparedJsonl,
     source_path: str,
     state_kind: str,
     acquired_at_ms: int,
     row_limit: int = codex_state.CODEX_STATE_PAGE_ROWS,
-    text_char_limit: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS,
     aggregate_byte_limit: int = codex_state.CODEX_STATE_MAX_AGGREGATE_BYTES,
 ) -> CodexStateMaterializationReceipt | None:
     """Project the complete retained export through bounded row and text pages."""
     if state_kind == "goals":
         kind = "goal"
-        parsed_kind: Literal["goals", "memories"] = "goals"
     elif state_kind == "memories":
         kind = "memory"
-        parsed_kind = "memories"
     else:
         return None
     rows_available = 0
     materialized = 0
     total_bytes = 0
     window_bytes = 0
-    for part in codex_state.iter_codex_state_parts(
-        state_path,
-        state_kind=parsed_kind,
-        page_size=row_limit,
-        text_chars=text_char_limit,
-        immutable=True,
-    ):
-        if part.part_kind == "invalid":
+    if prepared_state.codex_state_kind != state_kind:
+        raise ValueError("prepared state material kind changed")
+    for _thread_id, _item_id, part_kind, byte_size, prepared in prepared_state.iter_codex_state_material():
+        if part_kind == "invalid":
             rows_available += 1
             continue
-        if part.part_kind == "record" and materialized and materialized % row_limit == 0:
+        if part_kind == "record" and materialized and materialized % row_limit == 0:
             archive.commit()
             window_bytes = 0
-        encoded = _encode_state_payload(part.payload)
-        if len(encoded) > aggregate_byte_limit:
-            raise ValueError("one Codex state part exceeds the materialization byte window")
-        if window_bytes + len(encoded) > aggregate_byte_limit:
+        if window_bytes + byte_size > aggregate_byte_limit:
             archive.commit()
             window_bytes = 0
+        if prepared is None:
+            raise ValueError("prepared state material is missing its sealed carrier")
         _upsert_codex_material(
             archive,
             raw_id=raw_id,
-            source_path=source_path,
-            thread_id=part.thread_id,
-            kind=kind if part.part_kind == "record" else f"{kind}-text",
-            item_id=part.item_id,
+            prepared=prepared,
             observed_at_ms=acquired_at_ms,
-            encoded=encoded,
         )
-        if part.part_kind == "record":
+        if part_kind == "record":
             materialized += 1
             rows_available += 1
-        total_bytes += len(encoded)
-        window_bytes += len(encoded)
+        total_bytes += byte_size
+        window_bytes += byte_size
 
     receipt = CodexStateMaterializationReceipt(
         kind=kind,
@@ -218,7 +200,7 @@ def materialize_codex_state_content(
         clipped_item_ids=(),
         bytes_materialized=total_bytes,
         row_cap=int(row_limit),
-        text_char_cap=int(text_char_limit),
+        text_char_cap=prepared_state.codex_state_text_chars,
         aggregate_byte_cap=int(aggregate_byte_limit),
         rows_skipped_invalid=max(0, rows_available - materialized),
     )
@@ -242,23 +224,11 @@ def materialize_codex_state_content(
     return receipt
 
 
-class CodexStateFinalizeError(RuntimeError):
-    """A retained Codex state candidate could not be finalized in the source tier."""
-
-
-def _record_snapshot_candidate(archive: Any, raw_id: str, **kwargs: Any) -> None:
-    """Finalize one candidate, typing SQLite failures at this seam."""
-    try:
-        record_codex_state_snapshot_terminal(archive, raw_id, **kwargs)
-    except sqlite3.Error as exc:
-        raise CodexStateFinalizeError(f"codex state candidate {raw_id} could not be finalized: {exc}") from exc
-
-
 def record_codex_state_snapshot_terminal(
     archive: Any,
     raw_id: str,
     *,
-    state_path: Path,
+    prepared_state: PreparedJsonl,
     state_kind: str,
     source_path: str,
     acquired_at_ms: int,
@@ -283,16 +253,20 @@ def record_codex_state_snapshot_terminal(
         receipt = materialize_codex_state_content(
             archive,
             raw_id,
-            state_path=state_path,
+            prepared_state=prepared_state,
             source_path=source_path,
             state_kind=state_kind,
             acquired_at_ms=acquired_at_ms,
         )
     if state_kind == codex_state_projection.THREAD_STATE_KIND:
-        codex_state_projection.apply_retained_state_export(
+        snapshot = prepared_state.codex_state_snapshot
+        if snapshot is None or prepared_state.codex_state_kind != state_kind:
+            raise ValueError("prepared thread state snapshot is absent")
+        prepared_state.verify_files(full=False)
+        codex_state_projection.apply_prepared_state_snapshot(
             archive,
             raw_id,
-            export_path=state_path,
+            snapshot=snapshot,
             blob_hash=blob_hash or archive.raw_revision_descriptor(raw_id)[1],
             observed_at_ms=acquired_at_ms,
             source_path=source_path,
@@ -306,187 +280,9 @@ def record_codex_state_snapshot_terminal(
             f"{CODEX_STATE_CENSUS_DETAIL}; {receipt.as_detail()}" if receipt is not None else CODEX_STATE_CENSUS_DETAIL
         ),
         retire_full_revision_governance=True,
+        revision_authority=None,
     )
     archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CODEX)
-
-
-def _unreceipted_codex_state_raw_ids(source_db: Path) -> list[str]:
-    origin = Origin.CODEX_SESSION.value
-    with read_frame(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
-        conn = frame.connection
-        rows = conn.execute(
-            """
-            SELECT r.raw_id
-            FROM raw_sessions AS r
-            WHERE r.origin = ?
-              AND r.parsed_at_ms IS NULL
-              AND r.parse_error IS NULL
-              AND (
-                  lower(r.source_path) GLOB '*.sqlite'
-                  OR lower(r.source_path) GLOB '*.sqlite3'
-                  OR lower(r.source_path) GLOB '*.db'
-              )
-            ORDER BY r.acquired_at_ms, r.raw_id
-            """,
-            (origin,),
-        ).fetchall()
-        candidates = [str(row[0]) for row in rows]
-        if not candidates:
-            return []
-        placeholders = ", ".join("?" for _ in candidates)
-        typed_non_session = {
-            str(row[0])
-            for row in conn.execute(
-                f"SELECT raw_id FROM raw_artifacts WHERE parse_as_session = 0 AND raw_id IN ({placeholders})",
-                candidates,
-            )
-        }
-    return [raw_id for raw_id in candidates if raw_id not in typed_non_session]
-
-
-def _thread_state_projection_is_current(archive_root: Path) -> bool:
-    """Return whether the index projection already names the newest export.
-
-    Read-only over both tiers, so an already-converged archive needs no
-    writable open to prove there is nothing to do.
-    """
-    from polylogue.storage.archive_identity import resolve_active_index_path
-
-    try:
-        index_db = resolve_active_index_path(archive_root)
-    except Exception:
-        # An unresolvable index cannot prove the projection current; let the
-        # projection run and fail visibly instead of skipping it as done.
-        return False
-    if not index_db.is_file():
-        return True
-    try:
-        with read_frame(
-            archive_root / "source.db", timeout_class="background-read", tier=ArchiveTier.SOURCE
-        ) as source_frame:
-            latest = codex_state_projection.latest_retained_state_exports(source_frame.connection)
-        if not latest:
-            return True
-        with read_frame(index_db, timeout_class="background-read", tier=ArchiveTier.INDEX) as index_frame:
-            current = {
-                export.source_scope: codex_state_projection.projection_provenance(
-                    index_frame.connection, source_scope=export.source_scope
-                )
-                for export in latest
-            }
-    except sqlite3.Error as exc:
-        emit(
-            "sources.codex_state.projection_compare_failed",
-            level=DEBUG,
-            outcome="unmeasured",
-            reason="index_unreadable",
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return True
-    for export in latest:
-        projection = current[export.source_scope]
-        if projection is None:
-            return False
-        if (
-            projection.raw_id != export.raw_id
-            or projection.blob_hash != export.blob_hash
-            or (projection.observed_at_ms, projection.observation_order)
-            != (export.observed_at_ms, export.observation_order)
-        ):
-            return False
-    return True
-
-
-def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
-    """Finalize admitted Codex state exports that carry no terminal receipt.
-
-    Runs before the raw-materialization source-selection gate: the gate
-    counts such a raw as an incomparable cursor row, and every route that
-    could finalize it is behind the same gate. The receipt is derived from
-    the immutable retained export only. Returns the number of raws finalized.
-
-    The same pass reconciles the index-tier thread-state projection against
-    the newest retained export, so a reindex that applied the export before
-    the sessions it describes converges without depending on replay order.
-    """
-    source_db = archive_root / "source.db"
-    if not source_db.is_file():
-        return 0
-    raw_ids = _unreceipted_codex_state_raw_ids(source_db)
-    if not raw_ids and _thread_state_projection_is_current(archive_root):
-        return 0
-    from polylogue.sources.live.archive_open import _open_archive_for_live_write
-
-    resolved = 0
-    with _open_archive_for_live_write(archive_root) as archive:
-        for raw_id in raw_ids:
-            provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
-            if provider is not Provider.CODEX:
-                continue
-            state_path = archive.blob_path_for_hash(blob_hash)
-            if state_path is None:
-                continue
-            if not is_declared_logical_export(state_path, source_path):
-                continue
-            try:
-                state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
-            except (sqlite3.DatabaseError, OSError, ValueError) as exc:
-                emit(
-                    "sources.codex_state.snapshot_finalize_refused",
-                    outcome="degraded",
-                    reason="retained_snapshot_schema_unreadable",
-                    raw_id=raw_id,
-                    error_type=type(exc).__name__,
-                )
-                continue
-            if state_kind not in codex_state.IN_SCOPE_KINDS:
-                continue
-            observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
-            # Materialization commits in bounded pages by design, so a
-            # candidate cannot be one transaction. Rows it committed are
-            # idempotent content-addressed observations; the failed raw gets no
-            # terminal receipt, so it is retried and re-materialization
-            # supersedes the same coordinates.
-            try:
-                _record_snapshot_candidate(
-                    archive,
-                    raw_id,
-                    state_path=state_path,
-                    state_kind=state_kind,
-                    source_path=source_path,
-                    acquired_at_ms=observed_at_ms,
-                    censused_at_ms=observed_at_ms,
-                    blob_hash=blob_hash,
-                )
-            except (CodexStateFinalizeError, OSError, ValueError) as exc:
-                emit(
-                    "sources.codex_state.snapshot_finalize_refused",
-                    outcome="degraded",
-                    reason="retained_snapshot_finalize_failed",
-                    raw_id=raw_id,
-                    error_type=type(exc).__name__,
-                )
-                continue
-            resolved += 1
-        index_conn = archive.index_connection
-        if index_conn is not None:
-            codex_state_projection.ensure_thread_state_projection(
-                index_conn,
-                archive.source_connection,
-                blob_path_for_hash=archive.blob_path_for_hash,
-            )
-        # ``close`` does not commit, and the projection is the last write in
-        # this pass: without this the recomputed rows are discarded.
-        archive.commit()
-    if resolved:
-        emit(
-            "sources.codex_state.exports_finalized",
-            outcome="ok",
-            reason="missing_terminal_receipt",
-            rows=resolved,
-        )
-    return resolved
 
 
 __all__ = [
@@ -494,5 +290,4 @@ __all__ = [
     "CodexStateMaterializationReceipt",
     "materialize_codex_state_content",
     "record_codex_state_snapshot_terminal",
-    "resolve_retained_codex_state_receipts",
 ]

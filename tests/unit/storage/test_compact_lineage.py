@@ -34,7 +34,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.derived.lineage.compact import derive_compact_lineage
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 
 _PARENT = "codex-session:lineage-parent"
 _FORK = "codex-session:lineage-fork"
@@ -70,7 +70,7 @@ def _seed_family(conn: sqlite3.Connection) -> None:
             _message("p2", Role.USER, "keep going"),
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
     fork = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="lineage-fork",
@@ -84,7 +84,7 @@ def _seed_family(conn: sqlite3.Connection) -> None:
             _message("f3", Role.ASSISTANT, "fork reply"),
         ],
     )
-    write_parsed_session_to_archive(conn, fork)
+    write_prepared_session(conn, fork)
     spawned = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="lineage-spawned",
@@ -96,7 +96,7 @@ def _seed_family(conn: sqlite3.Connection) -> None:
             _message("s1", Role.ASSISTANT, "focused answer"),
         ],
     )
-    write_parsed_session_to_archive(conn, spawned)
+    write_prepared_session(conn, spawned)
     conn.commit()
 
 

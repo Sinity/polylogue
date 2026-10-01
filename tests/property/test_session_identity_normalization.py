@@ -29,8 +29,8 @@ from polylogue.core.identity_law import session_id as identity_law_session_id
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.schema import _ensure_schema
+from tests.infra.prepared_session import write_prepared_session
 
 _SURROGATE_CHARS = st.characters(min_codepoint=0xD800, max_codepoint=0xDFFF)
 _ASCII_ID_CHARS = st.characters(min_codepoint=0x21, max_codepoint=0x7E)
@@ -79,7 +79,7 @@ def test_db_generated_session_id_matches_python_identity_law(native_id: str) -> 
             # is for messages, so this must fail loudly, never write a
             # self-mismatched row.
             try:
-                write_parsed_session_to_archive(
+                write_prepared_session(
                     conn,
                     session,
                     content_hash=session_content_hash(session),
@@ -88,7 +88,7 @@ def test_db_generated_session_id_matches_python_identity_law(native_id: str) -> 
                 return
             raise AssertionError(f"expected ValueError for native_id={native_id!r}")
 
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             session,
             content_hash=session_content_hash(session),

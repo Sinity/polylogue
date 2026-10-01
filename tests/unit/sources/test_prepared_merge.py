@@ -14,6 +14,7 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
 from polylogue.sources.prepared_merge import prepare_retained_cohort_artifact, prepared_cohort_source_hash
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _chunk_artifact(directory: Path, session: ParsedSession, source_hash: str) -> PreparedJsonl:
@@ -159,7 +160,6 @@ def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, 
     from polylogue.sources.parsers.base import ParsedAttachment
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     first = ParsedSession(
         source_name=Provider.CODEX,
@@ -236,7 +236,7 @@ def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, 
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             initialize_archive_tier(conn, ArchiveTier.INDEX)
-            sid = write_parsed_session_to_archive(
+            sid = write_prepared_session(
                 conn, merged, preacquired_attachment_blobs={key: (blob, len(b"synthetic"), "acquired")}
             )
             stored = conn.execute(
@@ -408,3 +408,138 @@ def test_prepared_cohort_leaf_is_not_a_revision_storage_default(tmp_path: Path) 
         (True, False),
     ]
     assert [message.is_active_path for message in messages] == [True, True]
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["memory", "prepared"])
+@pytest.mark.parametrize("end_anchor", [False, True], ids=["next-message", "fragment-end"])
+def test_real_codex_instructions_anchor_keeps_its_fragment(
+    tmp_path: Path,
+    prepared: bool,
+    end_anchor: bool,
+) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.sources.parsers.codex import _codex_instructions_changed_event
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    chunks = [
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="instruction-fragments",
+            messages=[
+                ParsedMessage(provider_message_id=name, role=Role.USER, text=name, position=position)
+                for position, name in enumerate(names)
+            ],
+        )
+        for names in (("A", "B"), ("C", "D"))
+    ]
+    chunks[1].session_events.append(
+        _codex_instructions_changed_event(
+            kind="developer",
+            instructions="synthetic second fragment policy",
+            revision=1,
+            timestamp=None,
+            source_index=0,
+            effective_from_message_position=2 if end_anchor else 0,
+        )
+    )
+    artifacts = []
+    try:
+        if prepared:
+            artifacts = [
+                _chunk_artifact(tmp_path / f"chunk-{index}", chunk, str(index + 1) * 64)
+                for index, chunk in enumerate(chunks)
+            ]
+            aggregate = prepare_retained_cohort_artifact(
+                [(str(index), artifact) for index, artifact in enumerate(artifacts)],
+                tmp_path / "merged",
+            )
+            artifacts.append(aggregate)
+            with closing(aggregate.iter_sessions()) as sessions:
+                merged = next(sessions)
+        else:
+            merged = merge_parsed_session_chunks(chunks)[0]
+        assert [message.provider_message_id for message in merged.messages] == ["A", "B", "C", "D"]
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            initialize_archive_tier(conn, ArchiveTier.INDEX)
+            sid = write_prepared_session(conn, merged)
+            row = conn.execute(
+                "SELECT m.position FROM session_events e LEFT JOIN messages m "
+                "ON m.message_id = e.boundary_message_id WHERE e.session_id = ?",
+                (sid,),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == (None if end_anchor else 2)
+    finally:
+        for artifact in reversed(artifacts):
+            artifact.discard()
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["memory", "prepared"])
+def test_repeated_native_event_uses_exact_occurrence_after_composition(tmp_path: Path, prepared: bool) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.core.message_owner import MessageOwnerCoordinate
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    chunks = [
+        ParsedSession(
+            source_name=Provider.CLAUDE_AI,
+            provider_session_id="event-occurrences",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="repeated",
+                    role=Role.ASSISTANT,
+                    text=text,
+                    position=0,
+                    owner_coordinate=MessageOwnerCoordinate(stable_key=text, position=0),
+                ),
+            ],
+        )
+        for text in ("first occurrence", "second occurrence")
+    ]
+    chunks[1].session_events.append(
+        ParsedSessionEvent(
+            event_type="model_configuration",
+            source_message_provider_id="repeated",
+            payload={"model": "synthetic"},
+            owner_coordinate=chunks[1].messages[0].owner_coordinate,
+        )
+    )
+    artifacts = []
+    try:
+        if prepared:
+            artifacts = [
+                _chunk_artifact(tmp_path / f"chunk-{index}", chunk, str(index + 1) * 64)
+                for index, chunk in enumerate(chunks)
+            ]
+            aggregate = prepare_retained_cohort_artifact(
+                [(str(index), artifact) for index, artifact in enumerate(artifacts)],
+                tmp_path / "merged",
+            )
+            artifacts.append(aggregate)
+            with closing(aggregate.iter_sessions()) as sessions:
+                merged = next(sessions)
+        else:
+            merged = merge_parsed_session_chunks(chunks)[0]
+        assert merged.session_events[0].owner_coordinate == MessageOwnerCoordinate(
+            stable_key="second occurrence", position=1
+        )
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            initialize_archive_tier(conn, ArchiveTier.INDEX)
+            sid = write_prepared_session(conn, merged)
+            row = conn.execute(
+                "SELECT m.position FROM session_events e JOIN messages m "
+                "ON m.message_id = e.source_message_id WHERE e.session_id = ?",
+                (sid,),
+            ).fetchone()
+            assert row is not None and row[0] == 1
+    finally:
+        for artifact in reversed(artifacts):
+            artifact.discard()

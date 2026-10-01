@@ -59,7 +59,7 @@ def test_pooled_thread_loses_context_without_propagate() -> None:
     Python 3.14 gives a *newly created* ``threading.Thread`` the creating
     thread's context, so a bare thread correlates for free. A thread taken from
     a pool created *before* the bind does not — and that is precisely the shape
-    of ``polylogue.daemon.execution``'s long-lived ThreadPoolExecutor.
+    of ``polylogue.core.compute``'s long-lived ThreadPoolExecutor.
 
     Anti-vacuity: make ``propagate`` the identity function and the second half
     of this test goes red.

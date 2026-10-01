@@ -3,7 +3,7 @@
 Pins the exact ``threads``/``thread_spawn_edges`` column sets observed
 against a live ``~/.codex/state_5.sqlite`` (captured 2026-07-29, 3,054
 threads / 1,030 spawn edges) and asserts every column is either read by
-``parse_codex_state_db`` or explicitly allowlisted as deliberately
+``iter_codex_state_records`` or explicitly allowlisted as deliberately
 unconsumed, with a reason. A future Codex release that adds a genuinely new
 column must fail this test loudly instead of the column silently landing in
 neither camp -- add a typed field to ``CodexThreadRecord``/``CodexSpawnEdge``
@@ -172,7 +172,7 @@ def test_every_live_threads_column_is_read_or_allowlisted() -> None:
     unmapped = _LIVE_THREADS_COLUMNS - covered
     assert not unmapped, (
         f"Live Codex state_5.sqlite threads columns {sorted(unmapped)} are not read by "
-        "parse_codex_state_db nor allowlisted in this canary -- add a typed field to "
+        "iter_codex_state_records nor allowlisted in this canary -- add a typed field to "
         "CodexThreadRecord (codex_state.py) for genuinely new evidence instead of leaving it "
         "silently dropped."
     )

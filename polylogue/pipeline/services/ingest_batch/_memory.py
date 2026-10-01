@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from builtins import BaseExceptionGroup
+
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteSessionEventSink
 
@@ -37,6 +39,17 @@ def discard_session_data_payload(cdata: SessionWritePayload) -> None:
 
 
 def discard_ingest_result_payload(ir: IngestRecordResult) -> None:
+    failures: list[BaseException] = []
+    for payload in ir.sessions:
+        if payload.prepared_write is not None:
+            try:
+                payload.prepared_write.close()
+            except BaseException as failure:
+                failures.append(failure)
+            else:
+                payload.prepared_write = None
+    if failures:
+        raise BaseExceptionGroup("ingest preparation cleanup remains unsettled", failures)
     ir.sessions.clear()
 
 

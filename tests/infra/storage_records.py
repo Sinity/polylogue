@@ -7,7 +7,7 @@ import hashlib
 import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol, TypeAlias, TypeVar, cast
 from uuid import uuid4
@@ -47,9 +47,9 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     PendingPreParseRawAdmissionRequest,
     RawAdmissionExecution,
 )
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import connection_context, open_connection
 from tests.infra.live_ingest import write_session_counts_sync
+from tests.infra.prepared_session import write_prepared_session
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session
@@ -155,7 +155,7 @@ def _origin_value(provider: str) -> Origin:
 
 
 def _resolve_timestamp(value: str | None | _AutoTimestampSentinel) -> str | None:
-    return datetime.now(timezone.utc).isoformat() if isinstance(value, _AutoTimestampSentinel) else value
+    return datetime.now(UTC).isoformat() if isinstance(value, _AutoTimestampSentinel) else value
 
 
 def _resolve_attachment_message_id(
@@ -350,7 +350,7 @@ def store_records(
         ).fetchone()
         new_hash = _writer_hash(session.content_hash)
         parsed = _record_to_parsed_session(session, messages, attachments)
-        write_parsed_session_to_archive(
+        write_prepared_session(
             db_conn,
             parsed,
             content_hash=new_hash,
@@ -616,7 +616,7 @@ class SessionBuilder:
 
     def __init__(self, db_path: Path, session_id: str) -> None:
         self.db_path = db_path
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self.conv = SessionRecord(
             session_id=_session_id(session_id),
             native_id=f"ext-{session_id}",
@@ -756,7 +756,7 @@ class SessionBuilder:
     def save(self) -> SessionRecord:
         parsed = _record_to_parsed_session(self.conv, self.messages, self.attachments)
         with _WRITE_LOCK, open_connection(self.db_path) as conn:
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 parsed,
                 content_hash=_writer_hash(self.conv.content_hash),
@@ -796,7 +796,7 @@ def make_session(
     updated_at: str | None = None,
     **kwargs: object,
 ) -> SessionRecord:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     resolved_created_at = created_at if created_at is not None else (updated_at or now)
     resolved_updated_at = updated_at if updated_at is not None else (created_at or now)
     default_content_hash = uuid4().hex
@@ -824,7 +824,7 @@ def make_message(
     timestamp: str | None = None,
     **kwargs: object,
 ) -> MessageRecord:
-    ts = timestamp or datetime.now(timezone.utc).isoformat()
+    ts = timestamp or datetime.now(UTC).isoformat()
     if "provider_meta" in kwargs:
         require_json_value(kwargs["provider_meta"], context="message provider_meta")
     existing_blocks = _normalize_content_blocks(
@@ -899,7 +899,7 @@ def make_raw_session(
     validation_mode: str | ValidationMode | None = None,
     **kwargs: object,
 ) -> RawSessionRecord:
-    timestamp = acquired_at or datetime.now(timezone.utc).isoformat()
+    timestamp = acquired_at or datetime.now(UTC).isoformat()
     payload: RecordPayload = {
         "raw_id": raw_id,
         "source_name": source_name,
@@ -1016,8 +1016,8 @@ class DbFactory:
         metadata: JSONRecord | None = None,
     ) -> str:
         cid = id or str(uuid4())
-        created_iso = (created_at or datetime.now(timezone.utc)).isoformat()
-        updated_iso = (updated_at or datetime.now(timezone.utc)).isoformat()
+        created_iso = (created_at or datetime.now(UTC)).isoformat()
+        updated_iso = (updated_at or datetime.now(UTC)).isoformat()
 
         builder = (
             SessionBuilder(self.db_path, cid)

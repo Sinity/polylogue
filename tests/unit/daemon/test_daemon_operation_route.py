@@ -1646,7 +1646,7 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
     reports ``outcome == "failed"`` with
     ``error.code == "DaemonOperationCancelled"``, and both assertions go red.
     """
-    from polylogue.daemon.execution import CancellationHandle
+    from polylogue.core.compute import CancellationHandle
     from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS, DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
 

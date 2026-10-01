@@ -32,6 +32,12 @@ from polylogue.archive.query.transaction import (
     archive_read_context,
 )
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
+from polylogue.core.compute import (
+    BoundedComputeAdapter,
+    DaemonBackpressureError,
+    DaemonOperationCancelled,
+    current_cancellation,
+)
 from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
@@ -40,12 +46,6 @@ from polylogue.daemon import workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
     get_latest_event_id,
-)
-from polylogue.daemon.execution import (
-    BoundedComputeAdapter,
-    DaemonBackpressureError,
-    DaemonOperationCancelled,
-    current_cancellation,
 )
 from polylogue.daemon.peer_identity import peer_socket_owned_by_current_uid
 from polylogue.daemon.route_contracts import (
@@ -1834,7 +1834,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         kernel = getattr(self.server, "execution_kernel", None)
         mutating = getattr(self, "_write_gate_depth", 0) > 0
         if isinstance(kernel, BoundedComputeAdapter):
-            from polylogue.daemon.execution import AdmissionClass, CancellationHandle
+            from polylogue.core.compute import AdmissionClass, CancellationHandle
 
             cancellation = CancellationHandle()
             admission_class: AdmissionClass = "control" if mutating else "interactive-read"

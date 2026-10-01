@@ -18,7 +18,7 @@ import pytest
 from polylogue.operations.attachment_convergence import converge_drive_attachments
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 from tests.unit.daemon.test_attachment_convergence import _into, _open_index, _retain_raws, _session
 
 
@@ -34,8 +34,8 @@ def test_drive_backfill_refuses_bytes_the_operator_excised(tmp_path: Path) -> No
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("excised-one", file_id="drive-excised"), raw_id="excised-raw")
-    write_parsed_session_to_archive(index, _session("kept-one", file_id="drive-kept"), raw_id="kept-raw")
+    write_prepared_session(index, _session("excised-one", file_id="drive-excised"), raw_id="excised-raw")
+    write_prepared_session(index, _session("kept-one", file_id="drive-kept"), raw_id="kept-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
@@ -100,8 +100,8 @@ def test_an_excision_committed_before_the_flush_marks_the_attachment_unavailable
 
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("raced-one", file_id="drive-raced"), raw_id="raced-raw")
-    write_parsed_session_to_archive(index, _session("kept-one", file_id="drive-kept"), raw_id="kept-raw")
+    write_prepared_session(index, _session("raced-one", file_id="drive-raced"), raw_id="raced-raw")
+    write_prepared_session(index, _session("kept-one", file_id="drive-kept"), raw_id="kept-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
@@ -149,8 +149,8 @@ def test_an_excision_committed_after_the_flush_marks_the_attachment_unavailable(
 
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("raced-one", file_id="drive-raced"), raw_id="raced-raw")
-    write_parsed_session_to_archive(index, _session("kept-one", file_id="drive-kept"), raw_id="kept-raw")
+    write_prepared_session(index, _session("raced-one", file_id="drive-raced"), raw_id="raced-raw")
+    write_prepared_session(index, _session("kept-one", file_id="drive-kept"), raw_id="kept-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row

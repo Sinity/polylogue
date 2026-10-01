@@ -16,7 +16,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.browser_capture import parse as parse_capture
 from polylogue.sources.parsers.codex import parse as parse_codex
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.source_parser_cases import browser_thinking_turn, case
 
 
@@ -40,7 +40,7 @@ def test_writer_refuses_out_of_denominator_ordinal(representation: str) -> None:
     try:
         # No schema is needed: admission must refuse before the first SQL write.
         with pytest.raises(ValueError):
-            write_parsed_session_to_archive(conn, session, unit_accounting=accounting)
+            write_prepared_session(conn, session, unit_accounting=accounting)
         assert conn.total_changes == 0
     finally:
         conn.close()

@@ -40,14 +40,14 @@ from __future__ import annotations
 
 import sqlite3
 from codecs import getincrementaldecoder
-from collections.abc import Iterator
-from contextlib import ExitStack, closing
+from collections.abc import Iterable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.core.json import JSONDocument
-from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context, logical_source_shape
 
 CODEX_STATE_DB_MARKER = "codex_state_db"
 
@@ -282,17 +282,6 @@ IN_SCOPE_KINDS: frozenset[CodexSqliteKind] = frozenset(
 )
 
 
-def _connect_readonly(path: Path, *, timeout: float = 1.0, immutable: bool = False) -> sqlite3.Connection:
-    """Open *path* for reading, whether it is a retained export or a live file.
-
-    The retained material for a declared member is its canonical logical
-    export; the operator's live ``~/.codex`` databases are still read in
-    place for detection and ambient title enrichment. Never takes a write
-    lock against a live Codex.
-    """
-    return open_logical_source(path, immutable=immutable, timeout=timeout)
-
-
 def classify_codex_sqlite_path(path: Path, *, immutable: bool = False) -> CodexSqliteKind:
     """Classify a retained export or a live Codex SQLite file by its table shape.
 
@@ -374,10 +363,10 @@ class CodexSpawnEdge:
 
 @dataclass(frozen=True, slots=True)
 class CodexStateSnapshot:
-    """Everything ``parse_codex_state_db`` extracts from ``state_5.sqlite``."""
+    """Repeatable thread and spawn record views of one sealed state export."""
 
-    threads: tuple[CodexThreadRecord, ...]
-    spawn_edges: tuple[CodexSpawnEdge, ...]
+    threads: Iterable[CodexThreadRecord]
+    spawn_edges: Iterable[CodexSpawnEdge]
 
 
 #: Default keyset page for complete state materialization.
@@ -445,7 +434,7 @@ def iter_codex_state_parts(
         raise ValueError("page_size and text_chars must be positive")
     table = "thread_goals" if state_kind == "goals" else "stage1_outputs"
     fields = ("objective",) if state_kind == "goals" else ("raw_memory", "rollout_summary")
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
+    with logical_source_context(path, immutable=immutable) as conn:
         conn.row_factory = sqlite3.Row
         columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
         after_rowid: int | None = None
@@ -585,51 +574,55 @@ def _row_opt_int(row: sqlite3.Row, key: str) -> int | None:
     return int(value) if isinstance(value, (int, float)) else None
 
 
-def parse_codex_state_db(path: Path, *, immutable: bool = False) -> CodexStateSnapshot:
-    """Parse ``threads`` and ``thread_spawn_edges`` from a Codex ``state_5.sqlite`` snapshot.
+def iter_codex_state_records(
+    path: Path,
+    *,
+    immutable: bool = False,
+) -> Iterator[CodexThreadRecord | CodexSpawnEdge]:
+    """Decode complete state records in pages through one creator-owned export."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
 
-    *path* must already be a consistent, non-live snapshot (see
-    ``sources.sqlite_snapshot.snapshot_sqlite_database`` / ``stage_sqlite_snapshot``)
-    -- this function itself only ever opens read-only, but callers acquiring
-    from the live file are responsible for snapshotting first (polylogue-0jf4
-    acceptance criterion 4).
-    """
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
+    with logical_source_context(path, immutable=immutable) as conn:
         conn.row_factory = sqlite3.Row
-        thread_rows = conn.execute(
-            "SELECT id, title, cwd, created_at_ms, updated_at_ms, source, model, "
-            "agent_nickname, agent_role, archived FROM threads ORDER BY id"
-        ).fetchall()
-        edge_rows = conn.execute(
-            "SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges "
-            "ORDER BY parent_thread_id, child_thread_id"
-        ).fetchall()
-    threads = tuple(
-        CodexThreadRecord(
-            thread_id=_row_str(row, "id"),
-            title=_row_str(row, "title"),
-            cwd=_row_str(row, "cwd"),
-            created_at_ms=_row_int(row, "created_at_ms"),
-            updated_at_ms=_row_int(row, "updated_at_ms"),
-            source=_row_str(row, "source"),
-            model=_row_opt_str(row, "model"),
-            agent_nickname=_row_opt_str(row, "agent_nickname"),
-            agent_role=_row_opt_str(row, "agent_role"),
-            archived=bool(_row_int(row, "archived")),
-        )
-        for row in thread_rows
-        if _row_str(row, "id")
-    )
-    edges = tuple(
-        CodexSpawnEdge(
-            parent_thread_id=_row_str(row, "parent_thread_id"),
-            child_thread_id=_row_str(row, "child_thread_id"),
-            status=_row_str(row, "status"),
-        )
-        for row in edge_rows
-        if _row_str(row, "parent_thread_id") and _row_str(row, "child_thread_id")
-    )
-    return CodexStateSnapshot(threads=threads, spawn_edges=edges)
+        for table in ("threads", "thread_spawn_edges"):
+            query = (
+                "SELECT id, title, cwd, created_at_ms, updated_at_ms, source, model, "
+                "agent_nickname, agent_role, archived FROM threads ORDER BY id"
+                if table == "threads"
+                else "SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges "
+                "ORDER BY parent_thread_id, child_thread_id"
+            )
+            cursor = conn.execute(query)
+            try:
+                while True:
+                    check_compute_cancelled()
+                    rows = cursor.fetchmany(CODEX_STATE_PAGE_ROWS)
+                    if not rows:
+                        break
+                    for row in rows:
+                        check_compute_cancelled()
+                        if table == "threads":
+                            if _row_str(row, "id"):
+                                yield CodexThreadRecord(
+                                    thread_id=_row_str(row, "id"),
+                                    title=_row_str(row, "title"),
+                                    cwd=_row_str(row, "cwd"),
+                                    created_at_ms=_row_int(row, "created_at_ms"),
+                                    updated_at_ms=_row_int(row, "updated_at_ms"),
+                                    source=_row_str(row, "source"),
+                                    model=_row_opt_str(row, "model"),
+                                    agent_nickname=_row_opt_str(row, "agent_nickname"),
+                                    agent_role=_row_opt_str(row, "agent_role"),
+                                    archived=bool(_row_int(row, "archived")),
+                                )
+                        elif _row_str(row, "parent_thread_id") and _row_str(row, "child_thread_id"):
+                            yield CodexSpawnEdge(
+                                parent_thread_id=_row_str(row, "parent_thread_id"),
+                                child_thread_id=_row_str(row, "child_thread_id"),
+                                status=_row_str(row, "status"),
+                            )
+            finally:
+                cursor.close()
 
 
 __all__ = [
@@ -654,6 +647,6 @@ __all__ = [
     "is_in_scope_codex_sqlite_path",
     "looks_like_state_db_payload",
     "marker_payload",
-    "parse_codex_state_db",
+    "iter_codex_state_records",
     "iter_codex_state_parts",
 ]

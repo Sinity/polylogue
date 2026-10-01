@@ -21,7 +21,11 @@ from polylogue.archive.ingest_flags import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
-from polylogue.archive.revision_authority import HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL, RawRevisionKind
+from polylogue.archive.revision_authority import (
+    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+    RawRevisionAuthority,
+    RawRevisionKind,
+)
 from polylogue.archive.session_revision_membership import (
     MembershipClassification,
     MembershipRevision,
@@ -418,6 +422,7 @@ def publish_raw_census(writer_archive: Any, prepared: PreparedRawCensus) -> Cens
         # passing the empty tuple instead of None trips the writer's alignment
         # check, which is why the FAILED arm could never be published.
         projections=None if prepared.sessions is None else prepared.projections,
+        revision_authority=None,
     )
     return CensusPublication(True, False)
 
@@ -861,6 +866,7 @@ def publish_ingest_cohort(
                     retire_full_revision_governance=True,
                     projections=census.projections,
                     manage_transaction=False,
+                    revision_authority=RawRevisionAuthority.QUARANTINED,
                 )
         return CohortPublication(
             False,

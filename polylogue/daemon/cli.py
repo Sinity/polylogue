@@ -27,6 +27,7 @@ import click
 from polylogue.api import Polylogue
 from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
+from polylogue.core.compute import publish_compute_adapter, reset_compute_adapter
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import JSONDocument, dumps, json_document
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
@@ -39,7 +40,6 @@ from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV, api_command
 from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
 from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
-from polylogue.daemon.execution import publish_daemon_compute_adapter, reset_daemon_compute_adapter
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -1911,20 +1911,20 @@ def compose_ingest_owner(
     and re-drives accepted ingests exactly as the API server's runtime does;
     the caller starts the re-drive and shuts the runtime down.
     """
-    from polylogue.daemon.execution import daemon_compute_adapter
+    from polylogue.core.compute import compute_adapter
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 
     profiles = compose_session_profile_callback(
         archive_root,
-        compute_adapter=daemon_compute_adapter(),
+        compute_adapter=compute_adapter(),
         write_bridge=write_bridge,
         now=time.time,
     )
     runtime = DaemonOperationRuntime(
         archive_root,
         write_bridge=write_bridge,
-        execution_kernel=daemon_compute_adapter(),
+        execution_kernel=compute_adapter(),
         owner_loop=write_bridge.owner_loop,
         session_maintenance=profiles.maintenance,
     )
@@ -2676,7 +2676,7 @@ async def _run_daemon_services_under_active_writer_lease(
             # Daemon-internal lease-free work shares the capacity the API
             # server already owns rather than standing up a second pool
             # (polylogue-c0l7n).
-            publish_daemon_compute_adapter(api_server.execution_kernel)
+            publish_compute_adapter(api_server.execution_kernel)
             # The re-drive's claim phase runs on this loop; the listeners
             # serve only after it claimed every interrupted accepted ingest.
             await api_server.operation_runtime.accepted_ingest_redrive_claimed()
@@ -2762,9 +2762,9 @@ async def _run_daemon_services_under_active_writer_lease(
                 daemon_compute = api_server.execution_kernel
                 session_profile_callback = api_server.session_profile_callback
             else:
-                from polylogue.daemon.execution import daemon_compute_adapter
+                from polylogue.core.compute import compute_adapter
 
-                daemon_compute = daemon_compute_adapter()
+                daemon_compute = compute_adapter()
                 session_profile_callback = owner_session_profiles or compose_session_profile_callback(
                     archive_root_path,
                     compute_adapter=daemon_compute,
@@ -3596,7 +3596,7 @@ async def _run_daemon_services_under_active_writer_lease(
             # shared fallback; either way this run published it, so this run
             # joins its workers. Every service and the writer have stopped, so
             # nothing new is admitted; a worker still running is named.
-            surviving_compute = reset_daemon_compute_adapter(join_timeout_s=_COMPUTE_JOIN_TIMEOUT_S)
+            surviving_compute = reset_compute_adapter(join_timeout_s=_COMPUTE_JOIN_TIMEOUT_S)
             if surviving_compute:
                 emit(
                     "daemon.shutdown.compute_threads_orphaned",

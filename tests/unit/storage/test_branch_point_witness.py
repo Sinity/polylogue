@@ -30,8 +30,8 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
-    write_parsed_session_to_archive,
 )
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -101,9 +101,9 @@ class TestBranchPointWitness:
         cursor = CursorStore(db)
         conn = _connect(db)
         try:
-            write_parsed_session_to_archive(conn, _session("gp", [("m0", "m0"), ("m1", "other-m1")]))
-            write_parsed_session_to_archive(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
-            child_id = write_parsed_session_to_archive(
+            write_prepared_session(conn, _session("gp", [("m0", "m0"), ("m1", "other-m1")]))
+            write_prepared_session(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
+            child_id = write_prepared_session(
                 conn, _session("child", [("m0", "m0"), ("m1", "m1"), ("x", "x")], parent="parent")
             )
             conn.commit()
@@ -111,7 +111,7 @@ class TestBranchPointWitness:
             assert anchored_id == "codex-session:parent:n:m1"
             assert _composed(conn, child_id) == (["m0", "m1", "x"], True, None)
 
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn, _session("parent", [("m0", "m0"), ("m1", "other-m1"), ("m2", "m2")], parent="gp")
             )
             conn.commit()
@@ -138,16 +138,14 @@ class TestBranchPointWitness:
         cursor = CursorStore(db)
         conn = _connect(db)
         try:
-            write_parsed_session_to_archive(conn, _session("gp", [("m0", "m0"), ("m1", "m1")]))
-            write_parsed_session_to_archive(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
-            child_id = write_parsed_session_to_archive(
+            write_prepared_session(conn, _session("gp", [("m0", "m0"), ("m1", "m1")]))
+            write_prepared_session(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
+            child_id = write_prepared_session(
                 conn, _session("child", [("m0", "m0"), ("m1", "m1"), ("x", "x")], parent="parent")
             )
             conn.commit()
 
-            write_parsed_session_to_archive(
-                conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")], parent="gp")
-            )
+            write_prepared_session(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")], parent="gp"))
             conn.commit()
 
             anchored_id, _witness = _edge(conn, child_id)

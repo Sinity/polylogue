@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import gzip
 import json
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -363,7 +362,6 @@ def test_legacy_family_migrates_without_changing_version_or_dropping_witnesses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An actual recipe-1 package keeps its owner through canonicalization and reordered refreshes."""
-    monkeypatch.setattr(source_inference, "ProcessPoolExecutor", ThreadPoolExecutor)
     sources = tmp_path / "sources"
     sources.mkdir()
     document, _ = _gemini_cli_sources(sources)
@@ -520,7 +518,6 @@ def test_source_shape_loss_is_published_separately_from_package_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, historical: bool
 ) -> None:
     """Repeated unretained observations, including history, survive bundle emission and restart."""
-    monkeypatch.setattr(source_inference, "ProcessPoolExecutor", ThreadPoolExecutor)
     sources = tmp_path / "sources"
     sources.mkdir()
     _gemini_cli_sources(sources)

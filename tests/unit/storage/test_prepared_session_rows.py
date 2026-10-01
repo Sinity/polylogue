@@ -47,8 +47,8 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_write,
     prepared_session_rows_from_shard,
     read_archive_session_envelope,
-    write_parsed_session_to_archive,
 )
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -184,7 +184,7 @@ def _write_all(conn: sqlite3.Connection, sessions: list[ParsedSession], *, prepa
     for session in sessions:
         chash = str(session_content_hash(session))
         rows = prepare_session_rows(session) if prepared else None
-        write_parsed_session_to_archive(conn, session, content_hash=chash, prepared=rows)
+        write_prepared_session(conn, session, content_hash=chash, prepared_rows=rows)
 
 
 def test_prepared_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
@@ -228,11 +228,11 @@ def test_valid_prepared_rows_are_used_verbatim_without_rebuilding(
         monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
 
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
 
         stored_messages = conn.execute(
@@ -278,7 +278,7 @@ def test_writer_accepts_parse_bound_hash_without_recomputing(tmp_path: Path, mon
     monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
     conn = _connect(tmp_path / "bound.db")
     try:
-        session_id = write_parsed_session_to_archive(conn, bound, prepared=prepared)
+        session_id = write_prepared_session(conn, bound, prepared_rows=prepared)
         assert conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
     finally:
         conn.close()
@@ -297,11 +297,11 @@ def test_valid_identity_carrier_is_reused_without_writer_recomputation(
     monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
     conn = _connect(tmp_path / "carrier.db")
     try:
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
     finally:
         conn.close()
@@ -318,11 +318,11 @@ def test_corrupt_identity_carrier_is_refused(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "corrupt-carrier.db")
     try:
         with pytest.raises(PreparedSessionWriteRefusedError, match="disagrees with message rows"):
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=corrupt,
+                prepared_rows=corrupt,
             )
     finally:
         conn.close()
@@ -375,11 +375,11 @@ def test_seeded_corpus_stores_identity_golden_fixture(tmp_path: Path) -> None:
     try:
         for session in _synthetic_sessions():
             prepared = prepare_session_rows(session)
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=prepared,
+                prepared_rows=prepared,
             )
 
         observed = {
@@ -437,11 +437,11 @@ def test_new_session_skips_field_path_union(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr(archive_tier_write, "_union_with_existing_rows", _boom)
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
     finally:
@@ -488,11 +488,11 @@ def test_stale_prepared_rows_fall_back_to_fresh_content(tmp_path: Path) -> None:
 
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             mutated,
             content_hash=str(session_content_hash(mutated)),
-            prepared=stale_prepared,
+            prepared_rows=stale_prepared,
         )
         stored_text = conn.execute(
             "SELECT user_context_text FROM messages WHERE session_id = ?",
@@ -522,7 +522,7 @@ def test_prepared_rows_are_ignored_when_no_content_hash_supplied(tmp_path: Path)
         # No AssertionError from a monkeypatched builder here -- this test
         # only proves the reuse guard degrades safely, not that the builder
         # was skipped (it correctly is NOT skipped in this case).
-        session_id = write_parsed_session_to_archive(conn, session, prepared=prepared)
+        session_id = write_prepared_session(conn, session, prepared_rows=prepared)
         stored = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -573,7 +573,7 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        write_prepared_session(conn, parent, content_hash=str(session_content_hash(parent)))
         prepared = prepare_session_write(conn, child, merge_append=False)
 
         def _boom(*args: object, **kwargs: object) -> object:
@@ -583,12 +583,11 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
         monkeypatch.setattr(archive_tier_write, "_extract_prefix_tail", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
-        child_id = write_parsed_session_to_archive(
+        child_id = write_prepared_session(
             conn,
             child,
             content_hash=str(session_content_hash(child)),
             prepared_write=prepared,
-            prepared_required=True,
         )
         assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
             "c"
@@ -636,7 +635,7 @@ def test_disk_prepared_write_keeps_lineage_tail_and_rows_off_heap(
     publication = child.model_copy(update={"messages": sealed, "content_hash": str(session_content_hash(child))})
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        write_prepared_session(conn, parent, content_hash=str(session_content_hash(parent)))
         prepared = prepare_session_write(conn, publication, merge_append=False)
         assert not isinstance(prepared.rows.message_rows, tuple)
         assert len(prepared.context.messages) == 1
@@ -646,12 +645,11 @@ def test_disk_prepared_write_keeps_lineage_tail_and_rows_off_heap(
 
         monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_row_lowering)
         monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_row_lowering)
-        child_id = write_parsed_session_to_archive(
+        child_id = write_prepared_session(
             conn,
             publication,
             content_hash=publication.content_hash,
             prepared_write=prepared,
-            prepared_required=True,
         )
         assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
             "c"
@@ -685,7 +683,7 @@ def test_prepared_lineage_refuses_changed_earlier_parent_prefix(tmp_path: Path) 
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        write_prepared_session(conn, parent, content_hash=str(session_content_hash(parent)))
         prepared = prepare_session_write(conn, child, merge_append=False)
         changed_parent = parent.model_copy(
             update={
@@ -695,19 +693,18 @@ def test_prepared_lineage_refuses_changed_earlier_parent_prefix(tmp_path: Path) 
                 ]
             }
         )
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             changed_parent,
             content_hash=str(session_content_hash(changed_parent)),
             force_replace=True,
         )
         with pytest.raises(PreparedSessionWriteRefusedError, match="lineage prefix changed"):
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 child,
                 content_hash=str(session_content_hash(child)),
                 prepared_write=prepared,
-                prepared_required=True,
             )
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'waiting-child'").fetchone()[0] == 0
     finally:
@@ -767,11 +764,9 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
     expected = _connect(tmp_path / "expected.db")
     actual = _connect(tmp_path / "actual.db")
     try:
-        write_parsed_session_to_archive(expected, rich, raw_id="older", content_hash=str(session_content_hash(rich)))
-        write_parsed_session_to_archive(expected, poor, raw_id="newer", content_hash=str(session_content_hash(poor)))
-        session_id = write_parsed_session_to_archive(
-            actual, rich, raw_id="older", content_hash=str(session_content_hash(rich))
-        )
+        write_prepared_session(expected, rich, raw_id="older", content_hash=str(session_content_hash(rich)))
+        write_prepared_session(expected, poor, raw_id="newer", content_hash=str(session_content_hash(poor)))
+        session_id = write_prepared_session(actual, rich, raw_id="older", content_hash=str(session_content_hash(rich)))
         store = SqliteMessageStore(tmp_path / "prepared-poor.db")
         sink = store.new_sink()
         sink.extend(poor.messages)
@@ -799,13 +794,12 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
         )
         assert prepared.cross_acquisition_union is not None
         assert not isinstance(prepared.cross_acquisition_union.rows.message_rows, tuple)
-        write_parsed_session_to_archive(
+        write_prepared_session(
             actual,
             publication,
             raw_id="newer",
             content_hash=publication.content_hash,
             prepared_write=prepared,
-            prepared_required=True,
         )
         for table in ("sessions", "messages", "blocks"):
             assert [tuple(row) for row in actual.execute(f"SELECT * FROM {table} ORDER BY rowid")] == [
@@ -841,7 +835,7 @@ def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: 
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             first,
             raw_id="old",
@@ -849,7 +843,7 @@ def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: 
         )
         prepared = prepare_session_write(conn, second, merge_append=False, raw_id="second")
         assert prepared.cross_acquisition_union is not None
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             competing,
             raw_id="competing",
@@ -857,13 +851,12 @@ def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: 
             force_replace=True,
         )
         with pytest.raises(PreparedSessionWriteRefusedError, match="predecessor changed"):
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 second,
                 raw_id="second",
                 content_hash=str(session_content_hash(second)),
                 prepared_write=prepared,
-                prepared_required=True,
             )
         assert (
             conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == "competing"
@@ -901,20 +894,19 @@ def test_a_dropped_prepared_union_still_refreshes_replaced_attachments(tmp_path:
     for prepared_route in (False, True):
         conn = _connect(tmp_path / f"index-{prepared_route}.db")
         try:
-            write_parsed_session_to_archive(conn, first, raw_id="old", content_hash=str(session_content_hash(first)))
+            write_prepared_session(conn, first, raw_id="old", content_hash=str(session_content_hash(first)))
             prepared = (
                 prepare_session_write(conn, second, merge_append=False, raw_id="second") if prepared_route else None
             )
             if prepared is not None:
                 assert prepared.cross_acquisition_union is not None
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 second,
                 raw_id="second",
                 content_hash=str(session_content_hash(second)),
                 force_replace=True,
                 prepared_write=prepared,
-                prepared_required=prepared is not None,
             )
             snapshots.append(
                 {

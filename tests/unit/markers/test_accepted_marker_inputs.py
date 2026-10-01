@@ -41,9 +41,10 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.prepared_session import write_prepared_session
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 
@@ -332,13 +333,11 @@ def test_prepared_fallback_append_and_lineage_coordinates_match_writer(workspace
         session = _session("::note: repeated")
         first = prepare_session_write(conn, session, merge_append=False)
         first_candidate = marker_candidates_for_prepared_write(first)[0]
-        write_parsed_session_to_archive(
-            conn, session, prepared_write=first, content_hash=first.input_content_hash.hex()
-        )
+        write_prepared_session(conn, session, prepared_write=first, content_hash=first.input_content_hash.hex())
         second = prepare_session_write(conn, session, merge_append=True)
         second_candidate = marker_candidates_for_prepared_write(second)[0]
         assert first_candidate["provenance"] != second_candidate["provenance"]
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn, session, prepared_write=second, merge_append=True, content_hash=second.input_content_hash.hex()
         )
         stored = {row[0] for row in conn.execute("SELECT block_id FROM blocks")}
@@ -346,7 +345,7 @@ def test_prepared_fallback_append_and_lineage_coordinates_match_writer(workspace
         assert _nested(second_candidate, "provenance", "block_id") in stored
 
         parent = _session("::note: parent", native_id="parent", message_id="p")
-        write_parsed_session_to_archive(conn, parent)
+        write_prepared_session(conn, parent)
         child = parent.model_copy(
             update={
                 "provider_session_id": "child",
@@ -360,7 +359,7 @@ def test_prepared_fallback_append_and_lineage_coordinates_match_writer(workspace
         prepared_child = prepare_session_write(conn, child, merge_append=False)
         candidates = marker_candidates_for_prepared_write(prepared_child)
         assert [_nested(candidate, "match", "body") for candidate in candidates] == ["child"]
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn, child, prepared_write=prepared_child, content_hash=prepared_child.input_content_hash.hex()
         )
         stored = {
@@ -1496,7 +1495,7 @@ async def test_public_partial_multi_session_raw_rolls_back_before_marker_witness
             sessions=payloads,
         )
 
-    real_write = write_parsed_session_to_archive
+    real_write = write_prepared_session
 
     def fail_second_session(conn: sqlite3.Connection, session: ParsedSession, *args: Any, **kwargs: Any) -> Any:
         if session.provider_session_id == "z":

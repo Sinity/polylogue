@@ -42,7 +42,7 @@ from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -124,7 +124,7 @@ def _write_partial_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) ->
             _tool_msg("cy", Role.ASSISTANT, "child reply", 3, "pytest tests/unit -q"),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -135,7 +135,7 @@ def _write_partial_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) ->
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, parent, bulk_fts=bulk_fts)
+    write_prepared_session(conn, parent, bulk_fts=bulk_fts)
     return child_id
 
 
@@ -155,7 +155,7 @@ def _write_full_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) -> st
             _msg("c1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -165,7 +165,7 @@ def _write_full_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) -> st
             _msg("p1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    write_parsed_session_to_archive(conn, parent, bulk_fts=bulk_fts)
+    write_prepared_session(conn, parent, bulk_fts=bulk_fts)
     return child_id
 
 
@@ -233,14 +233,14 @@ def test_full_replace_bulk_guard_rebuilds_the_fts_surface(tmp_path: Path) -> Non
         title="before",
         messages=[_tool_msg("m0", Role.ASSISTANT, "before", 0, "rg before-command")],
     )
-    session_id = write_parsed_session_to_archive(conn, original)
+    session_id = write_prepared_session(conn, original)
     replacement = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="full-replace",
         title="after",
         messages=[_tool_msg("m1", Role.ASSISTANT, "after", 0, "pytest after-command")],
     )
-    assert write_parsed_session_to_archive(conn, replacement) == session_id
+    assert write_prepared_session(conn, replacement) == session_id
 
     assert_session_fts_exact_sync(conn, session_id)
     assert (
@@ -268,7 +268,7 @@ def test_bulk_fts_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
             _msg("cx", Role.USER, "child diverges here", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, child)
+    write_prepared_session(conn, child)
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("injected dependent-delete failure")
@@ -286,7 +286,7 @@ def test_bulk_fts_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
             ],
         )
         with pytest.raises(RuntimeError, match="injected dependent-delete failure"):
-            write_parsed_session_to_archive(conn, parent, bulk_fts=True)
+            write_prepared_session(conn, parent, bulk_fts=True)
     finally:
         _write_module._delete_prefix_message_dependents = original
 

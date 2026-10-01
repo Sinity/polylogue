@@ -22,6 +22,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _conversation(message_count: int = 300) -> dict[str, object]:
@@ -354,3 +355,47 @@ def test_sink_active_path_walk_starts_at_the_leaf_row(tmp_path: Path) -> None:
     # Only the leaf occurrence and its own parent chain: the later "b"
     # (parent "x") is a different message that repeats the provider id.
     assert [message.is_active_path for message in resident] == [True, True, None, None]
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["conventional", "prepared"])
+def test_real_claude_repeated_occurrence_events_keep_their_message(tmp_path: Path, prepared: bool) -> None:
+    from contextlib import closing
+
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "claude-ai" / "event-occurrences.json"
+    source = tmp_path / "conversation.json"
+    source.write_bytes(fixture.read_bytes())
+    artifact = None
+    try:
+        if prepared:
+            artifact = prepare_jsonl_blob(
+                str(source),
+                str(source),
+                Provider.CLAUDE_AI.value,
+                "fallback",
+                is_stream=False,
+                shard_directory=str(tmp_path / "prepared"),
+            )
+            assert artifact.error is None
+            with closing(artifact.iter_sessions()) as sessions:
+                parsed = next(sessions)
+        else:
+            parsed = _expected(json.loads(source.read_text()), source)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.row_factory = sqlite3.Row
+            initialize_archive_tier(conn, ArchiveTier.INDEX)
+            sid = write_prepared_session(conn, parsed)
+            rows = conn.execute(
+                "SELECT e.event_type, e.payload_json, b.text FROM session_events e "
+                "JOIN blocks b ON b.message_id = e.source_message_id "
+                "WHERE e.session_id = ? AND b.block_type = 'text'",
+                (sid,),
+            ).fetchall()
+        summaries = {json.loads(row[1])["summary"]: row[2] for row in rows if row[0] == "claude_ai_compaction_summary"}
+        assert summaries == {"first summary": "first occurrence", "second summary": "second occurrence"}
+        configurations = {json.loads(row[1])["model"]: row[2] for row in rows if row[0] == "model_configuration"}
+        assert configurations == {"synthetic-first": "first occurrence", "synthetic-second": "second occurrence"}
+        revisions = {json.loads(row[1])["updated_at"]: row[2] for row in rows if row[0] == "message_revision"}
+        assert revisions == {"2026-01-01T00:01:00Z": "first occurrence", "2026-01-01T00:03:00Z": "second occurrence"}
+    finally:
+        if artifact is not None:
+            artifact.discard()

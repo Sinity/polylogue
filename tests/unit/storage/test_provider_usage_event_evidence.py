@@ -13,7 +13,8 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedS
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -25,11 +26,11 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _write(conn: sqlite3.Connection, session: ParsedSession) -> str:
-    return write_parsed_session_to_archive(
+    return write_prepared_session(
         conn,
         session,
         content_hash=str(session_content_hash(session)),
-        prepared=prepare_session_rows(session),
+        prepared_rows=prepare_session_rows(session),
     )
 
 

@@ -1,11 +1,8 @@
-"""Batch ingest orchestration: ProcessPool workers + sync sqlite3 writes.
+"""Batch ingest orchestration with shared pure compute and caller-owned SQL.
 
-Architecture:
-- CPU-bound work (decode/validate/parse/transform) in ProcessPoolExecutor
-- DB writes in main thread via sync sqlite3 (no aiosqlite async overhead)
-- as_completed yields results as workers finish; writes drain completed worker
-  results without retaining the whole parsed batch in memory
-
+Decode, validation, parsing, and transformation use the bounded compute
+adapter. The caller applies completed results through its synchronous writer,
+without retaining the whole parsed batch in memory.
 """
 
 from __future__ import annotations
@@ -20,12 +17,11 @@ import sqlite3
 import time
 import unicodedata
 import uuid
-from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, BrokenExecutor, Future, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import AsyncExitStack, closing
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
@@ -34,8 +30,15 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
+from polylogue.core.compute import (
+    CancellationHandle,
+    DaemonBackpressureError,
+    DaemonOperationCancelled,
+    compute_adapter,
+    compute_window_length,
+)
+from polylogue.core.compute_cancel import compute_cancel_requested
 from polylogue.core.enums import BlockType, IngestOutcome, Origin, Provider
-from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
@@ -69,11 +72,6 @@ from polylogue.pipeline.services.ingest_worker import (
     SessionWritePayload,
     ingest_record,
 )
-from polylogue.pipeline.services.process_pool import (
-    process_pool_executor,
-    select_ingest_worker_count,
-    terminate_process_pool,
-)
 from polylogue.sinex.material_adapter import (
     PublicationBackpressureError,
     PublicationEncodingError,
@@ -85,7 +83,6 @@ from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputRefusedError,
     PreparedAcceptedMarkerInput,
@@ -151,7 +148,6 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 if TYPE_CHECKING:
-    from polylogue.archive.write_effects import WriteEffect, WriteEffectContext
     from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
@@ -162,10 +158,8 @@ from polylogue.pipeline.services.ingest_batch._memory import (
     INGEST_RELEASE_MESSAGE_THRESHOLD,
     discard_ingest_result_payload,
     discard_session_data_payload,
-    ingest_result_needs_memory_release,
 )
 from polylogue.pipeline.services.ingest_batch._models import (
-    _DEFAULT_INGEST_WORKER_LIMIT,
     _SINEX_STAGED_PAYLOAD_LIMIT_BYTES,
     _BulkConnectionBackendLike,
     _IngestBatchSummary,
@@ -199,12 +193,8 @@ class _BlobSized(Protocol):
 
 IngestHeartbeat = Callable[[], None]
 _INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
-# A heartbeat only proves that the coordinator is alive.  It is deliberately
-# not progress: a worker that completes no future must eventually be reported
-# as unfinished so the ordinary retry/refusal path can settle its raw IDs.
-# The deadline is per-progress window, not a batch wall-clock timeout, so a
-# legitimately large source can run indefinitely while results keep arriving.
-_INGEST_RESULT_PROGRESS_DEADLINE_S = 300.0
+# A heartbeat reports coordinator liveness; cancellation or a typed result
+# settles the owned worker future, without an elapsed progress deadline.
 _INGEST_RESULT_CHUNK_SIZE = 100
 
 
@@ -852,37 +842,38 @@ def _incoming_write_carries_distinct_messages(
     against one stored occurrence is new content, so the comparison counts
     occurrences rather than testing set membership.
     """
-    composed = _composed_db_signatures(conn, payload.session_id)
-    owners = _composed_message_owners(conn, [message_id for message_id, _signature in composed])
-    own_message_ids: list[str] = []
-    inherited_signatures: Counter[str] = Counter()
-    for message_id, signature in composed:
-        if owners.get(message_id, (payload.session_id, None))[0] == payload.session_id:
-            own_message_ids.append(message_id)
-        else:
-            inherited_signatures[signature] += 1
-    own_identities: Counter[str] = Counter()
-    for start in range(0, len(own_message_ids), 500):
-        batch = own_message_ids[start : start + 500]
-        placeholders = ",".join("?" for _ in batch)
-        own_identities.update(
-            str(row[0])
-            for row in conn.execute(
-                f"SELECT content_identity FROM messages WHERE message_id IN ({placeholders})", batch
-            )
-            if row[0] is not None
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.storage.sqlite.archive_tiers.write import _iter_composed_rows
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    # This is a temporary comparison within the existing preparation owner;
+    # only its boolean result crosses admission, alongside the predecessor.
+    with scratch_connection_context(prefix="ingest-comparison-", filename="counts.db") as counts:
+        counts.execute(
+            "CREATE TABLE counts(kind TEXT NOT NULL, key TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(kind,key)) WITHOUT ROWID"
         )
-    for message in session_to_write.messages:
-        identity = message_content_identity(message)
-        if own_identities[identity] > 0:
-            own_identities[identity] -= 1
-            continue
-        signature = _parsed_message_signature(message)
-        if inherited_signatures[signature] > 0:
-            inherited_signatures[signature] -= 1
-            continue
-        return True
-    return False
+        for message_id, signature, owner in _iter_composed_rows(conn, payload.session_id):
+            check_compute_cancelled()
+            if owner == payload.session_id:
+                row = conn.execute("SELECT content_identity FROM messages WHERE message_id=?", (message_id,)).fetchone()
+                if row is None or row[0] is None:
+                    continue
+                kind, key = "own", str(row[0])
+            else:
+                kind, key = "inherited", signature
+            counts.execute("INSERT INTO counts VALUES(?,?,1) ON CONFLICT(kind,key) DO UPDATE SET n=n+1", (kind, key))
+        for message in session_to_write.messages:
+            check_compute_cancelled()
+            identity = message_content_identity(message)
+            if counts.execute("UPDATE counts SET n=n-1 WHERE kind='own' AND key=? AND n>0", (identity,)).rowcount:
+                continue
+            signature = _parsed_message_signature(message)
+            if counts.execute(
+                "UPDATE counts SET n=n-1 WHERE kind='inherited' AND key=? AND n>0", (signature,)
+            ).rowcount:
+                continue
+            return True
+        return False
 
 
 def _preacquire_sidecar_blobs(
@@ -1443,6 +1434,11 @@ def _write_session(
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
     content_unchanged = existing_row is not None and existing_hash_hex == payload.content_hash
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
+    if payload.prepared_distinct_messages is None:
+        raise PreparedSessionWriteRefusedError("session decisions require canonical off-writer preparation")
+    current_predecessor = tuple(existing_row) if existing_row is not None else None
+    if current_predecessor != payload.prepared_predecessor:
+        raise PreparedSessionWriteRefusedError("ingest predecessor changed after off-writer preparation")
     session_to_write = payload.parsed_session
     merge_append = False
     append_force_replace = False
@@ -1576,7 +1572,7 @@ def _write_session(
             # same transcript from a genuinely different revision that happens
             # to tie on content-derived freshness (polylogue-5uoed). Skipping
             # the latter loses its distinct messages on a fresh import.
-            and not _incoming_write_carries_distinct_messages(conn, payload, session_to_write)
+            and payload.prepared_distinct_messages is False
         ):
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
@@ -1604,36 +1600,28 @@ def _write_session(
             counts["skipped_attachments"] = payload.attachment_count
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
             return False, counts
-        newer_revision = (
-            incoming_freshness_ms is not None
-            and existing_updated_at_int is not None
-            and incoming_freshness_ms > existing_updated_at_int
-        )
-        delta: ParsedSession | None = None
-        if newer_revision and _append_payload_changes_existing_message(conn, payload):
-            # A later full revision can revise an already-seen native message
-            # as well as add a tail. Replace it authoritatively so message,
-            # block, attachment, and event projections all come from the same
-            # revision. Older/equal replays continue through the append delta
-            # path and retain its unchanged-row contract.
-            counts["skipped_messages"] = 0
-            append_force_replace = True
-        else:
-            delta, skipped_messages = _append_delta_payload(conn, payload)
-            counts["skipped_messages"] = skipped_messages
-        if not append_force_replace:
-            if delta is None:
-                if payload.parsed_session.ingest_flags:
-                    upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
-                counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
-                counts["skipped_sessions"] = 1
-                counts["skipped_attachments"] = payload.attachment_count
-                counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-                if _needs_session_fts_repair(conn, payload.session_id):
-                    counts[_FTS_REPAIR_COUNT_KEY] = 1
-                return False, counts
-            session_to_write = delta
+        prepared_append = payload.prepared_write
+        if prepared_append is None:
+            if not payload.prepared_append_noop:
+                raise PreparedSessionWriteRefusedError("append publication lacks canonical preparation")
+            if tuple(existing_row) != payload.prepared_predecessor:
+                raise PreparedSessionWriteRefusedError("append predecessor changed after preparation")
+            if payload.parsed_session.ingest_flags:
+                upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
+            counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.prepared_append_skipped_messages
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            if _needs_session_fts_repair(conn, payload.session_id):
+                counts[_FTS_REPAIR_COUNT_KEY] = 1
+            return False, counts
+        if prepared_append.merge_append:
+            counts["skipped_messages"] = payload.prepared_append_skipped_messages
+            session_to_write = prepared_append.context.effective_session
             merge_append = True
+        else:
+            append_force_replace = True
 
     if not force_write and content_unchanged:
         if browser_precedence == "replace":
@@ -1716,24 +1704,8 @@ def _write_session(
         )
 
     prepared_write = payload.prepared_write
-    if prepared_write is None and isinstance(session_to_write.messages, SqliteMessageSink):
-        # A sealed worker artifact must already have its lineage, identity,
-        # row and cross-acquisition work prepared on a read-only snapshot.
-        # Rebuilding it here would put the entire session under writer hold.
-        raise PreparedSessionWriteRefusedError("sealed session has no pre-admission prepared write")
-    if prepared_write is None and prepared_writes is not None:
-        prepared_write = prepare_session_write(
-            conn,
-            session_to_write,
-            merge_append=merge_append,
-            fallback_timestamp=payload.fallback_timestamp,
-            source_conn=source_conn,
-            signature_cache=signature_cache,
-            raw_id=payload.raw_id,
-            # The worker's carrier covers the full session; the admission gate
-            # declines it for an append delta or a lineage-sliced tail.
-            prepared_rows=payload.prepared_rows,
-        )
+    if prepared_write is None:
+        raise PreparedSessionWriteRefusedError("session has no canonical pre-admission prepared write")
     if prepared_writes is not None and prepared_write is not None:
         # Register before the writer call so entry cleanup owns this carrier
         # even if publication raises before returning an outcome.
@@ -2432,7 +2404,6 @@ def _iter_ingest_results_sync(
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
     chunk_size: int = 0,
-    force_process_pool: bool = False,
 ) -> Iterable[IngestRecordResult]:
     """Yield ingest results, optionally chunked to bound parsed-result memory."""
     total = len(raw_artifacts)
@@ -2448,7 +2419,6 @@ def _iter_ingest_results_sync(
             worker_count=worker_count,
             heartbeat=heartbeat,
             progress=progress,
-            force_process_pool=force_process_pool,
         )
         return
 
@@ -2460,7 +2430,6 @@ def _iter_ingest_results_sync(
             worker_count=worker_count,
             heartbeat=heartbeat,
             progress=progress,
-            force_process_pool=force_process_pool,
         )
 
 
@@ -2499,230 +2468,88 @@ def _iter_ingest_results_chunk(
     worker_count: int,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
-    force_process_pool: bool = False,
 ) -> Iterable[IngestRecordResult]:
-    """Process one chunk of raw_artifacts, in-process or through the process pool.
+    """Drain pure parsing through the shared bounded admission authority.
 
-    The execution mode is chosen once, before anything is delivered, and never
-    changes afterwards. A pool that cannot accept a raw yields a typed result
-    for that raw instead of replaying the chunk inline: an inline replay would
-    deliver already-delivered raws a second time and run work that asked for
-    process isolation inside the coordinator. A pool that broke (a worker
-    died) is replaced for raws it never accepted, which keeps the same
-    isolation for them. Every raw of the chunk yields exactly one result.
+    Every raw receives one typed result. Saturation refuses unaccepted work;
+    accepted work is drained before inputs or scratch can be released. A slow
+    parse keeps its reservation until completion or cooperative cancellation.
     """
-    if worker_count <= 1 and not force_process_pool:
-        for raw_record in raw_artifacts:
-            if progress is not None:
-                progress.in_flight_raw_ids[:] = [raw_record.raw_id]
-            if heartbeat is not None:
-                heartbeat()
-            yield _run_ingest_record(raw_record, request)
-            if progress is not None:
-                progress.completed_raw_count += 1
-                progress.in_flight_raw_ids.clear()
-        return
-    raw_iter = iter(raw_artifacts)
-    futures: dict[Future[IngestRecordResult], str] = {}
-    # The pool each future ran on, and for a pool that broke, how many raws it
-    # held at the break: one is attributable to that raw, several are not.
-    future_pools: dict[Future[IngestRecordResult], object] = {}
-    broken_cohorts: dict[object, int] = {}
-    unattempted: deque[IngestRecordResult] = deque()
-    executor: Any = None
-    stalled = False
+    adapter = compute_adapter()
+    remaining = iter(raw_artifacts)
+    pending: dict[Future[IngestRecordResult], str] = {}
+    cancellations: dict[Future[IngestRecordResult], CancellationHandle] = {}
+    window = max(1, min(worker_count, adapter.snapshot().by_class("incremental-background").ceiling_slots))
+    exhausted = False
 
-    def settle_unattempted() -> Iterable[IngestRecordResult]:
-        while unattempted:
-            result = unattempted.popleft()
-            if progress is not None:
-                progress.completed_raw_count += 1
-            yield result
-
-    def refuse_remaining(reason: str, *, evidence_ref: str) -> None:
-        for raw_record in raw_iter:
-            unattempted.append(_unattempted_result(raw_record.raw_id, reason, evidence_ref=evidence_ref))
-
-    def shut_down(pool: Any, *, wait_for_workers: bool) -> None:
-        shutdown = getattr(pool, "shutdown", None)
-        if not callable(shutdown):
-            return
-        try:
-            shutdown(wait=wait_for_workers, cancel_futures=True)
-        except TypeError:
-            # Small test doubles may not expose ``cancel_futures``.
-            shutdown(wait=wait_for_workers)
+    def completed(raw_id: str) -> None:
+        if progress is not None:
+            progress.completed_raw_count += 1
+            progress.in_flight_raw_ids[:] = list(pending.values())
 
     try:
-        try:
-            executor = process_pool_executor(max_workers=max(1, worker_count))
-        except Exception as exc:
-            refuse_remaining(
-                f"process pool could not start: {type(exc).__name__}: {exc}",
-                evidence_ref=f"worker:pool_start:{type(exc).__name__}",
-            )
-            yield from settle_unattempted()
-            return
-        max_in_flight = max(1, worker_count)
-
-        def submit(raw_record: RawSessionRecord) -> Future[IngestRecordResult]:
-            nonlocal executor
-            try:
-                return cast("Future[IngestRecordResult]", executor.submit(_run_ingest_record, raw_record, request))
-            except BrokenExecutor:
-                # The pool lost a worker before accepting this raw, so the raw
-                # is proven undelivered: run it on a fresh pool, never inline.
-                broken = executor
-                executor = process_pool_executor(max_workers=max(1, worker_count))
-                shut_down(broken, wait_for_workers=False)
-                return cast("Future[IngestRecordResult]", executor.submit(_run_ingest_record, raw_record, request))
-
-        def submit_next() -> bool:
-            for raw_record in raw_iter:
+        while pending or not exhausted:
+            while not exhausted and len(pending) < window:
                 try:
-                    future = submit(raw_record)
-                except Exception as exc:
-                    unattempted.append(
-                        _unattempted_result(
-                            raw_record.raw_id,
-                            f"submission failed: {type(exc).__name__}: {exc}",
-                            evidence_ref=f"worker:submit:{type(exc).__name__}",
-                            # A pool that is shut down or broken is not this
-                            # raw's doing; anything else refuses the raw itself.
-                            deterministic=not isinstance(exc, (BrokenExecutor, RuntimeError)),
-                        )
+                    record = next(remaining)
+                except StopIteration:
+                    exhausted = True
+                    break
+                if compute_cancel_requested():
+                    result = _unattempted_result(
+                        record.raw_id, "compute cancelled", evidence_ref="worker:operation_cancelled"
                     )
+                    completed(record.raw_id)
+                    yield result
                     continue
-                futures[future] = raw_record.raw_id
-                future_pools[future] = executor
-                if progress is not None:
-                    progress.in_flight_raw_ids[:] = list(futures.values())
-                return True
-            return False
-
-        for _ in range(max_in_flight):
-            if not submit_next():
-                break
-        yield from settle_unattempted()
-        last_progress_at = time.monotonic()
-        while futures:
-            remaining_deadline = _INGEST_RESULT_PROGRESS_DEADLINE_S - (time.monotonic() - last_progress_at)
-            done, _pending = wait(
-                tuple(futures),
-                timeout=max(0.0, min(_INGEST_RESULT_WAIT_HEARTBEAT_S, remaining_deadline)),
-                return_when=FIRST_COMPLETED,
-            )
-            if not done:
-                if heartbeat is not None:
-                    heartbeat()
-                if time.monotonic() - last_progress_at >= _INGEST_RESULT_PROGRESS_DEADLINE_S:
-                    # A completion may race the timed wait (and test doubles
-                    # are allowed to report an empty ``done`` set). Re-check
-                    # readiness before refusing anything so a result that was
-                    # completed inside the deadline is never replaced by a
-                    # retryable timeout outcome.
-                    done = {future for future in futures if future.done()}
-                    if not done:
-                        stalled = True
-                        unfinished = tuple(futures.items())
-                        logger.warning(
-                            "ingest worker progress deadline exceeded; refusing %d unfinished raw item(s)",
-                            len(unfinished),
-                        )
-                        for future, raw_id in unfinished:
-                            future.cancel()
-                            stall_error = "worker progress deadline exceeded; retryable stalled/refused result"
-                            # polylogue-u1ww0: without an explicit disposition
-                            # this refusal inherited the dataclass default and
-                            # was persisted as a non-retryable success.
-                            yield _disposed_result(
-                                raw_id,
-                                stall_error,
-                                transient_error_disposition(
-                                    evidence_ref="worker:progress_deadline",
-                                    diagnostic=stall_error,
-                                ),
-                            )
-                        futures.clear()
-                        future_pools.clear()
-                        # ``Future.cancel()`` cannot stop a task that is already
-                        # executing in a worker process, and neither can
-                        # ``shutdown(cancel_futures=True)``. Without an explicit
-                        # terminate, every stalled pass left its running workers
-                        # alive holding CPU and memory, and repeated passes
-                        # accumulated them for the life of the daemon.
-                        if isinstance(executor, ProcessPoolExecutor):
-                            terminate_process_pool(executor)
-                        if progress is not None:
-                            # Refused work is no longer owned by this
-                            # coordinator. Leaving these ids in the progress
-                            # snapshot would make a settled batch look as if
-                            # its source cursor were still in flight.
-                            progress.in_flight_raw_ids.clear()
-                        # Raws not yet submitted never ran; they are refused
-                        # the same way instead of vanishing from the pass.
-                        refuse_remaining(
-                            "the pool was terminated after a progress stall",
-                            evidence_ref="worker:progress_deadline",
-                        )
-                        yield from settle_unattempted()
-                        continue
-                else:
+                try:
+                    operation = adapter.submit(
+                        partial(_run_ingest_record, record, request),
+                        admission_class="incremental-background",
+                        estimated_bytes=record.blob_size,
+                    )
+                except (DaemonBackpressureError, DaemonOperationCancelled) as exc:
+                    result = _unattempted_result(record.raw_id, exc.code, evidence_ref=f"worker:{exc.code}")
+                    completed(record.raw_id)
+                    yield result
                     continue
-            last_progress_at = time.monotonic()
-            for future in done:
-                raw_id = futures.pop(future)
-                pool = future_pools.pop(future, None)
+                pending[operation.future] = record.raw_id
+                cancellations[operation.future] = operation.cancellation
                 if progress is not None:
-                    progress.in_flight_raw_ids[:] = list(futures.values())
+                    progress.in_flight_raw_ids[:] = list(pending.values())
+            if not pending:
+                continue
+            ready, _ = wait(tuple(pending), timeout=_INGEST_RESULT_WAIT_HEARTBEAT_S, return_when=FIRST_COMPLETED)
+            if heartbeat is not None:
+                heartbeat()
+            for future in ready:
+                raw_id = pending.pop(future)
+                cancellations.pop(future)
                 try:
                     result = future.result()
-                except BrokenExecutor as exc:
-                    # A worker died (for example, killed by the kernel). Every
-                    # raw in flight on that pool sees the break, not only the
-                    # one that caused it. With one raw held the death is that
-                    # raw's; with several it is nobody's in particular, so
-                    # each of them is retryable rather than a parser defect.
-                    held = broken_cohorts.setdefault(
-                        pool, 1 + sum(1 for other in futures if future_pools.get(other) is pool)
-                    )
-                    result = _disposed_result(
-                        raw_id,
-                        f"worker: {exc}",
-                        (parser_defect_disposition if held == 1 else transient_error_disposition)(
-                            evidence_ref=f"worker:{type(exc).__name__}",
-                            diagnostic=f"{exc} ({held} raw(s) held by the pool when a worker died)",
-                        ),
-                    )
+                except (DaemonBackpressureError, DaemonOperationCancelled) as exc:
+                    result = _unattempted_result(raw_id, exc.code, evidence_ref=f"worker:{exc.code}")
                 except Exception as exc:
-                    # polylogue-u1ww0: a crashed worker is a classified
-                    # defect, not the dataclass default success.
                     result = _disposed_result(
                         raw_id,
                         f"worker: {exc}",
-                        parser_defect_disposition(
-                            evidence_ref=f"worker:{type(exc).__name__}",
-                            diagnostic=str(exc),
-                        ),
+                        parser_defect_disposition(evidence_ref=f"worker:{type(exc).__name__}", diagnostic=str(exc)),
                     )
-                submit_next()
-                if progress is not None:
-                    progress.in_flight_raw_ids[:] = list(futures.values())
-                    progress.completed_raw_count += 1
+                completed(raw_id)
                 yield result
-                yield from settle_unattempted()
-        yield from settle_unattempted()
     finally:
-        if executor is not None:
-            shut_down(executor, wait_for_workers=not stalled)
+        for future in pending:
+            if not future.done():
+                cancellations[future].cancel()
+        for future in pending:
+            with contextlib.suppress(BaseException):
+                future.result()
+        if progress is not None:
+            progress.in_flight_raw_ids.clear()
 
 
 def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:
-    return select_ingest_worker_count(
-        raw_artifacts,
-        ingest_workers,
-        default_worker_limit=_DEFAULT_INGEST_WORKER_LIMIT,
-    )
+    return compute_window_length(len(raw_artifacts), ingest_workers)
 
 
 def _new_ingest_batch_summary(
@@ -2915,92 +2742,6 @@ def _drain_ingest_result(
     _observe_current_rss(summary)
 
 
-def _consume_ingest_results(
-    conn: sqlite3.Connection,
-    raw_artifacts: list[RawSessionRecord],
-    *,
-    worker_request: _IngestWorkerRequest,
-    summary: _IngestBatchSummary,
-    materialized_ids: set[str],
-    publication_mode: PublicationMode,
-    primary_publication_service: PublicationService | None = None,
-    force_write: bool = False,
-    heartbeat: IngestHeartbeat | None = None,
-    progress: _WorkerProgress | None = None,
-    ingest_result_chunk_size: int = 0,
-    suspend_fts_triggers: bool = False,
-    force_process_pool: bool = False,
-    blob_publisher: ArchiveBlobPublisher | None = None,
-    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
-    source_conn: sqlite3.Connection | None = None,
-    fresh_build: bool = False,
-    marker_acceptance_enabled: bool = False,
-) -> bool:
-    result_iterator = iter(
-        _iter_ingest_results_sync(
-            raw_artifacts,
-            request=worker_request,
-            worker_count=summary.worker_count,
-            heartbeat=heartbeat,
-            progress=progress,
-            chunk_size=ingest_result_chunk_size,
-            force_process_pool=force_process_pool,
-        )
-    )
-    transaction_started = False
-    fresh_build_batch: set[str] | None = set() if fresh_build else None
-    drive_cohort_cache = DriveRevisionCohortCache()
-
-    def ensure_index_transaction() -> None:
-        nonlocal transaction_started
-        if transaction_started:
-            return
-        if suspend_fts_triggers:
-            conn.execute("PRAGMA foreign_keys = OFF")
-        conn.execute("BEGIN IMMEDIATE")
-        if suspend_fts_triggers:
-            from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
-
-            _open_unscoped_foreign_key_window(conn)
-            summary.foreign_key_window_open = True
-            suspend_fts_triggers_sync(conn)
-        transaction_started = True
-
-    while True:
-        wait_started = time.perf_counter()
-        try:
-            ir = next(result_iterator)
-        except StopIteration:
-            summary.teardown_elapsed_s = time.perf_counter() - wait_started
-            break
-        summary.result_wait_s += time.perf_counter() - wait_started
-        release_after_drain = ingest_result_needs_memory_release(ir)
-        try:
-            _drain_ingest_result(
-                conn,
-                ir,
-                summary=summary,
-                materialized_ids=materialized_ids,
-                publication_mode=publication_mode,
-                primary_publication_service=primary_publication_service,
-                ensure_index_transaction=ensure_index_transaction,
-                force_write=force_write,
-                blob_publisher=blob_publisher,
-                pending_attachment_receipts=pending_attachment_receipts,
-                source_conn=source_conn,
-                fresh_build=fresh_build,
-                fresh_build_batch=fresh_build_batch,
-                marker_acceptance_enabled=marker_acceptance_enabled,
-                drive_cohort_cache=drive_cohort_cache,
-            )
-        finally:
-            discard_ingest_result_payload(ir)
-            if release_after_drain:
-                release_process_memory()
-                _observe_current_rss(summary)
-    return transaction_started
-
-
 def _flush_ingest_results(
     conn: sqlite3.Connection,
     *,
@@ -3025,19 +2766,14 @@ def _commit_sync_ingest_side_effects(
     *,
     db_path: Path,
     changed_session_ids: Sequence[str],
-    settle_deferred_effects: bool = False,
 ) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
-
-    def settle_effect(effect: WriteEffect, context: WriteEffectContext) -> None:
-        effect.run(context)
 
     ArchiveWriteGateway(db_path).commit_write_sync(
         WriteOperation.INGEST,
         {
             "_connection": conn,
             "changed_session_ids": tuple(changed_session_ids),
-            **({"deferred_scheduler": settle_effect} if settle_deferred_effects else {}),
         },
     )
 
@@ -3399,6 +3135,61 @@ def _prepare_ingest_unit_sync(
                 for row in scratch.execute(f"SELECT {revision_columns}, raw_id FROM raw_sessions")
                 if tuple(row[:-1]) != before[row[-1]]
             )
+    if not stale:
+        with (
+            closing(open_readonly_connection(db_path, validate_schema=False)) as index,
+            closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source,
+        ):
+            index.row_factory = sqlite3.Row
+            index.execute("BEGIN")
+            source.execute("BEGIN")
+            try:
+                for payload in result.sessions:
+                    pending = payload.parsed_session
+                    merge_append = False
+                    existing = index.execute(
+                        "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?",
+                        (payload.session_id,),
+                    ).fetchone()
+                    payload.prepared_predecessor = tuple(existing) if existing is not None else None
+                    payload.prepared_distinct_messages = (
+                        _incoming_write_carries_distinct_messages(index, payload, pending)
+                        if existing is not None
+                        else True
+                    )
+                    if payload.append_only and existing is not None:
+                        created, updated = session_evidence_timestamps(
+                            pending, fallback_timestamp=payload.fallback_timestamp
+                        )
+                        incoming = updated or created
+                        newer = incoming is not None and existing[2] is not None and incoming > int(existing[2])
+                        replaces = newer and _append_payload_changes_existing_message(index, payload)
+                        if not replaces:
+                            delta, skipped = _append_delta_payload(index, payload)
+                            payload.prepared_append_skipped_messages = skipped
+                            if delta is None:
+                                payload.prepared_append_noop = True
+                                continue
+                            pending, merge_append = delta, True
+                    payload.prepared_write = prepare_session_write(
+                        index,
+                        pending,
+                        merge_append=merge_append,
+                        fallback_timestamp=payload.fallback_timestamp,
+                        source_conn=source,
+                        raw_id=payload.raw_id,
+                        prepared_rows=payload.prepared_rows,
+                    )
+            except BaseException as primary:
+                for payload in result.sessions:
+                    if payload.prepared_write is not None:
+                        try:
+                            payload.prepared_write.close()
+                        except BaseException as cleanup:
+                            primary.add_note(f"prepared ingest cleanup failed: {cleanup!r}")
+                        else:
+                            payload.prepared_write = None
+                raise
     return _PreparedIngestUnit(
         result,
         snapshots,
@@ -3476,9 +3267,8 @@ def _process_ingest_batch_sync(
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
-    force_process_pool: bool = False,
     fresh_build: bool = False,
-    prepared_unit: _PreparedIngestUnit | None = None,
+    prepared_unit: _PreparedIngestUnit,
     marker_acceptance_enabled: bool = False,
 ) -> _IngestBatchSummary:
     if progress is None:
@@ -3489,26 +3279,19 @@ def _process_ingest_batch_sync(
             summary.marker_request_facts_by_raw_id[record.raw_id] = _marker_request_facts(
                 record, validation_mode=validation_mode
             )
-    worker_request = _make_ingest_worker_request(
-        archive_root_str=archive_root_str,
-        blob_root_str=blob_root_str,
-        validation_mode=validation_mode,
-        measure_ingest_result_size=measure_ingest_result_size,
-    )
     t_start = time.perf_counter()
     archive_root = Path(archive_root_str)
-    if prepared_unit is not None:
-        if not _prepared_ingest_is_current(
-            prepared_unit,
-            db_path=db_path,
-            archive_root=archive_root,
-            validation_mode=validation_mode,
-            publication_mode=publication_mode,
-        ):
-            discard_ingest_result_payload(prepared_unit.result)
-            logger.info("Drive preparation became stale; leaving raw state for a fresh pass")
-            return summary
-        _publish_drive_revision_updates(prepared_unit, archive_root)
+    if not _prepared_ingest_is_current(
+        prepared_unit,
+        db_path=db_path,
+        archive_root=archive_root,
+        validation_mode=validation_mode,
+        publication_mode=publication_mode,
+    ):
+        discard_ingest_result_payload(prepared_unit.result)
+        logger.info("Drive preparation became stale; leaving raw state for a fresh pass")
+        return summary
+    _publish_drive_revision_updates(prepared_unit, archive_root)
     _resolve_codex_sidecar_snapshots(raw_artifacts, archive_root=archive_root)
     primary_publication_service = (
         PublicationService(
@@ -3553,54 +3336,40 @@ def _process_ingest_batch_sync(
     try:
         if marker_acceptance_enabled:
             _ensure_ingest_index_incarnation(conn)
-        if prepared_unit is not None:
 
-            def begin_prepared_transaction() -> None:
-                nonlocal transaction_started
-                if not transaction_started:
-                    conn.execute("BEGIN IMMEDIATE")
-                    transaction_started = True
+        def begin_prepared_transaction() -> None:
+            nonlocal transaction_started
+            if not transaction_started:
+                if suspend_fts_triggers:
+                    conn.execute("PRAGMA foreign_keys = OFF")
+                conn.execute("BEGIN IMMEDIATE")
+                if suspend_fts_triggers:
+                    from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
-            try:
-                _drain_ingest_result(
-                    conn,
-                    prepared_unit.result,
-                    summary=summary,
-                    materialized_ids=materialized_ids,
-                    publication_mode=publication_mode,
-                    primary_publication_service=primary_publication_service,
-                    ensure_index_transaction=begin_prepared_transaction,
-                    force_write=force_write,
-                    blob_publisher=blob_publisher,
-                    pending_attachment_receipts=pending_attachment_receipts,
-                    source_conn=source_conn,
-                    fresh_build=fresh_build,
-                    drive_plans=prepared_unit.drive_plans,
-                    marker_acceptance_enabled=marker_acceptance_enabled,
-                )
-            finally:
-                discard_ingest_result_payload(prepared_unit.result)
-        else:
-            transaction_started = _consume_ingest_results(
+                    _open_unscoped_foreign_key_window(conn)
+                    summary.foreign_key_window_open = True
+                    suspend_fts_triggers_sync(conn)
+                transaction_started = True
+
+        try:
+            _drain_ingest_result(
                 conn,
-                raw_artifacts,
-                worker_request=worker_request,
+                prepared_unit.result,
                 summary=summary,
                 materialized_ids=materialized_ids,
                 publication_mode=publication_mode,
                 primary_publication_service=primary_publication_service,
+                ensure_index_transaction=begin_prepared_transaction,
                 force_write=force_write,
-                heartbeat=heartbeat,
-                progress=progress,
-                ingest_result_chunk_size=ingest_result_chunk_size,
-                suspend_fts_triggers=suspend_fts_triggers,
-                force_process_pool=force_process_pool,
                 blob_publisher=blob_publisher,
                 pending_attachment_receipts=pending_attachment_receipts,
                 source_conn=source_conn,
                 fresh_build=fresh_build,
+                drive_plans=prepared_unit.drive_plans,
                 marker_acceptance_enabled=marker_acceptance_enabled,
             )
+        finally:
+            discard_ingest_result_payload(prepared_unit.result)
         _flush_ingest_results(
             conn,
             summary=summary,
@@ -3652,7 +3421,6 @@ def _process_ingest_batch_sync(
                 conn,
                 db_path=db_path,
                 changed_session_ids=tuple(fts_repair_ids),
-                **({"settle_deferred_effects": True} if prepared_unit is not None else {}),
             )
             if pending_attachment_receipts:
                 # Receipt consumption is a real source-tier mutation and must
@@ -3766,17 +3534,13 @@ async def process_ingest_batch(
 ) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
-    1. Submit all records to ProcessPool (decode + validate + parse + transform)
-    2. Consume results via as_completed — write to DB as each worker finishes
-    3. Defer session insight refresh to caller (done once after all batches)
-
-    When *ingest_result_chunk_size* > 0 and *batch_ids* exceeds it, raw
-    records are split into sub-batches to bound the memory held by parsed
-    results in the process pool and drain loop.
+    Each raw is prepared through the shared compute owner before its ordered
+    writer admission. Session insight refresh remains a downstream stage.
     """
-    import asyncio
 
-    if service.execution is not None and prepared_unit is None:
+    if service.execution is None:
+        raise PermissionError("ingest publication requires its declared execution owner")
+    if prepared_unit is None:
         from polylogue.config import load_polylogue_config
 
         settings = load_polylogue_config()
@@ -3858,17 +3622,10 @@ async def process_ingest_batch(
         sync_kwargs["fresh_build"] = True
     if prepared_unit is not None:
         sync_kwargs["prepared_unit"] = prepared_unit
-    if service.execution is None:
-        batch_summary = await asyncio.to_thread(
-            cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync),
-            raw_artifacts,
-            **sync_kwargs,
-        )
-    else:
-        batch_summary = await service.execution.publish_sync(
-            "index",
-            lambda: cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(raw_artifacts, **sync_kwargs),
-        )
+    batch_summary = await service.execution.publish_sync(
+        "index",
+        lambda: cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(raw_artifacts, **sync_kwargs),
+    )
     heavy_batch = (
         batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
         or batch_summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD
@@ -4053,7 +3810,7 @@ async def _persist_batch_raw_state_updates(
     marker_request_sessions_by_raw_id: Mapping[str, Sequence[dict[str, object]]] | None = None,
     marker_batches_by_raw_id: Mapping[str, PreparedAcceptedMarkerInput] | None = None,
 ) -> float:
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     raw_state_update_started = time.perf_counter()
     source_backend = service.repository.source_backend
     if publication_mode is not PublicationMode.OFF and source_backend is None:

@@ -31,7 +31,7 @@ from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.core.enums import BlockType, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.storage_records import db_setup
 
 
@@ -54,7 +54,7 @@ def _write_codex_session(db_path: Path, *, native_id: str, title: str | None) ->
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_prepared_session(conn, session)
         conn.commit()
     finally:
         conn.close()
@@ -152,7 +152,7 @@ def test_no_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_prepared_session(conn, session)
         conn.commit()
     finally:
         conn.close()

@@ -13,8 +13,8 @@ from typing import cast
 import aiosqlite
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.derivation import DerivationFrame, DerivationReport, Outcome
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import make_session_profile_frame

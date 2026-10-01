@@ -14,11 +14,15 @@ The SSE replay ledger `daemon_events` is a resume buffer in the disposable ops t
 
 Each ended run gets one termination receipt, reconciled by the next start as its own `termination_reconciliation` service: the run's lifecycle row records its host identity (pid, boot id, service-manager invocation, cgroup instance and `memory.events` baseline), and the receipt classifies the end from the stop marker, the manager's unit result, kernel and `systemd-oomd` kill records naming that pid or cgroup, the cgroup counters and the boot id, citing each source it used and naming each it could not (`polylogue/operations/daemon_termination.py`: `classify_termination`). `lifecycle_status` carries the newest receipt and the runs still awaiting one.
 
-Correlation crosses the compute boundary explicitly. Neither `threading.Thread`
-nor `ThreadPoolExecutor.submit` copies contextvars, so both derivation-kernel
-submits wrap their `partial` in `propagate(...)`; without it the work runs on a
-pool thread with an empty context and its events lose the run's correlation id
-(`polylogue/daemon/convergence.py:176-190`; `polylogue/daemon/convergence.py:280-284`; `polylogue/logging.py:441-445`).
+Correlation crosses the compute boundary explicitly. The shared bounded
+compute adapter captures the current submitter's context for each physical
+call and restores it on return, failure and cancellation. A reused worker
+therefore reports its current operation, regardless of the interpreter's
+`thread_inherit_context` default. Nested pure work borrows the same physical
+reservation in an isolated copy of that context. Writer capability remains
+subject to exact owner task, thread and explicit grant checks; copied logging
+correlation does not authorize a writer (`core/compute.py`; `logging.py`;
+`storage/sqlite/write_lease.py`).
 
 Read this as a statement about the daemon's convergence path, not about the
 tree. The ratchet is a `devtools gate patterns` rule, `legacy-stdlib-logger`,

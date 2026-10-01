@@ -41,7 +41,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _upsert_session_link,
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
-    write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.queries import message_query_reads as _message_query_reads_module
 from polylogue.storage.sqlite.queries.message_query_reads import (
@@ -52,6 +51,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     iter_messages,
 )
 from tests.infra.identity import archive_message_id
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.session_profiles import write_session_profile
 
 
@@ -172,7 +172,7 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
 
     # Child forked after parent[1]: it replays p0/p1 (identical content, fresh
     # provider ids, as a real fork does) then diverges into its own work.
@@ -189,7 +189,7 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
             _msg("cy", Role.ASSISTANT, "child reply", 3),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     # Only the divergent tail is physically stored under the child, at its
     # original positions (2, 3) — the inherited prefix is not duplicated.
@@ -284,7 +284,7 @@ def test_prefix_sharing_child_provider_usage_keeps_its_own_reported_totals(tmp_p
             )
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     child = ParsedSession(
         source_name=Provider.CODEX,
@@ -340,7 +340,7 @@ def test_prefix_sharing_child_provider_usage_keeps_its_own_reported_totals(tmp_p
             ),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     usage = conn.execute(
         """
@@ -411,7 +411,7 @@ def test_replaying_chain_stores_each_link_reported_cumulative(tmp_path: Path) ->
         turns += [(f"u{link}", Role.USER, f"prompt {link}"), (f"a{link}", Role.ASSISTANT, f"answer {link}")]
         messages = [_msg(pid, role, text, index) for index, (pid, role, text) in enumerate(turns)]
         session_ids.append(
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 ParsedSession(
                     source_name=Provider.CODEX,
@@ -487,7 +487,7 @@ def test_replaying_chain_with_equal_counters_keeps_every_usage_row(tmp_path: Pat
         turns += [(f"u{link}", Role.USER, f"prompt {link}"), (f"a{link}", Role.ASSISTANT, f"answer {link}")]
         messages = [_msg(pid, role, text, index) for index, (pid, role, text) in enumerate(turns)]
         session_ids.append(
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 ParsedSession(
                     source_name=Provider.CODEX,
@@ -543,7 +543,7 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
             _msg("cy", Role.ASSISTANT, "child reply", 3),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     # Parent absent → stored whole, edge not yet extracted.
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 4
     assert (
@@ -561,7 +561,7 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     # Resolution re-extracted the child: only its tail remains, edge recorded.
     stored = conn.execute(
@@ -611,7 +611,7 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
             _msg("p2", Role.USER, "parent continues alone", 2, timestamp="2026-01-01T00:09:00+00:00"),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
 
     # The child replays the parent's two leading messages, then diverges with a
     # tail whose clock runs BEHIND the branch point (00:05) and backwards within
@@ -629,7 +629,7 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
             _msg("cy", Role.ASSISTANT, "child reply", 3, timestamp="2026-01-01T00:02:00+00:00"),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     link = conn.execute(
         "SELECT inheritance, branch_point_message_id, resolved_dst_session_id FROM session_links"
@@ -670,7 +670,7 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
             _msg("f1", Role.ASSISTANT, "unrelated reply", 1, timestamp="2026-01-01T00:02:00+00:00"),
         ],
     )
-    fresh_id = write_parsed_session_to_archive(conn, fresh)
+    fresh_id = write_prepared_session(conn, fresh)
     fresh_link = conn.execute("SELECT inheritance FROM session_links WHERE src_session_id = ?", (fresh_id,)).fetchone()
     assert fresh_link["inheritance"] == "spawned-fresh"
     assert [
@@ -737,7 +737,7 @@ def _write_prefix_sharing_pair(conn: sqlite3.Connection, stamps: tuple[str | Non
             _msg("p2", Role.USER, "parent continues alone", 2, timestamp=stamps[2]),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="child",
@@ -751,7 +751,7 @@ def _write_prefix_sharing_pair(conn: sqlite3.Connection, stamps: tuple[str | Non
             _msg("ca", Role.ASSISTANT, "child reply", 3, timestamp=stamps[4]),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     return parent_id, child_id
 
 
@@ -891,7 +891,7 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
             _msg("cy", Role.ASSISTANT, "child reply", 3, timestamp="2026-01-01T00:03:00+00:00"),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     _seed_fresh_session_products(conn, child_id, message_count=4)
     assert _nonvalid_partitions(conn) == []
 
@@ -905,7 +905,7 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
             _msg("p2", Role.USER, "parent continues alone", 2, timestamp="2026-01-01T00:05:00+00:00"),
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     stored = conn.execute(
         "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
@@ -958,11 +958,11 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
     )
 
     if child_first:
-        child_id = write_parsed_session_to_archive(conn, child)
-        parent_id = write_parsed_session_to_archive(conn, parent)
+        child_id = write_prepared_session(conn, child)
+        parent_id = write_prepared_session(conn, parent)
     else:
-        parent_id = write_parsed_session_to_archive(conn, parent)
-        child_id = write_parsed_session_to_archive(conn, child)
+        parent_id = write_prepared_session(conn, parent)
+        child_id = write_prepared_session(conn, child)
 
     physical = conn.execute(
         "SELECT native_id, position, variant_index FROM messages WHERE session_id = ? ORDER BY position, variant_index",
@@ -992,7 +992,7 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
             ],
         }
     )
-    write_parsed_session_to_archive(conn, replacement)
+    write_prepared_session(conn, replacement)
 
     assert asyncio.run(_read_texts(db, child_id)) == ["root", "primary v2", "sibling v2", "child tail"]
     assert (
@@ -1029,7 +1029,7 @@ def test_missing_variant_branch_point_keeps_the_child_whole(tmp_path: Path) -> N
             _msg("p1-alt", Role.ASSISTANT, "branch cut", 1, variant_index=1),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="child",
@@ -1043,7 +1043,7 @@ def test_missing_variant_branch_point_keeps_the_child_whole(tmp_path: Path) -> N
             _msg("c2", Role.USER, "child tail", 2),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     link = conn.execute(
         "SELECT branch_point_message_id, inheritance, status FROM session_links WHERE src_session_id = ?", (child_id,)
     ).fetchone()
@@ -1051,7 +1051,7 @@ def test_missing_variant_branch_point_keeps_the_child_whole(tmp_path: Path) -> N
     before = [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages]
     assert before[-1] == "child tail" and len(before) > 1
 
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         parent.model_copy(
             update={
@@ -1092,7 +1092,7 @@ def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: 
             _msg("r1", Role.ASSISTANT, "root reply", 1),
         ],
     )
-    root_id = write_parsed_session_to_archive(conn, root)
+    root_id = write_prepared_session(conn, root)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -1104,7 +1104,7 @@ def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: 
             _msg("p2", Role.USER, "parent tail", 2),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     conn.execute("DELETE FROM messages WHERE message_id = ?", (archive_message_id(root_id, "r1"),))
     conn.commit()
 
@@ -1120,7 +1120,7 @@ def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: 
             _msg("c3", Role.ASSISTANT, "child tail", 3),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     # The parent's branch cut is absent.  It contributes only its owned tail
     # to signature alignment, so the child's full replay is preserved rather
@@ -1158,7 +1158,7 @@ def test_nested_dangling_ancestor_keeps_only_reachable_tails(tmp_path: Path) -> 
             _msg("r1", Role.ASSISTANT, "root reply", 1),
         ],
     )
-    root_id = write_parsed_session_to_archive(conn, root)
+    root_id = write_prepared_session(conn, root)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -1170,7 +1170,7 @@ def test_nested_dangling_ancestor_keeps_only_reachable_tails(tmp_path: Path) -> 
             _msg("p2", Role.USER, "parent tail", 2),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="child",
@@ -1183,7 +1183,7 @@ def test_nested_dangling_ancestor_keeps_only_reachable_tails(tmp_path: Path) -> 
             _msg("c3", Role.ASSISTANT, "child tail", 3),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     before_physical = conn.execute(
         "SELECT session_id, native_id, position, variant_index FROM messages "
@@ -1248,7 +1248,7 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
             _msg("p1", Role.ASSISTANT, "parent v1", 1),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="child",
@@ -1260,7 +1260,7 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
             _msg("c2", Role.USER, "child tail", 2),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     def _state() -> tuple[list[tuple[object, ...]], tuple[object, ...], list[str | None], bool, str | None]:
         physical = [
@@ -1326,15 +1326,15 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
 
     monkeypatch.setattr(_write_module, "_resolve_session_graph", _fail_after_graph_resolution)
     with pytest.raises(RuntimeError, match="fault after graph resolution"):
-        write_parsed_session_to_archive(conn, replacement)
+        write_prepared_session(conn, replacement)
     assert fired["count"] == 1, "fault injection did not reach graph resolution"
     assert _state() == before
 
     monkeypatch.setattr(_write_module, "_resolve_session_graph", real_resolve)
-    write_parsed_session_to_archive(conn, replacement)
+    write_prepared_session(conn, replacement)
     after_retry = _state()
     assert after_retry[2:] == (["root", "parent v2", "child tail"], True, None)
-    write_parsed_session_to_archive(conn, replacement)
+    write_prepared_session(conn, replacement)
     assert _state() == after_retry
     conn.close()
 
@@ -1352,7 +1352,7 @@ def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_pa
             _msg("a1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    ancestor_id = write_parsed_session_to_archive(conn, ancestor)
+    ancestor_id = write_prepared_session(conn, ancestor)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -1364,7 +1364,7 @@ def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_pa
             _msg("p1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (parent_id,)).fetchone()[0] == 0
 
     child = ParsedSession(
@@ -1379,7 +1379,7 @@ def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_pa
             _msg("c2", Role.USER, "child tail", 2),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     stale_branch_point = archive_message_id(parent_id, "a1")
     conn.execute(
         """
@@ -1423,7 +1423,7 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
             _msg("msg-10", Role.USER, "inherited prompt", 0),
         ],
     )
-    ancestor_id = write_parsed_session_to_archive(conn, ancestor)
+    ancestor_id = write_prepared_session(conn, ancestor)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -1435,7 +1435,7 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
             _msg("msg-20", Role.USER, "parent tail", 1),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="child",
@@ -1447,7 +1447,7 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
             _msg("msg-21", Role.USER, "child tail", 1),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     conn.execute(
         """
@@ -1516,7 +1516,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
             )
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 1
 
@@ -1540,7 +1540,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
             )
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent, manage_transaction=False)
+    parent_id = write_prepared_session(conn, parent, manage_transaction=False)
 
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     dangling_blocks = conn.execute(
@@ -1580,7 +1580,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
 
     # A source-tier rebuild reparses the child while the parent already exists.
     # The provider reference and canonical parent resolution must be identical.
-    write_parsed_session_to_archive(conn, child, force_replace=True, manage_transaction=False)
+    write_prepared_session(conn, child, force_replace=True, manage_transaction=False)
     rebuilt_event_ref = conn.execute(
         """
         SELECT source_message_id, source_message_provider_id
@@ -1623,7 +1623,7 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
             )
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 1
     row = conn.execute(
         """
@@ -1665,7 +1665,7 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
             )
         ],
     )
-    write_parsed_session_to_archive(conn, parent, manage_transaction=False)
+    write_prepared_session(conn, parent, manage_transaction=False)
 
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
@@ -1784,7 +1784,7 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
             ),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     assert (
         conn.execute("SELECT input_tokens FROM session_model_usage WHERE session_id = ?", (child_id,)).fetchone()[0]
         == 130
@@ -1815,7 +1815,7 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
             )
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     usage = conn.execute(
         """
@@ -1878,7 +1878,7 @@ def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:
             _msg("p1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     child = ParsedSession(
         source_name=Provider.CODEX,
@@ -1892,7 +1892,7 @@ def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:
             _msg("cx", Role.USER, "child diverges", 2),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     assert [
         "".join(b.text or "" for b in m.blocks) for m in read_archive_session_envelope(conn, child_id).messages
     ] == ["hello", "hi there", "child diverges"]
@@ -1908,7 +1908,7 @@ def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:
             _msg("p2", Role.USER, "parent keeps going", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, parent_grown)
+    write_prepared_session(conn, parent_grown)
 
     # The child's branch point survived; it still composes the full transcript.
     link = conn.execute(
@@ -1938,7 +1938,7 @@ def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
             _msg("r1", Role.ASSISTANT, "working", 1),
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     child = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
@@ -1951,7 +1951,7 @@ def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
             _msg("s1", Role.ASSISTANT, "fresh subagent answer", 1),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     stored = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = ?",
@@ -2047,9 +2047,9 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(
 
     db = tmp_path / "index.db"
     conn = _connect(db)
-    parent_id = write_parsed_session_to_archive(conn, parent)
-    continuation_id = write_parsed_session_to_archive(conn, continuation)
-    delegate_id = write_parsed_session_to_archive(conn, delegate)
+    parent_id = write_prepared_session(conn, parent)
+    continuation_id = write_prepared_session(conn, continuation)
+    delegate_id = write_prepared_session(conn, delegate)
 
     physical = conn.execute(
         """
@@ -2084,8 +2084,8 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(
         for message in read_archive_session_envelope(conn, continuation_id).messages
     ] == ["before", "summary", "after", "continued"]
 
-    write_parsed_session_to_archive(conn, parent)
-    write_parsed_session_to_archive(conn, continuation)
+    write_prepared_session(conn, parent)
+    write_prepared_session(conn, continuation)
     assert (
         conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
@@ -2105,8 +2105,8 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(
 
     late_db = tmp_path / "late-index.db"
     late_conn = _connect(late_db)
-    late_continuation_id = write_parsed_session_to_archive(late_conn, continuation)
-    late_parent_id = write_parsed_session_to_archive(late_conn, parent)
+    late_continuation_id = write_prepared_session(late_conn, continuation)
+    late_parent_id = write_prepared_session(late_conn, parent)
     late_link = late_conn.execute(
         "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
         (late_continuation_id,),
@@ -2150,7 +2150,7 @@ def _build_parent_and_fork(db: Path) -> tuple[str, str]:
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="child",
@@ -2164,7 +2164,7 @@ def _build_parent_and_fork(db: Path) -> tuple[str, str]:
             _msg("cy", Role.ASSISTANT, "child reply", 3),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     conn.close()
     return parent_id, child_id
 
@@ -2300,7 +2300,7 @@ def test_shared_signature_cache_composes_correctly(tmp_path: Path) -> None:
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, parent, signature_cache=cache)
+    write_prepared_session(conn, parent, signature_cache=cache)
 
     def _fork(name: str, tail_user: str, tail_assistant: str) -> str:
         child = ParsedSession(
@@ -2317,7 +2317,7 @@ def test_shared_signature_cache_composes_correctly(tmp_path: Path) -> None:
             ],
         )
         # Two SEPARATE write calls that SHARE one signature_cache dict.
-        return write_parsed_session_to_archive(conn, child, signature_cache=cache)
+        return write_prepared_session(conn, child, signature_cache=cache)
 
     fork_a_id = _fork("forka", "fork A diverges", "fork A reply")
     fork_b_id = _fork("forkb", "fork B diverges", "fork B reply")
@@ -2345,7 +2345,7 @@ def test_shared_signature_cache_composes_correctly(tmp_path: Path) -> None:
             _msg("p3", Role.ASSISTANT, "parent grows more", 3),
         ],
     )
-    write_parsed_session_to_archive(conn, parent_grown, signature_cache=cache)
+    write_prepared_session(conn, parent_grown, signature_cache=cache)
 
     assert _composed(fork_a_id) == ["hello", "hi there", "fork A diverges", "fork A reply"]
     assert _composed(fork_b_id) == ["hello", "hi there", "fork B diverges", "fork B reply"]
@@ -2369,7 +2369,7 @@ def _setup_interleaving_fixture(db: Path) -> tuple[sqlite3.Connection, str, str]
             _msg("p1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
 
     child = ParsedSession(
         source_name=Provider.CODEX,
@@ -2383,7 +2383,7 @@ def _setup_interleaving_fixture(db: Path) -> tuple[sqlite3.Connection, str, str]
             _msg("cx", Role.USER, "child diverges", 2),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     return conn, parent_id, child_id
 
 
@@ -2510,7 +2510,7 @@ def test_sync_and_async_report_incomplete_on_dangling_branch_point(tmp_path: Pat
             _msg("p1", Role.ASSISTANT, "hi there", 1),
         ],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     child = ParsedSession(
         source_name=Provider.CODEX,
@@ -2524,7 +2524,7 @@ def test_sync_and_async_report_incomplete_on_dangling_branch_point(tmp_path: Pat
             _msg("cx", Role.USER, "child diverges", 2),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
 
     # Hard-delete the parent's messages, leaving a dangling branch point --
     # session_links.branch_point_message_id is deliberately not a FK (see
@@ -2591,7 +2591,7 @@ def test_deep_chain_composes_complete_on_every_reader(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)
     provider_session_id = "root"
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -2603,7 +2603,7 @@ def test_deep_chain_composes_complete_on_every_reader(tmp_path: Path) -> None:
     leaf_id = None
     for level in range(_DEEP_CHAIN_LEVELS):
         child_provider_id = f"level-{level}"
-        leaf_id = write_parsed_session_to_archive(
+        leaf_id = write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -2662,7 +2662,7 @@ def test_chain_deeper_than_every_former_cap_composes_complete(tmp_path: Path) ->
     # One transaction: a per-write commit costs ~15x the write itself here.
     conn.execute("BEGIN")
     session_ids = [
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -2721,7 +2721,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)
     provider_session_id = "deep-root"
-    root_id = write_parsed_session_to_archive(
+    root_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -2747,7 +2747,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
                 _msg(f"tail-{level}", Role.ASSISTANT, f"level {level} tail", 1),
             ],
         )
-        leaf_id = write_parsed_session_to_archive(conn, leaf)
+        leaf_id = write_prepared_session(conn, leaf)
         provider_session_id = child_provider_id
 
     assert leaf is not None
@@ -2761,7 +2761,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
 
     # Full replacement/re-ingest exercises writer alignment again rather than
     # merely preserving the link produced on the first write.
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         leaf.model_copy(update={"updated_at": "2027-01-01T00:59:59Z"}),
     )
@@ -2782,7 +2782,7 @@ def test_shallow_chain_reports_complete(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)
 
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -2791,7 +2791,7 @@ def test_shallow_chain_reports_complete(tmp_path: Path) -> None:
             messages=[_msg("p0", Role.USER, "hello", 0)],
         ),
     )
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -2887,7 +2887,7 @@ def test_three_generation_lineage_composes_identically_in_every_visit_order(
 
     written: dict[str, str] = {}
     for name in order:
-        written[name] = write_parsed_session_to_archive(conn, by_name[name])
+        written[name] = write_prepared_session(conn, by_name[name])
     conn.commit()
 
     assert [message.blocks[0].text for message in read_archive_session_envelope(conn, written["child"]).messages] == [
@@ -2919,9 +2919,9 @@ def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) 
     db = tmp_path / "index.db"
     conn = _connect(db)
     grandparent, parent, child = _three_generation_sessions()
-    write_parsed_session_to_archive(conn, grandparent)
-    parent_id = write_parsed_session_to_archive(conn, parent)
-    child_id = write_parsed_session_to_archive(conn, child)
+    write_prepared_session(conn, grandparent)
+    parent_id = write_prepared_session(conn, parent)
+    child_id = write_prepared_session(conn, child)
     conn.commit()
     assert count_dangling_prefix_branch_points(conn) == (0, 0)
 
@@ -3066,7 +3066,7 @@ def test_hermes_continuation_segments_store_each_message_once_and_read_composed(
     _hermes_chain_state_db(state_db, links=links, messages_per_session=messages_per_session)
     conn = _connect(tmp_path / "index.db")
 
-    written = [write_parsed_session_to_archive(conn, session) for session in parse_state_db(state_db)]
+    written = [write_prepared_session(conn, session) for session in parse_state_db(state_db)]
     conn.commit()
 
     stored = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
@@ -3114,7 +3114,7 @@ def test_hermes_continuation_child_keeps_its_own_reported_usage(tmp_path: Path) 
         session_tokens=[(10 + index * 3, 20 + index * 5) for index in range(links)],
     )
     conn = _connect(tmp_path / "index.db")
-    written = [write_parsed_session_to_archive(conn, session) for session in parse_state_db(state_db)]
+    written = [write_prepared_session(conn, session) for session in parse_state_db(state_db)]
     conn.commit()
 
     totals = {
@@ -3150,7 +3150,7 @@ def test_alias_invalidation_records_retryable_convergence_debt(tmp_path: Path) -
         provider_session_aliases=["shared-stem"],
         messages=[_msg("a0", Role.USER, "hello", 0), _msg("a1", Role.ASSISTANT, "hi there", 1)],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
 
     child = ParsedSession(
         source_name=Provider.CODEX,
@@ -3164,7 +3164,7 @@ def test_alias_invalidation_records_retryable_convergence_debt(tmp_path: Path) -
             _msg("cx", Role.USER, "child diverges here", 2),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     resolved_before = conn.execute(
         "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
         (child_id,),
@@ -3186,7 +3186,7 @@ def test_alias_invalidation_records_retryable_convergence_debt(tmp_path: Path) -
         provider_session_aliases=["shared-stem"],
         messages=[_msg("b0", Role.USER, "unrelated", 0)],
     )
-    write_parsed_session_to_archive(conn, contender)
+    write_prepared_session(conn, contender)
     resolved_after = conn.execute(
         "SELECT resolved_dst_session_id, branch_point_message_id FROM session_links WHERE src_session_id = ?",
         (child_id,),
@@ -3353,14 +3353,14 @@ def test_dropped_branch_point_keeps_the_child_whole(tmp_path: Path) -> None:
     cursor = CursorStore(db)
     conn = _connect(db)
 
-    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    parent_id = write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
     conn.commit()
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
     assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:m1")
 
     # The re-acquired export no longer carries m1 -- the child's branch point.
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m2"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m2"]))
     conn.commit()
 
     assert _composed_texts(conn, parent_id) == ["m0", "m2"]
@@ -3380,9 +3380,9 @@ def test_intact_parent_rewrite_leaves_the_child_inheriting(tmp_path: Path) -> No
     unchanged copies nothing. Materializing unconditionally would fail here."""
     db = tmp_path / "index.db"
     conn = _connect(db)
-    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3"]))
+    parent_id = write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2", "m3"]))
     conn.commit()
 
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
@@ -3401,16 +3401,14 @@ def test_grandchild_follows_rows_its_parent_materialized(tmp_path: Path) -> None
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "m2", "x3"], parent="parent"))
-    grandchild_id = write_parsed_session_to_archive(
-        conn, _codex_session("grandchild", ["m0", "m1", "g2"], parent="child")
-    )
+    parent_id = write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2", "m3"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "m2", "x3"], parent="parent"))
+    grandchild_id = write_prepared_session(conn, _codex_session("grandchild", ["m0", "m1", "g2"], parent="child"))
     conn.commit()
     assert _composed_texts(conn, grandchild_id) == ["m0", "m1", "g2"]
     assert _edge_state(conn, grandchild_id)[2] == f"{parent_id}:n:m1"
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m3"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m3"]))
     conn.commit()
 
     assert _composed_texts(conn, child_id) == ["m0", "m1", "m2", "x3"]
@@ -3445,13 +3443,13 @@ def test_materialized_prefix_restores_a_swept_attachment(tmp_path: Path) -> None
             )
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
-    child_id = write_parsed_session_to_archive(
+    parent_id = write_prepared_session(conn, parent)
+    child_id = write_prepared_session(
         conn, _codex_session("child", ["hello", "hi there", "child diverges here"], parent="parent")
     )
     conn.commit()
 
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn, parent.model_copy(update={"messages": [_msg("p0", Role.USER, "hello", 0)], "attachments": []})
     )
     conn.commit()
@@ -3472,7 +3470,7 @@ def test_materialized_prefix_remaps_child_event_refs_with_fks_suspended(tmp_path
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -3493,14 +3491,14 @@ def test_materialized_prefix_remaps_child_event_refs_with_fks_suspended(tmp_path
         ),
     )
     parent = _codex_session("parent", ["hello", "hi there"])
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     conn.commit()
     events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{parent_id}:n:hi there",)]
 
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("BEGIN IMMEDIATE")
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["hello"]), manage_transaction=False)
+    write_prepared_session(conn, _codex_session("parent", ["hello"]), manage_transaction=False)
     conn.commit()
 
     assert _composed_texts(conn, child_id) == ["hello", "hi there", "child diverges here"]
@@ -3517,11 +3515,11 @@ def test_materialized_empty_tail_child_gets_an_active_leaf(tmp_path: Path) -> No
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1"], parent="parent"))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1"], parent="parent"))
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0"]))
     conn.commit()
 
     assert _composed_texts(conn, child_id) == ["m0", "m1"]
@@ -3543,12 +3541,12 @@ def test_materialization_evidence_survives_a_default_array_evidence(tmp_path: Pa
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "c"], parent="parent"))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "c"], parent="parent"))
     conn.execute("UPDATE session_links SET evidence_json = '[]' WHERE src_session_id = ?", (child_id,))
     conn.commit()
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0"]))
     conn.commit()
 
     link = conn.execute(
@@ -3577,13 +3575,13 @@ def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)
 
-    write_parsed_session_to_archive(conn, _codex_session("gp", ["m0", "m1", "m2", "m3"]))
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    write_prepared_session(conn, _codex_session("gp", ["m0", "m1", "m2", "m3"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
     conn.commit()
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"], parent="gp"))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"], parent="gp"))
     conn.commit()
 
     envelope = read_archive_session_envelope(conn, child_id)
@@ -3611,13 +3609,13 @@ def test_descendant_anchored_through_an_intermediate_parent_stays_whole(tmp_path
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    write_parsed_session_to_archive(conn, _codex_session("a", ["m0", "m1", "m2", "m3"]))
-    b_id = write_parsed_session_to_archive(conn, _codex_session("b", ["m0", "m1", "m2", "b3"], parent="a"))
-    c_id = write_parsed_session_to_archive(conn, _codex_session("c", ["m0", "m1", "c2"], parent="b"))
+    write_prepared_session(conn, _codex_session("a", ["m0", "m1", "m2", "m3"]))
+    b_id = write_prepared_session(conn, _codex_session("b", ["m0", "m1", "m2", "b3"], parent="a"))
+    c_id = write_prepared_session(conn, _codex_session("c", ["m0", "m1", "c2"], parent="b"))
     conn.commit()
     assert _edge_state(conn, c_id)[:2] == (b_id, "prefix-sharing")
 
-    write_parsed_session_to_archive(conn, _codex_session("a", ["m0", "m2", "m3"]))
+    write_prepared_session(conn, _codex_session("a", ["m0", "m2", "m3"]))
     conn.commit()
 
     envelope = read_archive_session_envelope(conn, c_id)
@@ -3638,7 +3636,7 @@ def test_reanchored_child_keeps_its_event_reference(tmp_path: Path) -> None:
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    write_parsed_session_to_archive(conn, _codex_session("gp", ["m0", "m1", "m2", "m3"]))
+    write_prepared_session(conn, _codex_session("gp", ["m0", "m1", "m2", "m3"]))
     child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
         update={
             "session_events": [
@@ -3648,13 +3646,13 @@ def test_reanchored_child_keeps_its_event_reference(tmp_path: Path) -> None:
             ]
         }
     )
-    child_id = write_parsed_session_to_archive(conn, child)
-    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"]))
+    child_id = write_prepared_session(conn, child)
+    parent_id = write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"]))
     conn.commit()
     events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{parent_id}:n:m1",)]
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"], parent="gp"))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"], parent="gp"))
     conn.commit()
 
     assert _edge_state(conn, child_id)[1:] == ("prefix-sharing", "codex-session:gp:n:m1")
@@ -3684,8 +3682,8 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
         title="parent",
         messages=[_msg("m0", Role.USER, "go", 0), dispatch],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
-    child_id = write_parsed_session_to_archive(
+    parent_id = write_prepared_session(conn, parent)
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -3696,7 +3694,7 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
             messages=[_msg("m0", Role.USER, "go", 0), dispatch, _msg("x2", Role.USER, "tail", 2)],
         ),
     )
-    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    worker_id = write_prepared_session(conn, _codex_session("worker", ["w0"]))
     conn.execute(
         """
         INSERT INTO session_links(
@@ -3708,7 +3706,7 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
     )
     conn.commit()
 
-    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
+    write_prepared_session(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
     conn.commit()
 
     assert _edge_state(conn, child_id) == (parent_id, "spawned-fresh", None)
@@ -3731,7 +3729,7 @@ def test_materialized_prefix_across_ancestors_keeps_counts_and_references(tmp_pa
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         _codex_session("child", ["m0", "m1", "p2", "x3"], parent="parent").model_copy(
             update={
@@ -3752,13 +3750,13 @@ def test_materialized_prefix_across_ancestors_keeps_counts_and_references(tmp_pa
             ]
         }
     )
-    gp_id = write_parsed_session_to_archive(conn, gp)
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "p2", "p3"], parent="gp"))
+    gp_id = write_prepared_session(conn, gp)
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "p2", "p3"], parent="gp"))
     conn.commit()
     events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{gp_id}:n:m1",)]
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "p3"], parent="gp"))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1", "p3"], parent="gp"))
     conn.commit()
 
     assert _composed_texts(conn, child_id) == ["m0", "m1", "p2", "x3"]
@@ -3784,8 +3782,8 @@ def test_renumbered_tail_moves_its_compaction_boundary(tmp_path: Path) -> None:
         title="parent",
         messages=[_msg("m0", Role.USER, "m0", 0), _msg("m1", Role.ASSISTANT, "m1", 1)],
     )
-    write_parsed_session_to_archive(conn, parent)
-    child_id = write_parsed_session_to_archive(
+    write_prepared_session(conn, parent)
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -3807,7 +3805,7 @@ def test_renumbered_tail_moves_its_compaction_boundary(tmp_path: Path) -> None:
     tail = "SELECT position FROM messages WHERE session_id = ? AND native_id = 'x'"
     assert [tuple(row) for row in conn.execute(tail, (child_id,))] == [(0,)]
 
-    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "m0", 0)]}))
+    write_prepared_session(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "m0", 0)]}))
     conn.commit()
 
     assert _edge_state(conn, child_id)[1:] == ("spawned-fresh", None)
@@ -3850,11 +3848,11 @@ def test_dispatch_pointer_follows_the_dispatchers_own_lineage(tmp_path: Path) ->
         )
 
     parent = session("parent", None, [])
-    parent_id = write_parsed_session_to_archive(conn, parent)
-    write_parsed_session_to_archive(conn, session("b-sibling", "parent", [("b2", "sibling tail")]))
-    c_id = write_parsed_session_to_archive(conn, session("c", "parent", [("c2", "c tail")]))
-    d_id = write_parsed_session_to_archive(conn, session("d", "c", [("c2", "c tail"), ("d3", "d tail")]))
-    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    parent_id = write_prepared_session(conn, parent)
+    write_prepared_session(conn, session("b-sibling", "parent", [("b2", "sibling tail")]))
+    c_id = write_prepared_session(conn, session("c", "parent", [("c2", "c tail")]))
+    d_id = write_prepared_session(conn, session("d", "c", [("c2", "c tail"), ("d3", "d tail")]))
+    worker_id = write_prepared_session(conn, _codex_session("worker", ["w0"]))
     conn.execute(
         """
         INSERT INTO session_links(
@@ -3866,7 +3864,7 @@ def test_dispatch_pointer_follows_the_dispatchers_own_lineage(tmp_path: Path) ->
     )
     conn.commit()
 
-    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
+    write_prepared_session(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
     conn.commit()
 
     pointer = conn.execute(
@@ -3885,12 +3883,12 @@ def test_ownership_is_by_session_not_by_id_prefix(tmp_path: Path) -> None:
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    parent_id = write_parsed_session_to_archive(conn, _codex_session("child:parent", ["m0", "m1", "m2"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="child:parent"))
+    parent_id = write_prepared_session(conn, _codex_session("child:parent", ["m0", "m1", "m2"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "x2"], parent="child:parent"))
     conn.commit()
     assert _edge_state(conn, child_id)[:2] == (parent_id, "prefix-sharing")
 
-    write_parsed_session_to_archive(conn, _codex_session("child:parent", ["m0", "m2"]))
+    write_prepared_session(conn, _codex_session("child:parent", ["m0", "m2"]))
     conn.commit()
 
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
@@ -3909,15 +3907,15 @@ def test_descendant_through_a_materialized_ancestor_follows_the_copy(tmp_path: P
     db = tmp_path / "index.db"
     conn = _connect(db)
     base = ["m0", "m1", "m2", "m3", "m4"]
-    write_parsed_session_to_archive(conn, _codex_session("g", base))
-    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "p5"], parent="g"))
-    b_id = write_parsed_session_to_archive(conn, _codex_session("b", [*base, "p5", "b6"], parent="p"))
-    c_id = write_parsed_session_to_archive(conn, _codex_session("c", [*base, "p5", "b6", "c7"], parent="b"))
-    d_id = write_parsed_session_to_archive(conn, _codex_session("d", ["m0", "m1", "d2"], parent="c"))
+    write_prepared_session(conn, _codex_session("g", base))
+    write_prepared_session(conn, _codex_session("p", [*base, "p5"], parent="g"))
+    b_id = write_prepared_session(conn, _codex_session("b", [*base, "p5", "b6"], parent="p"))
+    c_id = write_prepared_session(conn, _codex_session("c", [*base, "p5", "b6", "c7"], parent="b"))
+    d_id = write_prepared_session(conn, _codex_session("d", ["m0", "m1", "d2"], parent="c"))
     conn.commit()
     assert _edge_state(conn, d_id)[0] == c_id
 
-    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "q5"], parent="g"))
+    write_prepared_session(conn, _codex_session("p", [*base, "q5"], parent="g"))
     conn.commit()
 
     assert _edge_state(conn, b_id)[1:] == ("spawned-fresh", None)
@@ -3945,8 +3943,8 @@ def test_prefix_compaction_boundary_stays_on_the_copied_rows(tmp_path: Path) -> 
         title="parent",
         messages=[_msg("m0", Role.USER, "m0", 0), _msg("m1", Role.ASSISTANT, "m1", 1)],
     )
-    write_parsed_session_to_archive(conn, parent)
-    child_id = write_parsed_session_to_archive(
+    write_prepared_session(conn, parent)
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -3968,7 +3966,7 @@ def test_prefix_compaction_boundary_stays_on_the_copied_rows(tmp_path: Path) -> 
     )
     conn.commit()
 
-    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "m0", 0)]}))
+    write_prepared_session(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "m0", 0)]}))
     conn.commit()
 
     assert _edge_state(conn, child_id)[1:] == ("spawned-fresh", None)
@@ -4006,7 +4004,7 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
     def moved(message: ParsedMessage, position: int) -> ParsedMessage:
         return message.model_copy(update={"position": position})
 
-    gp_id = write_parsed_session_to_archive(
+    gp_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4022,7 +4020,7 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
         messages=[_msg("m0", Role.USER, "m0", 0), call, _msg("m2", Role.USER, "m2", 2)],
     )
     # Child first: its event then resolves onto the parent row at extraction.
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4036,10 +4034,10 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
             ],
         ),
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{parent_id}:n:b",)]
-    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    worker_id = write_prepared_session(conn, _codex_session("worker", ["w0"]))
     conn.execute(
         """
         INSERT INTO session_links(
@@ -4051,7 +4049,7 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
     )
     conn.commit()
 
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         parent.model_copy(
             update={
@@ -4097,7 +4095,7 @@ def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Pa
         )
 
     # Child first: its events then resolve onto the parent rows at extraction.
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4117,7 +4115,7 @@ def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Pa
             ],
         ),
     )
-    parent_id = write_parsed_session_to_archive(
+    parent_id = write_prepared_session(
         conn,
         parent(
             [
@@ -4136,7 +4134,7 @@ def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Pa
         (f"{parent_id}:n:a2",),
     ]
 
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         parent(
             [_msg("u0", Role.USER, "go", 0), _msg("a2", Role.ASSISTANT, "same", 1), _msg("u3", Role.USER, "next", 2)]
@@ -4186,10 +4184,10 @@ def test_dispatch_pointer_into_a_live_ancestor_block_follows_the_copy(tmp_path: 
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
-    child_id = write_parsed_session_to_archive(conn, _dispatch_session("child", "parent", ["p2", "x3"]))
-    gp_id = write_parsed_session_to_archive(conn, _dispatch_session("gp", None, []))
-    write_parsed_session_to_archive(conn, _dispatch_session("parent", "gp", ["p2", "p3"]))
-    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    child_id = write_prepared_session(conn, _dispatch_session("child", "parent", ["p2", "x3"]))
+    gp_id = write_prepared_session(conn, _dispatch_session("gp", None, []))
+    write_prepared_session(conn, _dispatch_session("parent", "gp", ["p2", "p3"]))
+    worker_id = write_prepared_session(conn, _codex_session("worker", ["w0"]))
     conn.execute(
         """
         INSERT INTO session_links(
@@ -4201,7 +4199,7 @@ def test_dispatch_pointer_into_a_live_ancestor_block_follows_the_copy(tmp_path: 
     )
     conn.commit()
 
-    write_parsed_session_to_archive(conn, _dispatch_session("parent", "gp", ["p3"]))
+    write_prepared_session(conn, _dispatch_session("parent", "gp", ["p3"]))
     conn.commit()
 
     assert _edge_state(conn, child_id)[1:] == ("spawned-fresh", None)
@@ -4224,11 +4222,11 @@ def test_uncaptured_descendant_references_follow_the_materialized_copy(tmp_path:
     db = tmp_path / "index.db"
     conn = _connect(db)
     base = ["m0", "m1", "m2", "m3", "m4"]
-    g_id = write_parsed_session_to_archive(conn, _codex_session("g", base))
-    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "p5"], parent="g"))
-    b_id = write_parsed_session_to_archive(conn, _codex_session("b", [*base, "p5", "b6"], parent="p"))
+    g_id = write_prepared_session(conn, _codex_session("g", base))
+    write_prepared_session(conn, _codex_session("p", [*base, "p5"], parent="g"))
+    b_id = write_prepared_session(conn, _codex_session("b", [*base, "p5", "b6"], parent="p"))
     # D before C: D's event then resolves onto the composed row when C arrives.
-    d_id = write_parsed_session_to_archive(
+    d_id = write_prepared_session(
         conn,
         _codex_session("d", ["m0", "m1", "d2"], parent="c").model_copy(
             update={
@@ -4240,12 +4238,12 @@ def test_uncaptured_descendant_references_follow_the_materialized_copy(tmp_path:
             }
         ),
     )
-    write_parsed_session_to_archive(conn, _codex_session("c", [*base, "p5", "b6", "c7"], parent="b"))
+    write_prepared_session(conn, _codex_session("c", [*base, "p5", "b6", "c7"], parent="b"))
     conn.commit()
     events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
     assert [tuple(row) for row in conn.execute(events, (d_id,))] == [(f"{g_id}:n:m0",)]
 
-    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "q5"], parent="g"))
+    write_prepared_session(conn, _codex_session("p", [*base, "q5"], parent="g"))
     conn.commit()
 
     assert _edge_state(conn, b_id)[1:] == ("spawned-fresh", None)
@@ -4282,11 +4280,11 @@ def test_materialized_generated_producer_ref_names_the_copy(tmp_path: Path) -> N
             )
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
+    parent_id = write_prepared_session(conn, parent)
     refs = "SELECT message_id, producer_ref FROM attachment_refs WHERE session_id = ?"
     [(parent_message, parent_producer)] = [tuple(row) for row in conn.execute(refs, (parent_id,))]
     assert parent_producer == f"message:{parent_message}"
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4299,7 +4297,7 @@ def test_materialized_generated_producer_ref_names_the_copy(tmp_path: Path) -> N
     )
     conn.commit()
 
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)], "attachments": []})
     )
     conn.commit()
@@ -4355,9 +4353,9 @@ def test_deferred_asserted_branch_point_with_a_lone_surrogate_binds_on_parent_sa
     child = child.model_copy(update={"branch_point_provider_message_id": surrogate_id})
     conn = _connect(tmp_path / "index.db")
 
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     conn.commit()
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
     conn.commit()
 
     bound = conn.execute(
@@ -4393,22 +4391,22 @@ def _materialize_then_replay(
             messages=messages,
         )
 
-    write_parsed_session_to_archive(conn, session("parent", parent_messages))
-    child_id = write_parsed_session_to_archive(conn, session("child", child_messages, parent="parent"))
+    write_prepared_session(conn, session("parent", parent_messages))
+    child_id = write_prepared_session(conn, session("child", child_messages, parent="parent"))
     conn.commit()
     assert _edge_state(conn, child_id)[1] == "prefix-sharing"
     inheriting = _child_ids(conn, child_id)
 
-    write_parsed_session_to_archive(conn, session("parent", rewritten))
+    write_prepared_session(conn, session("parent", rewritten))
     conn.commit()
     assert _edge_state(conn, child_id)[1] == "spawned-fresh"
     materialized = _child_ids(conn, child_id)
 
-    write_parsed_session_to_archive(conn, session("child", child_messages, parent="parent"), force_replace=True)
+    write_prepared_session(conn, session("child", child_messages, parent="parent"), force_replace=True)
     conn.commit()
     replayed = _child_ids(conn, child_id)
     # A second replay reads the scope the first one carried forward.
-    write_parsed_session_to_archive(conn, session("child", child_messages, parent="parent"), force_replace=True)
+    write_prepared_session(conn, session("child", child_messages, parent="parent"), force_replace=True)
     conn.commit()
     assert _child_ids(conn, child_id) == replayed
     conn.close()
@@ -4468,7 +4466,7 @@ def test_a_materialized_child_keeps_its_ids_when_a_message_is_prepended(tmp_path
         _msg("", Role.USER, "preamble", 0),
         *(message.model_copy(update={"position": (message.position or 0) + 1}) for message in child),
     ]
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4507,7 +4505,7 @@ def test_a_scoped_replay_places_rows_as_materialization_did(tmp_path: Path) -> N
 
 def _replay_child(tmp_path: Path, messages: list[ParsedMessage]) -> list[str]:
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4581,7 +4579,7 @@ def test_an_append_keeps_the_materialized_identity_scope(tmp_path: Path) -> None
     )
     conn = _connect(tmp_path / "index.db")
     appended = _msg("y", Role.ASSISTANT, "appended reply", 3)
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4615,7 +4613,7 @@ def test_a_materialized_child_keeps_its_ids_after_a_replay_drops_its_parent(tmp_
     conn = _connect(tmp_path / "index.db")
     orphaned = ParsedSession(source_name=Provider.CODEX, provider_session_id="child", title="child", messages=child)
     for _replay in range(2):
-        write_parsed_session_to_archive(conn, orphaned, force_replace=True)
+        write_prepared_session(conn, orphaned, force_replace=True)
         conn.commit()
         assert not conn.execute(
             "SELECT 1 FROM session_links WHERE src_session_id = ?", ("codex-session:child",)
@@ -4631,12 +4629,12 @@ def test_a_lost_row_before_a_surviving_branch_point_materializes_the_prefix(tmp_
     parent rewritten without ``m0`` shortens the child to ``[m1, x2]``.
     """
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
     conn.commit()
     assert _edge_state(conn, child_id)[1] == "prefix-sharing"
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m1"]))
+    write_prepared_session(conn, _codex_session("parent", ["m1"]))
     conn.commit()
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
     assert _edge_state(conn, child_id)[1] == "spawned-fresh"
@@ -4668,10 +4666,10 @@ def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
 
     conn = _connect(tmp_path / "index.db")
     depth = 60
-    write_parsed_session_to_archive(conn, _codex_session("s0", ["r0"]))
+    write_prepared_session(conn, _codex_session("s0", ["r0"]))
     for level in range(1, depth):
         texts = [f"r{index}" for index in range(level + 1)]
-        write_parsed_session_to_archive(conn, _codex_session(f"s{level}", texts, parent=f"s{level - 1}"))
+        write_prepared_session(conn, _codex_session(f"s{level}", texts, parent=f"s{level - 1}"))
     conn.commit()
     leaf = f"codex-session:s{depth - 1}"
     intermediates: dict[str, list[tuple[str, str]]] = {}
@@ -4710,7 +4708,7 @@ def test_a_scoped_replay_keeps_an_appended_duplicate_of_a_copy(tmp_path: Path) -
     _inheriting, materialized, _replayed = _materialize_then_replay(tmp_path, parent, child, rewritten)
     conn = _connect(tmp_path / "index.db")
     appended = _msg("", Role.USER, "hi", 3)
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4739,7 +4737,7 @@ def test_the_writer_admits_a_chain_deeper_than_any_walk_budget(tmp_path: Path) -
     conn = _connect(tmp_path / "index.db")
     conn.execute("BEGIN")
     for level in range(_VERY_DEEP_CHAIN_LEVELS):
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -4835,12 +4833,12 @@ def test_materialization_hashes_match_the_first_replay(tmp_path: Path) -> None:
             messages=messages,
         )
 
-    write_parsed_session_to_archive(conn, session("parent", parent))
-    child_id = write_parsed_session_to_archive(conn, session("child", child, "parent"))
-    write_parsed_session_to_archive(conn, session("parent", [_msg("m0", Role.USER, "m0", 0)]))
+    write_prepared_session(conn, session("parent", parent))
+    child_id = write_prepared_session(conn, session("child", child, "parent"))
+    write_prepared_session(conn, session("parent", [_msg("m0", Role.USER, "m0", 0)]))
     conn.commit()
     materialized = _child_hashes(conn, child_id)
-    write_parsed_session_to_archive(conn, session("child", child, "parent"), force_replace=True)
+    write_prepared_session(conn, session("child", child, "parent"), force_replace=True)
     conn.commit()
     assert _child_hashes(conn, child_id) == materialized
     conn.close()
@@ -4883,7 +4881,7 @@ def test_a_copied_tool_use_pairs_with_the_result_in_the_child_tail(tmp_path: Pat
         title="parent",
         messages=[_msg("m0", Role.USER, "go", 0), call],
     )
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="child",
@@ -4892,8 +4890,8 @@ def test_a_copied_tool_use_pairs_with_the_result_in_the_child_tail(tmp_path: Pat
         branch_type=BranchType.FORK,
         messages=[_msg("m0", Role.USER, "go", 0), answered, result],
     )
-    child_id = write_parsed_session_to_archive(conn, child)
-    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
+    child_id = write_prepared_session(conn, child)
+    write_prepared_session(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
     conn.commit()
     assert _edge_state(conn, child_id)[1] == "spawned-fresh"
     outcome = conn.execute(
@@ -4901,7 +4899,7 @@ def test_a_copied_tool_use_pairs_with_the_result_in_the_child_tail(tmp_path: Pat
     ).fetchone()
     assert tuple(outcome) == (ToolOutcome.OK.value,)
     materialized = _child_hashes(conn, child_id)
-    write_parsed_session_to_archive(conn, child, force_replace=True)
+    write_prepared_session(conn, child, force_replace=True)
     conn.commit()
     assert _child_hashes(conn, child_id) == materialized
     conn.close()
@@ -4915,15 +4913,15 @@ def test_the_tail_stays_connected_to_the_copied_prefix(tmp_path: Path) -> None:
     naming the parent's deleted row.
     """
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1"]))
     tail = _msg("x2", Role.USER, "tail", 2).model_copy(update={"parent_message_provider_id": "m1"})
     child = _codex_session("child", ["m0", "m1"], parent="parent")
-    child_id = write_parsed_session_to_archive(conn, child.model_copy(update={"messages": [*child.messages, tail]}))
+    child_id = write_prepared_session(conn, child.model_copy(update={"messages": [*child.messages, tail]}))
     conn.commit()
     parent_of = "SELECT parent_message_id FROM messages WHERE message_id = ?"
     assert tuple(conn.execute(parent_of, (f"{child_id}:n:x2",)).fetchone()) == ("codex-session:parent:n:m1",)
 
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0"]))
     conn.commit()
     assert _edge_state(conn, child_id)[1] == "spawned-fresh"
     assert tuple(conn.execute(parent_of, (f"{child_id}:n:x2",)).fetchone()) == (f"{child_id}:n:m1",)
@@ -4938,7 +4936,7 @@ def test_a_compaction_boundary_on_the_prefix_follows_its_copied_rows(tmp_path: P
     following its row to 0.
     """
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4947,7 +4945,7 @@ def test_a_compaction_boundary_on_the_prefix_follows_its_copied_rows(tmp_path: P
             messages=[_msg("m0", Role.USER, "m0", 5), _msg("m1", Role.ASSISTANT, "m1", 6)],
         ),
     )
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4968,7 +4966,7 @@ def test_a_compaction_boundary_on_the_prefix_follows_its_copied_rows(tmp_path: P
         ),
     )
     conn.commit()
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4994,8 +4992,8 @@ def test_a_boundary_message_id_follows_the_copied_row(tmp_path: Path) -> None:
     """Anti-vacuity: capture only ``source_message_id`` and the plain-text
     ``boundary_message_id`` keeps naming the parent's deleted row."""
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
-    child_id = write_parsed_session_to_archive(
+    write_prepared_session(conn, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_prepared_session(
         conn,
         _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
             update={"session_events": [ParsedSessionEvent(event_type="compaction", payload={})]}
@@ -5007,7 +5005,7 @@ def test_a_boundary_message_id_follows_the_copied_row(tmp_path: Path) -> None:
         ("codex-session:parent:n:m1", child_id),
     )
     conn.commit()
-    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0"]))
+    write_prepared_session(conn, _codex_session("parent", ["m0"]))
     conn.commit()
     boundary = conn.execute(
         "SELECT boundary_message_id FROM session_events WHERE session_id = ?", (child_id,)
@@ -5025,10 +5023,10 @@ def test_an_uncaptured_descendant_reference_to_a_deleted_row_follows_the_copy(tm
     """
     conn = _connect(tmp_path / "index.db")
     base = ["m0", "m1", "m2"]
-    write_parsed_session_to_archive(conn, _codex_session("g", base))
-    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "p3"], parent="g"))
+    write_prepared_session(conn, _codex_session("g", base))
+    write_prepared_session(conn, _codex_session("p", [*base, "p3"], parent="g"))
     # D before B: D's event then resolves onto the composed row when B arrives.
-    d_id = write_parsed_session_to_archive(
+    d_id = write_prepared_session(
         conn,
         _codex_session("d", [*base, "p3", "b4", "d5"], parent="b").model_copy(
             update={
@@ -5038,12 +5036,12 @@ def test_an_uncaptured_descendant_reference_to_a_deleted_row_follows_the_copy(tm
             }
         ),
     )
-    b_id = write_parsed_session_to_archive(conn, _codex_session("b", [*base, "p3", "b4"], parent="p"))
+    b_id = write_prepared_session(conn, _codex_session("b", [*base, "p3", "b4"], parent="p"))
     conn.commit()
     events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
     assert [tuple(row) for row in conn.execute(events, (d_id,))] == [("codex-session:p:n:p3",)]
 
-    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "q3"], parent="g"))
+    write_prepared_session(conn, _codex_session("p", [*base, "q3"], parent="g"))
     conn.commit()
     assert _edge_state(conn, b_id)[1] == "spawned-fresh"
     assert [tuple(row) for row in conn.execute(events, (d_id,))] == [(f"{b_id}:n:p3",)]
@@ -5079,8 +5077,8 @@ def test_a_reused_block_id_is_not_taken_for_the_dispatched_call(tmp_path: Path) 
         title="parent",
         messages=[_msg("m0", Role.USER, "go", 0), call("task-1"), later],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent)
-    child_id = write_parsed_session_to_archive(
+    parent_id = write_prepared_session(conn, parent)
+    child_id = write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -5091,7 +5089,7 @@ def test_a_reused_block_id_is_not_taken_for_the_dispatched_call(tmp_path: Path) 
             messages=[_msg("m0", Role.USER, "go", 0), call("task-1"), later, _msg("x3", Role.USER, "tail", 3)],
         ),
     )
-    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    worker_id = write_prepared_session(conn, _codex_session("worker", ["w0"]))
     conn.execute(
         """
         INSERT INTO session_links(
@@ -5102,7 +5100,7 @@ def test_a_reused_block_id_is_not_taken_for_the_dispatched_call(tmp_path: Path) 
         (worker_id, child_id, f"{parent_id}:n:m1:0"),
     )
     conn.commit()
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0), call("task-2")]})
     )
     conn.commit()
@@ -5123,10 +5121,10 @@ def test_a_dispatch_pointer_follows_the_copy_its_dispatcher_composes(tmp_path: P
     and the pointer names a block outside ``d``'s transcript.
     """
     conn = _connect(tmp_path / "index.db")
-    parent_id = write_parsed_session_to_archive(conn, _dispatch_session("parent", None, ["p2", "p3"]))
-    b_id = write_parsed_session_to_archive(conn, _dispatch_session("b", "parent", ["p2", "b3"]))
-    d_id = write_parsed_session_to_archive(conn, _dispatch_session("d", "b", ["p2", "b3", "d4"]))
-    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    parent_id = write_prepared_session(conn, _dispatch_session("parent", None, ["p2", "p3"]))
+    b_id = write_prepared_session(conn, _dispatch_session("b", "parent", ["p2", "b3"]))
+    d_id = write_prepared_session(conn, _dispatch_session("d", "b", ["p2", "b3", "d4"]))
+    worker_id = write_prepared_session(conn, _codex_session("worker", ["w0"]))
     conn.execute(
         """
         INSERT INTO session_links(
@@ -5137,7 +5135,7 @@ def test_a_dispatch_pointer_follows_the_copy_its_dispatcher_composes(tmp_path: P
         (worker_id, d_id, f"{parent_id}:n:m1:0"),
     )
     conn.commit()
-    write_parsed_session_to_archive(conn, _dispatch_session("parent", None, ["p3"]))
+    write_prepared_session(conn, _dispatch_session("parent", None, ["p3"]))
     conn.commit()
     assert _edge_state(conn, b_id)[1] == "spawned-fresh"
     assert _edge_state(conn, d_id)[1] == "prefix-sharing"
@@ -5156,9 +5154,9 @@ def test_a_guard_follows_the_edge_readers_compose(tmp_path: Path) -> None:
     on the other parent's edge, leaving the composing one dangling.
     """
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(conn, _codex_session("a-parent", ["m0", "m1"]))
-    write_parsed_session_to_archive(conn, _codex_session("z-parent", ["m0", "m1"]))
-    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="a-parent"))
+    write_prepared_session(conn, _codex_session("a-parent", ["m0", "m1"]))
+    write_prepared_session(conn, _codex_session("z-parent", ["m0", "m1"]))
+    child_id = write_prepared_session(conn, _codex_session("child", ["m0", "m1", "x2"], parent="a-parent"))
     conn.execute(
         """
         INSERT INTO session_links(
@@ -5170,7 +5168,7 @@ def test_a_guard_follows_the_edge_readers_compose(tmp_path: Path) -> None:
         (child_id,),
     )
     conn.commit()
-    write_parsed_session_to_archive(conn, _codex_session("a-parent", ["m0"]))
+    write_prepared_session(conn, _codex_session("a-parent", ["m0"]))
     conn.commit()
     envelope = read_archive_session_envelope(conn, child_id)
     assert envelope.lineage_complete is True
@@ -5186,14 +5184,14 @@ def test_a_scoped_replay_keeps_per_segment_prefix_positions(tmp_path: Path) -> N
     alone and both rows land on 0, refusing every unchanged replay.
     """
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX, provider_session_id="g", title="g", messages=[_msg("g0", Role.USER, "g0", 0)]
         ),
     )
     p_messages = [_msg("g0", Role.USER, "g0", 5), _msg("p1", Role.ASSISTANT, "p1", 0)]
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -5217,9 +5215,9 @@ def test_a_scoped_replay_keeps_per_segment_prefix_positions(tmp_path: Path) -> N
         branch_type=BranchType.FORK,
         messages=child_messages,
     )
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     conn.commit()
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -5234,7 +5232,7 @@ def test_a_scoped_replay_keeps_per_segment_prefix_positions(tmp_path: Path) -> N
     assert _edge_state(conn, child_id)[1] == "spawned-fresh"
     placed = "SELECT message_id, position, variant_index FROM messages WHERE session_id = ? ORDER BY message_id"
     stored = conn.execute(placed, (child_id,)).fetchall()
-    write_parsed_session_to_archive(conn, child, force_replace=True)
+    write_prepared_session(conn, child, force_replace=True)
     conn.commit()
     assert conn.execute(placed, (child_id,)).fetchall() == stored
     conn.close()
@@ -5253,10 +5251,9 @@ def test_settlement_streams_inherited_prefixes_through_the_guard_tables(
 
     conn = _connect(tmp_path / "index.db")
     base = [f"m{index}" for index in range(40)]
-    write_parsed_session_to_archive(conn, _codex_session("parent", base))
+    write_prepared_session(conn, _codex_session("parent", base))
     children = [
-        write_parsed_session_to_archive(conn, _codex_session(f"child{n}", [*base, f"x{n}"], parent="parent"))
-        for n in range(3)
+        write_prepared_session(conn, _codex_session(f"child{n}", [*base, f"x{n}"], parent="parent")) for n in range(3)
     ]
     conn.commit()
 
@@ -5274,7 +5271,7 @@ def test_settlement_streams_inherited_prefixes_through_the_guard_tables(
     with monkeypatch.context() as patched:
         for name in ("_capture_inherited_prefixes", "_settle_inherited_prefixes"):
             patched.setattr(write_module, name, list_free(getattr(write_module, name)))
-        write_parsed_session_to_archive(conn, _codex_session("parent", base[:10]))
+        write_prepared_session(conn, _codex_session("parent", base[:10]))
     conn.commit()
     for n, child_id in enumerate(children):
         assert _edge_state(conn, child_id)[1] == "spawned-fresh"
@@ -5321,7 +5318,7 @@ def test_inherited_attachment_the_parent_references_is_owned_by_the_parent_row(t
     ``provider_never_linked`` and leaves the shared row unfetched.
     """
     conn = _connect(tmp_path / "index.db")
-    parent_id = write_parsed_session_to_archive(
+    parent_id = write_prepared_session(
         conn,
         _codex_session("parent", ["m0", "m1"]).model_copy(update={"attachments": [_prefix_attachment("m1")]}),
     )
@@ -5332,7 +5329,7 @@ def test_inherited_attachment_the_parent_references_is_owned_by_the_parent_row(t
     )
     digest = hashlib.sha256(payload).digest()
     outcomes: list[Any] = []
-    child_id = write_parsed_session_to_archive(
+    child_id = write_prepared_session(
         conn,
         child,
         preacquired_attachment_blobs={child_attachment.acquisition_key: (digest, len(payload), "acquired")},
@@ -5359,12 +5356,12 @@ def test_inherited_message_whose_attachment_the_parent_lacks_stays_in_the_child_
     attachment has no owner and the composed child shows none.
     """
     conn = _connect(tmp_path / "index.db")
-    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
+    parent_id = write_prepared_session(conn, _codex_session("parent", ["m0", "m1"]))
     child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
         update={"attachments": [_prefix_attachment("m1")]}
     )
     outcomes: list[Any] = []
-    child_id = write_parsed_session_to_archive(conn, child, write_outcome=outcomes)
+    child_id = write_prepared_session(conn, child, write_outcome=outcomes)
     conn.commit()
 
     assert outcomes[-1].unresolved_attachment_owners == ()
@@ -5385,16 +5382,16 @@ def test_late_parent_keeps_the_childs_attachment_bearing_message(tmp_path: Path)
     ``m1``'s row -- and the attachment's only reference -- is deleted.
     """
     parent_first = _connect(tmp_path / "parent-first.db")
-    write_parsed_session_to_archive(parent_first, _codex_session("parent", ["m0", "m1"]))
+    write_prepared_session(parent_first, _codex_session("parent", ["m0", "m1"]))
     child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
         update={"attachments": [_prefix_attachment("m1")]}
     )
-    expected_id = write_parsed_session_to_archive(parent_first, child)
+    expected_id = write_prepared_session(parent_first, child)
     parent_first.commit()
 
     child_first = _connect(tmp_path / "child-first.db")
-    child_id = write_parsed_session_to_archive(child_first, child)
-    parent_id = write_parsed_session_to_archive(child_first, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_prepared_session(child_first, child)
+    parent_id = write_prepared_session(child_first, _codex_session("parent", ["m0", "m1"]))
     child_first.commit()
 
     assert child_id == expected_id
@@ -5420,21 +5417,19 @@ def test_prepared_child_write_refuses_once_the_parent_drops_an_inherited_attachm
     """
     conn = _connect(tmp_path / "index.db")
     parent = _codex_session("parent", ["m0", "m1"])
-    write_parsed_session_to_archive(conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]}))
+    write_prepared_session(conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]}))
     child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
         update={"attachments": [_prefix_attachment("m1")]}
     )
     prepared = _write_module.prepare_session_write(conn, child, merge_append=False)
-    write_parsed_session_to_archive(conn, parent)
+    write_prepared_session(conn, parent)
     conn.commit()
 
     with pytest.raises(_write_module.PreparedSessionWriteRefusedError, match="attachments changed"):
-        write_parsed_session_to_archive(
-            conn, child, content_hash=str(session_content_hash(child)), prepared_write=prepared
-        )
+        write_prepared_session(conn, child, content_hash=str(session_content_hash(child)), prepared_write=prepared)
     conn.rollback()
 
-    child_id = write_parsed_session_to_archive(conn, child)
+    child_id = write_prepared_session(conn, child)
     conn.commit()
     assert _composed_attachments(conn, child_id) == [(child_id, "m1", "shared.txt")]
     conn.close()
@@ -5489,30 +5484,28 @@ def test_parent_replacement_preserves_already_inherited_attachments(
 
     with closing(_connect(tmp_path / "index.db")) as conn:
         parent = _codex_session("parent", ["m0", "m1"])
-        parent_id = write_parsed_session_to_archive(
-            conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]})
-        )
+        parent_id = write_prepared_session(conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]}))
         child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
             update={"attachments": [_prefix_attachment("m1")]}
         )
-        child_id = write_parsed_session_to_archive(conn, child)
+        child_id = write_prepared_session(conn, child)
         ids = [child_id]
         if grandchild:
             grand = _codex_session("grand", ["m0", "m1", "y2"], parent="child").model_copy(
                 update={"attachments": [_prefix_attachment("m1")]}
             )
-            ids.append(write_parsed_session_to_archive(conn, grand))
+            ids.append(write_prepared_session(conn, grand))
         assert _composed_attachments(conn, child_id) == [(parent_id, "m1", "shared.txt")]
         if prepared:
             carrier = _write_module.prepare_session_write(conn, parent, merge_append=False)
             try:
-                write_parsed_session_to_archive(
+                write_prepared_session(
                     conn, parent, content_hash=str(session_content_hash(parent)), prepared_write=carrier
                 )
             finally:
                 carrier.close()
         else:
-            write_parsed_session_to_archive(conn, parent)
+            write_prepared_session(conn, parent)
         assert _composed_attachments(conn, parent_id) == []
         assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
         for session_id in ids:

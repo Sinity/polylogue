@@ -16,7 +16,8 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     should_skip_stale_replace,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.prepared_session import write_prepared_session
 
 _NOW_MS = 1_760_000_000_000
 
@@ -72,11 +73,11 @@ def test_commit_evidence_survives_a_checkout_this_machine_cannot_resolve(tmp_pat
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepare_session_rows(session),
+            prepared_rows=prepare_session_rows(session),
         )
         rows = list(conn.execute("SELECT * FROM session_commits WHERE session_id = ?", (session_id,)))
         assert len(rows) == 1

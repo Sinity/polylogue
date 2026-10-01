@@ -21,6 +21,7 @@ from typing import cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import DaemonConverger, SessionProfileConvergenceOwner
 from polylogue.daemon.derivation import (
     BaseDerivation,
@@ -32,7 +33,6 @@ from polylogue.daemon.derivation import (
     PendingReason,
     Replacement,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
 FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")

@@ -45,7 +45,7 @@ from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse_stream
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 
 CHECK = "reasoning-conservation"
 
@@ -178,9 +178,7 @@ def _materialize(root: Path, *, raw_id: str, session: ParsedSession) -> None:
     conn = _connect(root / "index.db")
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        write_parsed_session_to_archive(
-            conn, session, content_hash=hashlib.sha256(raw_id.encode()).hexdigest(), raw_id=raw_id
-        )
+        write_prepared_session(conn, session, content_hash=hashlib.sha256(raw_id.encode()).hexdigest(), raw_id=raw_id)
         conn.commit()
     finally:
         conn.close()

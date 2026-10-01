@@ -52,6 +52,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_write,
 )
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.prepared_session import write_prepared_session
 
 _SESSION_ID = "codex-session:append-delta-identity"
 _NATIVE_ID = _SESSION_ID.split(":", 1)[1]
@@ -172,13 +173,13 @@ def test_merged_carrier_refused_on_append(tmp_path: Path) -> None:
         merged_carrier = prepare_session_rows(payload.parsed_session)
 
         with pytest.raises(PreparedSessionWriteRefusedError, match="merged session"):
-            archive_tier_write.write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 delta,
                 content_hash=payload.content_hash,
                 pending_input_content_hash=bound_session_content_hash(delta),
                 merge_append=True,
-                prepared=merged_carrier,
+                prepared_rows=merged_carrier,
             )
     finally:
         conn.close()

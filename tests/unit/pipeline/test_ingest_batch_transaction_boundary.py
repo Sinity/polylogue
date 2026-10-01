@@ -27,8 +27,8 @@ from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.prepared_session import write_prepared_session
 from tests.unit.pipeline.test_ingest_batch import _message_tuple, _session_data
 
 _FTS_TRIGGERS = set(FTS_TRIGGER_NAMES)
@@ -122,7 +122,7 @@ def test_batch_transaction_is_not_committed_per_session(
     _install_fake_ingest(monkeypatch, {raws[0].raw_id: first, raws[1].raw_id: second})
 
     observed: list[list[str]] = []
-    real_write = write_parsed_session_to_archive
+    real_write = write_prepared_session
 
     def observing_write(conn: sqlite3.Connection, *args: Any, **kwargs: Any) -> Any:
         result = real_write(conn, *args, **kwargs)
@@ -165,7 +165,7 @@ def test_interrupt_during_suspended_fts_restores_triggers(
     raws = [_raw(tmp_path, "interrupt-one"), _raw(tmp_path, "interrupt-two")]
     _install_fake_ingest(monkeypatch, {raws[0].raw_id: first, raws[1].raw_id: second})
 
-    real_write = write_parsed_session_to_archive
+    real_write = write_prepared_session
     calls = {"n": 0}
 
     def interrupting_write(conn: sqlite3.Connection, *args: Any, **kwargs: Any) -> Any:

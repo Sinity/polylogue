@@ -3847,6 +3847,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
                 foreign_sessions,
                 parser_fingerprint="foreign-quarantined-test",
                 censused_at_ms=1,
+                revision_authority=None,
             )
 
         path.write_text(json.dumps(capture([first_turn, acquired_turn])), encoding="utf-8")
@@ -7170,6 +7171,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
         store.commit()
         retired_siblings = store.raw_membership_retired_full_revision_siblings("chatgpt-export:shared")
@@ -7367,6 +7369,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
                 parser_fingerprint="test-parser",
                 censused_at_ms=10,
                 retire_full_revision_governance=True,
+                revision_authority=None,
             )
         archive.rollback()
 
@@ -7379,10 +7382,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
         # (without retiring anything) immediately before
         # ``_apply_membership_sessions`` is invoked.
         archive.replace_raw_membership_census(
-            raw_c,
-            [session_c],
-            parser_fingerprint="test-parser",
-            censused_at_ms=10,
+            raw_c, [session_c], parser_fingerprint="test-parser", censused_at_ms=10, revision_authority=None
         )
 
         with caplog.at_level("WARNING", logger="polylogue.sources.live.batch"):
@@ -7467,10 +7467,7 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
             acquired_at_ms=1,
         )
         archive.replace_raw_membership_census(
-            raw_id,
-            [session],
-            parser_fingerprint="test-parser",
-            censused_at_ms=1,
+            raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
         )
 
         # Census complete, classification never run: decision IS NULL. This
@@ -7893,6 +7890,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
             [legacy_session],
             parser_fingerprint="legacy-parser",
             censused_at_ms=1,
+            revision_authority=None,
         )
         archive.apply_raw_membership_classification(
             "chatgpt-export:parser-drift",
@@ -8143,6 +8141,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
                 [current_session],
                 parser_fingerprint="test-parser",
                 censused_at_ms=2,
+                revision_authority=None,
             )
     with sqlite3.connect(index_db) as conn:
         head_before = conn.execute(

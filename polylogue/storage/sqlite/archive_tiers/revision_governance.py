@@ -127,7 +127,6 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     is_work_event_raw_id,
     parser_census_is_complete,
-    revision_authority_for_census_detail,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -561,8 +560,6 @@ def _write_parsed_precedence_result(
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
                 defer_fts_rebuild=defer_fts_rebuild,
-                prepared=prepared,
-                prepared_required=prepared_required,
                 prepared_write=prepared_write,
                 write_outcome=writer_outcomes,
                 # Lineage, hook-parent and dispatch-sidecar evidence live in
@@ -2410,7 +2407,7 @@ def replace_raw_membership_census(
     parser_fingerprint: str,
     censused_at_ms: int,
     detail: str = "",
-    revision_authority: RawRevisionAuthority | None = None,
+    revision_authority: RawRevisionAuthority | None,
     retire_full_revision_governance: bool = False,
     projections: Sequence[SessionRevisionProjection] | None = None,
     manage_transaction: bool = True,
@@ -2443,10 +2440,8 @@ def replace_raw_membership_census(
             ).fetchone()
             if dependent is not None:
                 raise ActiveByteRevisionChainError("an active byte-revision chain cannot move to membership governance")
-            # A typed authority is the protocol value; ``detail`` is display
-            # text.  Keep the detail-only bridge for older producers, but do
-            # not make explicitly typed writes depend on a prose spelling.
-            census_authority = revision_authority or revision_authority_for_census_detail(detail)
+            # Authority is supplied by the producer; detail is display text.
+            census_authority = revision_authority
             if sessions and census_authority is not RawRevisionAuthority.QUARANTINED:
                 # A retirement that leaves membership rows behind is only observable
                 # through its census authority: the retired raw loses its
@@ -2529,7 +2524,7 @@ def replace_raw_membership_census(
                 len(sessions or []),
                 censused_at_ms,
                 detail,
-                (revision_authority or revision_authority_for_census_detail(detail)),
+                revision_authority,
             ),
         )
         record_current_parser_source_census(conn, raw_id, parser_sessions=sessions)

@@ -20,7 +20,7 @@ from polylogue.core.enums import BlockType, Provider, ToolOutcome, ToolResultUnk
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -47,14 +47,14 @@ def _session(result: ParsedContentBlock, *, session_id: str = "census-1") -> Par
 
 
 def _write_clean(conn: sqlite3.Connection) -> None:
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         _session(
             ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="done", is_error=False),
             session_id="census-known",
         ),
     )
-    write_parsed_session_to_archive(
+    write_prepared_session(
         conn,
         _session(
             ParsedContentBlock(

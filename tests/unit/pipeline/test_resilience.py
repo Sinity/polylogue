@@ -11,7 +11,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, cast
@@ -38,8 +38,8 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.strategies import (
     AcquisitionInputSpec,
     ParseMergeEvent,
@@ -77,7 +77,7 @@ def _make_raw_record(
     # Write content to blob store
     blob_store = get_blob_store()
     actual_raw_id, blob_size = blob_store.write_from_bytes(content)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     return RawSessionRecord(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id
@@ -875,7 +875,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
 
     conn = _open_index_archive(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             session,
             content_hash=hashlib.sha256(b"tool-conv-1").hexdigest(),
@@ -927,7 +927,7 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
 
     conn = _open_index_archive(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             session,
             content_hash=hashlib.sha256(b"duplicate-message-conv").hexdigest(),

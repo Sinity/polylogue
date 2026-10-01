@@ -94,7 +94,7 @@ class _SelectedSessionAdapter(Protocol):
 
 
 if TYPE_CHECKING:
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
 

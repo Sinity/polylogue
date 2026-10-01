@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import fcntl
+import os
 import sqlite3
 import stat
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,6 +15,7 @@ from pathlib import Path
 from typing import IO, Any, BinaryIO
 from uuid import uuid4
 
+from polylogue.core.prepared_file import PreparedFileSeal
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFaultKind
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
@@ -29,6 +32,30 @@ class BlobPublicationReceipt:
     blob_hash: str
     size_bytes: int
     publisher_id: str
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PreparedBlobPublicationClaim:
+    """An exact publication claim allocated by its owning publisher."""
+
+    receipt: BlobPublicationReceipt
+    seal: PreparedFileSeal
+    prepared_path: Path
+    publisher: ArchiveBlobPublisher
+
+
+def _prepared_publication_claim(
+    publisher: ArchiveBlobPublisher,
+    receipt: BlobPublicationReceipt,
+    seal: PreparedFileSeal,
+    prepared_path: Path,
+) -> PreparedBlobPublicationClaim:
+    claim = object.__new__(PreparedBlobPublicationClaim)
+    object.__setattr__(claim, "receipt", receipt)
+    object.__setattr__(claim, "seal", seal)
+    object.__setattr__(claim, "prepared_path", Path(os.path.abspath(prepared_path)))
+    object.__setattr__(claim, "publisher", publisher)
+    return claim
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,31 +240,78 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash: dict[str, PreparedBlob] = {}
         self._refused_as_excised: set[str] = set()
 
-    def _queue(self, prepared: PreparedBlob) -> tuple[str, int]:
-        receipt = BlobPublicationReceipt(
-            publication_id=str(uuid4()),
-            blob_hash=prepared.hash_hex,
-            size_bytes=prepared.size_bytes,
-            publisher_id=self.publisher_id,
+    def _queue(self, prepared: PreparedBlob, claim: PreparedBlobPublicationClaim | None = None) -> tuple[str, int]:
+        receipt = (
+            claim.receipt
+            if claim is not None
+            else BlobPublicationReceipt(
+                publication_id=str(uuid4()),
+                blob_hash=prepared.hash_hex,
+                size_bytes=prepared.size_bytes,
+                publisher_id=self.publisher_id,
+            )
         )
         self._pending.append((receipt, prepared))
-        self._latest_receipt_by_hash[prepared.hash_hex] = receipt.publication_id
+        if claim is None:
+            self._latest_receipt_by_hash[prepared.hash_hex] = receipt.publication_id
         self._pending_by_hash[prepared.hash_hex] = prepared
         return prepared.hash_hex, prepared.size_bytes
 
-    def queue_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
+    def _validate_claim_path(self, path: Path) -> Path:
+        staging_root = Path(os.path.abspath(self._store.root / ".staging"))
+        path = Path(os.path.abspath(path))
+        path.relative_to(staging_root)
+        cursor = path.parent
+        while True:
+            info = cursor.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise ValueError("prepared claim must remain in owned private staging")
+            if cursor == staging_root:
+                return path
+            cursor = cursor.parent
+
+    def prepare_claim(self, prepared: PreparedBlob) -> PreparedBlobPublicationClaim:
+        """Allocate an exact claim and seal its bytes during off-writer preparation."""
+        self._validate_claim_path(prepared.temporary_path)
+        seal = PreparedFileSeal.capture(prepared.temporary_path)
+        if seal.sha256 != prepared.hash_hex or seal.size != prepared.size_bytes:
+            raise ValueError("prepared publication claim disagrees with its file")
+        receipt = BlobPublicationReceipt(str(uuid4()), prepared.hash_hex, prepared.size_bytes, self.publisher_id)
+        return _prepared_publication_claim(self, receipt, seal, prepared.temporary_path)
+
+    def queue_prepared(
+        self,
+        prepared: PreparedBlob,
+        *,
+        claim: PreparedBlobPublicationClaim | None = None,
+    ) -> tuple[str, int]:
         """Queue bytes prepared by shared compute for writer-owned publication.
 
         This performs no source-tier mutation.  The admitted archive writer
         still owns ``flush()``, which reserves the receipt and publishes the
         staged file together under the publisher exclusion protocol.
         """
-        staging_root = (self._store.root / ".staging").resolve()
+        staging_root = Path(os.path.abspath(self._store.root / ".staging"))
         try:
-            prepared.temporary_path.resolve().relative_to(staging_root)
+            if claim is None:
+                prepared.temporary_path.resolve().relative_to(staging_root.resolve())
+            else:
+                Path(os.path.abspath(prepared.temporary_path)).relative_to(staging_root)
         except ValueError as exc:
             raise ValueError("prepared blob must belong to this archive's private staging root") from exc
-        return self._queue(prepared)
+        if claim is not None:
+            if claim.publisher is not self or claim.receipt.publisher_id != self.publisher_id:
+                raise ValueError("prepared claim belongs to another publisher")
+            if claim.receipt.blob_hash != prepared.hash_hex or claim.receipt.size_bytes != prepared.size_bytes:
+                raise ValueError("prepared claim does not name these bytes")
+            if Path(os.path.abspath(prepared.temporary_path)) != claim.prepared_path:
+                raise ValueError("prepared claim names another private path")
+            try:
+                self._validate_claim_path(claim.prepared_path)
+                claim.seal.verify(prepared.temporary_path, full=False)
+            except (OSError, ValueError) as failure:
+                raise ArchiveStorageFaultError(StorageFaultKind.EVICTED, failure) from failure
+        return self._queue(prepared, claim)
 
     def write_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_path(source, heartbeat=heartbeat))
@@ -374,8 +448,8 @@ class ArchiveBlobPublisher(BlobStore):
         blob_hash: str | None = None
         for index, (receipt, prepared) in enumerate(self._pending):
             if receipt.publication_id == publication_id:
-                del self._pending[index]
                 self._store.discard_prepared(prepared)
+                del self._pending[index]
                 blob_hash = receipt.blob_hash
                 break
         else:
@@ -402,11 +476,16 @@ class ArchiveBlobPublisher(BlobStore):
         return True
 
     def discard_pending(self) -> None:
-        for _receipt, prepared in self._pending:
-            self._store.discard_prepared(prepared)
-        self._pending.clear()
-        self._adoptions.clear()
-        self._pending_by_hash.clear()
+        failures: list[BaseException] = []
+        for receipt, _prepared in tuple(self._pending):
+            try:
+                self.discard_pending_receipt(receipt.publication_id)
+            except BaseException as exc:
+                failures.append(exc)
+        for receipt in tuple(self._adoptions):
+            self.discard_pending_receipt(receipt.publication_id)
+        if failures:
+            raise BaseExceptionGroup("pending blob cleanup failed", failures)
 
     def blob_path(self, hash_hex: str) -> Path:
         final_path = self._store.blob_path(hash_hex)

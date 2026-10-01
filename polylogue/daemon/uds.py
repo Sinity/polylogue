@@ -28,7 +28,7 @@ from polylogue.operations.daemon_protocol import (
 from polylogue.operations.mutation_transaction import MutationPrincipal
 
 if TYPE_CHECKING:
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 

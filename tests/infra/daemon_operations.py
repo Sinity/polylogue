@@ -22,7 +22,7 @@ from uuid import uuid4
 
 import pytest
 
-from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 from polylogue.daemon.socket_path import ensure_private_socket_dir
 from polylogue.daemon.uds import DaemonAPIUnixHTTPServer

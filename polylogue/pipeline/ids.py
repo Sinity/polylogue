@@ -1311,9 +1311,12 @@ def _attachment_owner_coordinate(attachment: ParsedAttachment) -> MessageOwnerCo
     )
 
 
-def attachment_message_owner_key(attachment: ParsedAttachment, resolution: MessageOwnerResolution) -> str | None:
-    """Resolve one attachment to the same private owner key used by writes."""
-    coordinate = _attachment_owner_coordinate(attachment)
+def message_owner_key(
+    coordinate: MessageOwnerCoordinate,
+    provider_message_id: str | None,
+    resolution: MessageOwnerResolution,
+) -> str | None:
+    """Resolve one occurrence through the sole parser-to-writer authority."""
     if (
         coordinate.stable_key is not None
         and coordinate.stable_key not in resolution.ambiguous_stable_keys
@@ -1323,25 +1326,39 @@ def attachment_message_owner_key(attachment: ParsedAttachment, resolution: Messa
         return resolution.by_stable_key[coordinate.stable_key]
     if coordinate.physical_key is not None:
         if coordinate.physical_key in resolution.ambiguous_physical_coordinates:
-            raise MessageOwnerAmbiguityError(f"attachment owner coordinate is duplicated: {coordinate.physical_key!r}")
+            raise MessageOwnerAmbiguityError(f"message owner coordinate is duplicated: {coordinate.physical_key!r}")
         key = resolution.by_physical_coordinate.get(coordinate.physical_key)
         if key is not None:
             if key in resolution.ambiguous_keys:
                 raise MessageOwnerAmbiguityError(
-                    "attachment owner coordinate is indistinguishable from another message: "
-                    f"{coordinate.physical_key!r}"
+                    f"message owner coordinate is indistinguishable from another message: {coordinate.physical_key!r}"
                 )
             return key
     if coordinate.stable_key in resolution.ambiguous_stable_keys:
-        raise MessageOwnerAmbiguityError(f"attachment owner evidence is duplicated: {coordinate.stable_key!r}")
-    if attachment.message_provider_id:
-        provider_id = attachment.message_provider_id.strip()
+        raise MessageOwnerAmbiguityError(f"message owner evidence is duplicated: {coordinate.stable_key!r}")
+    if provider_message_id:
+        provider_id = provider_message_id.strip()
         if provider_id in resolution.ambiguous_provider_ids:
             raise MessageOwnerAmbiguityError(
-                f"attachment provider message id is duplicated without a private coordinate: {provider_id!r}"
+                f"message provider message id is duplicated without a private coordinate: {provider_id!r}"
             )
         return resolution.unique_provider_keys.get(provider_id, provider_id)
     return None
+
+
+def attachment_message_owner_key(attachment: ParsedAttachment, resolution: MessageOwnerResolution) -> str | None:
+    """Resolve one attachment to the same private owner key used by writes."""
+    return message_owner_key(_attachment_owner_coordinate(attachment), attachment.message_provider_id, resolution)
+
+
+def event_message_owner_key(event: ParsedSessionEvent, resolution: MessageOwnerResolution) -> str | None:
+    """Resolve explicit event occurrence evidence without coarser native-ID guessing."""
+    if event.owner_coordinate is None:
+        return None
+    key = message_owner_key(event.owner_coordinate, event.source_message_provider_id, resolution)
+    if key is None:
+        raise MessageOwnerAmbiguityError("event owner has no retained message")
+    return key
 
 
 def message_identity_hash(*, id: str) -> bytes:
@@ -1476,7 +1493,41 @@ def _anchor_is_remeasured(event: ParsedSessionEvent) -> bool:
     )
 
 
-def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
+def _event_hash_payload(
+    event: ParsedSessionEvent,
+    event_index: int,
+    resolution: MessageOwnerResolution | None,
+) -> dict[str, JSONValue]:
+    payload: dict[str, JSONValue] = {
+        "event_index": event_index,
+        "event_type": event.event_type,
+        "timestamp": event.timestamp,
+        "source_message_provider_id": event.source_message_provider_id,
+        "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
+    }
+    if event.owner_coordinate is not None:
+        if resolution is None:
+            raise MessageOwnerAmbiguityError("event occurrence has no prepared message resolution")
+        payload["source_message_owner_key"] = event_message_owner_key(event, resolution)
+    return payload
+
+
+@contextmanager
+def _event_owner_resolution(convo: ParsedSession) -> Iterator[MessageOwnerResolution | None]:
+    if not any(event.owner_coordinate is not None for event in convo.session_events):
+        yield None
+    elif hasattr(convo.messages, "path"):
+        with disk_message_owner_resolution(convo.messages) as resolution:
+            yield resolution
+    else:
+        yield message_owner_resolution(convo.messages)
+
+
+def _event_content_payload(
+    event: ParsedSessionEvent,
+    *,
+    source_owner_key: JSONValue = None,
+) -> dict[str, JSONValue]:
     """Build the position- and measurement-independent CONTENT payload for one event.
 
     Array position is not identity for events any more than for messages:
@@ -1516,12 +1567,16 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
         # duration is derived from, so it varies in tandem and is
         # measurement too, not content.
         timestamp = None
-    return {
+    content: dict[str, JSONValue] = {
         "event_type": event.event_type,
         "timestamp": timestamp,
         "source_message_provider_id": event.source_message_provider_id,
         "payload": hash_item_payload(_hashed_event_payload(event.event_type, payload)),
     }
+
+    if source_owner_key is not None:
+        content["source_message_owner_key"] = source_owner_key
+    return content
 
 
 #: The subset of an event content payload that answers *which event slot is
@@ -1634,9 +1689,11 @@ def _session_hash_components(
     caller re-deriving its own copy. Byte-identical to computing each
     payload independently -- pure sharing of an already-pure computation.
     """
-    # Owner keys anchor attachments only; the disk-backed route resolves them
-    # under the same condition.
-    owner_resolution = message_owner_resolution(convo.messages) if convo.attachments else None
+    owner_resolution = (
+        message_owner_resolution(convo.messages)
+        if convo.attachments or any(event.owner_coordinate is not None for event in convo.session_events)
+        else None
+    )
     # Private owner keys may use duplicate-occurrence evidence. Revision
     # identity must remain the intrinsic role/timestamp axis for timestamped
     # id-less messages, independent of the sibling count in this acquisition.
@@ -1655,14 +1712,8 @@ def _session_hash_components(
                 raise
             owner_anchor = None
         attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
-    session_events_payload: list[dict[str, JSONValue]] = [
-        {
-            "event_index": event_index,
-            "event_type": event.event_type,
-            "timestamp": event.timestamp,
-            "source_message_provider_id": event.source_message_provider_id,
-            "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
-        }
+    session_events_payload = [
+        _event_hash_payload(event, event_index, owner_resolution)
         for event_index, event in enumerate(convo.session_events)
     ]
     return messages_payload, attachments_payload, session_events_payload
@@ -1776,18 +1827,11 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
     literal('],"semantic_session_fields":')
     write(_session_semantic_fields(convo))
     literal(',"session_events":[')
-    for event_index, event in enumerate(convo.session_events):
-        if event_index:
-            literal(",")
-        write(
-            {
-                "event_index": event_index,
-                "event_type": event.event_type,
-                "timestamp": event.timestamp,
-                "source_message_provider_id": event.source_message_provider_id,
-                "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
-            }
-        )
+    with _event_owner_resolution(convo) as resolution:
+        for event_index, event in enumerate(convo.session_events):
+            if event_index:
+                literal(",")
+            write(_event_hash_payload(event, event_index, resolution))
     literal('],"title":')
     write(_prose_for_hash(convo.title))
     literal(',"updated_at":')
@@ -1859,28 +1903,27 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                         )
 
         event_count = 0
-        for event_count, event in enumerate(convo.session_events, start=1):
-            payload = {
-                "event_index": event_count - 1,
-                "event_type": event.event_type,
-                "timestamp": event.timestamp,
-                "source_message_provider_id": event.source_message_provider_id,
-                "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
-            }
-            conn.execute(
-                "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_item_payload(payload)))
-            )
-            content_payload = _event_content_payload(event)
-            base_identity = event_base_identity_hash(
-                event_type=content_payload["event_type"],
-                source_message_provider_id=content_payload["source_message_provider_id"],
-            )
-            content = bytes.fromhex(hash_item_payload(content_payload))
-            canonical_identity = event_canonical_identity_hash(base_identity=base_identity, content_hash=content)
-            conn.execute("INSERT OR IGNORE INTO event_content VALUES (?, ?)", (canonical_identity, content))
-            if _anchor_is_remeasured(event):
-                anchor_free = event_anchor_free_identity_hash(content_payload)
-                conn.execute("INSERT OR IGNORE INTO anchor_free_event VALUES (?, ?)", (canonical_identity, anchor_free))
+        with _event_owner_resolution(convo) as resolution:
+            for event_count, event in enumerate(convo.session_events, start=1):
+                payload = _event_hash_payload(event, event_count - 1, resolution)
+                conn.execute(
+                    "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_item_payload(payload)))
+                )
+                content_payload = _event_content_payload(
+                    event, source_owner_key=payload.get("source_message_owner_key")
+                )
+                base_identity = event_base_identity_hash(
+                    event_type=content_payload["event_type"],
+                    source_message_provider_id=content_payload["source_message_provider_id"],
+                )
+                content = bytes.fromhex(hash_item_payload(content_payload))
+                canonical_identity = event_canonical_identity_hash(base_identity=base_identity, content_hash=content)
+                conn.execute("INSERT OR IGNORE INTO event_content VALUES (?, ?)", (canonical_identity, content))
+                if _anchor_is_remeasured(event):
+                    anchor_free = event_anchor_free_identity_hash(content_payload)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO anchor_free_event VALUES (?, ?)", (canonical_identity, anchor_free)
+                    )
         return SessionRevisionProjection(
             session_hash=bytes.fromhex(session_hash_hex),
             message_hashes=_DiskRevisionHashes(store, "message_hash", message_count),
@@ -1964,7 +2007,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     event_anchor_free_identities: list[bytes | None] = []
     for payload, event in zip(session_events_payload, convo.session_events, strict=True):
         event_hashes.append(bytes.fromhex(hash_item_payload(payload)))
-        content_payload = _event_content_payload(event)
+        content_payload = _event_content_payload(event, source_owner_key=payload.get("source_message_owner_key"))
         event_base_identities.append(
             event_base_identity_hash(
                 event_type=content_payload["event_type"],

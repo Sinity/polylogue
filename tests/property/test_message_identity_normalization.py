@@ -27,12 +27,9 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import message_content_identities, session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import (
-    _duplicate_message_native_ids,
-    _message_id,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import _duplicate_message_native_ids, _message_id
 from polylogue.storage.sqlite.schema import _ensure_schema
+from tests.infra.prepared_session import write_prepared_session
 
 _SURROGATE_CHARS = st.characters(min_codepoint=0xD800, max_codepoint=0xDFFF)
 _ASCII_ID_CHARS = st.characters(min_codepoint=0x21, max_codepoint=0x7E)
@@ -85,7 +82,7 @@ def test_db_generated_message_id_matches_python_identity_law(native_ids: list[st
         # Real write path, FK enforcement on (write_parsed_session_to_archive
         # itself turns PRAGMA foreign_keys ON) -- a divergence here is exactly
         # the FK failure that killed operation ab5bad1f.
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             session,
             content_hash=session_content_hash(session),

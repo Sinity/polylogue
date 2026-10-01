@@ -239,8 +239,7 @@ async def ingest_sources_archive(
     archive = Polylogue(archive_root=root)
     parse_stage = LiveParseStage(
         max_workers=max(1, parse_workers) if parse_workers is not None else None,
-        shard_directory=root / "parse-shards",
-        use_processes=parse_workers != 1,
+        shard_directory=root / "blob" / ".staging" / "parse-shards",
     )
     try:
         cursor = await coordinator.run_sync("demo.ingest.cursor", lambda: CursorStore(root / "index.db"))

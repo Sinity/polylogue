@@ -414,8 +414,7 @@ class LiveWatcher:
             parse_stage
             if parse_stage is not None
             else LiveParseStage(
-                shard_directory=Path(polylogue.archive_root) / "parse-shards",
-                use_processes=True,
+                shard_directory=Path(polylogue.archive_root) / "blob" / ".staging" / "parse-shards",
             )
         )
         self._ingest_lock = asyncio.Lock()

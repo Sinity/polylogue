@@ -1,27 +1,9 @@
-"""Regression benchmark for polylogue-dcz5: prove the free-threaded parse win.
+"""Measure actual shared census parsing with one and several admission slots.
 
-polylogue-dcz5's deploy phase existed to unlock ``ThreadPoolExecutor`` census
-parse (``_parse_unique_retained_raws`` in
-``polylogue.sources.revision_backfill``, gated by
-``parallel_threads_effective()`` in ``polylogue.pipeline.services.process_pool``)
-on a genuinely free-threaded (no-GIL) interpreter; a GIL build degrades to the
-sequential parse. The remaining acceptance criterion is a *measurement*: does
-thread-parallel parse actually win on the interpreter this process is
-running, using the exact dispatch function the census path calls (not a
-synthetic ThreadPoolExecutor toy)?
-
-This benchmark calls ``_parse_unique_retained_raws`` itself at
-``ingest_workers=1`` (forces the sequential branch) and at
-``ingest_workers=N`` (takes the thread-pool branch iff
-``parallel_threads_effective()`` is true) against an identical synthetic
-Codex raw corpus, and records the wall-clock ratio. It is diagnostic, not a
-strict pass/fail gate on a specific ratio -- host core count and interpreter
-build vary -- but it DOES assert that parallel dispatch is never slower than
-sequential by more than noise, which would indicate the GIL-safety guard
-itself regressed (the one correctness property that must never flip).
-
-Run with:
-    pytest tests/benchmarks/test_parse_stage_thread_scaling.py --benchmark-enable -p no:xdist -v
+This synthetic benchmark uses the same immutable-descriptor route as census.
+It remains a measurement selection; normal focused correctness runs do not
+run it. Both variants use the selected free-threaded runtime and shared
+compute owner, with no alternate GIL or process dispatch.
 """
 
 from __future__ import annotations
@@ -32,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.pipeline.services.process_pool import parallel_threads_effective
+from polylogue.core.compute import compute_adapter
+from polylogue.runtime import require_free_threaded_runtime
 from polylogue.sources.revision_backfill import _parse_unique_retained_raws
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
@@ -60,11 +43,9 @@ def _time_parse(archive_root: Path, raw_ids: list[str], *, ingest_workers: int) 
 
 @pytest.mark.benchmark
 def test_parse_stage_thread_scaling(tmp_path: Path) -> None:
-    """Measure sequential vs thread-parallel census parse wall time on this
-    process's actual interpreter build, using the real daemon dispatch
-    function end to end (not a synthetic executor)."""
-    is_free_threaded = parallel_threads_effective()
-    workers = min(16, (__import__("os").cpu_count() or 2) - 2) or 1
+    """Measure one versus several admission slots on the supported runtime."""
+    identity = require_free_threaded_runtime(consumer="census parse measurement")
+    workers = compute_adapter().snapshot().by_class("incremental-background").ceiling_slots
 
     seq_root = tmp_path / "sequential"
     raw_ids = build_independent_raw_corpus(seq_root, raw_count=_RAW_COUNT, avg_payload_bytes=_AVG_PAYLOAD_BYTES)
@@ -78,30 +59,13 @@ def test_parse_stage_thread_scaling(tmp_path: Path) -> None:
     speedup = sequential_seconds / max(parallel_seconds, 1e-9)
     print(
         f"\nparse-stage thread scaling (interpreter={sys.version.split()[0]}, "
-        f"free_threaded={is_free_threaded}, workers={workers}, "
+        f"free_threaded={identity.free_threaded}, workers={workers}, "
         f"raw_count={_RAW_COUNT}, avg_payload_bytes={_AVG_PAYLOAD_BYTES}): "
         f"sequential={sequential_seconds:.4f}s, parallel={parallel_seconds:.4f}s, speedup={speedup:.2f}x"
     )
 
-    # The one correctness property that must never regress: threaded dispatch
-    # must never be dramatically slower than sequential. On a GIL build this
-    # ratio hovers near 1.0 (0.93x-0.96x was the polylogue-7mtf control-run
-    # finding -- thread overhead with no parallel win, not a regression). On
-    # a genuinely free-threaded build it should show a real multi-x win. Both
-    # cases pass this floor; only a GIL-mistaken-for-free-threaded dispatch
-    # (which would reintroduce the ~5000x writer-latency hazard this whole
-    # gate exists to prevent) would plausibly show catastrophic slowdown here.
     assert parallel_seconds < sequential_seconds * 1.5, (
-        f"threaded parse dispatch was slower than sequential by more than noise "
-        f"(sequential={sequential_seconds:.4f}s, parallel={parallel_seconds:.4f}s) -- "
-        "if free_threaded=True this is unexpected and worth investigating before trusting "
-        "the daemon's off-writer-hold warm to actually help."
+        f"shared census parse slowdown: one={sequential_seconds:.4f}s, several={parallel_seconds:.4f}s"
     )
-    if is_free_threaded:
-        assert speedup > 1.5, (
-            f"expected a genuine free-threaded speedup (was {speedup:.2f}x, "
-            f"sequential={sequential_seconds:.4f}s, parallel={parallel_seconds:.4f}s) -- "
-            "polylogue-7mtf's control run measured 3.9x-9.6x at w=4..16; a near-1x ratio "
-            "on a free-threaded interpreter would mean the parse workload is not actually "
-            "running in parallel (e.g. an accidental global lock reintroduced upstream)."
-        )
+    if workers > 1:
+        assert speedup > 1.5, f"expected a free-threaded parse speedup: {speedup:.2f}x with {workers} shared slots"

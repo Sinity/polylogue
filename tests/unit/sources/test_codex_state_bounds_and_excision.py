@@ -67,19 +67,52 @@ def _write_goals_db(path: Path, goals: list[tuple[str, str, str]]) -> None:
         conn.commit()
 
 
-def _materialize(root: Path, goals_path: Path, **limits: int) -> CodexStateMaterializationReceipt | None:
-    with ArchiveStore(root) as archive:
-        receipt = materialize_codex_state_content(
-            archive,
-            "raw-codex-state",
-            state_path=goals_path,
-            source_path="/synthetic/codex/goals_1.sqlite",
-            state_kind="goals",
-            acquired_at_ms=5_000,
-            **limits,
+def _materialize(root: Path, state_path: Path, **limits: int) -> CodexStateMaterializationReceipt | None:
+    from tempfile import TemporaryDirectory
+
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+    from polylogue.sources.parsers.codex_state import CODEX_STATE_MAX_TEXT_CHARS
+    from polylogue.sources.prepared_jsonl import _prepare_codex_state_blob
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    kind = "memories" if state_path.name == "memories_1.sqlite" else "goals"
+    store = BlobStore(root / "blob")
+    # Establish the actual Source tier before constructing its publisher.
+    with ArchiveStore(root):
+        pass
+    captured = snapshot_sqlite_to_blob(state_path, store)
+    scratch = TemporaryDirectory(dir=store._ensure_private_staging_root(), prefix=".state-prepared-")
+    with retain_native_sql_lifetimes(scratch):
+        prepared = _prepare_codex_state_blob(
+            store.blob_path(captured.blob_hash),
+            Path(scratch.name),
+            state_kind=kind,
+            source_hash=captured.blob_hash,
+            semantic_source_path=f"/synthetic/codex/{state_path.name}",
+            text_chars=limits.pop("text_char_limit", CODEX_STATE_MAX_TEXT_CHARS),
         )
-        archive.commit()
-    return receipt
+        try:
+            with write_lease("synthetic-state-materialization", archive_root=root):
+                prepared.publish_codex_materials()
+            with ArchiveStore(root) as archive:
+                receipt = materialize_codex_state_content(
+                    archive,
+                    "raw-codex-state",
+                    prepared_state=prepared,
+                    source_path=f"/synthetic/codex/{state_path.name}",
+                    state_kind=kind,
+                    acquired_at_ms=5_000,
+                    **limits,
+                )
+                archive.commit()
+            return receipt
+        finally:
+            prepared.discard()
+            assert not retained_native_sql_owners_for_lifetime(scratch)
+            scratch.cleanup()
 
 
 def test_state_materialization_continues_past_each_work_window(tmp_path: Path) -> None:
@@ -149,16 +182,7 @@ def test_long_memory_text_reassembles_from_material_pages(tmp_path: Path) -> Non
         conn.execute(
             "INSERT INTO stage1_outputs VALUES (?, 1, 2, ?, 'summary', 3, 'slug', 1)", ("thread-memory", memory)
         )
-    with ArchiveStore(root) as archive:
-        receipt = materialize_codex_state_content(
-            archive,
-            "raw-memory",
-            state_path=memory_path,
-            source_path="/synthetic/codex/memories_1.sqlite",
-            state_kind="memories",
-            acquired_at_ms=5_000,
-        )
-        archive.commit()
+    receipt = _materialize(root, memory_path)
     assert receipt is not None and receipt.rows_materialized == 1 and not receipt.bounded
     with sqlite3.connect(root / "source.db") as conn:
         page = list_materials_page(conn, evidence_ref="codex-session:thread-memory", limit=2)
@@ -292,22 +316,6 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
         assert hash_a in excised
 
 
-def test_an_unresolvable_index_does_not_read_as_a_current_projection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity (polylogue-hu24g): a failed index resolution returned
-    ``True`` ("already current"), so the Codex thread-state projection was
-    skipped as done instead of running and failing visibly."""
-    import polylogue.storage.archive_identity as archive_identity
-    from polylogue.sources.codex_state_evidence import _thread_state_projection_is_current
-
-    def unresolvable(_root: Path) -> Path:
-        raise OSError("active generation pointer unreadable")
-
-    monkeypatch.setattr(archive_identity, "resolve_active_index_path", unresolvable)
-    assert _thread_state_projection_is_current(tmp_path) is False
-
-
 @pytest.mark.asyncio
 async def test_retained_codex_goals_are_readable_through_every_public_session_route(tmp_path: Path) -> None:
     """A goal's objective and status are read back through CLI, API and MCP.
@@ -430,17 +438,21 @@ def _archive_with_goals(tmp_path: Path, goal_count: int) -> Path:
 def _admit_session_material(root: Path, *, source_uri: str, payload: bytes, observed_at_ms: int) -> str:
     """Admit one JSON material for thread A the way the material route records it."""
     from polylogue.storage.blob_store import BlobStore
-    from polylogue.storage.materials import admit_material, link_material
+    from polylogue.storage.materials import link_material, prepare_material
+    from tests.infra.material_preparation import apply_material_preparation, material_publisher
 
     with sqlite3.connect(root / "source.db") as conn:
-        material = admit_material(
-            conn,
-            blob_store=BlobStore(root / "blob"),
+        prepared = prepare_material(
+            blob_store=material_publisher(conn, BlobStore(root / "blob")),
             source_uri=source_uri,
             referrer_ref=_SESSION_A,
-            observed_at_ms=observed_at_ms,
             payload=payload,
             media_type="application/json",
+        )
+        material = apply_material_preparation(
+            conn,
+            prepared=prepared,
+            observed_at_ms=observed_at_ms,
             commit=False,
         )
         link_material(

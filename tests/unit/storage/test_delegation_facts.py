@@ -31,8 +31,8 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.surfaces.payloads import DelegationCardPayload, QueryUnitAggregateRowPayload
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.session_profiles import write_session_profile
 
 _HASH = b"x" * 32
@@ -642,7 +642,7 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
         branch_type=BranchType.SUBAGENT,
         messages=[ParsedMessage(provider_message_id="c0", role=Role.USER, text="go", position=0)],
     )
-    child_id = write_parsed_session_to_archive(conn, child_session, content_hash=session_content_hash(child_session))
+    child_id = write_prepared_session(conn, child_session, content_hash=session_content_hash(child_session))
     conn.commit()
 
     # The resolver must have written the PARENT into sessions.parent_session_id

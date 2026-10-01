@@ -94,6 +94,7 @@ from polylogue.archive.query.predicate import (
 )
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
+    RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
 )
@@ -2300,6 +2301,7 @@ class ArchiveStore:
         *,
         parser_fingerprint: str,
         censused_at_ms: int,
+        revision_authority: RawRevisionAuthority | None,
         detail: str = "",
         retire_full_revision_governance: bool = False,
         projections: Sequence[SessionRevisionProjection] | None = None,
@@ -2316,6 +2318,7 @@ class ArchiveStore:
             retire_full_revision_governance=retire_full_revision_governance,
             projections=projections,
             manage_transaction=manage_transaction,
+            revision_authority=revision_authority,
         )
 
     def convertible_full_revision_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:

@@ -278,6 +278,7 @@ def _message_json(value: ParsedMessage) -> str:
 def _event_json(value: ParsedSessionEvent) -> str:
     payload = value.model_dump(mode="json")
     payload["boundary_message_position"] = value.boundary_message_position
+    payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     return require_storable_string(_text_json(payload), kind="serialized event")
 
 

@@ -22,8 +22,8 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.codex import _tool_input_from_arguments, is_supported_session_stream, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.storage_records import db_setup
 
 
@@ -819,7 +819,7 @@ class TestMessageParsing:
         assert [message.parent_message_position for message in result.messages] == [None, None, None]
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_prepared_session(conn, result, content_hash=session_content_hash(result))
             rows = conn.execute(
                 "SELECT message_id, native_id, parent_message_id FROM messages ORDER BY position"
             ).fetchall()
@@ -1705,7 +1705,7 @@ class TestGitContextAndInstructions:
         result = parse(payload, "codex-whale-image")
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_prepared_session(conn, result, content_hash=session_content_hash(result))
             leaked_blocks = conn.execute(
                 "SELECT count(*) AS n FROM blocks WHERE search_text LIKE '%data:image/png;base64%'"
             ).fetchone()["n"]
@@ -2282,7 +2282,7 @@ class TestUnreadFieldTriage:
         )
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_prepared_session(conn, result, content_hash=session_content_hash(result))
             stored_instructions = conn.execute("SELECT instructions_text FROM sessions").fetchone()[0]
             event_rows = conn.execute(
                 "SELECT payload_json, boundary_message_id FROM session_events "
@@ -3211,7 +3211,7 @@ class TestReplacementHistoryConservation:
         assert contexts[0]["occurrences"] == 2
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_prepared_session(conn, result, content_hash=session_content_hash(result))
             rows = conn.execute(
                 "SELECT payload_json FROM session_events WHERE event_type = 'codex_replacement_context'"
             ).fetchall()
@@ -3234,7 +3234,7 @@ class TestReplacementHistoryConservation:
         )
 
         with open_connection(db_setup(workspace_env)) as conn:
-            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            write_prepared_session(conn, result, content_hash=session_content_hash(result))
             rows = conn.execute(
                 "SELECT payload_json FROM session_events "
                 "WHERE event_type = 'codex_replacement_context' ORDER BY position"

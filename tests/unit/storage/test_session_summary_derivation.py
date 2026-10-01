@@ -24,7 +24,7 @@ from polylogue.storage.derived.session.summary import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.sqlite_work_counter import sqlite_work_counter
 
 
@@ -136,7 +136,7 @@ def test_session_summary_converges_append_overlap_and_late_lineage_from_messages
                 ),
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, initial)
+        session_id = write_prepared_session(conn, initial)
         assert _stored(conn, session_id) == _oracle(conn, session_id)
 
         # A native-id-less tail proves the authorative replacement is based on
@@ -154,7 +154,7 @@ def test_session_summary_converges_append_overlap_and_late_lineage_from_messages
                 ParsedMessage(provider_message_id="tool", role=Role.TOOL, text="tool result"),
             ],
         )
-        write_parsed_session_to_archive(conn, append, merge_append=True)
+        write_prepared_session(conn, append, merge_append=True)
         assert _stored(conn, session_id) == _oracle(conn, session_id)
 
         # The same native id changes role and authoredness.  Force replacement
@@ -172,7 +172,7 @@ def test_session_summary_converges_append_overlap_and_late_lineage_from_messages
                 ]
             }
         )
-        write_parsed_session_to_archive(conn, corrected, force_replace=True)
+        write_prepared_session(conn, corrected, force_replace=True)
         assert _stored(conn, session_id) == _oracle(conn, session_id)
 
         child = ParsedSession(
@@ -185,13 +185,13 @@ def test_session_summary_converges_append_overlap_and_late_lineage_from_messages
                 ParsedMessage(provider_message_id="tail", role=Role.ASSISTANT, text="child tail"),
             ],
         )
-        child_id = write_parsed_session_to_archive(conn, child)
+        child_id = write_prepared_session(conn, child)
         parent = ParsedSession(
             source_name=Provider.CLAUDE_CODE,
             provider_session_id="summary-parent",
             messages=[ParsedMessage(provider_message_id="shared", role=Role.USER, text="shared prefix")],
         )
-        write_parsed_session_to_archive(conn, parent)
+        write_prepared_session(conn, parent)
         assert _stored(conn, child_id) == _oracle(conn, child_id)
     finally:
         conn.close()
@@ -206,7 +206,7 @@ def test_session_summary_inspection_repairs_corruption_then_second_pass_writes_n
     index_db = tmp_path / "index.db"
     conn = _connect(index_db)
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -262,7 +262,7 @@ def test_session_summary_census_marks_a_corrupt_counter_stale(tmp_path: Path) ->
     """The status census compares stored counters to messages, not stage history."""
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -296,7 +296,7 @@ def test_session_summary_census_accepts_valid_empty_session(tmp_path: Path) -> N
     """A LEFT JOIN's synthetic row cannot count as an empty session's message."""
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             ParsedSession(source_name=Provider.CODEX, provider_session_id="empty-census", messages=[]),
         )
@@ -323,7 +323,7 @@ def test_summary_inspection_refuses_retired_generation(tmp_path: Path) -> None:
     root.mkdir()
     conn = _connect(root / "index.db")
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_prepared_session(
             conn,
             ParsedSession(source_name=Provider.CODEX, provider_session_id="frame", messages=[]),
         )
@@ -356,7 +356,7 @@ def _seed_counter_archive(path: Path, *, sessions: int, messages: int) -> sqlite
     """Write ``sessions`` sessions of ``messages`` messages through the writer."""
     conn = _connect(path)
     for index in range(sessions):
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

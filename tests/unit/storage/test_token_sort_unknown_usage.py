@@ -12,7 +12,8 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import _summary_order_by
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _session(provider_session_id: str, *, timestamp: str, tokens: int | None) -> ParsedSession:
@@ -58,11 +59,11 @@ def test_ascending_token_sort_ranks_measured_zero_ahead_of_unmeasured(tmp_path: 
             ("measured-ten", "2026-01-03T00:00:00Z", 10),
         ):
             session = _session(name, timestamp=timestamp, tokens=tokens)
-            written[name] = write_parsed_session_to_archive(
+            written[name] = write_prepared_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=prepare_session_rows(session),
+                prepared_rows=prepare_session_rows(session),
             )
 
         order_by = _summary_order_by(sample=False, sort="tokens", reverse=True)

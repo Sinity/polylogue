@@ -27,7 +27,6 @@ from polylogue.pipeline.services.ingest_batch._observations import (
     _unattributed_batch_elapsed_s,
 )
 from polylogue.pipeline.services.ingest_worker import ingest_record
-from polylogue.pipeline.services.process_pool import process_pool_executor
 
 __all__ = [
     "_SessionEntry",
@@ -46,5 +45,4 @@ __all__ = [
     "_unattributed_batch_elapsed_s",
     "ingest_record",
     "process_ingest_batch",
-    "process_pool_executor",
 ]

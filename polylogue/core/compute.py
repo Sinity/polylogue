@@ -17,15 +17,25 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import threading
+from builtins import BaseExceptionGroup
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from time import monotonic
 from typing import Generic, Literal, TypeVar, cast
 
+from polylogue.core.sql_settlement import (
+    NativeSQLSettlementEvidence,
+    SQLCustodyOwner,
+    SQLSettlementRetry,
+    capture_native_sql_owners,
+    settle_native_sql,
+)
+
 AdmissionClass = Literal["interactive-read", "control", "incremental-background", "bulk-candidate"]
 T = TypeVar("T")
+InputT = TypeVar("InputT")
 
 #: Dispatch order between classes that are both eligible.  Control publishes,
 #: so it precedes reads; bulk candidate construction is the most deferrable.
@@ -145,6 +155,7 @@ class AdmissionSnapshot:
     rejected: int
     capacity_slots: int = 0
     classes: tuple[ClassAdmissionSnapshot, ...] = ()
+    retained_sql_settlements: tuple[RetainedSQLSettlement, ...] = ()
 
     @property
     def queued(self) -> int:
@@ -180,6 +191,15 @@ class AdmissionSnapshot:
             "capacity_slots": self.capacity_slots,
             "background_max_wait_s": self.background_max_wait_s,
             "classes": [entry.to_dict() for entry in self.classes],
+            "retained_sql_settlements": [
+                {
+                    "thread_name": entry.thread_name,
+                    "admission_class": entry.admission_class,
+                    "owner_count": entry.owner_count,
+                    "failure_types": list(entry.failure_types),
+                }
+                for entry in self.retained_sql_settlements
+            ],
         }
 
 
@@ -240,11 +260,13 @@ _CURRENT_CANCELLATION: contextvars.ContextVar[CancellationHandle | None] = conte
     "polylogue_current_daemon_cancellation", default=None
 )
 
+_CURRENT_COMPUTE = threading.local()
+
 
 def current_cancellation() -> CancellationHandle | None:
     """Return the request cancellation handle in daemon compute code."""
 
-    return _CURRENT_CANCELLATION.get()
+    return getattr(_CURRENT_COMPUTE, "cancellation", _CURRENT_CANCELLATION.get())
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +276,14 @@ class SubmittedOperation(Generic[T]):
     future: Future[T]
     cancellation: CancellationHandle
     _task: _Task | None = None
+
+    def retry_sql_settlement(self) -> None:
+        """Request cleanup on this operation's physical creator worker."""
+        if self._task is None:
+            if not self.future.done():
+                raise ValueError("pending operation has no physical cleanup owner")
+            return
+        self._task.sql_retry.request()
 
     @property
     def queue_delay_s(self) -> float:
@@ -295,17 +325,82 @@ class _ClassState:
         self.max_wait_s = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class RetainedSQLSettlement:
+    """Physical compute work retained for original-worker SQL cleanup."""
+
+    thread_name: str
+    admission_class: str
+    owner_count: int
+    failure_types: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class _RetainedSQLSettlement:
+    retry: SQLSettlementRetry
+    evidence: RetainedSQLSettlement
+
+
+def capture_compute_bridge() -> Callable[[], contextlib.AbstractContextManager[None]]:
+    """Borrow a joined bridge's exact running reservation, never new capacity.
+
+    The parent remains physically blocked on the bridge. Creator-thread SQL
+    cleanup must finish inside the bridge Task before its loop or thread ends.
+    """
+    adapter = getattr(_CURRENT_COMPUTE, "adapter", None)
+    task = getattr(_CURRENT_COMPUTE, "task", None)
+    cancellation = current_cancellation()
+
+    @contextlib.contextmanager
+    def borrow() -> Iterator[None]:
+        if adapter is None or task is None:
+            yield
+            return
+        prior = {name: getattr(_CURRENT_COMPUTE, name, None) for name in ("adapter", "task", "cancellation")}
+        token = _CURRENT_CANCELLATION.set(cancellation)
+        _CURRENT_COMPUTE.adapter = adapter
+        _CURRENT_COMPUTE.task = task
+        _CURRENT_COMPUTE.cancellation = cancellation
+        preserved = capture_native_sql_owners()
+        primary: BaseException | None = None
+        try:
+            yield
+        except BaseException as failure:
+            primary = failure
+            raise
+        finally:
+            try:
+                failure = adapter._settle_native_sql(task, preserved_native_owners=preserved)
+                if failure is not None:
+                    if primary is not None:
+                        primary.add_note(f"bridge native cleanup failed: {failure!r}")
+                    else:
+                        raise failure
+            finally:
+                for name, value in prior.items():
+                    if value is None:
+                        delattr(_CURRENT_COMPUTE, name)
+                    else:
+                        setattr(_CURRENT_COMPUTE, name, value)
+                _CURRENT_CANCELLATION.reset(token)
+
+    return borrow
+
+
 class _Task:
     __slots__ = (
         "admission_class",
         "bytes",
         "cancellation",
+        "context",
         "function",
         "future",
         "queue_delay_s",
         "queued_at",
         "slots",
         "state",
+        "sql_retry",
+        "sql_observed_generation",
         "units",
     )
 
@@ -313,6 +408,7 @@ class _Task:
         self,
         *,
         function: Callable[[], object],
+        context: contextvars.Context,
         future: Future[object],
         cancellation: CancellationHandle,
         admission_class: str,
@@ -321,6 +417,7 @@ class _Task:
         slots: int,
     ) -> None:
         self.function = function
+        self.context = context
         self.future = future
         self.cancellation = cancellation
         self.admission_class = admission_class
@@ -330,6 +427,8 @@ class _Task:
         self.queued_at = monotonic()
         self.queue_delay_s = 0.0
         self.state = "admitted"
+        self.sql_retry = SQLSettlementRetry()
+        self.sql_observed_generation = 0
 
 
 class BoundedComputeAdapter:
@@ -379,6 +478,7 @@ class BoundedComputeAdapter:
         self._active_slots = 0
         self._rejected = 0
         self._shutdown = False
+        self._sql_settlements: dict[int, _RetainedSQLSettlement] = {}
         self._classes: dict[str, _ClassState] = {name: _ClassState(name) for name in ADMISSION_CLASSES}
         self._queues: dict[str, deque[_Task]] = {name: deque() for name in ADMISSION_CLASSES}
         self._background_turn = 0
@@ -518,9 +618,46 @@ class BoundedComputeAdapter:
         estimated_bytes = min(estimated_bytes, self.capacity_bytes)
         handle = cancellation or CancellationHandle()
         future: Future[T] = Future()
+        if getattr(_CURRENT_COMPUTE, "adapter", None) is self:
+            # This pure subunit belongs to the running parent's reservation.
+            # Queueing and waiting here would deadlock a one-worker adapter.
+            # The caller includes its subunits in the parent's byte estimate;
+            # no extra worker or reservation is created. Scratch opened by
+            # the subunit settles before its synchronous completion.
+            parent = _CURRENT_COMPUTE.cancellation
+            parent_task = _CURRENT_COMPUTE.task
+
+            def run_nested() -> None:
+                preserved = capture_native_sql_owners()
+                result: T | None = None
+                failure: BaseException | None = None
+                try:
+                    if handle.cancelled or (parent is not None and parent.cancelled):
+                        raise DaemonOperationCancelled("operation cancelled before nested compute started")
+                    result = function()
+                except BaseException as exc:
+                    failure = exc
+                finally:
+                    settlement_failure = self._settle_native_sql(parent_task, preserved_native_owners=preserved)
+                    if settlement_failure is not None:
+                        if failure is None:
+                            failure = settlement_failure
+                        else:
+                            failure.add_note(f"native SQL cleanup also failed: {type(settlement_failure).__name__}")
+                if failure is not None:
+                    future.set_exception(failure)
+                else:
+                    future.set_result(cast("T", result))
+
+            # Preserve submit's context isolation while reusing the physical
+            # worker and reservation. Native cleanup runs in that same context.
+            contextvars.copy_context().run(run_nested)
+            return SubmittedOperation(future=future, cancellation=parent or handle, _task=parent_task)
         future.add_done_callback(lambda done: handle.cancel() if done.cancelled() else None)
+        context = contextvars.copy_context()
         task = _Task(
             function=function,
+            context=context,
             # The scheduler queue is heterogeneous, while this public handle
             # retains the concrete result type supplied by its caller.
             future=cast("Future[object]", future),
@@ -552,9 +689,86 @@ class BoundedComputeAdapter:
             self._queues[admission_class].append(task)
             runnable = self._drain_locked()
 
-        handle.add_listener(lambda: self._cancel_before_start(task))
+        def cancel_task() -> None:
+            task.sql_retry.request()
+            self._cancel_before_start(task)
+
+        handle.add_listener(cancel_task)
         self._run_all(runnable)
         return SubmittedOperation(future=future, cancellation=handle, _task=task)
+
+    def map(
+        self,
+        function: Callable[[InputT], T],
+        items: Iterable[InputT],
+        *,
+        admission_class: AdmissionClass = "incremental-background",
+        estimated_bytes: Callable[[InputT], int] = lambda _item: 0,
+        discard_unconsumed: Callable[[T], None] | None = None,
+    ) -> Iterator[T]:
+        """Run pure units in input order through this adapter's admission.
+
+        The window owns only its submitted operations, never the shared pool.
+        A failure or consumer cancellation drains those operations before the
+        caller can discard their scratch. Nested maps execute synchronously
+        under the parent's exact reservation.
+        """
+        if admission_class not in self._classes:
+            raise ValueError(f"unknown compute admission class: {admission_class!r}")
+        pending: deque[SubmittedOperation[T]] = deque()
+        iterator = iter(items)
+        waiting_item: tuple[InputT] | None = None
+        window = (
+            1 if getattr(_CURRENT_COMPUTE, "adapter", None) is self else self._classes[admission_class].ceiling_slots
+        )
+        try:
+            exhausted = False
+            while pending or not exhausted:
+                while not exhausted and len(pending) < window:
+                    if waiting_item is None:
+                        try:
+                            item = next(iterator)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                    else:
+                        item = waiting_item[0]
+                    try:
+                        operation = self.submit(
+                            lambda item=item: function(item),
+                            admission_class=admission_class,
+                            estimated_bytes=estimated_bytes(item),
+                        )
+                    except DaemonBackpressureError:
+                        if not pending:
+                            raise
+                        # Our accepted work can release this capacity. Do not
+                        # drop the input or abandon and retry the same prefix.
+                        waiting_item = (item,)
+                        break
+                    waiting_item = None
+                    pending.append(operation)
+                if pending:
+                    result = pending[0].future.result()
+                    pending.popleft()
+                    yield result
+        finally:
+            for operation in pending:
+                if not operation.future.done():
+                    operation.cancellation.cancel()
+            cleanup_failures: list[BaseException] = []
+            for operation in pending:
+                try:
+                    result = operation.future.result()
+                except BaseException:
+                    continue
+                if discard_unconsumed is not None:
+                    try:
+                        discard_unconsumed(result)
+                    except BaseException as exc:
+                        cleanup_failures.append(exc)
+            if cleanup_failures:
+                raise BaseExceptionGroup("compute result cleanup failed", cleanup_failures)
 
     # -- dispatch -------------------------------------------------------
 
@@ -636,7 +850,11 @@ class BoundedComputeAdapter:
             return
 
         def run() -> None:
+            task.sql_observed_generation = task.sql_retry.generation()
             token = _CURRENT_CANCELLATION.set(task.cancellation)
+            _CURRENT_COMPUTE.adapter = self
+            _CURRENT_COMPUTE.cancellation = task.cancellation
+            _CURRENT_COMPUTE.task = task
             result: object | None = None
             failure: BaseException | None = None
             try:
@@ -647,6 +865,15 @@ class BoundedComputeAdapter:
             except BaseException as exc:
                 failure = exc
             finally:
+                settlement_failure = self._settle_native_sql(task)
+                if settlement_failure is not None:
+                    if failure is None:
+                        failure = settlement_failure
+                    else:
+                        failure.add_note(f"native SQL cleanup also failed: {type(settlement_failure).__name__}")
+                del _CURRENT_COMPUTE.adapter
+                del _CURRENT_COMPUTE.cancellation
+                del _CURRENT_COMPUTE.task
                 _CURRENT_CANCELLATION.reset(token)
                 self._release(task, active=True)
             if failure is not None:
@@ -655,10 +882,68 @@ class BoundedComputeAdapter:
                 task.future.set_result(result)
 
         try:
-            self.executor.submit(run)
+            self.executor.submit(task.context.run, run)
         except BaseException:
             self._release(task, active=True)
             raise
+
+    def _settle_native_sql(
+        self,
+        task: _Task,
+        *,
+        preserved_native_owners: tuple[SQLCustodyOwner, ...] = (),
+    ) -> BaseException | None:
+        """Keep the physical future and worker owned until native SQL settles.
+
+        Only an explicit retry or shutdown wakes a failed cleanup. Cancellation
+        forbids new work but cannot surrender its creator-thread cleanup owner.
+        """
+        retry = task.sql_retry
+        retained: _RetainedSQLSettlement | None = None
+
+        def on_pending(pending: NativeSQLSettlementEvidence) -> None:
+            nonlocal retained
+            evidence = RetainedSQLSettlement(
+                thread_name=threading.current_thread().name,
+                admission_class=task.admission_class,
+                owner_count=pending.owner_count,
+                failure_types=pending.failure_types,
+            )
+            with self._lock:
+                if retained is None:
+                    retained = _RetainedSQLSettlement(retry, evidence)
+                    self._sql_settlements[id(task)] = retained
+                    shutting_down = self._shutdown
+                else:
+                    retained.evidence = evidence
+                    shutting_down = False
+            if shutting_down:
+                retry.request()
+
+        def on_settled() -> None:
+            task.sql_observed_generation = retry.generation()
+            with self._lock:
+                self._sql_settlements.pop(id(task), None)
+
+        return settle_native_sql(
+            retry=retry,
+            on_pending=on_pending,
+            on_settled=on_settled,
+            preserved_native_owners=preserved_native_owners,
+            initial_observed_generation=task.sql_observed_generation,
+        )
+
+    def retained_sql_settlements(self) -> tuple[RetainedSQLSettlement, ...]:
+        """Return unresolved physical ownership without touching native handles."""
+        with self._lock:
+            return tuple(entry.evidence for entry in self._sql_settlements.values())
+
+    def retry_sql_settlement(self) -> None:
+        """Ask each retained creator worker to retry its own cleanup once."""
+        with self._lock:
+            retained = tuple(self._sql_settlements.values())
+        for entry in retained:
+            entry.retry.request()
 
     def _release(self, task: _Task, *, active: bool) -> None:
         """Return one task's reservation exactly once and pump the queues."""
@@ -740,6 +1025,7 @@ class BoundedComputeAdapter:
                 rejected=self._rejected,
                 capacity_slots=self.max_workers,
                 classes=classes,
+                retained_sql_settlements=tuple(entry.evidence for entry in self._sql_settlements.values()),
             )
 
     def shutdown(self, *, wait: bool = False, cancel_futures: bool = True) -> None:
@@ -754,6 +1040,7 @@ class BoundedComputeAdapter:
             self._release(task, active=False)
             with contextlib.suppress(Exception):
                 task.future.set_exception(DaemonOperationCancelled("daemon compute adapter shut down"))
+        self.retry_sql_settlement()
         self.executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
     def close(self, *, join_timeout_s: float) -> tuple[str, ...]:
@@ -781,14 +1068,14 @@ _SHARED_COMPUTE_ADAPTER: BoundedComputeAdapter | None = None
 _SHARED_COMPUTE_LOCK = threading.Lock()
 
 
-def publish_daemon_compute_adapter(adapter: BoundedComputeAdapter) -> None:
+def publish_compute_adapter(adapter: BoundedComputeAdapter) -> None:
     """Declare the already-owned adapter as this process's shared capacity."""
     global _SHARED_COMPUTE_ADAPTER
     with _SHARED_COMPUTE_LOCK:
         _SHARED_COMPUTE_ADAPTER = adapter
 
 
-def daemon_compute_adapter() -> BoundedComputeAdapter:
+def compute_adapter() -> BoundedComputeAdapter:
     """Return the shared compute capacity, creating the fallback exactly once."""
     global _SHARED_COMPUTE_ADAPTER
     with _SHARED_COMPUTE_LOCK:
@@ -801,7 +1088,7 @@ def daemon_compute_adapter() -> BoundedComputeAdapter:
         return _SHARED_COMPUTE_ADAPTER
 
 
-def reset_daemon_compute_adapter(*, join_timeout_s: float = 0.0) -> tuple[str, ...]:
+def reset_compute_adapter(*, join_timeout_s: float = 0.0) -> tuple[str, ...]:
     """Drop the shared adapter so a new process scope can publish its own.
 
     Returns the worker threads still alive after *join_timeout_s*.
@@ -828,7 +1115,17 @@ __all__ = [
     "DaemonBackpressureError",
     "DaemonOperationCancelled",
     "SubmittedOperation",
-    "daemon_compute_adapter",
-    "publish_daemon_compute_adapter",
-    "reset_daemon_compute_adapter",
+    "compute_adapter",
+    "publish_compute_adapter",
+    "reset_compute_adapter",
 ]
+
+
+def compute_window_length(record_count: int, requested: int | None = None) -> int:
+    """Bound a caller's outstanding units by the shared background admission.
+
+    This is a submission window, not another executor or reservation. Actual
+    weighted admission remains the shared adapter's decision for every unit.
+    """
+    capacity = compute_adapter().snapshot().by_class("incremental-background").ceiling_units
+    return max(1, min(max(1, record_count), capacity, capacity if requested is None else max(1, requested)))

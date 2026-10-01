@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from polylogue import Polylogue
+from tests.infra.prepared_session import write_prepared_session
 
 if TYPE_CHECKING:
     from polylogue.api.runtime import RuntimeServices
@@ -69,14 +70,13 @@ async def test_attachment_library_pages_keep_session_and_transcript_order(
     from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     db_path = workspace_env["archive_root"] / "index.db"
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         initialize_archive_tier(conn, ArchiveTier.INDEX)
         for native_id, timestamp in [("a-old", "2026-01-01T00:00:00Z"), ("z-new", "2026-01-02T00:00:00Z")]:
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 ParsedSession(
                     source_name=Provider.CODEX,

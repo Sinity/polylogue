@@ -10,6 +10,7 @@ import sys
 import threading
 import zlib
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from datetime import UTC
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -690,11 +691,11 @@ def _clear_polylogue_env(
     reset_mcp_call_log()
 
     # Drop the process-global shared compute adapter.
-    # ``polylogue.daemon.execution._SHARED_COMPUTE_ADAPTER`` is published once
+    # ``polylogue.core.compute._SHARED_COMPUTE_ADAPTER`` is published once
     # per process by whichever daemon owns an API server
-    # (``publish_daemon_compute_adapter(api_server.execution_kernel)`` in
+    # (``publish_compute_adapter(api_server.execution_kernel)`` in
     # daemon/cli.py) and is read by every lease-free background derivation via
-    # ``daemon_compute_adapter()``. A test that patches the API server with a
+    # ``compute_adapter()``. A test that patches the API server with a
     # ``MagicMock`` publishes ``mock.execution_kernel`` into that global, and a
     # test that owns a real adapter leaves a *shut down* one behind. Both
     # survive into later tests, where ``convergence._converge_serialized`` then
@@ -705,9 +706,9 @@ def _clear_polylogue_env(
     # Process-lifetime publication is correct for a real daemon, whose adapter
     # outlives every request. It is only wrong for a test process that starts
     # and discards many daemons, so the production route is not weakened.
-    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.core.compute import reset_compute_adapter
 
-    reset_daemon_compute_adapter()
+    reset_compute_adapter()
 
     # Strip every POLYLOGUE_* host env var so tests never inherit operator
     # configuration (archive root, daemon api host/port, validation mode,
@@ -1264,7 +1265,7 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
         List of RawSessionRecord objects (synthetic data, always available)
     """
     import hashlib
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.storage.runtime import RawSessionRecord
@@ -1283,7 +1284,7 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
                     source_name=spec.provider,
                     source_path=f"<synthetic:{spec.provider}:{idx}>",
                     blob_size=len(raw_bytes),
-                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                    acquired_at=datetime.now(UTC).isoformat(),
                 )
             )
     return samples

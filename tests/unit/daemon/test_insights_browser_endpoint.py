@@ -245,7 +245,7 @@ class TestInsightsEndpointDispatch:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A path-only change is stale even when the session timestamp stays fixed."""
-        from polylogue.daemon.execution import BoundedComputeAdapter
+        from polylogue.core.compute import BoundedComputeAdapter
         from polylogue.daemon.session_profile_composition import compose_session_profile_callback
         from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 

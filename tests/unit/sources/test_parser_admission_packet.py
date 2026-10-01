@@ -24,7 +24,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping
 from polylogue.sources.parsers.codex import parse as parse_codex
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.prepared_session import write_prepared_session
 
 
 def test_unknown_structured_segment_is_retained_as_typed_evidence() -> None:
@@ -194,7 +194,7 @@ def test_writer_refuses_nonconserving_parse_before_sqlite_mutation() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         with pytest.raises(ValueError, match="parse admission conservation refused"):
-            write_parsed_session_to_archive(conn, session)
+            write_prepared_session(conn, session)
         assert conn.execute("SELECT 1").fetchone() == (1,)
     finally:
         conn.close()

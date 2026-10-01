@@ -25,8 +25,9 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
 from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks
 from tests.infra.logical_source_probe import open_reconstruction_handles, record_logical_source_connections
+from tests.infra.prepared_session import write_prepared_session
 
 
 def _write_state_db(path: Path, *, tool_contents: list[str]) -> None:
@@ -407,7 +408,7 @@ def test_codex_message_items_prose_is_findable_by_search(tmp_path: Path) -> None
     initialize_archive_database(db, ArchiveTier.INDEX)
     conn = sqlite3.connect(db)
     try:
-        write_parsed_session_to_archive(conn, session)
+        write_prepared_session(conn, session)
         conn.commit()
         matched = search_archive_blocks(conn, "wrapper untouched")
         block_texts = [

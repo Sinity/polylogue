@@ -29,14 +29,11 @@ from unittest.mock import patch
 import pytest
 
 from devtools.measurement_receipts import emit_receipt
-from polylogue.pipeline.services.process_pool import (
-    parallel_threads_effective,
-    resolve_revision_backfill_census_dispatch,
-)
+from polylogue.core.compute import compute_window_length
 from polylogue.sources import revision_backfill
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.revision_backfill import (
-    RevisionBackfillResult,
+    PreparedRevisionReplayResult,
     RevisionCensusResult,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
@@ -440,7 +437,7 @@ def _work_identity(
 
 
 def _live_metrics(
-    result: RevisionBackfillResult,
+    result: PreparedRevisionReplayResult,
     sealed: SealedRawInput,
     *,
     archive_bytes: int,
@@ -494,14 +491,8 @@ def _run_arm(
         _RETAINED_INDEX_INLINE_COMPARISON,
     ):
         raise RuntimeError("finished-build measurement runs only the declared selected arm")
-    # Report the dispatch width the production census will really use. GIL
-    # builds deliberately parse sequentially even when a larger width was
-    # requested.
-    effective_workers = resolve_revision_backfill_census_dispatch(
-        ingest_workers=worker_count,
-        record_count=sealed.raw_count,
-        free_threaded=parallel_threads_effective(),
-    ).worker_count
+    # Report the existing shared admission window used by production census.
+    effective_workers = compute_window_length(sealed.raw_count, worker_count)
     resource_probe = FinishedBuildResourceProbe.start()
     destination, owned_generation = _candidate_root(root, arm)
     index_path = destination / "index.db"
@@ -647,9 +638,6 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
     route_source = inspect.getsource(backfill_historical_revision_evidence)
     assert "prepare_session_shard" in inspect.getsource(revision_backfill._FrozenReplayShardTransport)
     assert "attached_session_shard" in route_source
-    assert "ProcessPoolExecutor" not in inspect.getsource(
-        __import__("polylogue.sources.revision_backfill", fromlist=["*"])
-    )
     assert {arm.name for arm in _REJECTED_ALTERNATIVES} == {
         "retained-index-inline",
         "deferred-index-fresh-shard-process",

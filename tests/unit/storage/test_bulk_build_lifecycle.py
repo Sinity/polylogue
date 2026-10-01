@@ -48,11 +48,7 @@ from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    bind_session_shard,
-    prepare_session_shard,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import bind_session_shard, prepare_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShard, attached_session_shard, open_session_shard
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from polylogue.storage.sqlite.runtime_indexes import (
@@ -60,6 +56,7 @@ from polylogue.storage.sqlite.runtime_indexes import (
     defer_secondary_indexes_sync,
     restore_deferred_secondary_indexes_sync,
 )
+from tests.infra.prepared_session import write_prepared_session
 from tests.infra.revision_backfill_benchmark import (
     FinishedBuildMeasurement,
     build_large_parent_shared_prefix_sessions,
@@ -236,11 +233,11 @@ def _write_fresh_shard_arm(conn: sqlite3.Connection, directory: Path, sessions: 
     with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
         bindings = bind_session_shard(schema, shard)
         for session in sessions:
-            write_parsed_session_to_archive(
+            write_prepared_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=bindings[_archive_session_id(session)],
+                prepared_rows=bindings[_archive_session_id(session)],
                 fresh_build=True,
                 fresh_build_batch=seen,
                 bulk_build=True,
@@ -263,7 +260,7 @@ def _lineage_scenario(conn: sqlite3.Connection, *, bulk_fts: bool, bulk_build: b
             _text_message(1, 2, "child diverges here"),
         ],
     )
-    child_id = write_parsed_session_to_archive(conn, child, bulk_fts=bulk_fts, bulk_build=bulk_build)
+    child_id = write_prepared_session(conn, child, bulk_fts=bulk_fts, bulk_build=bulk_build)
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="lineage-parent",
@@ -274,7 +271,7 @@ def _lineage_scenario(conn: sqlite3.Connection, *, bulk_fts: bool, bulk_build: b
             _text_message(1, 2, "parent continues alone"),
         ],
     )
-    parent_id = write_parsed_session_to_archive(conn, parent, bulk_fts=bulk_fts, bulk_build=bulk_build)
+    parent_id = write_prepared_session(conn, parent, bulk_fts=bulk_fts, bulk_build=bulk_build)
     return child_id, parent_id
 
 
@@ -282,9 +279,7 @@ def _build_corpus(conn: sqlite3.Connection, *, bulk_build: bool) -> list[str]:
     """Two independent sessions plus one prefix-sharing lineage pair."""
     session_ids = []
     for label in ("alpha", "beta"):
-        session_ids.append(
-            write_parsed_session_to_archive(conn, _session(label), bulk_fts=bulk_build, bulk_build=bulk_build)
-        )
+        session_ids.append(write_prepared_session(conn, _session(label), bulk_fts=bulk_build, bulk_build=bulk_build))
     child_id, parent_id = _lineage_scenario(conn, bulk_fts=bulk_build, bulk_build=bulk_build)
     session_ids.extend([child_id, parent_id])
     return session_ids
@@ -321,7 +316,7 @@ def _action_pair_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
 
 def test_bulk_build_write_leaves_derived_surfaces_empty(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
-    session_id = write_parsed_session_to_archive(conn, _session("solo"), bulk_fts=True, bulk_build=True)
+    session_id = write_prepared_session(conn, _session("solo"), bulk_fts=True, bulk_build=True)
 
     assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
@@ -343,7 +338,7 @@ def test_bulk_build_off_matches_todays_per_session_population(tmp_path: Path) ->
     """Without bulk_build, the same session write populates the FTS surface
     immediately. The action-pairs view is available in either mode."""
     conn = _connect(tmp_path / "index.db")
-    session_id = write_parsed_session_to_archive(conn, _session("solo"))
+    session_id = write_prepared_session(conn, _session("solo"))
 
     assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
     assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] > 0
@@ -388,7 +383,7 @@ def test_bulk_build_exact_sync_assertion_accepts_empty_state_but_still_checks_tr
     canonical triggers are somehow missing (the trigger-presence half of the
     proof is unaffected by bulk-build mode)."""
     conn = _connect(tmp_path / "index.db")
-    session_id = write_parsed_session_to_archive(conn, _session("solo"), bulk_fts=True, bulk_build=True)
+    session_id = write_prepared_session(conn, _session("solo"), bulk_fts=True, bulk_build=True)
 
     # Deliberately out of sync (0 indexed vs >0 expected) -- must not raise.
     assert_session_fts_exact_sync(conn, session_id, bulk_build=True)
@@ -410,7 +405,7 @@ def test_bulk_build_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
     _write_module._write_blocks = _boom
     try:
         with pytest.raises(RuntimeError, match="injected write failure"):
-            write_parsed_session_to_archive(conn, _session("solo"), bulk_fts=True, bulk_build=True)
+            write_prepared_session(conn, _session("solo"), bulk_fts=True, bulk_build=True)
     finally:
         _write_module._write_blocks = original
 
@@ -427,26 +422,26 @@ def test_bulk_build_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
 def test_fresh_build_refuses_duplicate_session_instead_of_replacing(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = _session("fresh")
-    write_parsed_session_to_archive(conn, session, fresh_build=True)
+    write_prepared_session(conn, session, fresh_build=True)
     with pytest.raises(AssertionError, match="fresh_build requires an absent session_id"):
-        write_parsed_session_to_archive(conn, session, fresh_build=True)
+        write_prepared_session(conn, session, fresh_build=True)
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
     conn.close()
 
 
 def test_fresh_build_refuses_nonempty_generation_even_for_new_session(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(conn, _session("existing"))
+    write_prepared_session(conn, _session("existing"))
     with pytest.raises(AssertionError, match="fresh_build requires an empty archive generation"):
-        write_parsed_session_to_archive(conn, _session("other"), fresh_build=True)
+        write_prepared_session(conn, _session("other"), fresh_build=True)
     conn.close()
 
 
 def test_fresh_build_batch_allows_distinct_sessions_after_empty_check(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     seen: set[str] = set()
-    write_parsed_session_to_archive(conn, _session("first"), fresh_build=True, fresh_build_batch=seen)
-    write_parsed_session_to_archive(conn, _session("second"), fresh_build=True, fresh_build_batch=seen)
+    write_prepared_session(conn, _session("first"), fresh_build=True, fresh_build_batch=seen)
+    write_prepared_session(conn, _session("second"), fresh_build=True, fresh_build_batch=seen)
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
     conn.close()
 
@@ -457,7 +452,7 @@ def test_fresh_build_skips_stale_replace_probe_but_keeps_its_absence_assertion(t
     statements: list[str] = []
     session = _session("fresh-timestamp").model_copy(update={"updated_at": "2026-01-01T00:00:02Z"})
     conn.set_trace_callback(statements.append)
-    write_parsed_session_to_archive(conn, session, fresh_build=True)
+    write_prepared_session(conn, session, fresh_build=True)
     conn.set_trace_callback(None)
 
     normalized = [statement.upper() for statement in statements]
@@ -479,7 +474,7 @@ def test_deferred_secondary_indexes_round_trip_without_losing_rows(tmp_path: Pat
         conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)).fetchone()
         for name in DEFERRED_SECONDARY_INDEX_NAMES
     )
-    write_parsed_session_to_archive(conn, _session("deferred"), fresh_build=True)
+    write_prepared_session(conn, _session("deferred"), fresh_build=True)
     restore_deferred_secondary_indexes_sync(conn)
     conn.commit()
     after = {
@@ -506,7 +501,7 @@ def test_fresh_shard_build_finishes_equivalent_to_retained_indexes(tmp_path: Pat
     retained_path = tmp_path / "retained.db"
     retained = _connect(retained_path)
     for session in sessions:
-        write_parsed_session_to_archive(retained, session, content_hash=str(session_content_hash(session)))
+        write_prepared_session(retained, session, content_hash=str(session_content_hash(session)))
     _finish_bulk_build(retained)
     retained_indexes = _reader_index_names(retained)
     retained.close()
@@ -549,7 +544,7 @@ def test_fresh_shard_finished_output_comparison_rejects_missing_finalization_or_
     retained_path = tmp_path / "retained.db"
     retained = _connect(retained_path)
     for session in sessions:
-        write_parsed_session_to_archive(retained, session, content_hash=str(session_content_hash(session)))
+        write_prepared_session(retained, session, content_hash=str(session_content_hash(session)))
     _finish_bulk_build(retained)
     retained.close()
     expected = _finished_output_snapshot(retained_path)
@@ -600,7 +595,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
             with conn:
                 _, import_seconds = _measure(
                     lambda: [
-                        write_parsed_session_to_archive(
+                        write_prepared_session(
                             conn, session, content_hash=str(session_content_hash(session)), manage_transaction=False
                         )
                         for session in sessions
@@ -643,7 +638,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
                     lambda: (
                         defer_secondary_indexes_sync(conn),
                         [
-                            write_parsed_session_to_archive(
+                            write_prepared_session(
                                 conn,
                                 session,
                                 content_hash=str(session_content_hash(session)),
@@ -700,11 +695,11 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
                     dropped = defer_secondary_indexes_sync(conn)
                     assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
                     for session in sessions:
-                        write_parsed_session_to_archive(
+                        write_prepared_session(
                             conn,
                             session,
                             content_hash=str(session_content_hash(session)),
-                            prepared=bindings[_archive_session_id(session)],
+                            prepared_rows=bindings[_archive_session_id(session)],
                             fresh_build=True,
                             fresh_build_batch=seen,
                             bulk_build=True,
@@ -810,7 +805,7 @@ def test_a_first_save_issues_no_replace_prelude_deletes(tmp_path: Path, fresh: b
     conn.set_trace_callback(statements.append)
     seen: set[str] = set()
     for session in (_session("prelude-alpha"), _session("prelude-beta", n_pairs=1)):
-        write_parsed_session_to_archive(
+        write_prepared_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
@@ -822,7 +817,7 @@ def test_a_first_save_issues_no_replace_prelude_deletes(tmp_path: Path, fresh: b
 
     statements.clear()
     revised = _session("prelude-alpha", n_pairs=1)
-    write_parsed_session_to_archive(conn, revised, content_hash=str(session_content_hash(revised)))
+    write_prepared_session(conn, revised, content_hash=str(session_content_hash(revised)))
     conn.commit()
     conn.set_trace_callback(None)
     assert {"session_identity_claims", "action_pairs", "web_content_constructs", "session_tags"} <= _prelude_deletes(

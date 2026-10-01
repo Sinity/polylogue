@@ -31,26 +31,41 @@ re-derives nothing from it. Two consequences follow and both are load-bearing:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence, Set
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 from urllib.parse import quote
 
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 
 #: Bump when the shard's own layout changes shape; it is part of the seal.
-SHARD_LAYOUT_VERSION = 2
+SHARD_LAYOUT_VERSION = 3
 
 #: The tables a shard transports, in the order the writer must copy them:
 #: ``blocks.message_id`` references ``messages.message_id``.
 SHARD_TABLES: tuple[str, ...] = ("messages", "blocks")
+
+if TYPE_CHECKING:
+    from polylogue.pipeline.ids import MessageOwnerResolution
+
+_T = TypeVar("_T")
+
+_OWNER_DDL = (
+    "CREATE TABLE shard_owner_manifest (session_ordinal INTEGER PRIMARY KEY, owner_count INTEGER NOT NULL)",
+    "CREATE TABLE shard_owner_key (session_ordinal INTEGER NOT NULL, ordinal INTEGER NOT NULL, owner_key TEXT NOT NULL, PRIMARY KEY(session_ordinal, ordinal)) WITHOUT ROWID",
+    "CREATE TABLE shard_owner_lookup (session_ordinal INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(session_ordinal, kind, key)) WITHOUT ROWID",
+    "CREATE TABLE shard_owner_ambiguity (session_ordinal INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(session_ordinal, kind, key)) WITHOUT ROWID",
+)
 
 _ATTACH_SCHEMA_PREFIX = "polylogue_shard"
 
@@ -94,7 +109,7 @@ def shard_column_signature() -> str:
     values into the archive. The seal records this digest and the writer
     compares it, so a stale shard is refused rather than mis-copied.
     """
-    payload = "\n".join(f"{table}:{shard_table_ddl(table)}" for table in SHARD_TABLES)
+    payload = "\n".join((*[f"{table}:{shard_table_ddl(table)}" for table in SHARD_TABLES], *_OWNER_DDL))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -152,6 +167,7 @@ class ShardSessionRows:
     #: Content-derived fallback identities carried by the prepared rows.  The
     #: writer validates and reuses these; it never regenerates them.
     content_identities: Sequence[tuple[str, int]]
+    owner_resolution: MessageOwnerResolution
 
     @property
     def message_row_count(self) -> int:
@@ -171,6 +187,23 @@ class SessionShard:
 
     def by_session_id(self) -> Mapping[str, ShardSessionRows]:
         return ShardSessionMapping(self.path, len(self.sessions))
+
+
+@contextmanager
+def _shard_connection(path: Path, *, readonly: bool = True) -> Iterator[sqlite3.Connection]:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+    connection = connect_measured(_read_only_uri(path), uri=True) if readonly else connect_measured(path)
+    owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
+    try:
+        yield owner.require_connection()
+    except BaseException as primary:
+        from polylogue.storage.sqlite.connection_profile import _close_failed_native_construction
+
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
 
 class SessionShardBuilder:
@@ -193,10 +226,40 @@ class SessionShardBuilder:
             self._conn.execute(shard_table_ddl(table))
         self._conn.execute(_SEAL_DDL)
         self._conn.execute(_SESSION_DDL)
+        for statement in _OWNER_DDL:
+            self._conn.execute(statement)
         self._conn.execute("CREATE INDEX shard_session_id ON shard_session(session_id)")
         self._next_rowid = dict.fromkeys(SHARD_TABLES, 1)
         self._session_count = 0
         self._conn.execute("BEGIN IMMEDIATE")
+
+    def capture_owner_resolution(self, resolution: MessageOwnerResolution) -> None:
+        """Seal the sole resolver's evidence beside this session's row tuples."""
+        session = self._session_count + 1
+        self._conn.execute("INSERT INTO shard_owner_manifest VALUES (?, ?)", (session, len(resolution.keys)))
+        for ordinal, key in enumerate(resolution.keys):
+            self._conn.execute("INSERT INTO shard_owner_key VALUES (?, ?, ?)", (session, ordinal, key))
+        for kind, lookup in (
+            ("physical", resolution.by_physical_coordinate),
+            ("stable", resolution.by_stable_key),
+            ("provider", resolution.unique_provider_keys),
+        ):
+            for key in lookup:
+                self._conn.execute(
+                    "INSERT INTO shard_owner_lookup VALUES (?, ?, ?, ?)",
+                    (session, kind, json.dumps(key, separators=(",", ":")), lookup[key]),
+                )
+        for kind, ambiguous in (
+            ("physical", resolution.ambiguous_physical_coordinates),
+            ("stable", resolution.ambiguous_stable_keys),
+            ("key", resolution.ambiguous_keys),
+            ("provider", resolution.ambiguous_provider_ids),
+        ):
+            for key in ambiguous:
+                self._conn.execute(
+                    "INSERT INTO shard_owner_ambiguity VALUES (?, ?, ?)",
+                    (session, kind, json.dumps(key, separators=(",", ":"))),
+                )
 
     def add(self, prepared: object) -> None:
         """Append one session's prepared rows.
@@ -209,6 +272,7 @@ class SessionShardBuilder:
         content_identities: Sequence[tuple[str, int]] = prepared.content_identities  # type: ignore[attr-defined]
         if len(content_identities) != len(message_rows):
             raise ShardRefusedError("prepared identity carrier does not cover every message row")
+        self.capture_owner_resolution(prepared.owner_resolution)  # type: ignore[attr-defined]
         message_lo = self._append("messages", message_rows)
         block_lo = self._append("blocks", block_rows)
         self._append_manifest(
@@ -227,8 +291,10 @@ class SessionShardBuilder:
         session_content_hash: bytes,
         message_rows: Iterator[tuple[object, ...]],
         block_rows: Iterator[tuple[object, ...]],
+        owner_resolution: MessageOwnerResolution,
     ) -> None:
         """Copy bounded row windows for one disk-backed parsed session."""
+        self.capture_owner_resolution(owner_resolution)
         message_lo = self._next_rowid["messages"]
         self._append_iter("messages", message_rows)
         block_lo = self._next_rowid["blocks"]
@@ -279,6 +345,15 @@ class SessionShardBuilder:
 
     def seal(self) -> SessionShard:
         """Commit the shard and return it. The seal row is the last write."""
+        count = int(self._conn.execute("SELECT COUNT(*) FROM shard_owner_manifest").fetchone()[0])
+        if count != self._session_count:
+            raise ShardRefusedError("each prepared session requires its captured owner resolution")
+        for session, expected in self._conn.execute("SELECT session_ordinal, owner_count FROM shard_owner_manifest"):
+            count, lo, hi = self._conn.execute(
+                "SELECT COUNT(*), MIN(ordinal), MAX(ordinal) FROM shard_owner_key WHERE session_ordinal=?", (session,)
+            ).fetchone()
+            if count != expected or (expected and (lo != 0 or hi != expected - 1)):
+                raise ShardRefusedError("prepared owner resolution is incomplete")
         for table in SHARD_TABLES:
             row = self._conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {table}").fetchone()
             if int(row[0]) != self._next_rowid[table] - 1:
@@ -417,6 +492,7 @@ def _session_entry(conn: sqlite3.Connection, path: Path, row: tuple[Any, ...]) -
         message_hi=message_hi,
         block_lo=int(row[4]),
         block_hi=int(row[5]),
+        owner_resolution=shard_owner_resolution(path, int(row[6])),
         content_identities=_read_message_identities(
             conn, path=path, message_lo=message_lo, message_hi=message_hi, session_id=session_id
         ),
@@ -448,7 +524,7 @@ class ShardSessionSequence(Sequence[ShardSessionRows]):
             raise IndexError(index)
         with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
             row = conn.execute(
-                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi, rowid "
                 "FROM shard_session WHERE rowid = ?",
                 (index + 1,),
             ).fetchone()
@@ -459,7 +535,7 @@ class ShardSessionSequence(Sequence[ShardSessionRows]):
     def __iter__(self) -> Iterator[ShardSessionRows]:
         with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
             for row in conn.execute(
-                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi, rowid "
                 "FROM shard_session ORDER BY rowid"
             ):
                 yield _session_entry(conn, self.path, row)
@@ -483,7 +559,7 @@ class ShardSessionMapping(Mapping[str, ShardSessionRows]):
     def __getitem__(self, session_id: str) -> ShardSessionRows:
         with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
             rows = conn.execute(
-                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi, rowid "
                 "FROM shard_session INDEXED BY shard_session_id WHERE session_id = ? LIMIT 2",
                 (session_id,),
             ).fetchall()
@@ -534,6 +610,22 @@ def open_session_shard(path: Path) -> SessionShard:
                 if session_id == previous_id:
                     raise ShardRefusedError(f"shard {path}: a session id appears twice in the manifest")
                 previous_id = str(session_id)
+            owner_count = int(conn.execute("SELECT COUNT(*) FROM shard_owner_manifest").fetchone()[0])
+            if owner_count != session_count:
+                raise ShardRefusedError("sealed shard lacks captured session owner evidence")
+            for ordinal, expected in conn.execute("SELECT session_ordinal, owner_count FROM shard_owner_manifest"):
+                count, lo, hi = conn.execute(
+                    "SELECT COUNT(*), MIN(ordinal), MAX(ordinal) FROM shard_owner_key WHERE session_ordinal=?",
+                    (ordinal,),
+                ).fetchone()
+                if (
+                    ordinal < 1
+                    or ordinal > session_count
+                    or expected < 0
+                    or count != expected
+                    or (expected and (lo != 0 or hi != expected - 1))
+                ):
+                    raise ShardRefusedError("sealed shard owner evidence is incomplete")
             maxima = {
                 table: int(conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {table}").fetchone()[0])
                 for table in SHARD_TABLES
@@ -647,3 +739,144 @@ __all__ = [
     "shard_column_signature",
     "shard_table_ddl",
 ]
+
+
+class _ShardOwnerKeys(Sequence[str]):
+    def __init__(self, path: Path, session: int, count: int) -> None:
+        self.path, self.session, self.count = path, session, count
+
+    def __len__(self) -> int:
+        return self.count
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+    @overload
+    def __getitem__(self, index: slice) -> list[str]: ...
+    def __getitem__(self, index: int | slice) -> str | list[str]:
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(self.count))]
+        ordinal = index + self.count if index < 0 else index
+        if not 0 <= ordinal < self.count:
+            raise IndexError(index)
+        with _shard_connection(self.path) as conn:
+            row = conn.execute(
+                "SELECT owner_key FROM shard_owner_key WHERE session_ordinal=? AND ordinal=?", (self.session, ordinal)
+            ).fetchone()
+        if row is None:
+            raise ShardRefusedError("sealed message-owner row disappeared")
+        return str(row[0])
+
+    def __iter__(self) -> Iterator[str]:
+        start = 0
+        while start < self.count:
+            with _shard_connection(self.path) as conn:
+                rows = conn.execute(
+                    "SELECT ordinal, owner_key FROM shard_owner_key WHERE session_ordinal=? AND ordinal>=? ORDER BY ordinal LIMIT 512",
+                    (self.session, start),
+                ).fetchall()
+            if not rows or any(int(row[0]) != start + i for i, row in enumerate(rows)):
+                raise ShardRefusedError("sealed message-owner range is incomplete")
+            if start + len(rows) > self.count:
+                raise ShardRefusedError("sealed message-owner range exceeds its manifest")
+            start += len(rows)
+            yield from (str(row[1]) for row in rows)
+
+
+class _ShardOwnerLookup(Mapping[_T, str]):
+    def __init__(self, path: Path, session: int, kind: str) -> None:
+        self.path, self.session, self.kind = path, session, kind
+
+    def __getitem__(self, key: _T) -> str:
+        with _shard_connection(self.path) as conn:
+            row = conn.execute(
+                "SELECT value FROM shard_owner_lookup WHERE session_ordinal=? AND kind=? AND key=?",
+                (self.session, self.kind, json.dumps(key, separators=(",", ":"))),
+            ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return str(row[0])
+
+    def __iter__(self) -> Iterator[_T]:
+        after = ""
+        while True:
+            with _shard_connection(self.path) as conn:
+                rows = conn.execute(
+                    "SELECT key FROM shard_owner_lookup WHERE session_ordinal=? AND kind=? AND key>? ORDER BY key LIMIT 512",
+                    (self.session, self.kind, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            for row in rows:
+                value = json.loads(row[0])
+                yield cast(_T, tuple(value) if self.kind == "physical" else value)
+
+    def __len__(self) -> int:
+        with _shard_connection(self.path) as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM shard_owner_lookup WHERE session_ordinal=? AND kind=?",
+                    (self.session, self.kind),
+                ).fetchone()[0]
+            )
+
+
+class _ShardOwnerAmbiguities(Set[_T]):
+    def __init__(self, path: Path, session: int, kind: str) -> None:
+        self.path, self.session, self.kind = path, session, kind
+
+    def __contains__(self, key: object) -> bool:
+        with _shard_connection(self.path) as conn:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM shard_owner_ambiguity WHERE session_ordinal=? AND kind=? AND key=?",
+                    (self.session, self.kind, json.dumps(key, separators=(",", ":"))),
+                ).fetchone()
+                is not None
+            )
+
+    def __iter__(self) -> Iterator[_T]:
+        after = ""
+        while True:
+            with _shard_connection(self.path) as conn:
+                rows = conn.execute(
+                    "SELECT key FROM shard_owner_ambiguity WHERE session_ordinal=? AND kind=? AND key>? ORDER BY key LIMIT 512",
+                    (self.session, self.kind, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            for row in rows:
+                value = json.loads(row[0])
+                yield cast(_T, tuple(value) if self.kind == "physical" else value)
+
+    def __len__(self) -> int:
+        with _shard_connection(self.path) as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM shard_owner_ambiguity WHERE session_ordinal=? AND kind=?",
+                    (self.session, self.kind),
+                ).fetchone()[0]
+            )
+
+
+def shard_owner_resolution(path: Path, session_ordinal: int) -> MessageOwnerResolution:
+    """Borrow sealed owner evidence; every native reader closes before transfer."""
+    from polylogue.pipeline.ids import MessageOwnerResolution
+
+    with _shard_connection(path) as conn:
+        row = conn.execute(
+            "SELECT owner_count FROM shard_owner_manifest WHERE session_ordinal=?", (session_ordinal,)
+        ).fetchone()
+    if row is None:
+        raise ShardRefusedError("sealed shard lacks required message-owner preparation")
+    return MessageOwnerResolution(
+        keys=_ShardOwnerKeys(path, session_ordinal, int(row[0])),
+        by_physical_coordinate=_ShardOwnerLookup[tuple[int, int]](path, session_ordinal, "physical"),
+        ambiguous_physical_coordinates=_ShardOwnerAmbiguities[tuple[int, int]](path, session_ordinal, "physical"),
+        by_stable_key=_ShardOwnerLookup[str](path, session_ordinal, "stable"),
+        ambiguous_stable_keys=_ShardOwnerAmbiguities[str](path, session_ordinal, "stable"),
+        ambiguous_keys=_ShardOwnerAmbiguities[str](path, session_ordinal, "key"),
+        unique_provider_keys=_ShardOwnerLookup[str](path, session_ordinal, "provider"),
+        ambiguous_provider_ids=_ShardOwnerAmbiguities[str](path, session_ordinal, "provider"),
+    )

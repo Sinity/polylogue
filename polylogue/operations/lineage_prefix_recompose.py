@@ -14,7 +14,7 @@ whatever ``_resolve_session_graph`` got wrong before anybody could see it, the
 mask ``daemon/lineage_startup.py`` exists to refuse.
 
 The re-derivation itself is the ordinary full-replay route
-(``backfill_historical_revision_evidence``) scoped to the child's own retained
+(``apply_prepared_revision_replay``) scoped to the child's own retained
 raw revision, so the write still lands through
 ``write_parsed_session_to_archive`` -- the single choke point shared by live
 ingest and full replay. There is no second lineage write route here.
@@ -26,6 +26,8 @@ import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import span
 from polylogue.storage.archive_identity import ArchiveLocation
@@ -164,7 +166,7 @@ def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: s
     the replay, never by the replay reporting that it ran. A best-effort
     partial recompose therefore cannot clear the row.
     """
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 
     conn = open_readonly_connection(index_path)
     try:
@@ -179,11 +181,26 @@ def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: s
     if not raw_ids:
         return "no retained raw revision is bound to this session, so its prefix cannot be re-derived"
     try:
-        backfill_historical_revision_evidence(
-            archive_root,
-            active_index_path=index_path,
-            selected_raw_ids=list(raw_ids),
-        )
+        adapter = make_raw_observation_derivation(archive_root, index_db_path=index_path)
+        frame = raw_observation_frame(archive_root, raw_ids=raw_ids, index_db_path=index_path)
+        for raw_id in raw_ids:
+            replacement = adapter.compute(frame, raw_id, replay_current=True)
+            publication_started = False
+
+            def publish(replacement=replacement) -> bool:
+                nonlocal publication_started
+                publication_started = True
+                return adapter.publish(frame, replacement)
+
+            try:
+                published = admit_stage_write(LINEAGE_PREFIX_RECOMPOSE_STAGE, publish)
+            finally:
+                if not publication_started:
+                    replacement.close()
+            if not published:
+                return "retained preparation requires another pass before prefix publication"
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
         return f"replaying retained raw evidence failed: {type(exc).__name__}: {exc}"
     conn = open_readonly_connection(index_path)
@@ -260,6 +277,7 @@ def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
         false_means_pending=True,
+        writer_admission="bridged",
     )
 
 
