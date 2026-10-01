@@ -1744,16 +1744,21 @@ class PreparedIndexMutation:
     def accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
         """Settle an already committed tier receipt even after cancellation."""
         self._require_live_owner()
-        observer = self._observers[receipt._tier]
         permit = self._pending_tier_permits.get(receipt._tier)
         if permit is None or receipt is not self._pending_tier_receipts.get(receipt._tier):
             raise ReferenceSealError("tier acceptance requires its original pending receipt")
-        observer.set_progress_handler(None, 0)
+        # Settlement reads both selected effect evidence and every original
+        # observer. Cancellation must not interrupt any of those handles after
+        # the durable producer has already committed.
+        settlement_connections = (*self._observers.values(), self._scratch)
+        for connection in settlement_connections:
+            connection.set_progress_handler(None, 0)
         try:
             with permit.acceptance_reservation():
                 self._accept_known_tier_commit(receipt)
         finally:
-            observer.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
+            for connection in settlement_connections:
+                connection.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
 
     def _accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
         if (

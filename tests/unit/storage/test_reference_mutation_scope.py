@@ -1218,7 +1218,7 @@ async def test_bound_removal_permission_stays_with_actual_apply_task_and_thread(
         assert await coordinator.shutdown()
 
 
-@pytest.mark.parametrize("commit_route", ["explicit", "native_context"])
+@pytest.mark.parametrize("commit_route", ["explicit", "native_context", "cancelled_after_commit"])
 def test_known_source_receipt_accepts_only_its_declared_native_commit(tmp_path: Path, commit_route: str) -> None:
     from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
@@ -1244,7 +1244,23 @@ def test_known_source_receipt_accepts_only_its_declared_native_commit(tmp_path: 
                     source.execute("UPDATE authority_control SET value = 'accepted' WHERE key = 'selected'")
                     permit.allow_commit(source)
                     source.commit()
-                seal.accept_known_tier_commit(permit.committed())
+                if commit_route == "cancelled_after_commit":
+                    import threading
+
+                    from polylogue.core.compute_cancel import compute_cancel
+
+                    cancelled = threading.Event()
+                    token = compute_cancel.set(cancelled)
+                    try:
+                        for observer in (*seal._observers.values(), seal._scratch):
+                            observer.set_progress_handler(lambda: int(cancelled.is_set()), 1)
+                        cancelled.set()
+                        seal.accept_known_tier_commit(permit.committed())
+                    finally:
+                        cancelled.clear()
+                        compute_cancel.reset(token)
+                else:
+                    seal.accept_known_tier_commit(permit.committed())
             seal.validate_observers_current()
             assert seal.observer("source").execute("SELECT value FROM authority_control").fetchone()[0] == "accepted"
 
