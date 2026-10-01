@@ -288,14 +288,47 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
     assert any(message.input_tokens for message in native.messages)
     assert any(message.blocks for message in native.messages)
 
-    def semantics(root: Path) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    def semantics(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+
+        messages: list[dict[str, Any]] = []
+        blocks: list[dict[str, Any]] = []
         with sqlite3.connect(root / "index.db") as conn:
-            messages = conn.execute(
-                "SELECT native_id, role, message_type, material_origin, input_tokens, output_tokens, "
-                "model_name, model_effort, stop_reason, variant_index, sender_name, recipient, "
-                "delivery_status, end_turn, user_context_text FROM messages ORDER BY message_id"
-            ).fetchall()
-            blocks = conn.execute("SELECT * FROM blocks ORDER BY message_id, position").fetchall()
+            conn.row_factory = sqlite3.Row
+            composed = read_archive_session_envelope(conn, "codex-session:child-native")
+            assert composed is not None and composed.lineage_complete
+            assert composed.parent_session_id == "codex-session:tool-call-session-1"
+            # A child-only attachment on an inherited turn legitimately ends
+            # prefix sharing. Compare the composed authored transcript, not
+            # the number of physical rows that own its material.
+            for message in composed.messages:
+                row = conn.execute("SELECT * FROM messages WHERE message_id = ?", (message.message_id,)).fetchone()
+                assert row is not None
+                # Physical identity and its hash are scoped to the session
+                # owning the row. Leaf status comes from the composed read.
+                semantic = {
+                    key: value
+                    for key, value in dict(row).items()
+                    if key not in {"message_id", "session_id", "content_hash"}
+                }
+                semantic["is_active_leaf"] = int(message.is_active_leaf)
+                if semantic["parent_message_id"] is not None:
+                    parent = conn.execute(
+                        "SELECT native_id FROM messages WHERE message_id = ?", (semantic["parent_message_id"],)
+                    ).fetchone()
+                    assert parent is not None
+                    semantic["parent_message_id"] = parent[0]
+                messages.append(semantic)
+                for row in conn.execute(
+                    "SELECT * FROM blocks WHERE message_id = ? ORDER BY position", (message.message_id,)
+                ):
+                    blocks.append(
+                        {
+                            key: value
+                            for key, value in dict(row).items()
+                            if key not in {"block_id", "message_id", "session_id"}
+                        }
+                    )
         return messages, blocks
 
     before = semantics(runtime.archive_root)
@@ -500,18 +533,27 @@ def test_unchanged_reacquisition_preserves_proven_raw_evidence(workspace_env: di
     assert runtime.converge()["parse"].parse_failures == 0
 
 
-def test_content_identical_duplicate_reuses_actual_raw_evidence(workspace_env: dict[str, Path]) -> None:
+def test_content_identical_duplicate_retains_actual_raw_evidence(workspace_env: dict[str, Path]) -> None:
     runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
     program = CorpusProgram(
         operations=(
             Acquire("acquire", _artifact("session", _codex_transcript("session", "first", "authored"))),
             Duplicate("duplicate", "session", "copy"),
+            Duplicate("same-path", "session", "same-path", new_source_path="sources/session.jsonl"),
             Converge("converge"),
         )
     )
     run = program.run(runtime)
-    assert run.state.applied_operation_ids == ("acquire", "duplicate", "converge")
-    assert runtime._raw_ids["copy"] == runtime._raw_ids["session"]
+    assert run.state.applied_operation_ids == ("acquire", "duplicate", "same-path", "converge")
+    assert runtime._raw_ids["same-path"] == runtime._raw_ids["session"]
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore.open_existing(runtime.archive_root, read_only=True) as archive:
+        for artifact_id in ("session", "copy", "same-path"):
+            assert runtime._raw_ids[artifact_id]
+            with archive.open_raw_revision_material(runtime._raw_ids[artifact_id][0]) as (_, handle, _, _):
+                assert handle.read() == run.state.artifact(artifact_id).payload
+    assert any(getattr(result, "skipped", 0) for result in runtime.last_results)
     assert runtime.converge()["parse"].parse_failures == 0
     with sqlite3.connect(runtime.archive_root / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM messages").fetchall() == [("first",)]

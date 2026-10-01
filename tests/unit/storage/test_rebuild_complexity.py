@@ -15,8 +15,13 @@ from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationRe
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources import revision_backfill
 from polylogue.storage.derived.raw import RawObservationDerivation
-from polylogue.storage.fts.sql import insert_all_message_identity_rows_sql
-from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
+from polylogue.storage.fts.fts_lifecycle import reset_message_fts_index_sync
+from polylogue.storage.fts.sql import (
+    FTS_MESSAGES_IDENTITY_RECIPE_ID,
+    insert_all_message_identity_rows_sql,
+    repair_message_identity_rows_range_sql,
+)
+from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql, rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
@@ -178,7 +183,10 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
         "delete-tautology",
         "update-tautology",
         "action-pairs-rebuild",
+        "action-pairs-tautology-scope",
         "fts-rebuild",
+        "fts-reset",
+        "fts-row-range-tautology",
         "fts-identity-rebuild",
         "fts-literal-scope",
         "fts-tautology-scope",
@@ -217,6 +225,31 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
             elif mutation == "action-pairs-rebuild":
                 rebuild_all_action_pairs_sync(archive._conn)
                 assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
+            elif mutation == "action-pairs-tautology-scope":
+                sql = action_pairs_refresh_sql("'absent' OR 1").replace(
+                    "INSERT INTO action_pairs", "INSERT OR REPLACE INTO action_pairs", 1
+                )
+                assert archive._conn.execute(sql).rowcount == count
+                assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
+            elif mutation == "fts-reset":
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                reset_message_fts_index_sync(archive._conn)
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+            elif mutation == "fts-row-range-tautology":
+                sql = (
+                    repair_message_identity_rows_range_sql()
+                    .replace("AND b.rowid <= ?", "AND b.rowid <= ? OR 1")
+                    .replace(f"'{FTS_MESSAGES_IDENTITY_RECIPE_ID}'", "'mutant-recipe'")
+                )
+                changes = archive._conn.total_changes
+                archive._conn.execute(sql, (0, 0))
+                assert archive._conn.total_changes > changes
+                assert (
+                    archive._conn.execute(
+                        "SELECT COUNT(*) FROM messages_fts_identity WHERE recipe_id = 'mutant-recipe'"
+                    ).fetchone()[0]
+                    > 0
+                )
             elif mutation == "fts-rebuild":
                 assert rebuild_archive_messages_fts(archive._conn) > 0
             elif mutation == "fts-delete-all":

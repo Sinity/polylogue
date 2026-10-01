@@ -74,6 +74,10 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
     # Trace callbacks expand bound values. A value containing SQL-looking
     # text is not a predicate or write target; neutralize it before matching.
     sql = _SQL_LITERAL.sub("?", sql)
+    if re.fullmatch(
+        r"drop table(?: if exists)? (?:messages_fts|messages_fts_identity|action_pairs|delegation_facts);?", sql
+    ):
+        return True
     if not sql.startswith(("delete ", "update ", "insert ", "replace ", "with ")):
         return False
     target = _WRITE_TARGET.search(sql)
@@ -109,12 +113,36 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
                 )
             )
             or (sql.partition(" select ")[2].startswith("new.rowid, ") and " from " not in sql)
-            or re.search(rf"b.rowid > {_BOUND_VALUE} and b.rowid <= {_BOUND_VALUE}", sql)
+            or re.search(
+                rf"where d.id is null and b.search_text != \? and b.rowid > {_BOUND_VALUE} "
+                rf"and b.rowid <= {_BOUND_VALUE} \) insert into messages_fts \(rowid, text\) "
+                r"select rowid, [^;]+ from missing$",
+                sql,
+            )
+            or re.search(
+                rf"where b.search_text != \? and b.rowid > {_BOUND_VALUE} and b.rowid <= {_BOUND_VALUE} "
+                r"on conflict\(rowid\) do update set block_id = excluded.block_id, "
+                r"source_hash = excluded.source_hash, recipe_id = excluded.recipe_id "
+                r"where messages_fts_identity.block_id != excluded.block_id "
+                r"or messages_fts_identity.source_hash is not excluded.source_hash "
+                r"or messages_fts_identity.recipe_id != excluded.recipe_id "
+                r"on conflict\(block_id\) do update set rowid = excluded.rowid, "
+                r"source_hash = excluded.source_hash, recipe_id = excluded.recipe_id$",
+                sql,
+            )
         )
     if table == "action_pairs":
         # Both tool-use branches and the result branch must be session-bound.
-        return len(re.findall(rf"u.session_id = {_BOUND_VALUE}", sql)) < 2 or not re.search(
-            rf"r.session_id = {_BOUND_VALUE}", sql
+        return not all(
+            re.search(predicate, sql)
+            for predicate in (
+                rf"where u.block_type = \? and u.tool_id is not null and u.tool_id != \? "
+                rf"and u.session_id = {_BOUND_VALUE} union all ",
+                rf"where r.block_type = \? and r.tool_id is not null and r.tool_id != \? "
+                rf"and r.session_id = {_BOUND_VALUE} \), numbered_events as ",
+                rf"where u.block_type = \? and \(u.tool_id is null or u.tool_id = \?\) "
+                rf"and u.session_id = {_BOUND_VALUE}$",
+            )
         )
     # The declared view reads only the current delegation_refresh_scope. Its
     # archive-wide population is counted above. Other INSERT/SELECT shapes

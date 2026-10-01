@@ -34,6 +34,7 @@ from polylogue.sources.parsers.browser_capture import (
 )
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_scenarios import open_index_db
+from tests.infra.daemon_operations import daemon_serving_archive
 
 
 def test_native_codex_capture_preserves_ordinary_parser_semantics() -> None:
@@ -271,6 +272,7 @@ def test_browser_capture_does_not_launder_capture_time_as_provider_update() -> N
 
 def test_native_chatgpt_title_merge_does_not_launder_capture_time() -> None:
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     session_payload = payload["session"]
     assert isinstance(session_payload, dict)
     session_payload["updated_at"] = "2026-04-24T00:00:01+00:00"
@@ -381,6 +383,7 @@ def test_claude_browser_capture_rejects_malformed_content_base64() -> None:
 
 def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["raw_provider_payload"] = {
         "id": "native-conv",
         "title": "Native ChatGPT title",
@@ -563,6 +566,7 @@ def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() ->
         },
     }
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["raw_provider_payload"] = raw_payload
 
     direct_session = parse_payload(Provider.CHATGPT, raw_payload, "direct-fallback")[0]
@@ -823,7 +827,7 @@ def test_browser_capture_prefers_raw_claude_ai_payload_when_present() -> None:
     session = payload["session"]
     assert isinstance(session, dict)
     session["provider"] = "claude-ai"
-    session["provider_session_id"] = "claude-conv-123"
+    session["provider_session_id"] = "claude-native-conv"
     payload["raw_provider_payload"] = {
         "uuid": "claude-native-conv",
         "name": "Native Claude title",
@@ -863,7 +867,7 @@ def test_browser_capture_raw_claude_ai_uses_content_when_text_empty() -> None:
     session = payload["session"]
     assert isinstance(session, dict)
     session["provider"] = "claude-ai"
-    session["provider_session_id"] = "claude-conv-123"
+    session["provider_session_id"] = "claude-native-conv"
     payload["raw_provider_payload"] = {
         "uuid": "claude-native-conv",
         "name": "Native Claude title",
@@ -903,7 +907,7 @@ def test_browser_capture_raw_claude_ai_attachment_content_stays_acquirable() -> 
     session = payload["session"]
     assert isinstance(session, dict)
     session["provider"] = "claude-ai"
-    session["provider_session_id"] = "claude-conv-123"
+    session["provider_session_id"] = "claude-native-conv"
     payload["raw_provider_payload"] = {
         "uuid": "claude-native-conv",
         "name": "Native Claude title",
@@ -1048,8 +1052,9 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     # The archive ingest path persists the captured session into the archive
     # ``index.db`` ``sessions`` table: ``origin`` carries the source family
@@ -1115,8 +1120,9 @@ async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
     blob_store = BlobStore(config.archive_root / "blob")
     config.sources = [Source(name="browser-capture", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
@@ -1240,8 +1246,9 @@ async def test_browser_capture_raw_payload_coalesces_with_chatgpt_export(
     ]
     sources = export_first_sources if source_order == "export-first" else list(reversed(export_first_sources))
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(sources)
+    with daemon_serving_archive(config.archive_root):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
@@ -1326,8 +1333,9 @@ async def test_browser_capture_raw_payload_coalesces_with_claude_ai_export(
         Source(name="browser-capture", path=artifact),
     ]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(sources)
+    with daemon_serving_archive(config.archive_root):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
@@ -1357,6 +1365,7 @@ def test_native_payload_delegation_keeps_envelope_acquired_assets() -> None:
     import base64 as _b64
 
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["session"]["attachments"] = [  # type: ignore[index]
         {
             "provider_attachment_id": "sandbox:native-a1:/mnt/data/kit.zip",
@@ -1405,6 +1414,7 @@ def test_native_payload_delegation_keeps_envelope_acquired_assets() -> None:
 
 def test_native_payload_delegation_without_envelope_attachments_is_unchanged() -> None:
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["session"]["attachments"] = []  # type: ignore[index]
     for turn in payload["session"]["turns"]:  # type: ignore[index]
         turn.pop("attachments", None)
@@ -1595,8 +1605,9 @@ async def test_browser_capture_tool_turn_blocks_land_in_archive_with_consistent_
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
@@ -1695,8 +1706,9 @@ async def test_browser_capture_block_metadata_lands_in_archive_session_events(
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
