@@ -19,6 +19,7 @@ from polylogue.storage.embeddings.identity import (
 )
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, SqliteVecUnavailableError, logger
 from polylogue.storage.sqlite.connection_profile import (
+    GenerationToken,
     attach_readonly_database,
     open_connection,
     open_readonly_connection,
@@ -101,6 +102,19 @@ def _configure_current_embedding_messages(
     )
 
 
+def _vector_snapshot_index_binding(connection: sqlite3.Connection) -> tuple[Path, GenerationToken]:
+    """Read the selected index proof retained by the existing snapshot owner."""
+    binding = getattr(connection, "_polylogue_vector_read_index_binding", None)
+    if (
+        not isinstance(binding, tuple)
+        or len(binding) != 2
+        or not isinstance(binding[0], Path)
+        or not isinstance(binding[1], GenerationToken)
+    ):
+        raise SqliteVecError("vector snapshot lacks its owner's selected index proof")
+    return binding[0], binding[1]
+
+
 def open_vector_read_snapshot(
     *,
     embeddings_path: Path,
@@ -113,11 +127,16 @@ def open_vector_read_snapshot(
 
     Callers choose and hold both paths under their publication barrier before
     calling this function.  No configured root, active-generation resolver,
-    or provider default participates here.
+    or provider default participates here. The returned handle retains the
+    selected index path and generation proof; provider construction consumes
+    that proof instead of certifying a held handle by its later pathname.
     """
 
     if not index_path.is_file():
         raise SqliteVecError(f"pinned vector snapshot found no index at {index_path}")
+    selected_index = index_path.resolve(strict=True)
+    selected_stat = selected_index.stat()
+    selected_generation = GenerationToken(device=selected_stat.st_dev, inode=selected_stat.st_ino)
     with _vector_projection_errors():
         conn = open_readonly_connection(embeddings_path, validate_schema=False)
     conn.row_factory = sqlite3.Row
@@ -130,10 +149,23 @@ def open_vector_read_snapshot(
                 raise SqliteVecUnavailableError(f"sqlite-vec extension failed to load: {error or 'unknown error'}")
             register_embedding_identity_sql(conn, recipe=recipe)
             # Each persistent database has its own read-only URI.
-            attach_readonly_database(conn, index_path, alias="archive_index")
+            attach_readonly_database(conn, selected_index, alias="archive_index")
             conn.execute("BEGIN")
             conn.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
             conn.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
+            attached = conn.execute("PRAGMA database_list").fetchall()
+            attached_index = next((row[2] for row in attached if row[1] == "archive_index"), None)
+            current_stat = selected_index.stat()
+            current_generation = GenerationToken(device=current_stat.st_dev, inode=current_stat.st_ino)
+            if (
+                not attached_index
+                or Path(attached_index).absolute() != selected_index
+                or current_generation != selected_generation
+            ):
+                raise SqliteVecError("selected archive index changed while pinning the vector snapshot; retry")
+            # The existing measured connection owns this proof across later
+            # provider construction, including after its pathname is replaced.
+            vars(conn)["_polylogue_vector_read_index_binding"] = (selected_index, selected_generation)
             if not defer_projection:
                 prepare_vector_read_projection(conn, recipe=recipe)
         return conn
@@ -170,7 +202,7 @@ class SqliteVecRuntimeMixin:
         _admitted_db_identity: tuple[int, int] | None
         _snapshot_connection: sqlite3.Connection | None
         _snapshot_index_path: Path
-        _snapshot_index_identity: tuple[int, int]
+        _snapshot_index_identity: GenerationToken
 
     def _assert_lifecycle_binding(self) -> None:
         if self._snapshot_connection is not None:
@@ -265,7 +297,10 @@ class SqliteVecRuntimeMixin:
             if index_path is not None:
                 selected = index_path.resolve(strict=True)
                 stat = selected.stat()
-                if selected != self._snapshot_index_path or (stat.st_dev, stat.st_ino) != self._snapshot_index_identity:
+                if (
+                    selected != self._snapshot_index_path
+                    or GenerationToken(device=stat.st_dev, inode=stat.st_ino) != self._snapshot_index_identity
+                ):
                     raise SqliteVecError("operation vector snapshot does not match the requested archive index")
             return self._snapshot_connection
         self._assert_lifecycle_binding()

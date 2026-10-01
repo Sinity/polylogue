@@ -281,6 +281,8 @@ has, not a window-specific gap.
 
 Existing-session similarity (`near:id:<ref>`) reads retained vectors without Voyage acquisition credentials. Text semantic queries require a new query embedding and therefore still require an API key. Unavailable vector storage produces typed uncertainty rather than certifying an empty answer.
 
+Python callers supplying a SQLite snapshot provider use an archive-owned handle returned by `open_vector_read_snapshot`; `from_vector_read_snapshot` consumes the index identity recorded when that handle was pinned. The caller retains its lifetime and creating thread. Raw connections without this owner proof are refused, and an API read requesting a different or replaced index is refused before hydration.
+
 Field values support quoted strings and in-field alternatives:
 
 ```bash

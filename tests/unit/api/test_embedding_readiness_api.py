@@ -254,7 +254,10 @@ async def test_public_provider_projection_owns_rows_without_changing_connection(
 
 
 @pytest.mark.asyncio
-async def test_supplied_snapshot_refuses_index_identity_replaced_before_api_read(tmp_path: Path) -> None:
+@pytest.mark.parametrize("replace_before_provider", [False, True])
+async def test_supplied_snapshot_refuses_index_identity_replaced_before_api_read(
+    tmp_path: Path, replace_before_provider: bool
+) -> None:
     """An already held conventional index cannot hydrate through its replacement."""
     import shutil
 
@@ -269,10 +272,17 @@ async def test_supplied_snapshot_refuses_index_identity_replaced_before_api_read
         index_path=tmp_path / "index.db",
         recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
     )
-    provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
+    provider = None
+    if not replace_before_provider:
+        provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
     try:
         (tmp_path / "index.db").rename(tmp_path / "held-index.db")
         shutil.copyfile(tmp_path / "held-index.db", tmp_path / "index.db")
+        if replace_before_provider:
+            provider = SqliteVecProvider.from_vector_read_snapshot(
+                voyage_key=None, connection=connection, model="voyage-4"
+            )
+        assert provider is not None
         async with Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db") as archive:
             with pytest.raises(SqliteVecError):
                 await archive.search_similar_sessions("codex-session:seed", vector_provider=provider)

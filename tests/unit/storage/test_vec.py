@@ -579,3 +579,45 @@ def test_retained_reader_refuses_acquisition_without_key(tmp_path: Path) -> None
     provider = SqliteVecProvider(voyage_key=None, db_path=tmp_path / "embeddings.db")
     with pytest.raises(SqliteVecError):
         provider._get_embeddings(["synthetic query"], input_type="query")
+
+
+def test_snapshot_provider_refuses_raw_connection_without_owner_proof(tmp_path: Path) -> None:
+    """A raw handle cannot be certified by statting a pathname after publication."""
+    from contextlib import closing
+
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(tmp_path, [])
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute("ATTACH DATABASE ? AS archive_index", (str(tmp_path / "index.db"),))
+        with pytest.raises(SqliteVecError):
+            SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+
+
+def test_snapshot_admission_refuses_index_replacement_and_closes_its_handle(tmp_path: Path) -> None:
+    """Recording a fresh post-attach identity would certify the replaced file."""
+    import shutil
+
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(tmp_path, [("seed", "m1", "Synthetic selected admission prose.", [1.0] + [0.0] * 1023)])
+    acquired: list[sqlite3.Connection] = []
+
+    def replace_selected_index(connection: sqlite3.Connection) -> None:
+        acquired.append(connection)
+        (tmp_path / "index.db").rename(tmp_path / "prior-index.db")
+        shutil.copyfile(tmp_path / "prior-index.db", tmp_path / "index.db")
+
+    with pytest.raises(SqliteVecError):
+        open_vector_read_snapshot(
+            embeddings_path=tmp_path / "embeddings.db",
+            index_path=tmp_path / "index.db",
+            recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+            configure_connection=replace_selected_index,
+        )
+    assert len(acquired) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        acquired[0].execute("SELECT 1")

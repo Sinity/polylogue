@@ -11,7 +11,7 @@ from pathlib import Path
 from polylogue.paths import embeddings_db_path
 from polylogue.storage.search_providers.sqlite_vec_embeddings import SqliteVecEmbeddingMixin
 from polylogue.storage.search_providers.sqlite_vec_queries import SqliteVecQueryMixin
-from polylogue.storage.search_providers.sqlite_vec_runtime import SqliteVecRuntimeMixin
+from polylogue.storage.search_providers.sqlite_vec_runtime import SqliteVecRuntimeMixin, _vector_snapshot_index_binding
 from polylogue.storage.search_providers.sqlite_vec_support import (
     BATCH_SIZE,
     DEFAULT_DIMENSION,
@@ -39,19 +39,15 @@ class SqliteVecProvider(
     ) -> None:
         if snapshot_connection is not None:
             # This provider is an operation-scoped reader. The archive owner
-            # opened and pinned the handle; record its attached index identity
-            # for validation without closing or reopening that authority.
+            # opened and pinned the handle; consume its recorded index proof
+            # without certifying it by a later pathname or reopening it.
             self.db_path = Path("embeddings.db")
             self.archive_root = None
             self._snapshot_connection = snapshot_connection
             self._snapshot_thread_id = threading.get_ident()
-            attached = snapshot_connection.execute("PRAGMA database_list").fetchall()
-            index = next((row[2] for row in attached if row[1] == "archive_index"), None)
-            if not index:
-                raise SqliteVecError("operation vector snapshot has no selected archive index")
-            self._snapshot_index_path = Path(index).resolve(strict=True)
-            stat = self._snapshot_index_path.stat()
-            self._snapshot_index_identity = (stat.st_dev, stat.st_ino)
+            self._snapshot_index_path, self._snapshot_index_identity = _vector_snapshot_index_binding(
+                snapshot_connection
+            )
             self.voyage_key = voyage_key
             self.model = model
             self.dimension = dimension
@@ -123,7 +119,12 @@ class SqliteVecProvider(
         model: str = DEFAULT_MODEL,
         dimension: int = DEFAULT_DIMENSION,
     ) -> SqliteVecProvider:
-        """Bind semantic reads to an archive-owned operation snapshot."""
+        """Bind reads to a handle returned by ``open_vector_read_snapshot``.
+
+        The archive owner retains the handle's lifetime and creating thread.
+        Its selected-index proof was captured at admission; unsupported raw
+        connections visibly refuse rather than receiving a fresh-stat proof.
+        """
 
         return cls(
             voyage_key,
