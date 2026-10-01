@@ -451,3 +451,41 @@ def test_jsonl_session_artifact_forwards_its_record_ceiling() -> None:
     # input is otherwise classifiable and the bound is what changed the outcome.
     scan = scan_jsonl_session_artifact(io.BytesIO(oversized), provider=Provider.CHATGPT)
     assert scan.oversized_records == 0
+
+
+def test_zip_parser_uses_accepted_container_after_declared_alias_retargets(tmp_path: Path) -> None:
+    """A reopen of the operator alias would parse B and lose A's entry receipt."""
+    from polylogue.sources.source_staging import bind_source_input
+    from polylogue.storage.blob_store import BlobStore
+
+    payload = (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
+    accepted = tmp_path / "accepted.zip"
+    unrelated = tmp_path / "unrelated.zip"
+    alias = tmp_path / "declared.zip"
+    _zip_with_member(accepted, "conversations.json", payload)
+    _zip_with_member(unrelated, "other.json", b'{"title":"unrelated","mapping":{}}')
+    alias.symlink_to(accepted)
+    with bind_source_input(alias) as binding:
+        alias.unlink()
+        alias.symlink_to(unrelated)
+        rows = list(
+            decoder_zip.process_zip(
+                alias,
+                provider_hint=Provider.CHATGPT,
+                should_group=True,
+                file_mtime=None,
+                capture_raw=True,
+                cursor_state=None,
+                blob_store=BlobStore(tmp_path / "blobs"),
+                source_binding=binding,
+            )
+        )
+    assert rows
+    for raw, session in rows:
+        assert session.source_name is Provider.CHATGPT
+        assert raw is not None
+        assert raw.captured_zip_coordinate is not None
+        assert raw.captured_zip_coordinate.canonical_container == str(accepted)
+        assert raw.captured_zip_coordinate.member_name == "conversations.json"
+        assert raw.captured_zip_coordinate.entry_ordinal == 0
+        assert raw.source_path == f"{alias}:conversations.json"

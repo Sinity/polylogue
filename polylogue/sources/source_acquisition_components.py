@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import pickle
+import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterable, Iterator
@@ -39,7 +41,6 @@ from .acquisition_boundary import (
     drain_bound,
     open_bound_member,
     refuse_declared_foreign,
-    release_captures_on_refusal,
     release_refused_capture,
 )
 from .decoder_zip import (
@@ -576,10 +577,9 @@ def stream_preserved_zip_entry_raw_data(
     """Durably stream one admitted ZIP member without decoding its content.
 
     The caller remains responsible for applying :class:`_ZipEntryValidator`
-    before this function.  Keeping the bounded entry reader here means a
-    source-tier-only outage retains the same ZIP-bomb protection as ordinary
-    acquisition while deliberately avoiding provider detection, JSON decoding,
-    and artifact classification.
+    before this function. Complete entry streaming verifies decompression and
+    CRC while avoiding provider detection, JSON decoding and artifact
+    classification on a source-tier-only acquisition route.
     """
     with open_bound_member(zf, context.entry, context.bound_provider) as handle:
         blob_hash, blob_size = capture_bound_stream(
@@ -1031,31 +1031,53 @@ def _iter_zip_entry_raw_data(
         return
 
     state = _ZipEntrySplitState()
-    # A member is one admission unit: the boundary refuses a foreign record
-    # only when its bytes are read, so no split leaves the member before the
-    # whole member validated. Any failure (a refusal, a ZIP-bomb ceiling, a
-    # read fault) releases the splits it captured: none was yielded.
-    splits: list[RawSessionData] = []
+    # Nothing leaves this admission unit before complete syntax/CRC validation.
+    # Metadata is spooled privately; failed/cancelled acquisition releases every
+    # publication prefix without retaining all split records in memory.
     identity_refusal: ContentIdentityRefusal | None = None
-    with release_captures_on_refusal(context.blob_store, refusals=(Exception,)) as captures:
+    with tempfile.TemporaryFile(mode="w+b", prefix="polylogue-zip-splits-") as splits:
         try:
-            for split_payload in _iter_zip_entry_split_payloads(zf, context, state):
-                state.did_split = True
-                split = make_split_entry_raw_data(
-                    blob_store=context.blob_store,
-                    split_payload=split_payload,
-                    source_path=context.source_path,
-                    file_mtime=context.file_mtime,
-                )
-                splits.append(split)
+            try:
+                for split_payload in _iter_zip_entry_split_payloads(zf, context, state):
+                    state.did_split = True
+                    split = make_split_entry_raw_data(
+                        blob_store=context.blob_store,
+                        split_payload=split_payload,
+                        source_path=context.source_path,
+                        file_mtime=context.file_mtime,
+                    )
+                    position = splits.tell()
+                    try:
+                        pickle.dump(split, splits, protocol=pickle.HIGHEST_PROTOCOL)
+                    except BaseException:
+                        splits.seek(position)
+                        splits.truncate()
+                        if split.blob_hash is not None:
+                            release_refused_capture(
+                                context.blob_store, split.blob_hash, split.blob_publication_receipt_id
+                            )
+                        raise
+            except ContentIdentityRefusal as exc:
+                # Identity refusal follows complete member validation. Keep
+                # admissible siblings and report the refused element afterward.
+                identity_refusal = exc
+        except BaseException:
+            splits.seek(0)
+            while True:
+                try:
+                    split = pickle.load(splits)
+                except EOFError:
+                    break
                 if split.blob_hash is not None:
-                    captures.append((split.blob_hash, split.blob_publication_receipt_id))
-        except ContentIdentityRefusal as exc:
-            # Raised only after the member was read whole: an element whose
-            # identity cannot be stored is the member's recorded gap, and its
-            # validated siblings are still acquired.
-            identity_refusal = exc
-    yield from splits
+                    release_refused_capture(context.blob_store, split.blob_hash, split.blob_publication_receipt_id)
+            raise
+        splits.seek(0)
+        while True:
+            try:
+                split = pickle.load(splits)
+            except EOFError:
+                break
+            yield split
     if identity_refusal is not None:
         raise identity_refusal
 

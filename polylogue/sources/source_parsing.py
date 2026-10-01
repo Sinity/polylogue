@@ -438,6 +438,7 @@ def _parse_one_source_path_bound(
             blob_root=blob_root,
             blob_store=blob_store,
             sidecar_data=sidecar_data,
+            source_binding=source_binding,
         )
         return
 

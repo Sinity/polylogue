@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import zipfile
 from collections.abc import Callable, Collection, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
@@ -30,6 +30,7 @@ from .parsers.base import ParsedSession, RawSessionData
 
 if TYPE_CHECKING:
     from .prepared_jsonl import PreparedJsonl
+    from .source_staging import SourceInputBinding
 
 logger = get_logger(__name__)
 
@@ -214,6 +215,7 @@ def process_zip(
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
     sidecar_data: SidecarData | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Process a ZIP file, yielding sessions from its entries.
 
@@ -234,6 +236,7 @@ def process_zip(
 
     from .acquisition_boundary import (
         capture_bound_stream,
+        open_bound_container,
         open_bound_member,
         release_captures_on_refusal,
         release_refused_capture,
@@ -253,10 +256,49 @@ def process_zip(
         zip_path=zip_path,
     )
 
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in validator.filter_entries(zf.infolist()):
+    from polylogue.config import Source
+    from polylogue.core.provider_identity import captured_hermes_profile_key
+
+    from .parsers.hermes_identity import CapturedHermesProfile
+    from .source_acquisition_components import (
+        ZipEntryReadContext,
+        _captured_zip_record,
+        zip_member_admission,
+        zip_member_profile_identity,
+    )
+    from .source_staging import bind_source_input
+
+    with ExitStack() as custody:
+        binding = source_binding or custody.enter_context(bind_source_input(zip_path))
+        physical = custody.enter_context(open_bound_container(store, binding))
+        zf = custody.enter_context(zipfile.ZipFile(physical))
+        entries = zf.infolist()
+        ordinals = {id(info): ordinal for ordinal, info in enumerate(entries)}
+        admission = zip_member_admission(zf, zip_path, entries, provider_hint)
+        for info in validator.filter_entries(entries, allowed_path=admission.allowed_path):
             name = info.filename
-            entry_provider_hint = zip_entry_provider_hint(name, provider_hint)
+            entry_provider_hint = admission.entry_provider_hint(zf, info)
+            member_context = ZipEntryReadContext(
+                source=Source(name=provider_hint.value, path=zip_path),
+                zip_path=zip_path,
+                entry=info,
+                file_mtime=file_mtime,
+                provider_hint=entry_provider_hint,
+                blob_store=store,
+                bound_provider=bound_location_provider(provider_hint),
+                captured_input_identity=binding.captured_identity,
+                entry_ordinal=ordinals[id(info)],
+            )
+            namespace = zip_member_profile_identity(binding.captured_identity, name)
+            profile = (
+                None
+                if namespace is None
+                else CapturedHermesProfile(
+                    namespace[0],
+                    captured_hermes_profile_key(namespace[0]),
+                    namespace[1],
+                )
+            )
             path_classification = classify_artifact_path(name, provider=entry_provider_hint)
             session_artifact: ArtifactClassification | None = None
             if path_classification is not None and not path_classification.parse_as_session:
@@ -283,11 +325,9 @@ def process_zip(
             precomputed_raw: RawSessionData | None = None
             try:
                 if capture_raw and entry_should_group:
-                    # The bounded member reader enforces a hard real-byte
-                    # ceiling during decompression, independent of the
-                    # entry's (forgeable) declared header sizes; the boundary
-                    # refuses a foreign record before the member is retained.
-                    with open_bound_member(zf, info, ctx.bound_provider) as handle:
+                    # The complete member boundary refuses foreign records
+                    # before publishing grouped bytes.
+                    with open_bound_member(zf, info, ctx.bound_provider, profile_identity=profile) as handle:
                         blob_hash, blob_size = capture_bound_stream(store, handle)
                     try:
                         with store.open(blob_hash) as stored_handle:
@@ -315,13 +355,18 @@ def process_zip(
                 with release_captures_on_refusal(store) as captures:
                     if precomputed_raw is not None and precomputed_raw.blob_hash is not None:
                         captures.append((precomputed_raw.blob_hash, precomputed_raw.blob_publication_receipt_id))
-                    with open_bound_member(zf, info, ctx.bound_provider) as handle:
-                        yield from emitter.emit(
+                    with open_bound_member(zf, info, ctx.bound_provider, profile_identity=profile) as handle:
+                        for raw, session in emitter.emit(
                             handle,
                             name,
                             precomputed_raw=precomputed_raw,
                             session_artifact=session_artifact,
-                        )
+                        ):
+                            if raw is not None:
+                                if raw.addressing_mode is None:
+                                    raw = raw.model_copy(update={"addressing_mode": MemberAddressingMode.WHOLE_MEMBER})
+                                raw = _captured_zip_record(raw, member_context)
+                            yield raw, session
             except ContentExcisedError as exc:
                 # An excised member is skipped; the archive's other members
                 # still ingest. Not a cursor failure: nothing to retry.

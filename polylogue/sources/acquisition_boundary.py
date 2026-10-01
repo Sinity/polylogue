@@ -482,10 +482,12 @@ def open_bound_member(
     zf: zipfile.ZipFile,
     info: zipfile.ZipInfo,
     location: Provider | str | None,
+    *,
+    profile_identity: CapturedHermesProfile | None = None,
 ) -> Iterator[BinaryIO]:
     """Open an admitted ZIP member through the boundary; the archive's location binds it."""
     refuse_declared_foreign(info.filename, location)
-    with bind_stream(open_zip_entry(zf, info), info.filename, location) as stream:
+    with bind_stream(open_zip_entry(zf, info), info.filename, location, profile_identity=profile_identity) as stream:
         yield stream
 
 

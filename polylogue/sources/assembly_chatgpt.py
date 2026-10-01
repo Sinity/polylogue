@@ -357,33 +357,23 @@ class ChatGPTAssemblySpec:
                 attachment_count = len(attachments)
                 conn.execute(f"SAVEPOINT {savepoint}")
                 try:
-                    # Write the expanded sequence in place, in the same order the
-                    # in-memory route produces: each pointer's renditions sit
-                    # together. A rendition can overwrite a slot not yet read;
-                    # that input is kept aside until its turn, so only displaced
-                    # rows are held, never the whole attachment list.
-                    displaced: dict[int, ParsedAttachment] = {}
                     write_position = 0
-                    for position in range(attachment_count):
-                        attachment = displaced.pop(position) if position in displaced else attachments[position]
-                        resolved_items, resolved_events = _resolve_attachment_renditions(
-                            attachment,
-                            index,
-                            thread_id=conv.provider_session_id,
-                            asset_blobs=asset_blobs,
-                        )
-                        for item in resolved_items:
-                            if write_position >= attachment_count:
-                                attachments.append(item)
-                            elif write_position == position:
-                                if item is not attachment:
-                                    attachments[write_position] = item
-                            else:
-                                if write_position not in displaced:
-                                    displaced[write_position] = attachments[write_position]
-                                attachments[write_position] = item
-                            write_position += 1
-                        events.extend(resolved_events)
+                    with attachments.original_items_for_rewrite() as originals:
+                        for attachment in originals:
+                            for item, event in _resolve_attachment_renditions(
+                                attachment,
+                                index,
+                                thread_id=conv.provider_session_id,
+                                asset_blobs=asset_blobs,
+                            ):
+                                if item is not None:
+                                    if write_position >= attachment_count:
+                                        attachments.append(item)
+                                    else:
+                                        attachments[write_position] = item
+                                    write_position += 1
+                                if event is not None:
+                                    events.append(event)
                 except BaseException:
                     conn.execute(f"ROLLBACK TO {savepoint}")
                     conn.execute(f"RELEASE {savepoint}")
@@ -397,16 +387,20 @@ class ChatGPTAssemblySpec:
             new_events: list[ParsedSessionEvent] = []
             changed = False
             for attachment in conv.attachments:
-                resolved_items, resolved_events = _resolve_attachment_renditions(
+                resolved_count = 0
+                for item, event in _resolve_attachment_renditions(
                     attachment,
                     index,
                     thread_id=conv.provider_session_id,
                     asset_blobs=asset_blobs,
-                )
-                new_attachments.extend(resolved_items)
-                if resolved_items != [attachment] or resolved_items[0] is not attachment:
-                    changed = True
-                new_events.extend(resolved_events)
+                ):
+                    if item is not None:
+                        new_attachments.append(item)
+                        resolved_count += 1
+                        changed |= item is not attachment
+                    if event is not None:
+                        new_events.append(event)
+                changed |= resolved_count != 1
             if not changed and not new_events:
                 return conv
             return conv.model_copy(
@@ -438,7 +432,7 @@ def _resolve_attachment_renditions(
     *,
     thread_id: str,
     asset_blobs: Mapping[str, tuple[str, int]],
-) -> tuple[list[ParsedAttachment], list[ParsedSessionEvent]]:
+) -> Iterator[tuple[ParsedAttachment | None, ParsedSessionEvent | None]]:
     """Resolve one attachment into every physical member it names.
 
     Discovery keys a single member by its bare asset id and, once a second
@@ -458,12 +452,13 @@ def _resolve_attachment_renditions(
     first = next(iterator, None)
     if first is None:
         resolved, event = _resolve_attachment(attachment, index, thread_id=thread_id, asset_blobs=asset_blobs)
-        return [resolved], [] if event is None else [event]
+        yield resolved, event
+        return
     base, base_event = _resolve_asset_attachment(attachment, index, {})
-    items: list[ParsedAttachment] = []
-    events: list[ParsedSessionEvent] = [] if base_event is None else [base_event]
+    if base_event is not None:
+        yield None, base_event
     if attachment.inline_bytes is not None or attachment.precomputed_blob is not None:
-        items.append(base)
+        yield base, None
     for key in chain((first,), iterator):
         member = key[len(prefix) :]
         blob_hash, blob_size = asset_blobs[key]
@@ -486,8 +481,8 @@ def _resolve_attachment_renditions(
                 "prepared_carrier_key": None,
             }
         )
-        items.append(rendition)
-        events.append(
+        yield (
+            rendition,
             ParsedSessionEvent(
                 event_type="chatgpt_asset_resolution",
                 source_message_provider_id=attachment.message_provider_id,
@@ -503,9 +498,8 @@ def _resolve_attachment_renditions(
                     "resolution_source": "asset_member",
                     "blob_acquired": True,
                 },
-            )
+            ),
         )
-    return items, events
 
 
 def _resolve_attachment(
