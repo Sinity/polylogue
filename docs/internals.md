@@ -1285,8 +1285,9 @@ attributable to a specific convergence cycle.
 ## Daemon Metrics Endpoint (#1321)
 
 `GET /metrics` returns the Prometheus text exposition format
-(`text/plain; version=0.0.4`). Implementation lives in
-`polylogue/daemon/metrics.py`; the route is wired in
+(`text/plain; version=0.0.4`). Collection and exposition live in
+`polylogue/operations/daemon_metrics.py`; `polylogue/daemon/metrics.py` adapts
+the result to HTTP. The route is wired in
 `polylogue/daemon/http.py` alongside `/healthz/*` so all three scrape
 surfaces share the same unauthenticated posture (scrapers cannot supply
 credentials; the daemon binds to loopback by default).

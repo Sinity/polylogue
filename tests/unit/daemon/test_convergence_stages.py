@@ -10,6 +10,8 @@ import pytest
 
 import polylogue.daemon.convergence_stages as stages
 import polylogue.logging as plog
+import polylogue.operations.claude_workflow_convergence as workflow
+import polylogue.operations.sinex_convergence as sinex_composition
 from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon.convergence_stages import (
@@ -230,10 +232,10 @@ def test_derivation_barrier_exists_only_in_primary_mode_and_reads_configured_sou
         read.append((source_db_path, ids))
         return {"held"} & set(ids)
 
-    monkeypatch.setattr(stages, "load_polylogue_config", lambda: SimpleNamespace(sinex_mode=mode))
+    monkeypatch.setattr(sinex_composition, "load_polylogue_config", lambda: SimpleNamespace(sinex_mode=mode))
     monkeypatch.setattr(sinex_service, "primary_blocking_object_ids", blocking)
 
-    barrier = stages.configured_derivation_barrier(configured_root)
+    barrier = sinex_composition.configured_derivation_barrier(configured_root)
 
     if mode != "primary":
         assert barrier is None
@@ -265,8 +267,8 @@ def test_claude_workflow_stage_event_replaces_its_snapshot_rather_than_appending
         run_count=2, call_count=2, attempt_count=2, linked_session_count=2, unresolved_call_count=0, gaps=()
     )
 
-    stages._record_claude_workflow_stage_event(tmp_path, first)
-    stages._record_claude_workflow_stage_event(tmp_path, second)
+    workflow.record_claude_workflow_stage_event(tmp_path, first)
+    workflow.record_claude_workflow_stage_event(tmp_path, second)
 
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         rows = conn.execute(
@@ -291,7 +293,7 @@ def test_claude_workflow_failure_invalidates_the_clean_receipt(tmp_path: Path) -
     kept reading that stale clean row and reporting OK while convergence was
     failing and the graph was stale.
 
-    Anti-vacuity: delete the ``_record_claude_workflow_failure_event`` call
+    Anti-vacuity: delete the ``record_claude_workflow_failure_event`` call
     from ``execute``'s ``except`` branch and the stored status stays ``clean``
     with the first pass's counts, so both status assertions go red. The
     opposite direction is pinned too -- a blanket "always record failed" would
@@ -303,9 +305,9 @@ def test_claude_workflow_failure_invalidates_the_clean_receipt(tmp_path: Path) -
     clean = SimpleNamespace(
         run_count=7, call_count=7, attempt_count=7, linked_session_count=7, unresolved_call_count=0, gaps=()
     )
-    stages._record_claude_workflow_stage_event(tmp_path, clean)
+    workflow.record_claude_workflow_stage_event(tmp_path, clean)
 
-    stage = stages.make_claude_workflow_stage(tmp_path / "index.db")
+    stage = workflow.make_claude_workflow_stage(tmp_path / "index.db")
     target = tmp_path / "projects" / "demo" / "session.jsonl"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("{}\n", encoding="utf-8")
@@ -357,11 +359,11 @@ def test_readiness_refuses_a_failed_claude_workflow_receipt(tmp_path: Path) -> N
     clean = SimpleNamespace(
         run_count=3, call_count=3, attempt_count=3, linked_session_count=3, unresolved_call_count=0, gaps=()
     )
-    stages._record_claude_workflow_stage_event(tmp_path, clean)
+    workflow.record_claude_workflow_stage_event(tmp_path, clean)
     healthy = _claude_workflow_materialization_check(tmp_path)
     assert healthy.status is OutcomeStatus.OK, healthy.summary
 
-    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("materializer exploded"))
+    workflow.record_claude_workflow_failure_event(tmp_path, RuntimeError("materializer exploded"))
     failed = _claude_workflow_materialization_check(tmp_path)
 
     assert failed.status is OutcomeStatus.ERROR, failed.summary
@@ -385,14 +387,14 @@ def test_an_older_failed_pass_cannot_overwrite_a_newer_clean_receipt(tmp_path: P
         run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=0, gaps=()
     )
 
-    stages._record_claude_workflow_stage_event(tmp_path, clean, started_at_ns=2_000)
-    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("stale failure"), started_at_ns=1_000)
+    workflow.record_claude_workflow_stage_event(tmp_path, clean, started_at_ns=2_000)
+    workflow.record_claude_workflow_failure_event(tmp_path, RuntimeError("stale failure"), started_at_ns=1_000)
     assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.OK
     # A failure that started in the same instant cannot prove it is newer.
-    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("tied failure"), started_at_ns=2_000)
+    workflow.record_claude_workflow_failure_event(tmp_path, RuntimeError("tied failure"), started_at_ns=2_000)
     assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.OK
 
-    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("newer failure"), started_at_ns=3_000)
+    workflow.record_claude_workflow_failure_event(tmp_path, RuntimeError("newer failure"), started_at_ns=3_000)
     newer = _claude_workflow_materialization_check(tmp_path)
     assert newer.status is OutcomeStatus.ERROR
     assert "newer failure" in newer.summary
@@ -402,5 +404,41 @@ def test_an_older_failed_pass_cannot_overwrite_a_newer_clean_receipt(tmp_path: P
     gapped = SimpleNamespace(
         run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=1, gaps=("gap",)
     )
-    stages._record_claude_workflow_stage_event(tmp_path, gapped, started_at_ns=500)
+    workflow.record_claude_workflow_stage_event(tmp_path, gapped, started_at_ns=500)
     assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.WARNING
+
+
+def test_workflow_publication_keeps_configured_root_after_index_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Following the generation parent would lose source authority and the receipt."""
+    from contextlib import closing
+
+    from polylogue.analysis import claude_workflow_materializer as materializer
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_active_archive_root(tmp_path)
+    generation = tmp_path / ".index-generations" / "promoted"
+    generation.mkdir(parents=True)
+    initialize_archive_database(generation / "index.db", ArchiveTier.INDEX)
+    (tmp_path / ".index-active-pointer").write_text(str(generation / "index.db"), encoding="utf-8")
+    roots: list[Path] = []
+    summary = SimpleNamespace(
+        run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=0, gaps=()
+    )
+
+    def materialize(root: Path) -> object:
+        roots.append(root)
+        return summary
+
+    monkeypatch.setattr(materializer, "materialize_claude_workflow_archive", materialize)
+    target = tmp_path / "projects" / "demo" / "session.jsonl"
+    stage = workflow.make_claude_workflow_stage(tmp_path / "index.db")
+    assert stage.execute(target) is True
+    assert roots == [tmp_path]
+    with closing(sqlite3.connect(tmp_path / "ops.db")) as conn:
+        assert conn.execute(
+            "SELECT status FROM daemon_stage_events WHERE event_id = 'claude_workflow:current'"
+        ).fetchone() == ("clean",)
+    assert not (generation / "ops.db").exists()

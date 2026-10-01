@@ -499,7 +499,7 @@ def compose_embedding_convergence(
             return EmbeddingConvergenceResult(None, "provider_unavailable")
 
         return ComposedEmbeddingConvergence(unavailable)
-    from polylogue.daemon.convergence_stages import configured_derivation_barrier
+    from polylogue.operations.sinex_convergence import configured_derivation_barrier
 
     owner = DerivationConvergenceOwner(
         DaemonConverger(

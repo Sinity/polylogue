@@ -10,13 +10,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon import metrics
+from polylogue.daemon.metrics import handle_metrics
+from polylogue.operations import daemon_metrics as metrics
 from polylogue.operations.storage_io_observation import IoPhaseObservation, StorageIoObservation
 
 
 def _scrape(db: Path) -> str:
     responder = MagicMock()
-    metrics.handle_metrics(responder, db)
+    handle_metrics(responder, db)
     assert responder._send_text.call_args.args[0] == HTTPStatus.OK
     return cast(str, responder._send_text.call_args.args[1])
 
@@ -256,3 +257,60 @@ def test_process_collection_failure_isolated(monkeypatch: pytest.MonkeyPatch, tm
     assert "polylogue_diagnostic_delivery_total" in body
     assert "polylogue_storage_io_phase_observable" not in body
     assert 'polylogue_daemon_metrics_collection_available{group="process_io"} 0' in body
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "fallback", "reason"),
+    [
+        ("_ops_attempt_counts", None, "attempt_counts_unreadable"),
+        ("_ops_recent_attempt_durations", [], "attempt_durations_unreadable"),
+        ("_ops_latest_ingest_memory", [], "ingest_memory_unreadable"),
+        ("_ops_storage_route_counts", None, "storage_route_counts_unreadable"),
+        ("_archive_latest_embedding_run_state", None, "latest_embedding_run_unreadable"),
+    ],
+)
+def test_tier_query_fault_retains_fallback_and_closes_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader_name: str, fallback: object, reason: str
+) -> None:
+    """Removing typed refusal, its diagnostic or finally-close makes this red."""
+    import polylogue.storage.sqlite.connection_profile as profiles
+
+    database = tmp_path / "ops.db"
+    conn = sqlite3.connect(database)
+    conn.set_authorizer(
+        lambda action, *_args: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_SELECT else sqlite3.SQLITE_OK
+    )
+    monkeypatch.setattr(profiles, "open_readonly_connection", lambda *_args, **_kwargs: conn)
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(metrics, "emit", lambda _event, **fields: events.append(fields))
+    try:
+        assert getattr(metrics, reader_name)(database) == fallback
+        assert len(events) == 1
+        assert events[0]["reason"] == reason
+        assert events[0]["outcome"] == "degraded"
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("PRAGMA database_list")
+    finally:
+        conn.close()
+
+
+def test_throughput_query_fault_does_not_append_partial_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed acquisition returns the existing refusal without claiming a rate."""
+    import polylogue.storage.sqlite.connection_profile as profiles
+
+    database = tmp_path / "ops.db"
+    conn = sqlite3.connect(database)
+    conn.set_authorizer(
+        lambda action, *_args: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_SELECT else sqlite3.SQLITE_OK
+    )
+    monkeypatch.setattr(profiles, "open_readonly_connection", lambda *_args, **_kwargs: conn)
+    lines: list[str] = []
+    try:
+        assert metrics._emit_ops_throughput_metrics(lines, database) is False
+        assert lines == []
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("PRAGMA database_list")
+    finally:
+        conn.close()

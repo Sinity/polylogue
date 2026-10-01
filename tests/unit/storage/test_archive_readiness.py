@@ -1301,7 +1301,7 @@ def test_claude_workflow_materialization_status_missing_ops_db_returns_none(tmp_
 
 
 def test_claude_workflow_materialization_status_reads_latest_stage_event(tmp_path: Path) -> None:
-    """Reads back exactly what daemon/convergence_stages.py's claude_workflow
+    """Reads back exactly what operations/claude_workflow_convergence.py's claude_workflow
     stage persists via record_daemon_stage_event -- the wiring this bead adds
     so a materialization gap count survives past one log line (bd polylogue-uh9l).
     """

@@ -3,27 +3,23 @@
 Each stage has a ``check`` that inspects current archive state and an
 ``execute`` that performs the missing work. The live watcher owns source
 ingestion through daemon-side raw-record ingest; daemon convergence stages only
-repair and refresh post-ingest archive state.
+derive and refresh post-ingest archive state.
 
 Raw, session, FTS and embedding outputs use their domain derivations.
 """
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from collections.abc import Sequence
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
-from polylogue.core.enums import Provider
-from polylogue.core.sqlite_introspection import table_exists as _table_exists
-from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import INFO, WARNING, emit, span
+from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
 from polylogue.operations.lineage_prefix_recompose import make_lineage_prefix_recompose_stage
 from polylogue.operations.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWork,
@@ -31,22 +27,13 @@ from polylogue.operations.raw_authority_verdict_cache import (
     warm_raw_authority_verdict_cache,
 )
 from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
-from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.sqlite.connection_profile import (
-    attach_database,
-    open_daemon_connection,
-    open_readonly_connection,
-)
+from polylogue.operations.session_source_membership import session_ids_for_paths
+from polylogue.operations.sinex_convergence import publication_service_for_archive
 
 if TYPE_CHECKING:
-    from polylogue.daemon.derivation import PublicationBarrier
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import SinexTransport
 
-_HOT_INSIGHT_SOURCE_BYTES = 64 * 1024 * 1024
-_HOT_INSIGHT_QUIET_SECONDS = 60.0
-_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
 _DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS = 8
 #: One stage execution keeps warming bounded cohort batches while each batch
 #: makes progress, up to this much wall time. A single batch per execution
@@ -113,253 +100,6 @@ def _emit_sinex_drain(scope: str, subjects: int, summary: object, *, path: Path 
         debt=debt,
         remaining=remaining,
         **scoped,
-    )
-
-
-def _is_transient_sqlite_lock(exc: BaseException) -> bool:
-    """Defer to SQLite's result code; text alone misses SQLITE_LOCKED."""
-    return is_transient_sqlite_lock(exc)
-
-
-def _open_archive_insight_write_connection(db_path: Path, *, archive_root: Path) -> sqlite3.Connection:
-    """Open an archive writer bound to the root admitted by its caller.
-
-    ``db_path`` may be an active index generation outside the durable archive
-    root.  The caller therefore supplies the admitted root rather than
-    deriving it from the generation path.
-    """
-    return open_daemon_connection(
-        db_path,
-        timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000,
-        busy_timeout_ms=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS,
-        archive_root=archive_root,
-    )
-
-
-# ── Stage: Claude Workflow evidence ──────────────────────────────
-
-_CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT = 20
-
-
-def _record_claude_workflow_stage_event(
-    archive_root: Path, summary: object, *, started_at_ns: int | None = None
-) -> None:
-    """Persist the materialization summary so a readiness surface can read it.
-
-    ``materialize_claude_workflow_archive`` returns a fresh
-    ``ClaudeWorkflowMaterializationSummary`` every convergence pass; without
-    this it was logged once and discarded. Recorded into the disposable
-    ``ops.db`` tier via the existing generic ``daemon_stage_events`` table (no
-    schema change) so ``polylogue doctor`` / archive readiness can report the
-    current gap count instead of only a log line.
-    """
-    gaps = tuple(getattr(summary, "gaps", ()))
-    payload: dict[str, object] = {
-        "run_count": getattr(summary, "run_count", 0),
-        "call_count": getattr(summary, "call_count", 0),
-        "attempt_count": getattr(summary, "attempt_count", 0),
-        "linked_session_count": getattr(summary, "linked_session_count", 0),
-        "unresolved_call_count": getattr(summary, "unresolved_call_count", 0),
-        "gap_count": len(gaps),
-        "gaps": list(gaps[:_CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT]),
-    }
-    _write_claude_workflow_stage_event(
-        archive_root, status="gaps" if gaps else "clean", payload=payload, started_at_ns=started_at_ns
-    )
-
-
-def _record_claude_workflow_failure_event(
-    archive_root: Path, exc: BaseException, *, started_at_ns: int | None = None
-) -> None:
-    """Invalidate the recorded receipt when rematerialization itself failed.
-
-    The receipt carries the stable id ``claude_workflow:current``, so a clean
-    row from an earlier pass stays the latest event until something replaces
-    it. Returning from the failure branch without writing therefore left
-    ``_claude_workflow_materialization_check`` reporting OK on the strength of
-    a receipt the current graph no longer matches -- the archive is failing to
-    converge and readiness says it is healthy. Record the attempt's typed
-    failure instead; the readiness check refuses a ``failed`` receipt rather
-    than reading a ``gap_count`` that this pass never computed.
-    """
-    _write_claude_workflow_stage_event(
-        archive_root,
-        status="failed",
-        payload={
-            "error_type": type(exc).__name__,
-            "error_detail": str(exc),
-            # No gap tuple exists: the materialization that would have produced
-            # one is the thing that failed. Declaring the absence keeps a reader
-            # from treating a missing key as "zero gaps".
-            "gap_count": None,
-        },
-        started_at_ns=started_at_ns,
-    )
-
-
-def _newer_claude_workflow_receipt(conn: sqlite3.Connection, event_id: str, attempt_started_at_ns: int) -> bool:
-    """Whether the stored receipt comes from a pass that started no earlier than this one.
-
-    Start times are nanosecond wall-clock readings; a tie counts as newer, so
-    a failed pass never displaces a receipt it cannot prove it postdates.
-    """
-    from polylogue.core.json import loads
-
-    row = conn.execute("SELECT payload_json FROM daemon_stage_events WHERE event_id = ?", (event_id,)).fetchone()
-    if row is None or not row[0]:
-        return False
-    stored = loads(row[0])
-    stored_started = stored.get("attempt_started_at_ns") if isinstance(stored, dict) else None
-    return isinstance(stored_started, int) and stored_started >= attempt_started_at_ns
-
-
-def _write_claude_workflow_stage_event(
-    archive_root: Path, *, status: str, payload: dict[str, object], started_at_ns: int | None = None
-) -> None:
-    """Replace the claude_workflow stage receipt with this pass's outcome.
-
-    The receipt is one row, and a write can be queued behind the writer lease
-    while a later pass completes. Each receipt records when its pass started.
-    A *failed* pass's write is dropped when the stored receipt comes from a
-    pass that started later, so an older failure cannot overwrite a newer
-    rematerialization. A successful pass always writes: its receipt follows
-    its own publication, so the last published graph keeps the last word.
-    """
-    attempt_started_at_ns = time.time_ns() if started_at_ns is None else started_at_ns
-    payload = {**payload, "attempt_started_at_ns": attempt_started_at_ns}
-    try:
-        from polylogue.core.stage_admission import admit_stage_write
-        from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
-        from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-        ops_db = archive_root / "ops.db"
-        ops_db.parent.mkdir(parents=True, exist_ok=True)
-
-        def record() -> None:
-            with open_initialized_tier_connection(ops_db, ArchiveTier.OPS, archive_root=archive_root) as conn:
-                if status == "failed" and _newer_claude_workflow_receipt(
-                    conn, f"{CLAUDE_WORKFLOW_STAGE_NAME}:current", attempt_started_at_ns
-                ):
-                    return
-                record_daemon_stage_event(
-                    conn,
-                    stage=CLAUDE_WORKFLOW_STAGE_NAME,
-                    status=status,
-                    observed_at_ms=int(time.time() * 1000),
-                    payload=payload,
-                    # A stable id makes this the current snapshot rather than
-                    # an append: every reader selects only the newest row for
-                    # this stage, and ``daemon_stage_events`` has no retention,
-                    # so letting the writer mint a fresh UUID each pass grew
-                    # ops.db without bound for a row nothing ever read again.
-                    event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
-                )
-
-        # The stage is ``bridged``: its engine runs off the writer lease (the
-        # convergence-debt retry calls it directly), so this ops write must be
-        # admitted like the materializer's own publication.
-        admit_stage_write("stage.claude_workflow.record", record)
-    except Exception as exc:
-        emit(
-            "daemon.stage.event_record_failed",
-            level=WARNING,
-            stage="claude_workflow",
-            outcome="degraded",
-            reason="stage_event_not_recorded",
-            status=status,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-
-
-def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
-    """Rebuild Claude Workflow graphs after any admitted family member changes."""
-
-    def archive_root() -> Path:
-        active_index = _active_archive_index_path(db_path)
-        return (active_index or db_path).parent
-
-    def relevant(path: Path) -> bool:
-        return artifact_rule_for_path(Provider.CLAUDE_CODE, str(path)) is not None
-
-    def check(path: Path) -> bool:
-        if not relevant(path):
-            return False
-        try:
-            from polylogue.analysis.claude_workflow_materializer import (
-                claude_workflow_materialization_needed,
-            )
-
-            return claude_workflow_materialization_needed(archive_root())
-        except FileNotFoundError:
-            # No archive to materialize from is genuinely "no work", but it is the
-            # one place in convergence where a swallowed exception still answers
-            # "converged" -- say so rather than deciding it silently.
-            emit(
-                "daemon.stage.check_skipped",
-                stage="claude_workflow",
-                outcome="skipped",
-                reason="no_archive",
-                path=path,
-            )
-            return False
-
-    def execute(path: Path) -> StageExecuteReturn:
-        if not relevant(path):
-            return True
-        with span("daemon.stage.execute", stage="claude_workflow", path=path) as work:
-            started_at_ns = time.time_ns()
-            try:
-                from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
-
-                summary = materialize_claude_workflow_archive(archive_root())
-            except Exception as exc:
-                # Invalidate the receipt before returning: an earlier clean row
-                # is still the latest event otherwise, and readiness would keep
-                # reporting OK while convergence fails (see
-                # ``_record_claude_workflow_failure_event``).
-                _record_claude_workflow_failure_event(archive_root(), exc, started_at_ns=started_at_ns)
-                work.degraded(
-                    "materialization_failed",
-                    error_type=type(exc).__name__,
-                    error_detail=str(exc),
-                )
-                return False
-            gaps = len(summary.gaps)
-            fields = {
-                "runs": summary.run_count,
-                "calls": summary.call_count,
-                "attempts": summary.attempt_count,
-                "gaps": gaps,
-            }
-            _record_claude_workflow_stage_event(archive_root(), summary, started_at_ns=started_at_ns)
-            if gaps:
-                work.degraded("unresolved_workflow_gaps", **fields)
-            else:
-                work.ok(**fields)
-            return True
-
-    def check_many(paths: Sequence[Path]) -> set[Path]:
-        candidates = {path for path in paths if relevant(path)}
-        if not candidates:
-            return set()
-        return candidates if check(next(iter(candidates))) else set()
-
-    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
-        candidates = [path for path in paths if relevant(path)]
-        return True if not candidates else execute(candidates[0])
-
-    return ConvergenceStage(
-        name="claude_workflow",
-        description="Rebuild evidence-backed Claude Workflow topology from current raw authority",
-        check=check,
-        execute=execute,
-        check_many=check_many,
-        execute_many=execute_many,
-        whole_archive=True,
-        writer_admission="bridged",
     )
 
 
@@ -442,23 +182,6 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
-def _sinex_session_ids_for_paths(
-    db_path: Path,
-    paths: Sequence[Path],
-) -> dict[Path, list[str]]:
-    normalized = tuple(dict.fromkeys(Path(path) for path in paths))
-    if not normalized:
-        return {}
-    lookup_db = _active_archive_index_path(db_path) or db_path
-    if not lookup_db.exists():
-        return {path: [] for path in normalized}
-    conn = open_readonly_connection(lookup_db)
-    try:
-        return _schema_archive_session_ids_for_source_paths(conn, normalized, archive_root=db_path.parent)
-    finally:
-        conn.close()
-
-
 def make_sinex_publication_stage(
     db_path: Path,
     service: PublicationService,
@@ -467,7 +190,7 @@ def make_sinex_publication_stage(
     from polylogue.sinex.models import PublicationMode
 
     def ids_for_path(path: Path) -> list[str]:
-        return _sinex_session_ids_for_paths(db_path, (path,)).get(path, [])
+        return session_ids_for_paths(db_path, (path,)).get(path, [])
 
     def check(path: Path) -> bool:
         return bool(service.unresolved_object_ids(ids_for_path(path)))
@@ -481,13 +204,13 @@ def make_sinex_publication_stage(
         return not service.unresolved_object_ids(session_ids)
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
-        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        by_path = session_ids_for_paths(db_path, paths)
         all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
         unresolved = service.unresolved_object_ids(all_ids)
         return {path for path, values in by_path.items() if unresolved.intersection(values)}
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
-        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        by_path = session_ids_for_paths(db_path, paths)
         all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
         if not all_ids:
             return True
@@ -509,7 +232,7 @@ def make_sinex_publication_stage(
         return bool(service.blocking_object_ids(ids_for_path(path)))
 
     def barrier_many(paths: Sequence[Path]) -> set[Path]:
-        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        by_path = session_ids_for_paths(db_path, paths)
         all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
         blocked = service.blocking_object_ids(all_ids)
         return {path for path, values in by_path.items() if blocked.intersection(values)}
@@ -614,24 +337,10 @@ def make_fts_readiness_binding_stage(db_path: Path) -> ConvergenceStage:
     repeatedly per row, it runs it once after the burst.
     """
 
-    def _index_path() -> Path:
-        return ArchiveLocation.resolve(db_path.parent).active_index_path
-
     def check(_path: Path) -> bool:
-        from polylogue.operations.fts_derivation import fts_readiness_binding
+        from polylogue.operations.fts_derivation import fts_readiness_binding_needed
 
-        index_db = _index_path()
-        if not index_db.exists():
-            return False
-        conn = open_readonly_connection(index_db, validate_schema=False)
-        try:
-            if not _table_exists(conn, "messages_fts_readiness_binding"):
-                return False
-            if not _table_exists(conn, "blocks") or not _table_exists(conn, "messages_fts"):
-                return False
-            return fts_readiness_binding(conn) is None
-        finally:
-            conn.close()
+        return fts_readiness_binding_needed(db_path.parent)
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
         if not paths:
@@ -642,31 +351,16 @@ def make_fts_readiness_binding_stage(db_path: Path) -> ConvergenceStage:
         return execute_many((_path,))
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
-        from polylogue.operations.fts_derivation import stamp_fts_readiness_binding
+        from polylogue.operations.fts_derivation import publish_fts_readiness_binding
 
         with span("daemon.stage.execute", stage="fts_readiness_binding", files=len(paths)) as work:
-            index_db = _index_path()
-            if not index_db.exists():
+            bound = publish_fts_readiness_binding(db_path.parent)
+            if bound is None:
                 work.empty(bound=False, reason="no_index_tier")
                 return True
-            conn = open_daemon_connection(index_db, archive_root=db_path.parent)
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                bound = stamp_fts_readiness_binding(conn)
-                conn.execute("COMMIT" if bound else "ROLLBACK")
-            except Exception:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-                raise
-            finally:
-                conn.close()
             if bound:
                 work.ok(bound=True)
             else:
-                # Not a failure and not converged: the surface itself is not
-                # valid right now, or a writer moved ``blocks`` underneath the
-                # inspection. Either way readiness keeps answering from the
-                # authoritative inspection and this stage retries.
                 work.degraded("fts_surface_not_valid", bound=False)
             return bound
 
@@ -727,23 +421,6 @@ def make_hook_paste_enrichment_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
-def configured_derivation_barrier(archive_root: Path) -> PublicationBarrier | None:
-    """The primary-publication barrier derivation owners honor, when configured.
-
-    The staged routes read it through the Sinex stage's
-    ``blocks_following_stages``; derivation owners run their own convergers
-    without that stage, so composition hands them the same read directly.
-    Outside primary mode nothing is held.
-    """
-    from polylogue.sinex.models import PublicationMode
-    from polylogue.sinex.service import primary_blocking_object_ids
-
-    if PublicationMode.from_string(load_polylogue_config().sinex_mode) is not PublicationMode.PRIMARY:
-        return None
-    source_db = ArchiveLocation.resolve(archive_root).configured_tier("source").configured_path
-    return partial(primary_blocking_object_ids, source_db)
-
-
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -753,7 +430,6 @@ def make_default_convergence_stages(
     from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
     from polylogue.paths import archive_root
     from polylogue.sinex.models import PublicationMode
-    from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import resolve_configured_transport
 
     mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
@@ -763,8 +439,8 @@ def make_default_convergence_stages(
         stages.append(
             make_sinex_publication_stage(
                 db_path,
-                PublicationService(
-                    source_db_path=ArchiveLocation.resolve(archive_root()).configured_tier("source").configured_path,
+                publication_service_for_archive(
+                    archive_root(),
                     mode=mode,
                     transport=transport,
                 ),
@@ -804,173 +480,7 @@ def _make_attachment_bytes_stage(db_path: Path, *, archive_root: Path) -> Conver
     )
 
 
-# ── Helpers ────────────────────────────────────────────────────────
-
-
-def _source_path_is_hot_for_insights(path: Path, *, now: float | None = None) -> bool:
-    try:
-        stat = path.stat()
-    except OSError:
-        return False
-    if stat.st_size < _HOT_INSIGHT_SOURCE_BYTES:
-        return False
-    current = time.time() if now is None else now
-    return current - stat.st_mtime < _HOT_INSIGHT_QUIET_SECONDS
-
-
-# ── Archive file-set helpers ─────────────────────────────────────
-
-
-def _attached_source_db_path(conn: sqlite3.Connection, *, archive_root: Path | None = None) -> Path:
-    if archive_root is not None:
-        return archive_root / "source.db"
-    for _, name, path in conn.execute("PRAGMA database_list").fetchall():
-        if str(name) == "main" and path:
-            return Path(str(path)).with_name("source.db")
-    return Path("source.db")
-
-
-def _ensure_source_tier_attached(conn: sqlite3.Connection, *, archive_root: Path | None = None) -> bool:
-    for _, name, _path in conn.execute("PRAGMA database_list").fetchall():
-        if str(name) == "source_tier":
-            return True
-    source_db = _attached_source_db_path(conn, archive_root=archive_root)
-    if not source_db.exists():
-        return False
-    attach_database(conn, source_db, alias="source_tier")
-    return True
-
-
-def _active_archive_index_path(db_path: Path) -> Path | None:
-    """Resolve the active ``index.db`` for the archive rooted at ``db_path``'s directory.
-
-    ``db_path`` always lives directly in the archive root (whether it names
-    ``index.db``, ``source.db``, or another tier file), so ``db_path.parent``
-    is the archive root -- this mirrors ``ArchiveLocation``'s own resolution
-    instead of blindly renaming ``db_path`` to ``index.db`` in place, so an
-    active ``.index-active-pointer`` generation is still followed correctly.
-    """
-
-    index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
-    if not index_db.exists():
-        return None
-    try:
-        conn = open_readonly_connection(index_db)
-        try:
-            return index_db if _table_exists(conn, "sessions") else None
-        finally:
-            conn.close()
-    except Exception as exc:
-        emit(
-            "daemon.archive.index_probe_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="active_index_unreadable",
-            path=index_db,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return None
-
-
-def _schema_archive_session_ids_for_source_paths(
-    conn: sqlite3.Connection,
-    paths: Sequence[Path],
-    *,
-    archive_root: Path | None = None,
-) -> dict[Path, list[str]]:
-    normalized_paths = tuple(dict.fromkeys(Path(path) for path in paths))
-    if not normalized_paths or not _table_exists(conn, "sessions"):
-        return {path: [] for path in normalized_paths}
-    raw_table = "raw_sessions"
-    if not _table_exists(conn, "raw_sessions"):
-        raw_table = "source_tier.raw_sessions"
-        if not _ensure_source_tier_attached(conn, archive_root=archive_root):
-            return {path: [] for path in normalized_paths}
-        # Deliberately let sqlite3.Error from the attach above propagate
-        # instead of swallowing it into an empty result here (polylogue-co8b):
-        # every caller of this helper (_archive_embed_check[_many] and
-        # _sinex_session_ids_for_paths) wraps
-        # its own call in a broad try/except that fails OPEN -- "treating as
-        # needs-work" -- matching every other freshness probe in this file.
-        # Swallowing the error here instead made the outer probe see a clean
-        # `{path: []}` result and conclude there was nothing to do, silently
-        # disabling embed/insights convergence for the affected source paths
-        # with no convergence_debt row and no counter, only a log line. The
-        # existing false_means_pending -> convergence_debt retry path already
-        # bounds the resulting "fires every tick" concern: a genuinely
-        # persistent attach failure surfaces as repeated execute() failures,
-        # which convergence_debt retries with its own backoff rather than
-        # busy-looping here.
-    result: dict[Path, list[str]] = {path: [] for path in normalized_paths}
-    paths_by_text = {str(path): path for path in normalized_paths}
-    placeholders = ", ".join("?" for _ in normalized_paths)
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT r.source_path, s.session_id
-        FROM {raw_table} AS r
-        JOIN sessions AS s ON s.raw_id = r.raw_id
-        WHERE r.source_path IN ({placeholders})
-        ORDER BY r.source_path, s.session_id
-        """,
-        tuple(paths_by_text),
-    ).fetchall()
-    for source_path, session_id in rows:
-        path = paths_by_text.get(str(source_path))
-        if path is not None:
-            result[path].append(str(session_id))
-    return result
-
-
-def _archive_hot_insight_session_ids(
-    conn: sqlite3.Connection,
-    session_ids: Sequence[str],
-    *,
-    now: float | None = None,
-    archive_root: Path | None = None,
-) -> set[str]:
-    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not unique_ids or not _table_exists(conn, "sessions"):
-        return set()
-    raw_table = "raw_sessions"
-    if not _table_exists(conn, "raw_sessions"):
-        raw_table = "source_tier.raw_sessions"
-        try:
-            if not _ensure_source_tier_attached(conn, archive_root=archive_root):
-                return set()
-        except sqlite3.Error as exc:
-            emit(
-                "daemon.archive.source_tier_attach_failed",
-                level=WARNING,
-                outcome="degraded",
-                reason="hot_insight_probe_unavailable",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            return set()
-    placeholders = ", ".join("?" for _ in unique_ids)
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT s.session_id, r.source_path
-        FROM sessions AS s
-        JOIN {raw_table} AS r ON r.raw_id = s.raw_id
-        WHERE s.session_id IN ({placeholders})
-          AND r.source_path IS NOT NULL
-          AND r.source_path != ''
-        ORDER BY s.session_id
-        """,
-        unique_ids,
-    ).fetchall()
-    current = time.time() if now is None else now
-    return {
-        str(session_id)
-        for session_id, source_path in rows
-        if _source_path_is_hot_for_insights(Path(str(source_path)), now=current)
-    }
-
-
 __all__ = [
-    "make_claude_workflow_stage",
     "make_delegation_work_evidence_stage",
     "make_default_convergence_stages",
     "make_hook_paste_enrichment_stage",
