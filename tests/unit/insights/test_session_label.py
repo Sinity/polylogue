@@ -17,7 +17,6 @@ from polylogue.analysis.session_label import (
     SessionLabelInputs,
     compute_session_structural_label,
     distinct_repo_relative_file_count_for_session,
-    dominant_repo_relative_path_for_session,
     session_structural_label_for_session,
 )
 from polylogue.archive.message.roles import Role
@@ -76,8 +75,7 @@ def test_provider_title_wins_over_structural_form() -> None:
         provider_title="Fix the ingest race",
         repo_name="polylogue",
         is_directory=False,
-        dominant_path="pipeline/services/ingest_batch/_core.py",
-        additional_file_count=26,
+        distinct_file_count=27,
         message_count=499,
     )
     assert compute_session_structural_label(inputs) == "Fix the ingest race"
@@ -89,8 +87,7 @@ def test_structural_label_matches_bead_evidence_shape() -> None:
         provider_title=None,
         repo_name="polylogue",
         is_directory=False,
-        dominant_path="pipeline/services/ingest_batch/_core.py",
-        additional_file_count=26,
+        distinct_file_count=27,
         message_count=499,
     )
     assert compute_session_structural_label(inputs) == "polylogue · 27 files · 499 msgs"
@@ -101,8 +98,6 @@ def test_structural_label_includes_elapsed_duration() -> None:
         provider_title=None,
         repo_name="polylogue",
         is_directory=False,
-        dominant_path=None,
-        additional_file_count=0,
         message_count=12,
         distinct_file_count=2,
         duration_ms=7_200_000,
@@ -115,8 +110,7 @@ def test_structural_label_uses_singular_file_for_one_touched_file() -> None:
         provider_title=None,
         repo_name="sinex",
         is_directory=False,
-        dominant_path="src/main.rs",
-        additional_file_count=0,
+        distinct_file_count=1,
         message_count=12,
     )
     assert compute_session_structural_label(inputs) == "sinex · 1 file · 12 msgs"
@@ -127,8 +121,7 @@ def test_structural_label_degrades_to_message_count_only_with_no_evidence() -> N
         provider_title=None,
         repo_name=None,
         is_directory=True,
-        dominant_path=None,
-        additional_file_count=0,
+        distinct_file_count=0,
         message_count=3,
     )
     assert compute_session_structural_label(inputs) == "3 msgs"
@@ -146,8 +139,7 @@ def test_structural_label_suppresses_repo_name_when_marked_directory() -> None:
         provider_title=None,
         repo_name="sinity",
         is_directory=True,
-        dominant_path=None,
-        additional_file_count=0,
+        distinct_file_count=0,
         message_count=7,
     )
     assert compute_session_structural_label(inputs) == "7 msgs"
@@ -174,13 +166,13 @@ def test_repo_relative_path_handles_missing_root() -> None:
     assert repo_relative_path("polylogue/foo.py", "") == "polylogue/foo.py"
 
 
-# ── read-path integration: dominant_repo_relative_path_for_session ─────────
+# ── read-path integration: distinct repo-relative file counting ───────────
 
 
-def test_dominant_path_is_repo_relative_across_two_worktree_checkouts(tmp_path: Path) -> None:
+def test_distinct_paths_normalize_across_two_worktree_checkouts(tmp_path: Path) -> None:
     """The same logical file, edited from two different worktree checkouts
-    of ONE repository, must resolve to the SAME repo-relative dominant path
-    once each session's checkout root is known -- decision 2."""
+    of ONE repository, must count once even when the session also records
+    its repo-relative spelling -- decision 2."""
     conn = _connect(tmp_path / "index.db")
     repo_root_a = tmp_path / "checkout-a"
     repo_root_b = tmp_path / "checkout-b"
@@ -194,6 +186,7 @@ def test_dominant_path_is_repo_relative_across_two_worktree_checkouts(tmp_path: 
         messages=[
             _read_message(0, "edit the ingest core"),
             _edit_call(1, str(repo_root_a / "pipeline" / "_core.py")),
+            _edit_call(2, "pipeline/_core.py"),
         ],
     )
     session_b = ParsedSession(
@@ -203,21 +196,17 @@ def test_dominant_path_is_repo_relative_across_two_worktree_checkouts(tmp_path: 
         messages=[
             _read_message(0, "edit the ingest core"),
             _edit_call(1, str(repo_root_b / "pipeline" / "_core.py")),
+            _edit_call(2, "pipeline/_core.py"),
         ],
     )
     session_a_id = write_fixture_index_session(conn, session_a)
     session_b_id = write_fixture_index_session(conn, session_b)
 
-    path_a, extra_a = dominant_repo_relative_path_for_session(conn, session_a_id)
-    path_b, extra_b = dominant_repo_relative_path_for_session(conn, session_b_id)
-
-    assert path_a == "pipeline/_core.py"
-    assert path_b == "pipeline/_core.py"
-    assert extra_a == 0
-    assert extra_b == 0
+    assert distinct_repo_relative_file_count_for_session(conn, session_a_id) == DistinctFileCount(1)
+    assert distinct_repo_relative_file_count_for_session(conn, session_b_id) == DistinctFileCount(1)
 
 
-def test_dominant_path_picks_most_touched_file_and_counts_the_rest(tmp_path: Path) -> None:
+def test_distinct_file_count_deduplicates_repeated_touches(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     repo_root = tmp_path / "myrepo"
     (repo_root / ".git").mkdir(parents=True)
@@ -236,10 +225,7 @@ def test_dominant_path_picks_most_touched_file_and_counts_the_rest(tmp_path: Pat
     )
     session_id = write_fixture_index_session(conn, session)
 
-    dominant_path, additional = dominant_repo_relative_path_for_session(conn, session_id)
-
-    assert dominant_path == "a.py"
-    assert additional == 2  # b.py, c.py
+    assert distinct_repo_relative_file_count_for_session(conn, session_id) == DistinctFileCount(3)
 
 
 def test_session_structural_label_for_session_end_to_end(tmp_path: Path) -> None:

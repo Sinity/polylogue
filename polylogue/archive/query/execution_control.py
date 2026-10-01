@@ -35,7 +35,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar
@@ -550,7 +550,7 @@ class InterruptibleSQLiteRead:
         with self._store_lock:
             self._store = store
         try:
-            _set_progress_guard(store, guard, n_opcodes=progress_opcodes)
+            store.set_read_progress_guard(guard, n_opcodes=progress_opcodes)
             if ctx.should_abort():
                 raise _abort_error(ctx)
             try:
@@ -572,9 +572,7 @@ class InterruptibleSQLiteRead:
             ctx.receipt.run_s = time.monotonic() - started
             with self._store_lock:
                 self._store = None
-            clear_guard = getattr(store, "clear_read_progress_guard", None)
-            if callable(clear_guard):
-                clear_guard()
+            store.clear_read_progress_guard()
             ctx.mark_cleanup_complete()
 
     @contextmanager
@@ -584,18 +582,14 @@ class InterruptibleSQLiteRead:
 
         ctx = self._ctx
         with default_admission_controller().admit_blocking(ctx):
-            # Keep lightweight archive doubles compatible with the positional
-            # open contract; the real store supplies its bounded busy timeout.
-            store = ArchiveStore.open_existing(archive_root)
+            store = ArchiveStore.open_existing(archive_root, read_timeout=read_timeout, read_only=True)
             with self._store_lock:
                 self._store = store
             try:
-                _set_progress_guard(store, lambda: 1 if ctx.should_abort() else 0)
+                store.set_read_progress_guard(lambda: 1 if ctx.should_abort() else 0, n_opcodes=PROGRESS_GUARD_OPCODES)
                 if ctx.should_abort():
                     raise _abort_error(ctx)
-                begin_snapshot = getattr(store, "begin_read_snapshot", None)
-                if callable(begin_snapshot):
-                    begin_snapshot()
+                store.begin_read_snapshot()
                 ctx.receipt.state = "running"
                 yield store
                 if ctx.should_abort():
@@ -625,25 +619,13 @@ def _is_interrupt_error(exc: Exception) -> bool:
     return False
 
 
-def _set_progress_guard(
-    store: ArchiveStore, guard: Callable[[], int], *, n_opcodes: int = PROGRESS_GUARD_OPCODES
-) -> None:
-    setter = getattr(store, "set_read_progress_guard", None)
-    if callable(setter):
-        setter(guard, n_opcodes=n_opcodes)
-
-
 def _close_store(store: ArchiveStore, *, clear_progress_guard: bool = True) -> None:
-    """Clear read state and close full stores while tolerating test doubles."""
-    clear_guard = getattr(store, "clear_read_progress_guard", None)
-    if clear_progress_guard and callable(clear_guard):
-        clear_guard()
-    end_snapshot = getattr(store, "end_read_snapshot", None)
-    if callable(end_snapshot):
-        end_snapshot()
-    closer = getattr(store, "close", None)
-    if callable(closer):
-        closer()
+    """Settle the required reader protocol, closing even if an earlier step fails."""
+    with ExitStack() as cleanup:
+        cleanup.callback(store.close)
+        cleanup.callback(store.end_read_snapshot)
+        if clear_progress_guard:
+            cleanup.callback(store.clear_read_progress_guard)
 
 
 def _abort_error(

@@ -138,6 +138,8 @@ def test_cli_read_verb_mints_no_api_token_when_no_daemon_is_listening(
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
+    from polylogue.cli.operation_kernel import OperationUnavailableError
+    from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE
 
     bootstrap_archive_root(tmp_path)
 
@@ -151,7 +153,10 @@ def test_cli_read_verb_mints_no_api_token_when_no_daemon_is_listening(
 
     result = CliRunner().invoke(cli, ["--plain", "read", "--all"], catch_exceptions=False)
 
-    # An empty archive legitimately exits 2 (``empty``); what must not happen
-    # is a credential write. Anything above 2 is a real failure.
-    assert result.exit_code in {0, 2}, result.output
+    # No daemon means a typed refusal, not an empty result from a local fallback.
+    # The credential tripwire and unchanged-root assertion remain the safety law.
+    assert result.exit_code == FAILED_READ_EXIT_CODE, result.output
+    assert isinstance(result.exception, SystemExit)
+    assert isinstance(result.exception.__cause__, OperationUnavailableError)
+    assert result.exception.__cause__.code == "daemon_required"
     assert _root_entries(tmp_path) == before

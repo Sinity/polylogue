@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
@@ -21,7 +21,7 @@ def _shared_registry(storage_root: str) -> SchemaRegistry:
     return SchemaRegistry(storage_root=Path(storage_root))
 
 
-def _registry_for(registry_cls: type[SchemaRegistry]) -> object:
+def _registry_for(registry_cls: type[SchemaRegistry]) -> SchemaRegistry:
     if registry_cls is SchemaRegistry:
         return _shared_registry(str(data_home() / "schemas"))
     return registry_cls()
@@ -56,20 +56,6 @@ def _load_schema(
             f"No schema found for provider: {provider} (package: {package_version}, element: {element_kind})"
         )
     return schema
-
-
-def _load_named_schema(
-    registry: object,
-    provider: Provider,
-) -> tuple[JSONDocument, str] | None:
-    get_schema = getattr(registry, "get_schema", None)
-    if not callable(get_schema):
-        return None
-    for version in ("latest", "default"):
-        schema = get_schema(str(provider), version=version)
-        if isinstance(schema, dict):
-            return schema, version
-    return None
 
 
 def _historical_schemas(
@@ -113,18 +99,12 @@ def resolve_provider_schema(
 ) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
-    if not hasattr(registry, "get_package"):
-        named_schema = _load_named_schema(registry, canonical)
-        if named_schema is None:
-            raise FileNotFoundError(f"No schema found for provider: {canonical}")
-        schema, version = named_schema
-        return canonical, schema, (str(canonical), version, "session_document")
-    package_registry = cast(SchemaRegistry, registry)
-    package = _load_package(package_registry, canonical, version="default")
+
+    package = _load_package(registry, canonical, version="default")
     package_version = package.version
     element_kind = package.default_element_kind
     schema = _load_schema(
-        package_registry,
+        registry,
         canonical,
         package_version=package_version,
         element_kind=element_kind,
@@ -144,24 +124,17 @@ def resolve_payload_schema(
 ) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
-    if not hasattr(registry, "resolve_payload"):
-        named_schema = _load_named_schema(registry, canonical)
-        if named_schema is None:
-            raise FileNotFoundError(f"No schema found for provider: {canonical}")
-        schema, version = named_schema
-        return canonical, schema, (str(canonical), version, "session_document")
 
-    package_registry = cast(SchemaRegistry, registry)
     resolution = schema_resolution
     if resolution is None:
-        resolution = package_registry.resolve_payload(
+        resolution = registry.resolve_payload(
             str(canonical),
             payload,
             source_path=source_path,
         )
 
     if resolution is None:
-        package = _load_package(package_registry, canonical, version="default")
+        package = _load_package(registry, canonical, version="default")
         package_version = package.version
         element_kind = package.default_element_kind
     else:
@@ -169,7 +142,7 @@ def resolve_payload_schema(
         element_kind = resolution.element_kind
 
     schema = _load_schema(
-        package_registry,
+        registry,
         canonical,
         package_version=package_version,
         element_kind=element_kind,
@@ -182,7 +155,7 @@ def resolve_payload_schema(
         return canonical, schema, (str(canonical), package_version, element_kind)
 
     for historical_version, historical_schema in _historical_schemas(
-        package_registry,
+        registry,
         canonical,
         element_kind=element_kind,
     ):
@@ -193,8 +166,5 @@ def resolve_payload_schema(
 
 def available_providers(*, registry_cls: type[SchemaRegistry] = SchemaRegistry) -> list[str]:
     registry = _registry_for(registry_cls)
-    list_providers = getattr(registry, "list_providers", None)
-    if not callable(list_providers):
-        return []
-    providers = list_providers()
+    providers = registry.list_providers()
     return [str(provider) for provider in providers]
