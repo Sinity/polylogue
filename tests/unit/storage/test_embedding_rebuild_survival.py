@@ -43,20 +43,14 @@ from tests.infra.live_ingest import write_index_session
 _TEXT = "This authored prose message must survive an identity-only rebuild unscathed."
 
 
-# The stub must embed under the model the archive is configured for: the
-# status projection and generation queries scope by the configured model,
-# so a stub naming a different one looks permanently unembedded. Deriving
-# it keeps these tests about dedup/rebuild rather than about model drift.
-_CONFIGURED_EMBEDDING_MODEL = load_polylogue_config().embedding_model
-
-
 class _CountingFakeVectorProvider:
     """Stub embedder that records every call -- proves API cost was or wasn't spent."""
 
-    model = _CONFIGURED_EMBEDDING_MODEL
     dimension = 1024
 
     def __init__(self) -> None:
+        # Bind after pytest has installed the isolated configuration.
+        self.model = load_polylogue_config().embedding_model
         self.calls: list[list[str]] = []
 
     def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:

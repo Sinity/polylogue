@@ -27,20 +27,15 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from tests.infra.live_ingest import write_index_session
 
-# The stub must embed under the model the archive is configured for: the
-# status projection and generation queries scope by the configured model,
-# so a stub naming a different one looks permanently unembedded. Deriving
-# it keeps these tests about dedup/rebuild rather than about model drift.
-_CONFIGURED_EMBEDDING_MODEL = load_polylogue_config().embedding_model
-
 _SHARED_TEXT = "This exact prose appears verbatim in two unrelated sessions."
 
 
 class _FakeVectorProvider:
-    model = _CONFIGURED_EMBEDDING_MODEL
     dimension = 1024
 
     def __init__(self) -> None:
+        # Bind after pytest has installed the isolated configuration.
+        self.model = load_polylogue_config().embedding_model
         self.calls: list[list[str]] = []
 
     def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
