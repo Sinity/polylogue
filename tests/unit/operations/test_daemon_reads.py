@@ -758,3 +758,52 @@ def test_declared_query_units_replays_the_http_opaque_continuation(tmp_path: Pat
     first_items = cast("list[dict[str, object]]", first["items"])
     second_items = cast("list[dict[str, object]]", second["items"])
     assert first_items[0]["message_id"] != second_items[0]["message_id"]
+
+
+@pytest.mark.parametrize("lane", ["semantic", "hybrid"])
+def test_keyless_text_search_with_retained_binding_remains_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane: str
+) -> None:
+    """Retained-vector binding must not turn unavailable acquisition into failure."""
+    from unittest.mock import MagicMock
+
+    from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+    from polylogue.operations.daemon_reads import VectorReadBinding
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(
+        tmp_path,
+        [("seed", "m1", "Synthetic needle prose with retained embeddings.", [1.0] + [0.0] * 1023)],
+    )
+    binding = VectorReadBinding(voyage_key=None, model="voyage-4-lite", dimension=1024)
+    acquisition = MagicMock(side_effect=AssertionError("keyless text must not call acquisition"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", acquisition)
+    connection = open_vector_read_snapshot(
+        embeddings_path=tmp_path / "embeddings.db", index_path=tmp_path / "index.db", recipe=binding.recipe
+    )
+    try:
+        with open_operation_read(tmp_path) as pinned:
+
+            def execute() -> object:
+                return execute_read_operation(
+                    "cli.query",
+                    {"params": {"query": ("needle",), "retrieval_lane": lane}},
+                    archive=pinned.archive,
+                    serving_identity="daemon",
+                    dependencies=DaemonReadDependencies(vector_binding=binding, vector_connection=connection),
+                )
+
+            if lane == "semantic":
+                with pytest.raises(EmbeddingRetrievalNotReadyError) as refusal:
+                    execute()
+                assert refusal.value.readiness_status == "disabled"
+            else:
+                result = cast(_SearchResult, execute())
+                assert result["outcome"]["state"] == "degraded"
+                assert result["unavailable_lanes"] == ["vector"]
+                assert result["failed_lanes"] == []
+    finally:
+        connection.close()
+    acquisition.assert_not_called()

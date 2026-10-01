@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import builtins
 import sqlite3
-from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
 from polylogue.core.errors import VectorRuntimeUnavailableError
@@ -42,17 +41,6 @@ def resolve_optional_vector_provider(
 
 
 logger = get_logger(__name__)
-
-
-class _SessionSimilarityReader(Protocol):
-    def read_session_similarity(
-        self,
-        session_id: str,
-        *,
-        index_path: Path,
-        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
-        limit: int = 10,
-    ) -> dict[str, object]: ...
 
 
 class RepositoryVectorMixin:
@@ -119,7 +107,7 @@ class RepositoryVectorMixin:
             raise VectorRuntimeUnavailableError("No local vector runtime is available")
 
         return await asyncio.to_thread(
-            cast(_SessionSimilarityReader, vector_provider).read_session_similarity,
+            vector_provider.read_session_similarity,
             session_id,
             index_path=self._backend.db_path,
             limit=limit,

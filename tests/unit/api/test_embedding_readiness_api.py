@@ -108,3 +108,29 @@ async def test_retained_similarity_uses_explicit_archive_recipe_without_acquisit
     hits = cast(list[dict[str, object]], result["results"])
     assert [hit["session_id"] for hit in hits] == ["codex-session:near"]
     provider_call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_supplied_public_vector_provider_projects_retained_similarity(tmp_path: Path) -> None:
+    """The public provider protocol includes the operation the API invokes."""
+    from polylogue.core.protocols import VectorProvider
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(
+        tmp_path,
+        [
+            ("seed", "m1", "Synthetic seed prose for a supplied provider.", [1.0] + [0.0] * 1023),
+            ("near", "m1", "Synthetic neighbor prose for a supplied provider.", [0.99, 0.141] + [0.0] * 1022),
+        ],
+    )
+    provider: VectorProvider = SqliteVecProvider(
+        voyage_key=None, db_path=tmp_path / "embeddings.db", archive_root=tmp_path
+    )
+    assert isinstance(provider, VectorProvider)
+    with patch.object(provider, "_get_embeddings", side_effect=AssertionError("no acquisition")) as acquisition:
+        async with Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db") as archive:
+            result = await archive.search_similar_sessions("codex-session:seed", vector_provider=provider)
+    assert result["source_embedded_messages"] == 1
+    assert [hit["session_id"] for hit in cast(list[dict[str, object]], result["results"])] == ["codex-session:near"]
+    acquisition.assert_not_called()

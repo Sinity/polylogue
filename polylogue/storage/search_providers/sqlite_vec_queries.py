@@ -27,6 +27,7 @@ class SqliteVecQueryMixin:
         archive_root: Path | None
         model: str
         dimension: int
+        voyage_key: str | None
 
         def _lifecycle_admission(self) -> AbstractContextManager[None]: ...
 
@@ -144,6 +145,10 @@ class SqliteVecQueryMixin:
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Run the provider route under managed lifecycle admission."""
+        if not self.voyage_key:
+            raise EmbeddingRetrievalNotReadyError(
+                "text retrieval requires embedding acquisition credentials", readiness_status="disabled"
+            )
         with self._lifecycle_admission():
             return self._query_unlocked(text, limit)
 
