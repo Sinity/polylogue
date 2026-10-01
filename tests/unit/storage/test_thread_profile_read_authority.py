@@ -16,6 +16,7 @@ moved reads ``stale`` and the ordinary derivation converger re-materializes it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -113,7 +114,7 @@ async def test_thread_read_reports_a_stale_profile_as_written_not_as_recovered(t
     out.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
     with open_connection(index_db) as conn:
@@ -158,7 +159,7 @@ async def test_reconvergence_is_what_makes_the_profile_lineage_current(tmp_path:
     assertion here is the only thing that would have caught it.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
     with open_connection(index_db) as conn:

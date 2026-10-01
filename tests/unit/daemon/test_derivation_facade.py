@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -169,7 +170,7 @@ class _DemandVsAuditDerivation(StringStatusDerivation):
 
 
 @pytest.mark.asyncio
-async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
+async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone(tmp_path: Path) -> None:
     """A demand-only pass pages its own keyspace from its own cursor.
 
     Anti-vacuity (polylogue-6remh): with one shared cursor the demand pass
@@ -181,7 +182,7 @@ async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
     adapter.domain = "session_profile"
     converger = DaemonConverger([], derivations=[adapter])
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         converger,
         compute_adapter=compute,
@@ -225,7 +226,7 @@ def test_a_promoted_generation_restarts_the_demand_cursor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() -> None:
+async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope(tmp_path: Path) -> None:
     """A targeted earlier id cannot inherit an archive sweep's page cursor.
 
     Anti-vacuity: pass ``resume=True`` through an incremental scope and the
@@ -236,7 +237,7 @@ async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() 
     adapter.domain = "session_profile"
     converger = DaemonConverger([], derivations=[adapter])
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         converger,
         compute_adapter=compute,
@@ -260,7 +261,7 @@ async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() 
 
 
 @pytest.mark.asyncio
-async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sweep() -> None:
+async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sweep(tmp_path: Path) -> None:
     """A terminal cursor does not clear debt while a quiet key remains pending.
 
     Anti-vacuity: clear legacy derived debt from ``cursor.swept`` alone and
@@ -277,7 +278,7 @@ async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sw
 
     adapter = QuietArchiveDerivation(("a", "b"))
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         DaemonConverger([], derivations=[adapter]),
         compute_adapter=compute,
@@ -295,7 +296,7 @@ async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sw
 
 
 @pytest.mark.asyncio
-async def test_session_owner_cancellation_waits_for_an_admitted_publication() -> None:
+async def test_session_owner_cancellation_waits_for_an_admitted_publication(tmp_path: Path) -> None:
     """Cancellation cannot abandon a worker holding the bridged writer gate.
 
     Anti-vacuity: return immediately from ``CancelledError`` and this task
@@ -318,7 +319,7 @@ async def test_session_owner_cancellation_waits_for_an_admitted_publication() ->
 
     adapter = BlockingDerivation()
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = SessionProfileConvergenceOwner(
         DaemonConverger([], derivations=[adapter]),
         compute_adapter=compute,
@@ -346,7 +347,7 @@ async def test_session_owner_cancellation_waits_for_an_admitted_publication() ->
 
 
 @pytest.mark.asyncio
-async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
+async def test_session_owner_serializes_a_sweep_and_targeted_callback(tmp_path: Path) -> None:
     """Concurrent owner callers cannot race one mutable kernel cursor.
 
     Anti-vacuity: remove the owner-local coroutine lock and the targeted
@@ -376,7 +377,7 @@ async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
 
     adapter = ScopedDerivation()
     compute = BoundedComputeAdapter(max_workers=1, queue_units=2)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     converger = DaemonConverger([], derivations=[adapter])
     owner = SessionProfileConvergenceOwner(
         converger,

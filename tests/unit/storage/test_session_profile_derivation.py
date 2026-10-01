@@ -114,6 +114,7 @@ def _usage_rollup(index_db: Path, session_id: str, *, quiet: bool = False) -> Se
         lambda: _write_connection(index_db),
         session_scope=lambda _frame: [session_id],
         quiet_key=(lambda _frame, _key: True) if quiet else None,
+        archive_root=index_db.parent,
     )
 
 
@@ -125,7 +126,7 @@ def _materialize(index_db: Path, session_id: str) -> bool:
     whose rollup that domain has not settled. Doing both here is the ordering
     the kernel drives, not a workaround.
     """
-    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.publish", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         publish_session_usage_rollup(
             conn,
@@ -143,7 +144,7 @@ def _status(index_db: Path, session_id: str) -> str:
 
 def _mutate(index_db: Path, session_id: str, column: str, expression: str) -> None:
     """Change one output-affecting value in place; touch nothing identifying."""
-    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         before = conn.execute(
             "SELECT count(*), max(occurred_at_ms), max(position) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -247,7 +248,7 @@ def test_publication_refuses_a_binding_that_moved_under_the_computation(
 
     _mutate(index_db, session_id, "role", "'assistant'")
 
-    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.publish", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         assert publish_session_profile(conn, session_id, input_binding=computed_at) is False
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
@@ -268,13 +269,13 @@ def test_excess_publication_removes_the_complete_profile_family(
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
 
-    with write_lease("test.delete-session"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.delete-session", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
 
-    with write_lease("test.publish-excess"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.publish-excess", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         assert publish_session_profile(conn, session_id, input_binding="obsolete") is True
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
@@ -286,7 +287,7 @@ def test_a_profile_with_no_stored_binding_is_stale_not_valid(archive: tuple[Path
     """A row that cannot say what it was computed from cannot certify itself."""
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute("UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = ?", (session_id,))
         conn.commit()
 
@@ -297,7 +298,7 @@ def test_an_orphaned_profile_is_reported_as_excess(archive: tuple[Path, str]) ->
     """Excess is discovered from the output relation, not from an invalidation."""
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -342,7 +343,7 @@ def test_publishing_an_excess_key_removes_the_orphan(archive: tuple[Path, str]) 
     """
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -361,7 +362,7 @@ def test_scoped_rebuild_retires_a_deleted_session_before_acknowledging_demand(
 ) -> None:
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.delete-session"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.delete-session", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -381,7 +382,7 @@ def test_scoped_rebuild_retires_a_deleted_session_before_acknowledging_demand(
 def test_deleted_profile_demand_uses_excess_route(archive: tuple[Path, str], scoped: bool) -> None:
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.delete-session"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.delete-session", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -391,6 +392,7 @@ def test_deleted_profile_demand_uses_excess_route(archive: tuple[Path, str], sco
         lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: (session_id,) if scoped else None,
+        archive_root=index_db.parent,
     )
     assert adapter.required_page(None, cursor=None, limit=10) == ((), None)
     assert adapter.excess_page(None, cursor=None, limit=10) == ((session_id,), None)
@@ -424,11 +426,13 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
         lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
     )
     summary = SessionSummaryDerivation(
         lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
         lambda: _write_connection(index_db),
         session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
     )
     registry = DerivationRegistry([summary, _usage_rollup(index_db, session_id), adapter])
 
@@ -470,6 +474,7 @@ def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
         lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
     )
     frame = DerivationFrame(
         archive_root=str(index_db.parent),
@@ -511,6 +516,7 @@ def test_prepared_profile_family_rolls_back_when_latency_write_fails(
         lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
     )
     frame = DerivationFrame(
         archive_root=str(index_db.parent),
@@ -523,7 +529,10 @@ def test_prepared_profile_family_rolls_back_when_latency_write_fails(
     _mutate(index_db, session_id, "word_count", "word_count + 13")
     # Reach the sibling-write fault, rather than fail the upstream-staleness guard.
     # Settle ONLY canonical usage here; retain the old profile family for rollback.
-    with write_lease("test.settle-usage-before-fault"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.settle-usage-before-fault", archive_root=index_db.parent),
+        closing(_write_connection(index_db)) as conn,
+    ):
         binding = session_input_bindings(conn, (session_id,))[session_id]
         assert publish_session_usage_rollup(
             conn, session_id, input_binding=binding, recipe_version=session_usage_rollup_recipe_version()
@@ -536,7 +545,10 @@ def test_prepared_profile_family_rolls_back_when_latency_write_fails(
             for table in ("session_profiles", "session_latency_profiles")
         }
     prepared = adapter.compute(frame, session_id)
-    with write_lease("test.inject-latency-failure"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.inject-latency-failure", archive_root=index_db.parent),
+        closing(_write_connection(index_db)) as conn,
+    ):
         conn.execute(
             """
             CREATE TRIGGER fail_test_latency_insert
@@ -569,7 +581,10 @@ def test_reader_never_observes_a_mixed_profile_family_during_publish(
     index_db, session_id = archive
     adapter, frame, _ = _converge_session_profile(index_db.parent, index_db, session_id)
     _mutate(index_db, session_id, "word_count", "word_count + 17")
-    with write_lease("test.settle-usage-for-reader"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.settle-usage-for-reader", archive_root=index_db.parent),
+        closing(_write_connection(index_db)) as conn,
+    ):
         binding = session_input_bindings(conn, (session_id,))[session_id]
         assert publish_session_usage_rollup(
             conn,
@@ -625,7 +640,7 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 
     index_db, session_id = archive
-    with write_lease("test.seed-related"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.seed-related", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         message_id = str(
             conn.execute(
                 "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1",
@@ -661,6 +676,7 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
         lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
     )
     frame = DerivationFrame(
         archive_root=str(index_db.parent),
@@ -672,7 +688,7 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
     )
     prepared = adapter.compute(frame, session_id)
 
-    with write_lease("test.mutate-related"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate-related", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         if input_kind == "attachment":
             conn.execute("UPDATE attachment_refs SET caption = ? WHERE attachment_id = ?", ("after", "related-input"))
         else:
@@ -700,7 +716,7 @@ def test_marker_recovery_is_its_own_domain_and_never_rewrites_the_profile(
     cannot depend on a marker appearing, disappearing, or failing to deliver.
     """
     index_db, session_id = archive
-    with write_lease("test.seed-marker"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.seed-marker", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute(
             "UPDATE blocks SET text = ? WHERE message_id = (SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1)",
             ("::finding: current index text is not an accepted input", session_id),
@@ -767,6 +783,7 @@ def test_prepared_generation_refuses_when_the_active_anchor_promotes(
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
         generation_binding=lambda: active_generation["path"],
+        archive_root=index_db.parent,
     )
     frame = DerivationFrame(
         archive_root=str(index_db.parent),
@@ -803,11 +820,13 @@ def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path,
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
         quiet_keys=lambda _frame: frozenset({session_id}),
+        archive_root=index_db.parent,
     )
     summary = SessionSummaryDerivation(
         lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
         lambda: _write_connection(index_db),
         session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
     )
     report = converge(
         DerivationRegistry([summary, _usage_rollup(index_db, session_id, quiet=True), adapter]),
@@ -850,7 +869,7 @@ def test_a_session_row_value_change_makes_inspection_stale(
     assert _materialize(index_db, session_id) is True
     assert _status(index_db, session_id) == "valid"
 
-    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute(
             f"UPDATE sessions SET {column} = {expression} WHERE session_id = ?",
             (session_id,),
@@ -1092,7 +1111,10 @@ def test_recipe_seed_includes_orphaned_profile_partitions(
     """A one-time recipe seed also schedules retained rows whose source vanished."""
     root, index_db, session_id = marker_archive
     _converge_session_profile(root, index_db, session_id)
-    with write_lease("test.profile-recipe-seed"), closing(sqlite3.connect(index_db)) as conn:
+    with (
+        write_lease("test.profile-recipe-seed", archive_root=index_db.parent),
+        closing(sqlite3.connect(index_db)) as conn,
+    ):
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM session_profile_demand WHERE session_id = ?", (session_id,))
         invalid_value = -1 if seed_field == "materializer_version" else "previous-recipe"

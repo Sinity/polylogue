@@ -113,10 +113,10 @@ def test_receipt_tail_reconciles_active_generation_without_repromotion(
     promotions = 0
     clears = 0
 
-    def count_promote(self: IndexGenerationStore, generation: Any) -> Any:
+    def count_promote(self: IndexGenerationStore, generation: Any, prepared: Any = None) -> Any:
         nonlocal promotions
         promotions += 1
-        return original_promote(self, generation)
+        return original_promote(self, generation, prepared)
 
     def fail_clear_once(archive_root: Path, baseline: Any, *, allow_missing: bool = False) -> None:
         nonlocal clears
@@ -165,10 +165,10 @@ def test_pointer_swapped_before_metadata_failure_recovers_once(
             raise OSError(errno.EBUSY, "active metadata temporarily busy")
         original_write(self, generation)
 
-    def count_promote(self: IndexGenerationStore, generation: Any) -> Any:
+    def count_promote(self: IndexGenerationStore, generation: Any, prepared: Any = None) -> Any:
         nonlocal promotions
         promotions += 1
-        return original_promote(self, generation)
+        return original_promote(self, generation, prepared)
 
     monkeypatch.setattr(IndexGenerationStore, "_write", fail_active_write_once)
     monkeypatch.setattr(IndexGenerationStore, "promote", count_promote)

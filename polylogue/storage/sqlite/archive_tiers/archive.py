@@ -11,19 +11,26 @@ contract spanning index and source) moved to
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import itertools
 import json
+import os
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 from types import TracebackType
-from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
 
 from polylogue.analysis.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
@@ -124,6 +131,7 @@ from polylogue.core.errors import (
     UnsupportedInsightFilterError,
 )
 from polylogue.core.json import require_json_value
+from polylogue.core.protocols import ProgressCallback
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
@@ -137,7 +145,7 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.derived.session.records import SessionProfileRecord
-from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.derived.topology.derivation import (
     TopologyNodeInput,
@@ -331,6 +339,8 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_WRITE_CONNECTION_PROFILE,
     WRITE_CONNECTION_PROFILE,
+    NativeSQLCustodyOwner,
+    _close_failed_native_construction,
     attach_readonly_database,
     open_connection,
     open_readonly_connection,
@@ -705,6 +715,102 @@ def _assert_active_cold_build_index_only(index_path: Path, *, durable_paths: tup
         )
 
 
+def resolve_session_id_in_index(conn: sqlite3.Connection, token: str) -> str:
+    """Resolve a public session token using the archive's canonical lookup law."""
+    exact = conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (token,)).fetchone()
+    if exact is not None:
+        return str(exact["session_id"])
+    if ":" in token:
+        provider_token, native_id = token.split(":", 1)
+        origin_id = f"{origin_from_provider(Provider.from_string(provider_token)).value}:{native_id}"
+        exact = conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (origin_id,)).fetchone()
+        if exact is not None:
+            return str(exact["session_id"])
+    lower_bound, upper_bound = session_id_prefix_bounds(token)
+    where = "session_id >= ?"
+    params: list[str] = [lower_bound]
+    if upper_bound is not None:
+        where = f"{where} AND session_id < ?"
+        params.append(upper_bound)
+    rows = conn.execute(
+        f"""
+        SELECT session_id
+        FROM sessions
+        WHERE {where}
+        ORDER BY session_id
+        LIMIT 2
+        """,
+        tuple(params),
+    ).fetchall()
+    if not rows:
+        # Suffix fallback: a bare native id, full or prefix, resolves only if
+        # one stored origin-prefixed id matches it.
+        if ":" not in token:
+            like_token = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            exact_suffix_rows = conn.execute(
+                """
+                SELECT session_id
+                FROM sessions
+                WHERE session_id LIKE '%:' || ? ESCAPE '\\'
+                ORDER BY session_id
+                LIMIT 2
+                """,
+                (like_token,),
+            ).fetchall()
+            if len(exact_suffix_rows) == 1:
+                return str(exact_suffix_rows[0]["session_id"])
+            if len(exact_suffix_rows) > 1:
+                raise ValueError(f"session id suffix {token!r} is ambiguous")
+            suffix_rows = conn.execute(
+                """
+                SELECT session_id
+                FROM sessions
+                WHERE session_id LIKE '%:' || ? || '%' ESCAPE '\\'
+                ORDER BY session_id
+                LIMIT 2
+                """,
+                (like_token,),
+            ).fetchall()
+            if len(suffix_rows) == 1:
+                return str(suffix_rows[0]["session_id"])
+            if len(suffix_rows) > 1:
+                raise ValueError(f"session id prefix {token!r} is ambiguous")
+        raise KeyError(token)
+    if len(rows) > 1:
+        raise ValueError(f"session id prefix {token!r} is ambiguous")
+    return str(rows[0]["session_id"])
+
+
+def _archive_mutator(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Acquire physical archive custody before an ArchiveStore write route."""
+
+    @wraps(method)
+    def wrapped(self: ArchiveStore, *args: object, **kwargs: object) -> Any:
+        self._require_writable(method.__name__)
+        self._enter_mutation_lease(settlement=method.__name__ in {"commit", "rollback"})
+        try:
+            result = method(self, *args, **kwargs)
+        except BaseException as exc:
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease((type(exc), exc, exc.__traceback__))
+            raise
+        else:
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease(None)
+            return result
+
+    return wrapped
+
+
+class ArchiveStoreSettlementError(RuntimeError):
+    """Cleanup could not settle SQL; the original owner can retry this Store."""
+
+    def __init__(self, store: ArchiveStore, failure: BaseException) -> None:
+        super().__init__("archive SQL cleanup remains unsettled; retry close on its original owner")
+        self.store = store
+        self.failure = failure
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -740,6 +846,20 @@ class ArchiveStore:
             raise ValueError("the active cold-build shape requires a plain writable active-generation open")
         self._active_cold_build_requested = active_cold_build
         self._active_cold_build_engaged = False
+        self._writer_owner_pid = os.getpid()
+        self._sqlite_owner_thread = threading.current_thread()
+        try:
+            self._sqlite_owner_task = asyncio.current_task()
+        except RuntimeError:
+            self._sqlite_owner_task = None
+        self._conn = None
+        self._source_conn = None
+        self.operation_vector_connection = None
+        self._user_write_connections: list[sqlite3.Connection] = []
+        self._blob_publisher = None
+        self._replay_publisher_slot = None
+        self._sql_custody: ArchiveWriteCustody | None = None
+        self._archive_custody_identity: tuple[int, int] | None = None
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_index_path = frozen_index_path
@@ -762,6 +882,7 @@ class ArchiveStore:
         # accepted only by the owner of the real archive.
         self._write_lease_archive_root = archive_root
         self._active_writer_lease = None
+        self._pending_archive_mutation_lease_context = None
         self._deferred_secondary_indexes: tuple[str, ...] = ()
         self._generation_empty_at_open = False
         if not read_only:
@@ -770,7 +891,10 @@ class ArchiveStore:
 
             if owned_inactive_generation is None:
                 from polylogue.storage.index_generation import ActiveWriterLease
+                from polylogue.storage.sqlite.write_lease import require_write_lease
 
+                require_write_lease("storage.archive_store", archive_root=archive_root)
+                archive_root.mkdir(parents=True, exist_ok=True)
                 self._active_writer_lease = ActiveWriterLease(archive_root)
                 self._active_writer_lease.acquire()
                 if not source_tier_acquisition:
@@ -803,6 +927,10 @@ class ArchiveStore:
                     **json.loads((archive_root / "generation.json").read_text(encoding="utf-8"))
                 )
                 declared_archive_root = Path(generation.archive_root).resolve(strict=True)
+                self._write_lease_archive_root = declared_archive_root
+                from polylogue.storage.sqlite.write_lease import require_write_lease
+
+                require_write_lease("storage.archive_store", archive_root=declared_archive_root)
                 authoritative_generation = IndexGenerationStore.for_archive_root(
                     declared_archive_root,
                     repair_anchor=False,
@@ -844,7 +972,17 @@ class ArchiveStore:
                         self._active_writer_lease.close()
                         self._active_writer_lease = None
                         raise
+        if not read_only:
+            # The caller's mutation owner holds physical custody before this
+            # writable handle opens. The handle itself is persistent, but its
+            # existence does not retain the archive-wide writer gate.
+            from polylogue.storage.sqlite.write_lease import require_write_lease
+
+            require_write_lease("storage.archive_store", archive_root=self._write_lease_archive_root)
+        construction_complete = False
         try:
+            if not read_only:
+                self._enter_mutation_lease()
             self._initialize_store(
                 archive_root,
                 validate_index_layout=validate_index_layout,
@@ -889,14 +1027,26 @@ class ArchiveStore:
                 self._conn.commit()
             if active_cold_build:
                 self._engage_active_cold_build()
-        except Exception:
-            conn = getattr(self, "_conn", None)
-            if conn is not None:
-                conn.close()
-            if self._active_writer_lease is not None:
-                self._active_writer_lease.close()
-                self._active_writer_lease = None
+            construction_complete = True
+        except BaseException as primary:
+            try:
+                self.close()
+            except ArchiveStoreSettlementError as cleanup_error:
+                cleanup_error.add_note(f"ArchiveStore construction failed first: {type(primary).__name__}: {primary}")
+                raise cleanup_error from primary
+            except BaseException as cleanup_error:
+                primary.add_note(f"ArchiveStore construction cleanup also failed: {cleanup_error}")
             raise
+        finally:
+            if (
+                not read_only
+                and not self._has_pending_write_sql()
+                and (
+                    construction_complete
+                    or (self._conn is None and self._source_conn is None and self.operation_vector_connection is None)
+                )
+            ):
+                self._release_mutation_lease(None)
 
     def _initialize_store(
         self,
@@ -912,6 +1062,16 @@ class ArchiveStore:
         validate_index_layout: bool = True,
     ) -> None:
         self.archive_root = archive_root
+        self._sqlite_owner_thread = threading.current_thread()
+        self._conn: sqlite3.Connection | None = None
+        self._source_conn: sqlite3.Connection | None = None
+        self.operation_vector_connection: sqlite3.Connection | None = None
+        self._blob_publisher: ArchiveBlobPublisher | None = None
+        self._replay_publisher_slot: ExitStack | None = None
+        try:
+            self._sqlite_owner_task = asyncio.current_task()
+        except RuntimeError:
+            self._sqlite_owner_task = None
         from polylogue.storage.archive_identity import ArchiveIdentity
 
         self.operation_identity: ArchiveIdentity | None = None
@@ -1074,10 +1234,103 @@ class ArchiveStore:
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
 
+    def _require_sql_owner(self, *, cleanup: bool = False) -> None:
+        if self._writer_owner_pid != os.getpid():
+            raise RuntimeError("a forked process cannot use an inherited archive store")
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        if threading.current_thread() is not self._sqlite_owner_thread or (
+            current_task is not self._sqlite_owner_task
+            and not (cleanup and self._sqlite_owner_task is not None and self._sqlite_owner_task.done())
+        ):
+            # sqlite3 connections are thread-affine. Refuse before dropping
+            # handles or releasing the archive gate so their owning thread can
+            # still settle every transaction.
+            raise RuntimeError("ArchiveStore must use its SQLite handles on their owning thread")
+
     def _require_writable(self, operation: str) -> None:
         """Reject mutations before they can open or use a writable tier."""
+        self._require_sql_owner()
         if self._read_only:
             raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
+
+    def _enter_mutation_lease(self, *, settlement: bool = False) -> None:
+        """Enter the existing archive gate unless an outer owner already holds it."""
+        from polylogue.storage.sqlite.write_lease import current_write_lease, require_write_lease, write_lease
+
+        active = current_write_lease()
+        if active is not None:
+            lease = require_write_lease("ArchiveStore mutation", archive_root=self._write_lease_archive_root)
+            if lease is None or lease.custody is None:
+                raise RuntimeError("archive mutation admission has no physical custody")
+            self._retain_sql_custody(lease.custody)
+            return
+        if self._pending_archive_mutation_lease_context is not None:
+            require_write_lease("ArchiveStore transaction continuation", archive_root=self._write_lease_archive_root)
+            return
+        if self._sql_custody is not None:
+            if not settlement:
+                from polylogue.storage.sqlite.write_lease import UnleasedWriteError
+
+                raise UnleasedWriteError("retained archive SQL must settle before new mutation admission")
+        else:
+            require_write_lease("ArchiveStore mutation admission", archive_root=self._write_lease_archive_root)
+        context = write_lease(
+            "storage.archive_store.mutation",
+            archive_root=self._write_lease_archive_root,
+            _custody=self._sql_custody,
+            _sql_owner=self if self._sql_custody is not None else None,
+        )
+        lease = context.__enter__()
+        try:
+            if lease.custody is None:
+                raise RuntimeError("archive mutation admission has no physical custody")
+            self._retain_sql_custody(lease.custody)
+        except BaseException as exc:
+            context.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+        self._pending_archive_mutation_lease_context = context
+        return
+
+    def _retain_sql_custody(self, custody: ArchiveWriteCustody) -> None:
+        from polylogue.storage.sqlite.write_lease import UnleasedWriteError
+
+        if self._archive_custody_identity is None:
+            self._archive_custody_identity = custody.directory_identity
+        elif self._archive_custody_identity != custody.directory_identity:
+            raise UnleasedWriteError("archive directory was replaced while this Store retained SQLite handles")
+        if self._sql_custody is not None and self._sql_custody is not custody:
+            raise RuntimeError("archive SQL cannot move between unsettled custody owners")
+        custody.retain_sql_owner(self)
+        self._sql_custody = custody
+
+    def _has_pending_write_sql(self) -> bool:
+        """Retain transactions and temporary writers whose close has not settled."""
+        return bool(
+            (self._conn is not None and self._conn.in_transaction)
+            or (self._source_conn is not None and self._source_conn.in_transaction)
+            or (self.operation_vector_connection is not None and self.operation_vector_connection.in_transaction)
+            or bool(self._user_write_connections)
+        )
+
+    def _release_mutation_lease(self, exc_info: tuple[object, object, object] | None) -> None:
+        context, self._pending_archive_mutation_lease_context = self._pending_archive_mutation_lease_context, None
+        first_error: BaseException | None = None
+        if context is not None:
+            try:
+                context.__exit__(*(exc_info if exc_info is not None else (None, None, None)))
+            except BaseException as error:
+                first_error = error
+        custody, self._sql_custody = self._sql_custody, None
+        if custody is not None:
+            try:
+                custody.release_sql_owner(self)
+            except BaseException as error:
+                first_error = first_error or error
+        if first_error is not None:
+            raise first_error
 
     @property
     def active_cold_build_engaged(self) -> bool:
@@ -1105,6 +1358,23 @@ class ArchiveStore:
             return
         self._active_cold_build_engaged = True
 
+    @_archive_mutator
+    def rebuild_session_insights(
+        self,
+        *,
+        session_ids: Sequence[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> SessionInsightCounts:
+        """Own every materializer commit on this Store's actual connection."""
+        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
+
+        return rebuild_session_insights_sync(
+            self._conn,
+            session_ids=session_ids,
+            progress_callback=progress_callback,
+        )
+
+    @_archive_mutator
     def finish_active_cold_build(self) -> tuple[int, int, int] | None:
         """Release the active cold-build shape at the end of a pass.
 
@@ -1158,6 +1428,7 @@ class ArchiveStore:
         self._active_cold_build_engaged = False
         return checkpoint_result
 
+    @_archive_mutator
     def restore_deferred_secondary_indexes(self) -> None:
         """Recreate deferred reader indexes before publishing a generation."""
         self._require_writable("restore deferred secondary indexes")
@@ -1294,6 +1565,7 @@ class ArchiveStore:
         """Whether index writes land in an owned, never-yet-promoted generation."""
         return self._owned_inactive_generation is not None
 
+    @_archive_mutator
     def run_generation_readiness_pass(self) -> None:
         """Make an owned cold-built generation publishable.
 
@@ -1409,15 +1681,40 @@ class ArchiveStore:
     def end_read_snapshot(self) -> None:
         """Release the owned read snapshot without ever committing read work."""
 
-        self._read_snapshot_owned = False
-        if self._conn.in_transaction:
-            self._conn.rollback()
-        if self._source_conn is not None and self._source_conn.in_transaction:
-            self._source_conn.rollback()
-        if self.operation_vector_connection is not None:
-            self.operation_vector_connection.rollback()
-            self.operation_vector_connection.close()
-            self.operation_vector_connection = None
+        first_error: BaseException | None = None
+        index_settled = False
+        try:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            index_settled = True
+        except BaseException as exc:
+            first_error = exc
+        if self._source_conn is not None:
+            try:
+                if self._source_conn.in_transaction:
+                    self._source_conn.rollback()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if getattr(self, "operation_vector_connection", None) is not None:
+            connection = self.operation_vector_connection
+            try:
+                if connection.in_transaction:
+                    connection.rollback()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            try:
+                connection.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            else:
+                self.operation_vector_connection = None
+        if index_settled:
+            self._read_snapshot_owned = False
+        if first_error is not None:
+            raise first_error
 
     def interrupt_reads(self) -> None:
         """Interrupt any statement active on the index read connection.
@@ -1426,7 +1723,7 @@ class ArchiveStore:
         is explicitly cross-thread callable).
         """
         self._conn.interrupt()
-        if self._source_conn is not None:
+        if getattr(self, "_source_conn", None) is not None:
             self._source_conn.interrupt()
         if self.operation_vector_connection is not None:
             self.operation_vector_connection.interrupt()
@@ -1485,8 +1782,18 @@ class ArchiveStore:
             )
         if initialize:
             initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        return open_connection(self.user_db_path, archive_root=self._write_lease_archive_root)
+        connection = open_connection(self.user_db_path, archive_root=self._write_lease_archive_root)
+        self._user_write_connections.append(connection)
+        return connection
 
+    def _close_user_connection(self, connection: sqlite3.Connection) -> None:
+        """Retire a User writer only after its actual close succeeds."""
+        connection.close()
+        self._user_write_connections[:] = [
+            retained for retained in self._user_write_connections if retained is not connection
+        ]
+
+    @_archive_mutator
     def commit(self) -> None:
         """Commit index.db and any source transaction left by other callers.
 
@@ -1494,16 +1801,27 @@ class ArchiveStore:
         publication receipts; bulk cadence applies to the derived index.
         """
         self._require_writable("commit archive writes")
-        if self._source_tier_acquisition:
+        try:
+            if self._source_tier_acquisition:
+                if self._source_conn is not None:
+                    self._source_conn.commit()
+                return
+            from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+            scope = current_index_mutation_scope()
+            if scope is not None:
+                scope.require_connection(self._conn)
+                scope.commit()
+            else:
+                self._conn.commit()
+            self._consume_index_blob_receipts()
+            self._flush_pending_raw_parse_states()
             if self._source_conn is not None:
                 self._source_conn.commit()
-            return
-        self._conn.commit()
-        self._consume_index_blob_receipts()
-        self._flush_pending_raw_parse_states()
-        if self._source_conn is not None:
-            self._source_conn.commit()
-        self._release_replay_publisher_slot()
+            self._release_replay_publisher_slot()
+        finally:
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease(None)
 
     def _hold_replay_publisher_slot(self) -> None:
         if self._replay_publisher_slot is not None:
@@ -1537,45 +1855,126 @@ class ArchiveStore:
             if manage_transaction:
                 self._release_replay_publisher_slot()
 
+    @_archive_mutator
     def rollback(self) -> None:
         """Roll back the index.db and (if open) source.db write connections.
 
         Used by a bulk caller to discard an uncommitted, half-applied batch when
         a write raises, before propagating the error.
         """
+        first_error: BaseException | None = None
+
+        def settle(action: Callable[[], object]) -> bool:
+            nonlocal first_error
+            try:
+                action()
+                return True
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+                else:
+                    first_error.add_note(f"another archive rollback failed: {error}")
+                return False
+
+        from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+        scope = current_index_mutation_scope()
+        if scope is not None:
+            scope.require_connection(self._conn)
+        for connection in tuple(self._user_write_connections):
+            settle(connection.rollback)
         if self._source_tier_acquisition:
             if self._source_conn is not None:
-                self._source_conn.rollback()
-            return
-        self._conn.rollback()
-        self._pending_index_blob_receipts.clear()
-        self._pending_raw_parse_states.clear()
-        if self._source_conn is not None:
-            self._source_conn.rollback()
-        self._release_replay_publisher_slot()
+                settle(self._source_conn.rollback)
+        else:
+            if settle(scope.rollback if scope is not None else self._conn.rollback):
+                self._pending_index_blob_receipts.clear()
+                self._pending_raw_parse_states.clear()
+            if self._source_conn is not None:
+                settle(self._source_conn.rollback)
+            if self.operation_vector_connection is not None:
+                settle(self.operation_vector_connection.rollback)
+            if not self._has_pending_write_sql():
+                settle(self._release_replay_publisher_slot)
+        if first_error is not None:
+            raise first_error
 
     def close(self) -> None:
+        self._require_sql_owner(cleanup=True)
+        first_error: BaseException | None = None
+
+        def settle(action: Callable[[], object]) -> bool:
+            nonlocal first_error
+            try:
+                action()
+                return True
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                return False
+
+        def settle_connection(connection: sqlite3.Connection) -> bool:
+            nonlocal first_error
+            try:
+                if connection.in_transaction:
+                    connection.rollback()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            try:
+                connection.close()
+                return True
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                return False
+
+        # Finish every handle before releasing physical custody. One failed
+        # close must not strand a later SQL connection or let another writer
+        # enter while its transaction is still live.
+        for connection in tuple(self._user_write_connections):
+            if settle_connection(connection):
+                self._user_write_connections[:] = [
+                    retained for retained in self._user_write_connections if retained is not connection
+                ]
         if self.operation_vector_connection is not None:
-            self.operation_vector_connection.close()
-            self.operation_vector_connection = None
+            connection = self.operation_vector_connection
+            if settle_connection(connection):
+                self.operation_vector_connection = None
         if self._blob_publisher is not None:
-            self._blob_publisher.discard_pending()
-        self._release_replay_publisher_slot()
-        # Deferral is never restored at close. Index deferral is only ever
-        # granted to an OWNED INACTIVE generation, which no reader can open:
-        # there is nothing to protect, and a close-time restore made a
-        # multi-pass cold build (polylogue-b7dkb) pay one full CREATE INDEX
-        # pass per intake page -- the exact cost the deferral removes. The
-        # generation is either made ready (``run_generation_readiness_pass``,
-        # or ``restore_deferred_secondary_indexes`` at the offline replay's
-        # boundary) or discarded.
+            settle(self._blob_publisher.discard_pending)
+        settle(self._release_replay_publisher_slot)
         if self._source_conn is not None:
-            self._source_conn.close()
-            self._source_conn = None
-        self._conn.close()
-        if self._active_writer_lease is not None:
-            self._active_writer_lease.close()
-            self._active_writer_lease = None
+            connection = self._source_conn
+            if settle_connection(connection):
+                self._source_conn = None
+        if getattr(self, "_conn", None) is not None:
+            connection = self._conn
+            if settle_connection(connection):
+                self._conn = None
+        transactions_settled = not self._has_pending_write_sql()
+        handles_closed = (
+            self.operation_vector_connection is None
+            and self._source_conn is None
+            and self._conn is None
+            and not self._user_write_connections
+        )
+        if handles_closed and self._active_writer_lease is not None:
+            lease = self._active_writer_lease
+            if settle(lease.close):
+                self._active_writer_lease = None
+        if transactions_settled and handles_closed:
+            try:
+                self._release_mutation_lease(
+                    None if first_error is None else (type(first_error), first_error, first_error.__traceback__)
+                )
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            if not handles_closed:
+                raise ArchiveStoreSettlementError(self, first_error) from first_error
+            raise first_error
 
     @contextmanager
     def attached_session_shard(
@@ -1610,6 +2009,7 @@ class ArchiveStore:
         finally:
             attachment.__exit__(None, None, None)
 
+    @_archive_mutator
     def append_work_event(
         self,
         *,
@@ -1818,6 +2218,7 @@ class ArchiveStore:
             defer_fts_rebuild=defer_fts_rebuild,
         )
 
+    @_archive_mutator
     def write_raw_and_parsed(
         self,
         session: ParsedSession,
@@ -1851,6 +2252,7 @@ class ArchiveStore:
             finalize_raw_parse=finalize_raw_parse,
         )
 
+    @_archive_mutator
     def write_raw_payload(
         self,
         *,
@@ -1887,6 +2289,7 @@ class ArchiveStore:
     def raw_native_id(self, raw_id: str) -> str | None:
         return raw_native_id(self, raw_id)
 
+    @_archive_mutator
     def write_hook_event(
         self,
         *,
@@ -1938,6 +2341,7 @@ class ArchiveStore:
             policy_snapshot=policy_snapshot,
         )
 
+    @_archive_mutator
     def write_hook_events_from_carrier(
         self,
         *,
@@ -1972,6 +2376,7 @@ class ArchiveStore:
             policy_snapshot=build_excision_policy_snapshot(self.archive_root),
         )
 
+    @_archive_mutator
     def delete_hook_event(self, hook_event_id: str) -> bool:
         """Delete a hook event and its source-tier payload reference."""
         self._require_writable("delete source.db hook evidence")
@@ -1981,6 +2386,7 @@ class ArchiveStore:
         """Classify all durable hook payload evidence without mutating it."""
         return census_hook_event_authority(self._ensure_source_conn())
 
+    @_archive_mutator
     def write_raw_blob_ref(
         self,
         *,
@@ -2014,6 +2420,7 @@ class ArchiveStore:
             post_parse=post_parse,
         )
 
+    @_archive_mutator
     def record_raw_container_coordinate(
         self,
         raw_id: str,
@@ -2035,6 +2442,7 @@ class ArchiveStore:
             content_identity=content_identity,
         )
 
+    @_archive_mutator
     def admit_raw_artifact_payload(
         self,
         *,
@@ -2066,6 +2474,7 @@ class ArchiveStore:
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
 
+    @_archive_mutator
     def admit_raw_artifact_blob_ref(
         self,
         *,
@@ -2096,6 +2505,7 @@ class ArchiveStore:
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
 
+    @_archive_mutator
     def write_parsed_for_retained_raw(
         self,
         session: ParsedSession,
@@ -2126,6 +2536,7 @@ class ArchiveStore:
                 revision_authoritative=revision_authoritative,
             )
 
+    @_archive_mutator
     def write_parsed_for_retained_raw_result(
         self,
         session: ParsedSession,
@@ -2156,10 +2567,12 @@ class ArchiveStore:
                 revision_authoritative=revision_authoritative,
             )
 
+    @_archive_mutator
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True) -> None:
         self._require_writable("bind source.db revision")
         return bind_raw_revision(self, raw_id, revision, manage_transaction=manage_transaction)
 
+    @_archive_mutator
     def promote_reconstructed_legacy_append_revisions(
         self,
         revisions: Sequence[tuple[str, RawRevisionEnvelope]],
@@ -2181,6 +2594,7 @@ class ArchiveStore:
             observed_at_ms=observed_at_ms,
         )
 
+    @_archive_mutator
     def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
         self._require_writable("release source.db revisions")
         return release_provisional_full_revisions(self, raw_ids)
@@ -2205,6 +2619,7 @@ class ArchiveStore:
     def _raw_revision_source_path_has_divergent_evidence(self, logical_source_key: str) -> bool:
         return _raw_revision_source_path_has_divergent_evidence(self, logical_source_key)
 
+    @_archive_mutator
     def classify_raw_revision_cohort_for_rebuild_repair(
         self,
         logical_source_key: str,
@@ -2212,6 +2627,7 @@ class ArchiveStore:
         self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_rebuild_repair(self, logical_source_key)
 
+    @_archive_mutator
     def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
         self, logical_source_key: str
     ) -> RevisionReplayPlan:
@@ -2221,6 +2637,7 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
 
+    @_archive_mutator
     def classify_raw_revision_cohort_for_live_watch(
         self,
         logical_source_key: str,
@@ -2228,6 +2645,7 @@ class ArchiveStore:
         self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_live_watch(self, logical_source_key)
 
+    @_archive_mutator
     def classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key: str) -> RevisionReplayPlan:
         self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key)
@@ -2293,6 +2711,7 @@ class ArchiveStore:
     def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
         return raw_payload_sizes(self, raw_ids)
 
+    @_archive_mutator
     def replace_raw_membership_census(
         self,
         raw_id: str,
@@ -2382,6 +2801,7 @@ class ArchiveStore:
     def raw_revision_replay_adoptable(self, sessions: Sequence[ParsedSession]) -> bool:
         return raw_revision_replay_adoptable(self, sessions)
 
+    @_archive_mutator
     def defer_raw_revision_adoption(
         self,
         logical_source_key: str,
@@ -2391,6 +2811,7 @@ class ArchiveStore:
         self._require_writable("defer source.db revision adoption")
         return defer_raw_revision_adoption(self, logical_source_key, raw_ids, sessions)
 
+    @_archive_mutator
     def apply_raw_revision_replay(
         self,
         plan: RevisionReplayPlan,
@@ -2441,6 +2862,7 @@ class ArchiveStore:
                 prepared_aggregate_content_hash=prepared_aggregate_content_hash,
             )
 
+    @_archive_mutator
     def apply_raw_membership_classification(
         self,
         logical_source_key: str,
@@ -2485,10 +2907,12 @@ class ArchiveStore:
                 prepared_write=prepared_write,
             )
 
+    @_archive_mutator
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
         self._require_writable("finalize source.db parse state")
         return finalize_raw_parse_state(self, raw_id, state=state)
 
+    @_archive_mutator
     def mark_raw_parse_failed(
         self,
         raw_id: str,
@@ -2506,6 +2930,7 @@ class ArchiveStore:
             preserve_existing_failure_evidence=preserve_existing_failure_evidence,
         )
 
+    @_archive_mutator
     def record_raw_failure_evidence(
         self,
         raw_id: str,
@@ -2527,6 +2952,7 @@ class ArchiveStore:
             kind=kind,
         )
 
+    @_archive_mutator
     def mark_raw_parse_succeeded(self, raw_id: str, *, provider: Provider) -> None:
         self._require_writable("mark source.db parse success")
         return mark_raw_parse_succeeded(self, raw_id, provider=provider)
@@ -2574,6 +3000,7 @@ class ArchiveStore:
     def _raw_parse_failure_state(provider: Provider, exc: BaseException) -> RawSessionStateUpdate:
         return _raw_parse_failure_state(provider, exc)
 
+    @_archive_mutator
     def write_raw_and_parsed_result(
         self,
         session: ParsedSession,
@@ -2607,6 +3034,7 @@ class ArchiveStore:
             finalize_raw_parse=finalize_raw_parse,
         )
 
+    @_archive_mutator
     def admit_raw_and_parsed_result(
         self,
         session: ParsedSession,
@@ -4171,88 +4599,7 @@ class ArchiveStore:
 
     def resolve_session_id(self, token: str) -> str:
         """Resolve an exact or prefix session id token."""
-        exact = self._conn.execute(
-            "SELECT session_id FROM sessions WHERE session_id = ?",
-            (token,),
-        ).fetchone()
-        if exact is not None:
-            return str(exact["session_id"])
-        if ":" in token:
-            provider_token, native_id = token.split(":", 1)
-            origin_id = f"{origin_from_provider(Provider.from_string(provider_token)).value}:{native_id}"
-            exact = self._conn.execute(
-                "SELECT session_id FROM sessions WHERE session_id = ?",
-                (origin_id,),
-            ).fetchone()
-            if exact is not None:
-                return str(exact["session_id"])
-        lower_bound, upper_bound = session_id_prefix_bounds(token)
-        where = "session_id >= ?"
-        params: list[str] = [lower_bound]
-        if upper_bound is not None:
-            where = f"{where} AND session_id < ?"
-            params.append(upper_bound)
-        rows = self._conn.execute(
-            f"""
-            SELECT session_id
-            FROM sessions
-            WHERE {where}
-            ORDER BY session_id
-            LIMIT 2
-            """,
-            tuple(params),
-        ).fetchall()
-        if not rows:
-            # Suffix fallback: a bare native id (e.g. the UUID that appears as
-            # the session's source filename, ``1944721d-...``), full or a
-            # prefix of it, resolves to the stored ``<origin>:<native_id>``.
-            # Try the EXACT native id first (no trailing ``%``): in an
-            # archive with sibling native ids where one is a prefix of
-            # another (``abc`` and ``abcd``), an exact lookup for ``abc``
-            # must still return only the ``abc`` row, not raise ambiguous
-            # just because ``abcd`` also matches the widened prefix pattern
-            # below (#2626 review). Only fall through to the prefix-widened
-            # (trailing ``%``) match -- which allows a truncated prefix to
-            # resolve, #7q16 -- when the exact lookup finds nothing. The
-            # leading ``:`` anchors both patterns to right after the origin
-            # separator so neither can match mid-native-id. Provider native
-            # ids are globally unique, so a single match is unambiguous;
-            # multiple matches raise just like the prefix path rather than
-            # guessing.
-            if ":" not in token:
-                like_token = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                exact_suffix_rows = self._conn.execute(
-                    """
-                    SELECT session_id
-                    FROM sessions
-                    WHERE session_id LIKE '%:' || ? ESCAPE '\\'
-                    ORDER BY session_id
-                    LIMIT 2
-                    """,
-                    (like_token,),
-                ).fetchall()
-                if len(exact_suffix_rows) == 1:
-                    return str(exact_suffix_rows[0]["session_id"])
-                if len(exact_suffix_rows) > 1:
-                    raise ValueError(f"session id suffix {token!r} is ambiguous")
-                suffix_rows = self._conn.execute(
-                    """
-                    SELECT session_id
-                    FROM sessions
-                    WHERE session_id LIKE '%:' || ? || '%' ESCAPE '\\'
-                    ORDER BY session_id
-                    LIMIT 2
-                    """,
-                    (like_token,),
-                ).fetchall()
-                if len(suffix_rows) == 1:
-                    return str(suffix_rows[0]["session_id"])
-                if len(suffix_rows) > 1:
-                    raise ValueError(f"session id prefix {token!r} is ambiguous")
-            raise KeyError(token)
-        if len(rows) > 1:
-            raise ValueError(f"session id prefix {token!r} is ambiguous")
-        return str(rows[0]["session_id"])
+        return resolve_session_id_in_index(self._conn, token)
 
     def resolve_exact_session_ids(
         self,
@@ -4321,6 +4668,7 @@ class ArchiveStore:
             return IndexStatus(exists=False, count=0)
         return IndexStatus(exists=True, count=_count_scalar(self._conn, "SELECT COUNT(*) FROM messages_fts"))
 
+    @_archive_mutator
     def add_user_tags(
         self,
         session_ids: tuple[str, ...],
@@ -4366,7 +4714,7 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         self._attach_user_tier_if_present()
         if changed:
             from polylogue.storage.search.cache import invalidate_search_cache
@@ -4374,6 +4722,7 @@ class ArchiveStore:
             invalidate_search_cache()
         return changed
 
+    @_archive_mutator
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
         """Mark user tag assertions deleted and return deleted row count."""
         self._require_writable("delete user.db tags")
@@ -4404,7 +4753,7 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         self._attach_user_tier_if_present()
         if removed:
             from polylogue.storage.search.cache import invalidate_search_cache
@@ -4937,6 +5286,7 @@ class ArchiveStore:
             offset=offset,
         )
 
+    @_archive_mutator
     def set_user_metadata(self, session_ids: tuple[str, ...], pairs: tuple[tuple[str, object], ...]) -> int:
         """Set human-owned metadata as archive user.db assertions."""
         user_conn = self._open_user_write_connection(initialize=True)
@@ -4978,7 +5328,7 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         return changed
 
     def read_user_metadata(self, session_id: str) -> dict[str, object]:
@@ -4991,7 +5341,7 @@ class ArchiveStore:
         try:
             rows = list_assertions_for_target(user_conn, f"session:{resolved_session_id}", kind=AssertionKind.METADATA)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         decoded: dict[str, object] = {}
         for assertion in rows:
             if assertion.status == "deleted" or assertion.key is None:
@@ -4999,6 +5349,7 @@ class ArchiveStore:
             decoded[str(assertion.key)] = assertion.value
         return decoded
 
+    @_archive_mutator
     def delete_user_metadata(self, session_id: str, key: str) -> int:
         """Mark one user metadata assertion deleted."""
         (resolved_session_id,) = self.require_stored_session_ids((session_id,))
@@ -5026,8 +5377,9 @@ class ArchiveStore:
                 user_conn.rollback()
                 raise
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def add_mark(
         self,
         target_type: str,
@@ -5053,8 +5405,9 @@ class ArchiveStore:
                 )
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def remove_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
         """Remove one user mark from archive user.db."""
         if not self.user_db_path.exists():
@@ -5068,7 +5421,7 @@ class ArchiveStore:
                     "deleted",
                 )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def list_marks(
         self,
@@ -5085,7 +5438,7 @@ class ArchiveStore:
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.MARK)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         selected: list[tuple[ArchiveAssertionEnvelope, str, str]] = []
         for assertion in assertions:
             found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
@@ -5114,6 +5467,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def save_annotation(
         self,
         annotation_id: str,
@@ -5141,8 +5495,9 @@ class ArchiveStore:
                 )
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_annotation_schema(
         self,
         schema: AnnotationSchema,
@@ -5161,7 +5516,7 @@ class ArchiveStore:
                     registered_at_ms=registered_at_ms if registered_at_ms is not None else int(time.time() * 1000),
                 )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_annotation_schema(
         self,
@@ -5177,7 +5532,7 @@ class ArchiveStore:
         try:
             return read_durable_annotation_schema(user_conn, schema_id, version)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def list_annotation_schemas(self) -> tuple[DurableAnnotationSchema, ...]:
         """List durable annotation schema definitions in identity order."""
@@ -5189,8 +5544,9 @@ class ArchiveStore:
         try:
             return list_durable_annotation_schemas(user_conn)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_annotation_batch(self, batch: AnnotationBatch) -> AnnotationBatch:
         """Persist one immutable annotation-batch provenance container."""
 
@@ -5200,7 +5556,7 @@ class ArchiveStore:
             with user_conn:
                 return persist_annotation_batch(user_conn, batch)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_annotation_batch(self, batch_id: str) -> AnnotationBatch | None:
         """Read one durable annotation batch by id."""
@@ -5212,7 +5568,7 @@ class ArchiveStore:
         try:
             return read_annotation_batch(user_conn, batch_id)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def list_annotation_batches(
         self,
@@ -5237,7 +5593,7 @@ class ArchiveStore:
                 limit=limit,
             )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
         """Read one annotation from archive user.db."""
@@ -5266,7 +5622,7 @@ class ArchiveStore:
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.ANNOTATION)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         selected: list[tuple[ArchiveAssertionEnvelope, str, str]] = []
         for assertion in assertions:
             found_annotation_id = str(assertion.key or "")
@@ -5298,6 +5654,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_annotation(self, annotation_id: str) -> bool:
         """Delete one annotation from archive user.db."""
         if not self.user_db_path.exists():
@@ -5307,8 +5664,9 @@ class ArchiveStore:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_view(self, view_id: str, name: str, query_json: str, *, watch: bool = False) -> bool:
         """Create or update one saved view in archive user.db.
 
@@ -5367,7 +5725,7 @@ class ArchiveStore:
                     clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_view(self, view_id: str) -> dict[str, str] | None:
         """Get one saved view by id from archive user.db."""
@@ -5389,7 +5747,7 @@ class ArchiveStore:
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.SAVED_QUERY)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         return [
             {
                 "view_id": _id_from_target_ref(assertion.target_ref, "saved_view:"),
@@ -5404,6 +5762,7 @@ class ArchiveStore:
             for assertion in assertions
         ]
 
+    @_archive_mutator
     def delete_view(self, view_id: str) -> bool:
         """Delete one saved view from archive user.db, watch binding included.
 
@@ -5435,8 +5794,9 @@ class ArchiveStore:
                     clear_query_watch(user_conn, name=watched_name, now_ms=deleted_at_ms)
             return deleted
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_recall_pack(
         self,
         pack_id: str,
@@ -5458,7 +5818,7 @@ class ArchiveStore:
                 upsert_recall_pack(user_conn, label, payload, recall_pack_id=pack_id)
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
         """Get one recall pack by id from archive user.db."""
@@ -5476,7 +5836,7 @@ class ArchiveStore:
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.RECALL_PACK)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         out: list[dict[str, str]] = []
         for assertion in assertions:
             payload = assertion.value if isinstance(assertion.value, dict) else {}
@@ -5494,6 +5854,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_recall_pack(self, pack_id: str) -> bool:
         """Delete one recall pack from archive user.db."""
         if not self.user_db_path.exists():
@@ -5503,8 +5864,9 @@ class ArchiveStore:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def save_workspace(
         self,
         *,
@@ -5534,7 +5896,7 @@ class ArchiveStore:
                 upsert_workspace(user_conn, name, settings, workspace_id=workspace_id)
             return not exists
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
         """Get one workspace by id from archive user.db."""
@@ -5556,7 +5918,7 @@ class ArchiveStore:
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.WORKSPACE_NOTE)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         out: list[dict[str, str]] = []
         for assertion in assertions:
             settings = assertion.value if isinstance(assertion.value, dict) else {}
@@ -5576,6 +5938,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_workspace(self, workspace_id: str) -> bool:
         """Delete one workspace from archive user.db."""
         if not self.user_db_path.exists():
@@ -5585,8 +5948,9 @@ class ArchiveStore:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def record_correction(
         self,
         session_id: str,
@@ -5614,7 +5978,7 @@ class ArchiveStore:
                     author_kind=author_kind,
                 )
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         listed = self.list_corrections(session_id=resolved_session_id, kind=correction_kind.value)
         if not listed:
             raise KeyError((resolved_session_id, correction_kind.value))
@@ -5630,7 +5994,7 @@ class ArchiveStore:
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.CORRECTION)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
         out: list[LearningCorrection] = []
         for assertion in assertions:
             target_type, target_id = _split_user_target_ref(assertion.target_ref)
@@ -5648,6 +6012,7 @@ class ArchiveStore:
             )
         return out
 
+    @_archive_mutator
     def delete_correction(self, session_id: str, kind: str) -> bool:
         """Delete one learning correction from archive user.db."""
         (resolved_session_id,) = self.require_stored_session_ids((session_id,))
@@ -5660,8 +6025,9 @@ class ArchiveStore:
                 correction_id = correction_id_for("insight", resolved_session_id, correction_kind.value)
                 return mark_assertion_status(user_conn, assertion_id_for_correction(correction_id), "deleted")
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def clear_corrections(self, session_id: str) -> int:
         """Delete all learning corrections for one archive session."""
         (resolved_session_id,) = self.require_stored_session_ids((session_id,))
@@ -5681,8 +6047,9 @@ class ArchiveStore:
                         deleted_count += 1
                 return deleted_count
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def post_blackboard_note(
         self,
         body: str,
@@ -5714,7 +6081,7 @@ class ArchiveStore:
             user_conn.commit()
             return envelope
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
     def list_blackboard_notes(self, *, limit: int | None = None) -> list[ArchiveBlackboardNoteEnvelope]:
         """List blackboard notes from archive user.db, newest first.
@@ -5729,8 +6096,9 @@ class ArchiveStore:
         try:
             return list_archive_blackboard_note_envelopes(user_conn, limit=limit)
         finally:
-            user_conn.close()
+            self._close_user_connection(user_conn)
 
+    @_archive_mutator
     def delete_sessions(
         self,
         session_ids: tuple[str, ...],
@@ -5799,65 +6167,74 @@ class ArchiveStore:
         if not resolved_session_ids:
             return 0
         conn = connect_measured(self.index_db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+        owner = NativeSQLCustodyOwner(conn)
         deleted = 0
         deleted_session_ids: list[str] = []
         try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
             # This recovery path uses executescript(), which commits implicitly.
             # Restore missing triggers before the delete transaction so a later
             # trigger-install failure cannot commit the destructive work early.
             from polylogue.storage.fts.fts_lifecycle import ensure_fts_triggers_sync
 
             ensure_fts_triggers_sync(conn)
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                for session_id in resolved_session_ids:
-                    # Must run before the blocks rows are removed below.
-                    conn.execute(delete_session_rows_sql(1), (session_id,))
-                    conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-                conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-                conn.execute(
-                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                    (FTS_BULK_SESSION_WRITE_GUARD,),
-                )
+            from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+            seal = PreparedIndexMutation(self.index_db_path, archive_root=self._write_lease_archive_root)
+            with seal, seal.mutation_scope(conn) as mutation_scope:
                 try:
                     for session_id in resolved_session_ids:
-                        conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
-                        conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
-                        # attachment_refs cascades from sessions, so the refs
-                        # vanish with no Python code observing it. Their
-                        # attachments rows would survive with a stale ref_count
-                        # and no reachable ref -- what archive verification
-                        # reports as an error. Read the ids before the delete;
-                        # after it there is nothing left to join through.
-                        orphan_candidates = session_attachment_ids(conn, session_id)
-                        cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                        refresh_and_sweep_attachment_rows(conn, orphan_candidates)
-                        if int(cursor.rowcount) > 0:
-                            deleted += int(cursor.rowcount)
-                            deleted_session_ids.append(session_id)
-                finally:
-                    conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+                        mutation_scope.note_deleted_session(session_id)
+                        mutation_scope.note_lineage_change(session_id)
+                        # Must run before the blocks rows are removed below.
+                        conn.execute(delete_session_rows_sql(1), (session_id,))
+                        conn.execute(delete_session_identity_rows_sql(1), (session_id,))
+                    conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
                     conn.execute(
-                        "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
                         (FTS_BULK_SESSION_WRITE_GUARD,),
                     )
-                ArchiveWriteGateway(self.index_db_path).commit_write_sync(
-                    write_operation,
-                    {
-                        "_connection": conn,
-                        "changed_session_ids": tuple(deleted_session_ids),
-                        # Explicit pre-delete cleanup above is the only safe
-                        # FTS repair once the external-content rows are gone.
-                        "repair_message_fts": False,
-                    },
-                )
-            except BaseException:
-                conn.rollback()
-                raise
-        finally:
-            conn.close()
+                    try:
+                        for session_id in resolved_session_ids:
+                            conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
+                            conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
+                            # attachment_refs cascades from sessions, so the refs
+                            # vanish with no Python code observing it. Their
+                            # attachments rows would survive with a stale ref_count
+                            # and no reachable ref -- what archive verification
+                            # reports as an error. Read the ids before the delete;
+                            # after it there is nothing left to join through.
+                            orphan_candidates = session_attachment_ids(conn, session_id)
+                            cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+                            refresh_and_sweep_attachment_rows(conn, orphan_candidates)
+                            if int(cursor.rowcount) > 0:
+                                deleted += int(cursor.rowcount)
+                                deleted_session_ids.append(session_id)
+                    finally:
+                        conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+                        conn.execute(
+                            "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                            (FTS_BULK_SESSION_WRITE_GUARD,),
+                        )
+                    ArchiveWriteGateway(self.index_db_path).commit_write_sync(
+                        write_operation,
+                        {
+                            "_connection": conn,
+                            "changed_session_ids": tuple(deleted_session_ids),
+                            # Explicit pre-delete cleanup above is the only safe
+                            # FTS repair once the external-content rows are gone.
+                            "repair_message_fts": False,
+                        },
+                    )
+                except BaseException:
+                    conn.rollback()
+                    raise
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
+        else:
+            owner.close()
         return deleted
 
     def _attach_user_tier_if_present(self) -> None:
@@ -7676,7 +8053,16 @@ class ArchiveStore:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        try:
+            self.close()
+        except ArchiveStoreSettlementError as close_error:
+            if exc is None:
+                raise
+            raise close_error from exc
+        except BaseException as close_error:
+            if exc is None:
+                raise
+            exc.add_note(f"ArchiveStore cleanup also failed: {close_error}")
 
 
 def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSessionSummary:

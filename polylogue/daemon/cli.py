@@ -2964,6 +2964,8 @@ async def _run_daemon_services_under_active_writer_lease(
             if not watcher_creation_blocked and intake_scheduled:
                 async with Polylogue() as polylogue:
                     from polylogue.archive.query.execution_control import QueryExecutionContext
+                    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+                    from polylogue.daemon.execution import daemon_compute_adapter
                     from polylogue.daemon.intake_adapters import (
                         ColdBuildGeneration,
                         ColdBuildSettlement,
@@ -2977,6 +2979,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         register_cold_build_generation,
                     )
                     from polylogue.operations.operation_context import open_operation_read
+
+                    promotion_compute = (
+                        api_server.execution_kernel if api_server is not None else daemon_compute_adapter()
+                    )
+
+                    cold_build_promotion_execution = DriveCatchupExecution(
+                        write_coordinator,
+                        compute_adapter=promotion_compute,
+                    )
 
                     watcher = LiveWatcher(
                         polylogue,
@@ -3201,9 +3212,16 @@ async def _run_daemon_services_under_active_writer_lease(
                                     # generation serves from a retained raw is
                                     # refused, not promoted (polylogue-5hcbg).
                                     await write_coordinator.run_sync(
+                                        "daemon.cold_build.prepare_candidate",
+                                        generation.prepare_promotion_candidate,
+                                    )
+                                    await cold_build_promotion_execution.publish_prepared_sync(
                                         "daemon.cold_build.promote",
-                                        promote_cold_build_covering_active_index,
-                                        generation,
+                                        generation.prepare_promotion_proof,
+                                        functools.partial(
+                                            promote_cold_build_covering_active_index,
+                                            generation,
+                                        ),
                                     )
                                     promoted = True
                                 else:

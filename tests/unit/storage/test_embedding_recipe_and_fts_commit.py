@@ -57,13 +57,13 @@ def test_fts_owned_commit_failure_rolls_back_and_allows_retry(test_conn: sqlite3
 
     test_conn.set_authorizer(deny_one_commit)
     try:
-        with write_lease("test.w5.fts-commit"):
+        with write_lease("test.w5.fts-commit", archive_root=test_db.parent):
             with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
                 repair_message_fts_index_sync(test_conn, [session_id])
         assert denied, "the failure must be at the real owned COMMIT"
         assert not test_conn.in_transaction
     finally:
         test_conn.set_authorizer(None)
-    with write_lease("test.w5.fts-retry"):
+    with write_lease("test.w5.fts-retry", archive_root=test_db.parent):
         repair_message_fts_index_sync(test_conn, [session_id])
     assert not test_conn.in_transaction

@@ -21,7 +21,7 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_ready,
 )
 from polylogue.storage.raw_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
+    raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -162,7 +162,7 @@ def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path:
                 raw_id, parser_fingerprint, status, logical_keys_json, detail
             ) VALUES (?, ?, 'complete', '["codex-session:duplicate", "codex-session:duplicate"]', '')
             """,
-            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+            (raw_id, raw_authority_parser_fingerprint()),
         )
         conn.commit()
 
@@ -196,7 +196,7 @@ def test_raw_materialization_snapshot_rejects_receipt_key_drift_from_durable_bin
                 raw_id, parser_fingerprint, status, logical_keys_json, detail
             ) VALUES (?, ?, 'complete', '["codex-session:wrong-binding"]', '')
             """,
-            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+            (raw_id, raw_authority_parser_fingerprint()),
         )
         conn.commit()
 
@@ -252,7 +252,7 @@ def test_raw_materialization_snapshot_accepts_parser_confirmed_empty_non_session
         archive.replace_raw_membership_census(
             raw_id,
             [],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=1,
         )
 
@@ -288,7 +288,7 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
                 raw_id, parser_fingerprint, status, logical_keys_json, detail
             ) VALUES (?, ?, 'complete', '["codex:stream-census"]', '')
             """,
-            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+            (raw_id, raw_authority_parser_fingerprint()),
         )
         conn.commit()
 
@@ -550,7 +550,7 @@ def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_pa
         archive.replace_raw_membership_census(
             raw_id,
             None,
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=0,
             detail=BYTE_AUTHORITY_CENSUS_DETAIL,
         )

@@ -100,9 +100,7 @@ def _adapter(index_db: Path, session_ids: tuple[str, ...]) -> SessionSummaryDeri
         return sqlite3.connect(index_db)
 
     return SessionSummaryDerivation(
-        read_connection,
-        write_connection,
-        session_scope=lambda _frame: session_ids,
+        read_connection, write_connection, session_scope=lambda _frame: session_ids, archive_root=index_db.parent
     )
 
 

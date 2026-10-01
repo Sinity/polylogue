@@ -392,7 +392,7 @@ def test_cancelled_cold_build_preparation_is_not_reported_as_an_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops() -> None:
+async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops(tmp_path: Path) -> None:
     """Ending preparation in the caller's cancellation path makes this red.
 
     The write coordinator shields an admitted execution from caller
@@ -402,7 +402,7 @@ async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops() 
     from polylogue.daemon.discovery_progress import run_cold_build_preparation
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     started = threading.Event()
     release = threading.Event()
 
@@ -433,11 +433,11 @@ async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops() 
 
 
 @pytest.mark.asyncio
-async def test_unadmitted_cancelled_preparation_ends_at_the_caller() -> None:
+async def test_unadmitted_cancelled_preparation_ends_at_the_caller(tmp_path: Path) -> None:
     from polylogue.daemon.discovery_progress import run_cold_build_preparation
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     holder_started = asyncio.Event()
     holder_release = asyncio.Event()
 

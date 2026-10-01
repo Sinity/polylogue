@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
@@ -178,7 +179,7 @@ async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
     # Page admission's cursor-authority gate proves raw existence over both
     # the source and index tiers (#5657), so the page needs a whole archive.
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     source_root = tmp_path / "sources"
     source_root.mkdir()
     source = source_root / "session.jsonl"

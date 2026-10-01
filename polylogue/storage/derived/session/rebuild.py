@@ -2022,24 +2022,17 @@ def rebuild_archive_session_insights(
     session_ids: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> SessionInsightCounts:
-    """Rebuild durable session insights via the canonical materializer.
+    """Rebuild session insights through the ArchiveStore mutation owner.
 
-    This is a thin adapter over :func:`rebuild_session_insights_sync` — the
-    single rebuild stack shared with daemon convergence (#1743 P13). It
-    resolves any session-id aliases against the archive, then delegates the
-    whole rebuild of the per-session insight rows and their materialization
-    markers. Thread and tag summaries are query-time views.
-    to the canonical path, which commits internally.
-
-    :mod:`polylogue.api` (the async facade) calls this primitive downward
-    instead of duplicating it or reaching across ring boundaries for a
-    private symbol (polylogue-exb).
+    Resolve session aliases before entering the Store's write scope. The Store
+    owns physical custody across the canonical materializer's internal commits;
+    this adapter never writes through a private connection. Thread and tag
+    summaries remain query-time views.
     """
     resolved_ids = _resolve_archive_rebuild_session_ids(archive, session_ids) if session_ids is not None else None
     if session_ids is not None and not resolved_ids:
         return SessionInsightCounts()
-    return rebuild_session_insights_sync(
-        archive._conn,
+    return archive.rebuild_session_insights(
         session_ids=resolved_ids,
         progress_callback=progress_callback,
     )

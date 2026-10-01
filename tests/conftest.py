@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gc
 import hashlib
 import json
@@ -1192,7 +1193,7 @@ async def sqlite_backend(tmp_path: Path) -> AsyncIterator[SQLiteBackend]:
     from polylogue.storage.sqlite import SQLiteBackend
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     db_path = tmp_path / "index.db"
     backend = SQLiteBackend(db_path=db_path)
     yield backend

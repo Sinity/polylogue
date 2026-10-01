@@ -3519,6 +3519,46 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
                     ],
                 ),
             )
+            child_session_id = write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="ref-resolution-child-v1",
+                    parent_session_provider_id="ref-resolution-v1",
+                    branch_type=BranchType.FORK,
+                    title="Ref resolution child",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="resolve this public ref",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="resolve this public ref")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="child-tail",
+                            role=Role.ASSISTANT,
+                            text="child tail",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child tail")],
+                        ),
+                    ],
+                ),
+            )
+            other_session_id = write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="ref-resolution-other-v1",
+                    title="Unrelated ref resolution session",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="other-message",
+                            role=Role.USER,
+                            text="unrelated transcript",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unrelated transcript")],
+                        )
+                    ],
+                ),
+            )
 
         session_payload = await archive.resolve_ref(f"session:{session_id}")
         assert session_payload.resolved is True
@@ -3537,6 +3577,15 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         assert evidence_message_payload.resolved is True
         assert evidence_message_payload.payload_kind == "message"
         assert evidence_message_payload.evidence_refs == (f"{session_id}::{message_id}",)
+        assert (await archive.resolve_ref(f"{other_session_id}::{message_id}")).resolved is False
+        assert (await archive.resolve_ref(f"{other_session_id}::{message_id}::0")).resolved is False
+
+        inherited_message = await archive.resolve_ref(f"{child_session_id}::{message_id}")
+        assert inherited_message.resolved is True
+        assert inherited_message.payload_kind == "message"
+        inherited_block = await archive.resolve_ref(f"{child_session_id}::{message_id}::0")
+        assert inherited_block.resolved is True
+        assert inherited_block.payload_kind == "block"
 
         block_payload = await archive.resolve_ref(f"block:{message_id}:0")
         assert block_payload.resolved is True

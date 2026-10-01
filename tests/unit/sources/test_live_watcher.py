@@ -1401,7 +1401,7 @@ def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_cha
     poisoned it is fixed -- the file on disk never changes, only the code
     that reads it. A ``_PARSER_FINGERPRINT`` bump (this module's existing,
     deliberately-versioned marker for a parser-semantics change, the same
-    pattern ``RAW_AUTHORITY_PARSER_FINGERPRINT`` uses) must be enough to
+    pattern ``raw_authority_parser_fingerprint()`` uses) must be enough to
     trigger a fresh attempt through the real ``LiveWatcher._needs_work`` path,
     not merely through ``CursorStore.revive_replaced_exclusion`` directly.
     """

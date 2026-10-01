@@ -121,13 +121,13 @@ def test_sync_attached_tier_profiles_map_main_only(
 )
 async def test_async_attached_tier_profiles_map_main_only(
     tmp_path: Path,
-    configure: Callable[[aiosqlite.Connection], Awaitable[None]],
+    configure: Callable[..., Awaitable[None]],
     configured_mmap_size: int,
 ) -> None:
     _seed_attached_archive_tiers(tmp_path)
     conn = await aiosqlite.connect(tmp_path / "index.db")
     try:
-        await configure(conn)
+        await configure(conn, archive_root=tmp_path)
         values: dict[str, int] = {}
         for schema in ("main", *_ATTACHED_SCHEMAS):
             cursor = await conn.execute(f"PRAGMA {schema}.mmap_size")

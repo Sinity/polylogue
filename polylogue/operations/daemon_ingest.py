@@ -89,7 +89,7 @@ from polylogue.storage.ingest_governance import (
     publish_ingest_cohort,
     publish_raw_census,
 )
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.source_generation_receipts import source_generation_receipt_page
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.raw_admission import execute_source_item_admission
@@ -930,7 +930,7 @@ class IngestExecution:
                             return prepare_raw_census(
                                 pinned.archive,
                                 census_raw_id,
-                                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                                parser_fingerprint=raw_authority_parser_fingerprint(),
                                 parse_retained_raw=parse_retained_raw_sessions,
                                 censused_at_ms=census_observed_at_ms,
                             )
@@ -984,7 +984,7 @@ class IngestExecution:
                             pinned.archive,
                             logical_source_key=cohort_key,
                             source_generation_id=generation_id,
-                            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                            parser_fingerprint=raw_authority_parser_fingerprint(),
                             parse_retained_raw=_parse_assembled_retained_raw,
                             acquired_at_ms=cohort_observed_at_ms,
                         )

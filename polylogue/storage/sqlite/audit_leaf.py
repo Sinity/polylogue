@@ -10,8 +10,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    DB_TIMEOUT,
+    NativeConnectionSettlementError,
+    NativeSQLCustodyOwner,
+    _close_failed_native_construction,
+    open_readonly_connection,
+)
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
@@ -47,10 +54,30 @@ class VerifiedAuditLeaf:
     connection.
     """
 
-    def __init__(self, archive_root: Path, *, filename: str = "audit.db", lock_writer: bool = False) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        filename: str = "audit.db",
+        lock_writer: bool = False,
+        identity_access: Literal["ordinary", "lock-preserving"] = "ordinary",
+    ) -> None:
         self._archive_root = archive_root
         self._filename = filename
         self._lock_writer = lock_writer
+        if identity_access == "lock-preserving":
+            path_flag = getattr(os, "O_PATH", None)
+            if path_flag is None:
+                raise AuditLeafError(
+                    "lock-preserving identity custody requires the pending portable custody capability"
+                )
+            if lock_writer:
+                raise AuditLeafError("metadata identity custody cannot own a writer flock")
+            self._identity_open_flag = path_flag
+        elif identity_access == "ordinary":
+            self._identity_open_flag = os.O_RDONLY
+        else:
+            raise ValueError(f"unknown identity access: {identity_access}")
         self._directory_fd: int | None = None
         self._leaf_fd: int | None = None
         self._directory_identity: _AuditLeafIdentity | None = None
@@ -125,6 +152,13 @@ class VerifiedAuditLeaf:
         ):
             raise AuditLeafError(f"audit tier leaf changed during SQLite open: {self._archive_root / self._filename}")
 
+    def identity_metadata(self) -> os.stat_result:
+        """Read metadata from the lifetime-pinned selected main inode."""
+        if self._leaf_fd is None:
+            raise RuntimeError("audit leaf descriptor is closed")
+        self.assert_unchanged()
+        return os.fstat(self._leaf_fd)
+
     def close(self) -> None:
         directory_fd, leaf_fd = self._directory_fd, self._leaf_fd
         writer_lock_held = self._writer_lock_held
@@ -181,7 +215,7 @@ class VerifiedAuditLeaf:
     def _open_leaf(self) -> int:
         if self._directory_fd is None:
             raise RuntimeError("audit leaf descriptor is closed")
-        flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        flags = self._identity_open_flag | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
         return os.open(self._filename, flags, dir_fd=self._directory_fd)
 
     def _open_leaf_metadata(self) -> os.stat_result:
@@ -260,15 +294,24 @@ class VerifiedAuditLeaf:
                 continue
             descriptor = os.open(
                 filename,
-                os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                self._identity_open_flag | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=self._directory_fd,
             )
             try:
                 actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
-            finally:
+            except BaseException:
                 os.close(descriptor)
+                raise
             if actual != expected:
+                os.close(descriptor)
                 raise AuditLeafError(f"audit tier sidecar changed while opening: {self._archive_root / filename}")
+            if self._identity_open_flag == getattr(os, "O_PATH", None) and filename not in self._sidecar_fds:
+                # Keep the selected inode alive for the observer's entire
+                # lifetime. O_PATH close cannot release SQLite's POSIX locks.
+                self._sidecar_fds[filename] = descriptor
+                self._sidecar_identities[filename] = actual
+            else:
+                os.close(descriptor)
         self._assert_pinned_sidecars()
 
     def prepare_writable_sqlite(self, connection: sqlite3.Connection) -> None:
@@ -343,7 +386,7 @@ class VerifiedAuditLeaf:
                 )
                 descriptor = os.open(
                     filename,
-                    os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                    self._identity_open_flag | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
                     dir_fd=self._directory_fd,
                 )
             except FileNotFoundError as exc:
@@ -428,51 +471,69 @@ class VerifiedAuditLeaf:
 
 
 @contextmanager
+def _owned_verified_leaf_connection(
+    path: Path,
+    *,
+    readonly: bool = False,
+    lock_writer: bool = False,
+) -> Iterator[tuple[sqlite3.Connection, VerifiedAuditLeaf]]:
+    """Keep verified descriptors with their actual SQL owner until close settles."""
+    leaf = VerifiedAuditLeaf(path.parent, filename=path.name, lock_writer=lock_writer).__enter__()
+    try:
+        connection = (
+            open_readonly_connection(leaf.anchored_path, validate_schema=False)
+            if readonly
+            else sqlite3.connect(leaf.sqlite_uri(), uri=True, timeout=DB_TIMEOUT)
+        )
+        owner = NativeSQLCustodyOwner(connection, leaf=leaf)
+    except NativeConnectionSettlementError as error:
+        # A readonly profile can fail before this outer owner is constructed.
+        # Transfer the still-pinned leaf to that already retained actual owner.
+        error.owner.leaf = leaf
+        raise
+    except BaseException as primary:
+        try:
+            leaf.close()
+        except BaseException as cleanup:
+            primary.add_note(f"verified descriptor cleanup also failed: {type(cleanup).__name__}")
+        raise
+    try:
+        yield connection, leaf
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
+
+
+@contextmanager
 def open_verified_audit_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Open one writable audit connection pinned to an owned leaf descriptor."""
-
     require_write_lease(f"open_verified_audit_connection({path})", archive_root=path.parent)
-    with VerifiedAuditLeaf(path.parent, filename=path.name, lock_writer=True) as leaf:
-        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True, timeout=DB_TIMEOUT)
-        try:
-            leaf.prepare_writable_sqlite(connection)
-            leaf.install_transaction_guard(connection)
-            yield connection
-            leaf.assert_unchanged()
-        finally:
-            connection.rollback()
-            connection.close()
+    with _owned_verified_leaf_connection(path, lock_writer=True) as (connection, leaf):
+        leaf.prepare_writable_sqlite(connection)
+        leaf.install_transaction_guard(connection)
+        yield connection
+        leaf.assert_unchanged()
 
 
 @contextmanager
 def open_verified_sqlite_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Open a read-only SQLite leaf through a no-follow directory descriptor."""
-
-    with VerifiedAuditLeaf(path.parent, filename=path.name) as leaf:
-        # The verified child path preserves live WAL visibility. The declared
-        # profile also forbids write authority through ATTACH and PRAGMAs.
-        connection = open_readonly_connection(leaf.anchored_path, validate_schema=False)
-        try:
-            leaf.assert_unchanged()
-            yield connection
-            leaf.assert_unchanged()
-        finally:
-            connection.close()
+    with _owned_verified_leaf_connection(path, readonly=True) as (connection, leaf):
+        leaf.assert_unchanged()
+        yield connection
+        leaf.assert_unchanged()
 
 
 @contextmanager
 def open_verified_sqlite_write_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Open an existing writable SQLite leaf through a no-follow descriptor."""
-
     require_write_lease(f"open_verified_sqlite_write_connection({path})", archive_root=path.parent)
-    with VerifiedAuditLeaf(path.parent, filename=path.name) as leaf:
-        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True, timeout=DB_TIMEOUT)
-        try:
-            leaf.assert_unchanged()
-            yield connection
-            leaf.assert_unchanged()
-        finally:
-            connection.close()
+    with _owned_verified_leaf_connection(path) as (connection, leaf):
+        leaf.assert_unchanged()
+        yield connection
+        leaf.assert_unchanged()
 
 
 @contextmanager

@@ -23,8 +23,8 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.storage.raw_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
     parser_census_logical_keys,
+    raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite.archive_tiers.revision_governance import _application_decision_for
 
@@ -494,7 +494,7 @@ def _parser_census_state(
     source_index = _int_cell(raw[1])
     parser_confirmed_non_session = (
         membership_census is not None
-        and str(membership_census[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
+        and str(membership_census[0]) == raw_authority_parser_fingerprint()
         and str(membership_census[1]) == "non_session"
         and membership_count == 0
     )
@@ -502,7 +502,7 @@ def _parser_census_state(
         source_index is not None
         and source_index < 0
         and membership_census is not None
-        and str(membership_census[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
+        and str(membership_census[0]) == raw_authority_parser_fingerprint()
         and str(membership_census[1]) == "failed"
         and membership_count == 0
         and str(membership_census[3]) == RawRevisionAuthority.BYTE_PROVEN.value
@@ -512,13 +512,13 @@ def _parser_census_state(
         or byte_governed_fragment
         or (
             membership_census is not None
-            and str(membership_census[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
+            and str(membership_census[0]) == raw_authority_parser_fingerprint()
             and str(membership_census[1]) == "complete"
             and membership_count == len(memberships)
         )
     )
     complete = (
-        str(receipt[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
+        str(receipt[0]) == raw_authority_parser_fingerprint()
         and str(receipt[1]) == "complete"
         and expected_membership_census
         and parser_census_is_complete(

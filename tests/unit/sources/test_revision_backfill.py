@@ -42,7 +42,7 @@ from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
+from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
 from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
@@ -681,11 +681,41 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
                     raw_id, parser_fingerprint, status, logical_keys_json, detail
                 ) VALUES (?, ?, 'complete', ?, 'parser-observed: legacy receipt shape')
                 """,
-                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, receipt_keys),
+                (raw_id, raw_authority_parser_fingerprint(), receipt_keys),
             )
         conn.commit()
 
     assert uncensused_historical_revision_raw_ids(tmp_path, [legacy_raw_id, canonical_raw_id]) == (legacy_raw_id,)
+
+
+def test_previous_dynamic_parser_fingerprint_requires_reobservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parser receipt gate compares with current executable semantics, without a revision allowlist."""
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"previous-parser-semantics",
+            source_path="previous-parser-semantics.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, detail
+            ) VALUES (?, ?, 'complete', '[]', 'parser-observed: previous semantic closure')
+            """,
+            (raw_id, raw_authority_parser_fingerprint()),
+        )
+        conn.commit()
+
+    previous_fingerprint = raw_authority_parser_fingerprint()
+    changed_fingerprint = previous_fingerprint[:-1] + ("0" if previous_fingerprint[-1] != "0" else "1")
+    monkeypatch.setattr(revision_backfill, "raw_authority_parser_fingerprint", lambda: changed_fingerprint)
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == (raw_id,)
 
 
 def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_receipt(tmp_path: Path) -> None:
@@ -758,7 +788,7 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
                     detail = 'parser-observed: legacy receipt shape'
                 WHERE raw_id = ?
                 """,
-                (RAW_AUTHORITY_PARSER_FINGERPRINT, raw_id),
+                (raw_authority_parser_fingerprint(), raw_id),
             )
 
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == (raw_id,)
@@ -2259,7 +2289,7 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
             WHERE parser_fingerprint = ?
             GROUP BY status ORDER BY status
             """,
-            (RAW_AUTHORITY_PARSER_FINGERPRINT,),
+            (raw_authority_parser_fingerprint(),),
         ).fetchall()
     # polylogue-39kcs: all three raws are census-complete, including the
     # legacy append fragment. Its receipt records the durable identity set
@@ -2608,7 +2638,7 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
                     (raw_id, parser_fingerprint, status, logical_keys_json, detail)
                 VALUES (?, ?, 'complete', ?, 'pre-seeded for test')
                 """,
-                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, json.dumps([key])),
+                (raw_id, raw_authority_parser_fingerprint(), json.dumps([key])),
             )
         conn.commit()
 
@@ -3163,7 +3193,7 @@ def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
         )
         assert conn.execute(
             "SELECT COUNT(*) FROM raw_authority_parser_census WHERE parser_fingerprint = ? AND status = 'complete'",
-            (RAW_AUTHORITY_PARSER_FINGERPRINT,),
+            (raw_authority_parser_fingerprint(),),
         ).fetchone()[0] == len(raw_ids)
 
 

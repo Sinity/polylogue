@@ -74,7 +74,7 @@ from polylogue.sources.revision_backfill import (
 from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
@@ -4779,8 +4779,8 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
             "WHERE revision_kind IN ('full', 'append') ORDER BY revision_kind"
         ).fetchall()
         assert census_rows == [
-            ("append", RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", '["codex-session:capture-proof"]'),
-            ("full", RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", '["codex-session:capture-proof"]'),
+            ("append", raw_authority_parser_fingerprint(), "complete", '["codex-session:capture-proof"]'),
+            ("full", raw_authority_parser_fingerprint(), "complete", '["codex-session:capture-proof"]'),
         ]
         # The durable frontier blocker ledger belongs to the separate, async
         # RawAuthorityReconciler (daemon convergence / offline backfill). A
@@ -7166,7 +7166,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
             store.replace_raw_membership_census(
                 raw_id,
                 sessions,
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,

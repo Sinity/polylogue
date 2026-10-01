@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -357,22 +358,28 @@ def test_one_shot_diagnostic_read_is_readonly_and_releases_its_connection(index_
 # -- production-route read-only enforcement ----------------------------------
 
 
-def _migrated_readers(index_db: Path) -> Iterator[tuple[str, Callable[[], sqlite3.Connection]]]:
+def _migrated_readers(index_db: Path) -> Iterator[tuple[str, Callable[[], AbstractContextManager[sqlite3.Connection]]]]:
     """One opener per production route this bead migrated or already owned."""
-    yield "api/cli interactive", lambda: open_readonly_connection(index_db, validate_schema=False)
+    yield "api/cli interactive", lambda: closing(open_readonly_connection(index_db, validate_schema=False))
     yield (
         "operations/debt background",
-        lambda: open_readonly_connection(index_db, validate_schema=False, timeout_class="background-read"),
+        lambda: closing(open_readonly_connection(index_db, validate_schema=False, timeout_class="background-read")),
     )
     yield (
         "security/excision profiled",
-        lambda: open_profiled_connection(index_db, profile=READ_PROFILES["background-read"]),
+        lambda: closing(open_profiled_connection(index_db, profile=READ_PROFILES["background-read"])),
     )
     yield (
         "daemon/backup sealed",
-        lambda: open_readonly_connection(index_db, validate_schema=False, immutable=True),
+        lambda: closing(open_readonly_connection(index_db, validate_schema=False, immutable=True)),
     )
-    yield "cli streaming read frame", lambda: read_frame(index_db, timeout_class="background-read").connection
+
+    @contextmanager
+    def frame_connection() -> Iterator[sqlite3.Connection]:
+        with read_frame(index_db, timeout_class="background-read") as frame:
+            yield frame.connection
+
+    yield "cli streaming read frame", frame_connection
 
 
 _WRITE_ATTEMPTS = (
@@ -389,13 +396,10 @@ _WRITE_ATTEMPTS = (
 )
 def test_migrated_readers_refuse_writes_at_the_database_boundary(index_db: Path, statement: str) -> None:
     for label, opener in _migrated_readers(index_db):
-        conn = opener()
-        try:
+        with opener() as conn:
             with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
                 conn.execute(statement)
             assert conn.execute("SELECT count(*) FROM rows_").fetchone()[0] == 10, label
-        finally:
-            conn.close()
 
 
 def test_migrated_readers_cannot_write_through_an_attached_database(index_db: Path, tmp_path: Path) -> None:
@@ -408,15 +412,13 @@ def test_migrated_readers_cannot_write_through_an_attached_database(index_db: Pa
         conn.close()
 
     for label, opener in _migrated_readers(index_db):
-        reader = opener()
-        try:
-            reader.execute("ATTACH DATABASE ? AS sibling", (str(sibling),))
-            with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
-                reader.execute("INSERT INTO sibling.target VALUES ('injected')")
-        except sqlite3.DatabaseError as exc:  # an ATTACH the profile refuses outright is also correct
-            assert any(reason in str(exc) for reason in ("not authorized", "readonly", "read-only")), label
-        finally:
-            reader.close()
+        with opener() as reader:
+            try:
+                reader.execute("ATTACH DATABASE ? AS sibling", (str(sibling),))
+                with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
+                    reader.execute("INSERT INTO sibling.target VALUES ('injected')")
+            except sqlite3.DatabaseError as exc:  # a refused ATTACH is also correct
+                assert any(reason in str(exc) for reason in ("not authorized", "readonly", "read-only")), label
 
     survivor = sqlite3.connect(sibling)
     try:
@@ -488,3 +490,260 @@ def test_read_frame_rejects_nonfinite_snapshot_bounds(index_db: Path, bound: flo
     with pytest.raises(ValueError):
         with ReadFrame(index_db, profile=replace(READ_PROFILES["interactive-read"], max_snapshot_age_s=bound)):
             pass
+
+
+@pytest.mark.uses_real_clock("actual read handle cleanup preserves physical exclusion")
+@pytest.mark.parametrize("failure_point", ["initial", "rebind", "close"])
+def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
+    index_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    from polylogue.storage.sqlite import connection_profile as profiles
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_custody_probe import archive_custody_available
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    original_open = profiles.open_readonly_connection
+    original_version = profiles._data_version
+    handles: list[SettlementHandle] = []
+    frames: list[ReadFrame] = []
+    fault = failure_point == "initial"
+
+    def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        handle = SettlementHandle(original_open(*args, **kwargs))  # type: ignore[arg-type]
+        handles.append(handle)
+        return handle  # type: ignore[return-value]
+
+    def version(connection: sqlite3.Connection) -> int:
+        if fault:
+            raise ValueError("synthetic frame metadata failure")
+        return original_version(connection)
+
+    monkeypatch.setattr(profiles, "open_readonly_connection", controlled_open)
+    monkeypatch.setattr(profiles, "_data_version", version)
+    context = write_lease("test.frame_cleanup", archive_root=index_db.parent)
+    context.__enter__()
+    try:
+        if failure_point == "initial":
+            with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
+                read_frame(index_db)
+        else:
+            frame = read_frame(index_db)
+            frames.append(frame)
+            if failure_point == "rebind":
+                handles[0].allow_cleanup.set()
+                fault = True
+                with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
+                    frame.rebind()
+            else:
+                attempts: list[str] = []
+
+                class Cursor:
+                    def __init__(self, name: str, fails: bool) -> None:
+                        self.name, self.fails = name, fails
+
+                    def close(self) -> None:
+                        attempts.append(self.name)
+                        if self.fails:
+                            raise OSError("synthetic cursor cleanup failure")
+
+                failed = Cursor("failed", True)
+                successful = Cursor("successful", False)
+                frame._cursors.update((failed, successful))  # type: ignore[arg-type]
+                with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
+                    frame.close()
+                assert set(attempts) == {"failed", "successful"}
+                assert frame._cursors == {failed}
+                failed.fails = False
+        owner = refused.value.owner
+        assert owner.frame is not None
+        assert owner.connection is handles[-1]
+        assert not archive_custody_available(index_db.parent)
+        handles[-1].allow_cleanup.set()
+        owner.close()
+        assert owner.frame is None
+        assert owner.connection is None
+        with pytest.raises(sqlite3.ProgrammingError):
+            handles[-1].connection.execute("SELECT 1")
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        for frame in frames:
+            frame.close()
+        context.__exit__(None, None, None)
+    assert archive_custody_available(index_db.parent)
+
+
+def test_independent_frame_census_retains_discarded_failed_cleanup(
+    index_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gc
+
+    from polylogue.storage.sqlite import connection_profile as profiles
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    actual_open = profiles.open_readonly_connection
+    handles: list[SettlementHandle] = []
+
+    def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        handle = SettlementHandle(actual_open(*args, **kwargs))  # type: ignore[arg-type]
+        handles.append(handle)
+        return handle  # type: ignore[return-value]
+
+    monkeypatch.setattr(profiles, "open_readonly_connection", controlled_open)
+    try:
+        frame = read_frame(index_db)
+        identity = id(frame)
+        with pytest.raises(profiles.NativeConnectionSettlementError):
+            frame.close()
+        del frame
+        gc.collect()
+        retained = next(frame for frame in profiles._LIVE_READ_FRAMES if id(frame) == identity)
+        assert retained._sql_owner.custody is None
+        with pytest.raises(profiles.NativeConnectionSettlementError):
+            _ = retained.connection
+        with pytest.raises(profiles.NativeConnectionSettlementError):
+            retained.revalidate()
+        assert retained._sql_owner.connection is handles[0]
+        handles[0].allow_cleanup.set()
+        retained.close()
+        assert all(id(frame) != identity for frame in profiles._LIVE_READ_FRAMES)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        for frame in tuple(profiles._LIVE_READ_FRAMES):
+            if frame._path == index_db:
+                frame.close()
+
+
+@pytest.mark.uses_real_clock("fork child must refuse inherited SQL before any SQLite call")
+def test_forked_frame_refuses_inherited_sql_and_resets_usable_census(index_db: Path) -> None:
+    import json
+    import os
+
+    from polylogue.storage.sqlite import connection_profile as profiles
+
+    if not hasattr(os, "fork"):
+        pytest.skip("process fork is unavailable")
+    with read_frame(index_db) as frame:
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(read_fd)
+            try:
+                refused = 0
+                for operation in (
+                    lambda: frame.connection.execute("SELECT 1"),
+                    frame.cancel,
+                    frame.revalidate,
+                    frame.close,
+                ):
+                    try:
+                        operation()
+                    except RuntimeError:
+                        refused += 1
+                assert not profiles.live_read_frames()
+                assert profiles._FORK_ABANDONED_READ_FRAMES
+                with read_frame(index_db) as fresh:
+                    assert fresh.connection.execute("SELECT COUNT(*) FROM rows_").fetchone()[0] == 10
+                assert not profiles.live_read_frames()
+                os.write(write_fd, json.dumps({"refused": refused}).encode())
+                os._exit(0)
+            except BaseException:
+                os._exit(1)
+        os.close(write_fd)
+        try:
+            result = os.read(read_fd, 1024)
+        finally:
+            os.close(read_fd)
+        waited, status = os.waitpid(pid, 0)
+        assert waited == pid and os.waitstatus_to_exitcode(status) == 0
+        assert json.loads(result) == {"refused": 4}
+        assert frame.connection.execute("SELECT COUNT(*) FROM rows_").fetchone()[0] == 10
+
+
+@pytest.mark.uses_real_clock("fork/async task custody uses actual owner identities")
+@pytest.mark.parametrize("foreign_owner", ["task", "fork"])
+@pytest.mark.parametrize("action", ["resume", "close"])
+def test_started_frame_stream_refuses_foreign_step_and_cleanup(
+    index_db: Path,
+    foreign_owner: str,
+    action: str,
+) -> None:
+    import asyncio
+    import json
+    import os
+
+    if foreign_owner == "fork" and not hasattr(os, "fork"):
+        pytest.skip("process fork is unavailable")
+
+    async def run() -> None:
+        with read_frame(index_db) as frame:
+            actual = frame._conn
+            counts = {"step": 0, "close": 0}
+
+            class Cursor:
+                def __init__(self, cursor: sqlite3.Cursor) -> None:
+                    self.cursor = cursor
+
+                def __next__(self) -> sqlite3.Row:
+                    counts["step"] += 1
+                    return next(self.cursor)
+
+                def close(self) -> None:
+                    counts["close"] += 1
+                    self.cursor.close()
+
+            class Connection:
+                def execute(self, sql: str, parameters: tuple[object, ...]) -> Cursor:
+                    return Cursor(actual.execute(sql, parameters))
+
+            frame._conn = Connection()  # type: ignore[assignment]
+            stream = frame.stream("SELECT position FROM rows_ ORDER BY position")
+            assert next(stream)[0] == 1
+            assert counts == {"step": 1, "close": 0}
+
+            def foreign_operation() -> None:
+                with pytest.raises(RuntimeError):
+                    next(stream) if action == "resume" else stream.close()
+                assert counts == {"step": 1, "close": 0}
+                assert frame._cursors
+
+            if foreign_owner == "task":
+
+                async def foreign_task() -> None:
+                    foreign_operation()
+
+                await asyncio.create_task(foreign_task())
+            else:
+                read_fd, write_fd = os.pipe()
+                pid = os.fork()
+                if pid == 0:
+                    os.close(read_fd)
+                    try:
+                        foreign_operation()
+                        os.write(write_fd, json.dumps(counts).encode())
+                        os._exit(0)
+                    except BaseException:
+                        os._exit(1)
+                os.close(write_fd)
+                try:
+                    result = os.read(read_fd, 1024)
+                finally:
+                    os.close(read_fd)
+                waited, status = os.waitpid(pid, 0)
+                assert waited == pid and os.waitstatus_to_exitcode(status) == 0
+                assert json.loads(result) == {"step": 1, "close": 0}
+                # The parent's copied iterator still belongs to this task.
+                stream.close()
+            frame.close()
+            assert not frame._cursors
+            assert not frame.streaming
+            assert counts["close"] == 1
+            frame.rebind()
+            assert frame.connection.execute("SELECT COUNT(*) FROM rows_").fetchone()[0] == 10
+            assert not frame.streaming
+
+    asyncio.run(run())

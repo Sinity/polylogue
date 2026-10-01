@@ -30,11 +30,70 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
+## Write custody and connection lifetime
+
+Each outer write lease names its archive root and holds an owned, descriptor-anchored
+`.archive-write-custody.lock` before writable archive SQL begins. Nested owners
+borrow that custody; a thread receives authority through a single-use grant,
+and a task cannot acquire authority by inheriting another task's context.
+The lock file remains in place after release. Directory and lock identities
+are checked before and after acquisition; replacement is a visible refusal.
+
+An ArchiveStore retains custody while any write transaction or temporary User
+writer handle remains unsettled. Commit, rollback and close settle its actual
+handles before release. Native connection construction registers each actual
+handle before schema or profile SQL; successful setup hands the idle handle to
+its caller, while failed construction cleanup retains its original owner.
+A failed close retains those handles and exposes the Store in a typed settlement
+error. Cleanup must execute on the original SQLite thread. A finished task may
+leave cleanup custody on that thread, but cannot leave authority for a new
+mutation. Async SQLite close retains its existing worker and raw handle when
+raw close fails; it stops the worker only after the raw handle has closed.
+
+If a daemon operation finishes with unsettled SQL, the coordinator retains its
+original worker, context and grant. A later admission or shutdown may request
+one cleanup attempt on that worker before acquiring new write custody. The
+mailbox accepts cleanup only. Failed settlement is retryable and keeps the
+actual handles; cancellation of a waiter does not cancel accepted cleanup.
+Status reports retained workers and async backends, and shutdown reports idle
+only after those owners settle.
+
+The index rebuild lock has a separate lifetime: RebuildLease acquires its
+exclusive lock nonblocking under brief write custody, then releases that
+acquisition custody. Each accepted write segment takes its own physical custody.
+The exclusive rebuild lock survives accepted work and failed SQL settlement;
+competing active-writer and rebuild admissions refuse promptly rather than wait
+for that lifetime lock. An idle ArchiveStore retains its shared rebuild lock,
+but releases physical write custody between mutations.
+
+Native connection caching lasts for one admitted operation. Nested contexts
+reuse that operation's handle; a standalone context takes the existing physical
+write lease. Outer settlement closes every successfully idle cached handle,
+including SQL committed after context exit. An active transaction or failed
+close stays pinned and yields a typed settlement refusal. Promotion settles
+current-operation cached handles before changing the Index pointer, so later
+cached artifact validation opens the current generation. Schema corpus validation
+uses its explicit Source connection. It never derives
+file identity from a pathname or a separate SQLite metadata descriptor.
+Verified-leaf descriptors remain with the same native owner until SQL closes,
+including body and profile failures. Sync and async sibling attachment carries
+the configured archive root separately from SQLite's resolved generation path,
+so promotion retains the intended Source, User and Ops authority.
+
+ReadFrame owns its connection and cursors on the request or page-loop thread.
+Its existing process census holds a strong reference until actual connection
+close succeeds, including failed construction or cleanup. Close attempts every
+cursor and the connection; failed cleanup retains the concrete frame for retry.
+Every caller closes through its context or ExitStack. Only declared cancellation
+may interrupt from another thread. Independent read frames do not acquire writer
+custody; readers inside an admitted async write operation retain that operation's
+existing grant until actual SQL close and original worker exit.
+
 ## Identity and generated columns
 
 - `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`SESSIONS_SPEC` in `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:805-813`).
 - `messages.message_id` is stored-generated with explicit namespace tags: native identity becomes `session_id || ':n:' || native_id`; content-derived identity becomes `session_id || ':c:' || content_identity || '.' || content_occurrence` -- a digest of the message's own declared semantic fields, so an insertion elsewhere in the export cannot renumber it onto a different message (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:337-342`).
-- Content identity (`session_content_hash`, message content identity, revision projections) hashes canonical JSON: absence is `null`, distinct from `""` and every string; only the declared prose fields in `_NFC_TEXT_FIELDS` are NFC-folded, while identifiers, tool arguments, paths, metadata, event payloads, and mapping keys hash exactly, so canonically equivalent keys stay separate slots (`polylogue/pipeline/ids.py`). `messages.content_address`, the branch-point witness, follows the same rules (`_message_content_address` in `polylogue/storage/sqlite/archive_tiers/write.py`).
+- Content identity (`session_content_hash`, message content identity, revision projections) hashes canonical JSON: absence is `null`, distinct from `""` and every string; only the declared prose fields in `_NFC_TEXT_FIELDS` are NFC-folded, while identifiers, tool arguments, paths, metadata, event payloads, and string mapping keys stay exact (`polylogue/pipeline/ids.py`). If a declared Python value would lose type or key association under the historic JSON lowering (for example, bytes versus its hex string, or simultaneous `1` and `"1"` mapping keys), the canonical content hash and fallback ID add the same typed witness. Ordinary JSON inputs retain their established content hashes and fallback IDs. `messages.content_address`, the branch-point witness, follows the content-hash projection (`_message_content_address` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - `messages.identity_source` records which identity path fired; its index CHECK is generated from the semantic `MessageIdentitySource` Literal (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:360-365`; `polylogue/core/types.py:13-16`).
 - `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path and `search_text` projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:561-566`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:635-650`).
 - Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:527-647`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:330-333`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:93`).

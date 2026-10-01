@@ -399,7 +399,7 @@ async def test_backend_referenced_path_filter_contract(workspace_env: dict[str, 
 async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
         store_records(

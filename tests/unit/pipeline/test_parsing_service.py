@@ -77,7 +77,7 @@ def _parse_batch_observation(
 
 async def test_parse_backlog_excludes_terminal_failure_authority_until_forced_reparse(tmp_path: Path) -> None:
     """Scheduled parse selection stops retrying a typed terminal refusal."""
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     try:
@@ -120,7 +120,7 @@ async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
     mutation: str,
 ) -> None:
     """Only an exact, typed terminal carrier suppresses scheduled retry."""
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     raw_id = "malformed-terminal"
@@ -172,7 +172,7 @@ async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
 @pytest.mark.asyncio
 async def test_validation_failed_unsupported_terminal_evidence_remains_unexplained(tmp_path: Path) -> None:
     """Validation failure authority is limited to corrupt/decode outcomes."""
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     try:

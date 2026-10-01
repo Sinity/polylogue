@@ -41,6 +41,24 @@ from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import AttachmentDirection, AttachmentUploadOrigin
 
 
+def _require_string_mapping_keys(value: object, *, field: str) -> object:
+    """Refuse keys that Pydantic's ``str`` mapping schema would coerce.
+
+    In particular, ``{b"a": 1, "a": 2}`` silently becomes ``{"a": 2}``
+    during validation.  These fields declare JSON object keys, so accepting
+    that input would discard parser evidence before hashing or storage sees it.
+    Nested values typed as ``object`` retain their original mapping keys and
+    are handled by the semantic hash projection.
+    """
+    if value is None:
+        return value
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} requires an object mapping")
+    if any(not isinstance(key, str) for key in value):
+        raise ValueError(f"{field} requires string mapping keys")
+    return value
+
+
 class AdmissionUnit(PolylogueStrEnum):
     """Input-unit levels covered by the parser admission contract."""
 
@@ -236,6 +254,16 @@ class ParsedFileEdit(BaseModel):
     replace_all: bool | None = None
     user_modified: bool | None = None
 
+    @field_validator("structured_patch", mode="before")
+    @classmethod
+    def validate_structured_patch_keys(cls, value: object) -> object:
+        if value is None:
+            return value
+        if isinstance(value, (list, tuple)):
+            for patch in value:
+                _require_string_mapping_keys(patch, field="structured_patch")
+        return value
+
 
 class ParsedContentBlock(BaseModel):
     """A single structured content block within a parsed message.
@@ -282,6 +310,11 @@ class ParsedContentBlock(BaseModel):
     # TOOL_RESULT block carrying the provider's edit outcome fields.
     file_edit: ParsedFileEdit | None = None
     web_constructs: list[ParsedWebConstruct] = Field(default_factory=list)
+
+    @field_validator("tool_input", "metadata", mode="before")
+    @classmethod
+    def validate_mapping_keys(cls, value: object, info: ValidationInfo) -> object:
+        return _require_string_mapping_keys(value, field=info.field_name or "content block mapping")
 
     @model_validator(mode="after")
     def validate_tool_result_outcome(self) -> ParsedContentBlock:
@@ -624,6 +657,11 @@ class ParsedSessionEvent(BaseModel):
     boundary_end_position: int | None = None
     boundary_message_position: int | None = Field(default=None, exclude=True)
 
+    @field_validator("payload", mode="before")
+    @classmethod
+    def validate_payload_keys(cls, value: object) -> object:
+        return _require_string_mapping_keys(value, field="session event payload")
+
 
 class ParsedDispatchObservation(BaseModel):
     """Provider evidence for one parent-side dispatch."""
@@ -769,6 +807,14 @@ class ParsedSession(BaseModel):
     # polylogue-2qx.4 / polylogue-cgfy: tracker-agnostic external references
     # (pr-link today, issue refs generalize to the same relation).
     session_refs: list[ParsedSessionRef] = Field(default_factory=list)
+
+    @field_validator("pending_drafts", mode="before")
+    @classmethod
+    def validate_pending_draft_keys(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            for draft in value:
+                _require_string_mapping_keys(draft, field="pending_drafts")
+        return value
 
     @field_validator("source_name", mode="before")
     @classmethod

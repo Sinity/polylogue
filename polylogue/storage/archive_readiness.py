@@ -27,7 +27,7 @@ from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
 from polylogue.storage.derived.session.status import session_insight_status_sync
-from polylogue.storage.raw_authority import parser_census_logical_keys
+from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
@@ -393,7 +393,6 @@ def _pinned_parser_census_projection(
             "non_complete_receipt_count": 0,
             "incomplete_origin_summary": [],
         }
-    from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 
     blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
     rows = conn.execute(
@@ -417,7 +416,11 @@ def _pinned_parser_census_projection(
         LEFT JOIN {source_schema}.raw_session_memberships m ON m.raw_id = r.raw_id
         ORDER BY r.raw_id, m.logical_source_key
         """,
-        (RAW_AUTHORITY_PARSER_FINGERPRINT, RAW_AUTHORITY_PARSER_FINGERPRINT, RawRevisionAuthority.BYTE_PROVEN.value),
+        (
+            raw_authority_parser_fingerprint(),
+            raw_authority_parser_fingerprint(),
+            RawRevisionAuthority.BYTE_PROVEN.value,
+        ),
     )
     complete_count = incomplete_count = incomplete_blob_bytes = missing_receipt_count = non_complete_receipt_count = 0
     incomplete_origins: Counter[str] = Counter()
@@ -451,7 +454,7 @@ def _pinned_parser_census_projection(
         ) = current_row
         complete = (
             receipt_raw_id is not None
-            and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
+            and str(fingerprint) == raw_authority_parser_fingerprint()
             and str(status) == "complete"
             and parser_census_is_complete(
                 recorded_keys=parser_census_logical_keys(logical_keys_json),
@@ -923,7 +926,7 @@ def raw_materialization_readiness_snapshot(
             parser_census_non_complete_receipt_count = 0
             parser_census_origin_summary: list[dict[str, object]] = []
             if _table_columns(conn, "source", "raw_authority_parser_census"):
-                from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+                from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 
                 parser_census_available = True
                 blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
@@ -953,8 +956,8 @@ def raw_materialization_readiness_snapshot(
                     ORDER BY r.raw_id, m.logical_source_key
                     """,
                     (
-                        RAW_AUTHORITY_PARSER_FINGERPRINT,
-                        RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        raw_authority_parser_fingerprint(),
+                        raw_authority_parser_fingerprint(),
                         RawRevisionAuthority.BYTE_PROVEN.value,
                     ),
                 )
@@ -993,7 +996,7 @@ def raw_materialization_readiness_snapshot(
                     blob_size_value = cast(int | None, blob_size)
                     complete = (
                         receipt_raw_id is not None
-                        and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
+                        and str(fingerprint) == raw_authority_parser_fingerprint()
                         and str(status) == "complete"
                         and parser_census_is_complete(
                             recorded_keys=recorded_keys,

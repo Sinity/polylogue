@@ -10,10 +10,12 @@ import shutil
 import socket
 import sqlite3
 import stat
+import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import closing, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -283,8 +285,43 @@ class IndexGeneration:
     page_size: int = 0
 
 
+@dataclass(slots=True)
+class PreparedIndexPromotion:
+    """Off-gate proof retained through one index-generation pointer swap."""
+
+    generation_id: str
+    candidate_path: Path
+    prior_active_path: Path | None
+    candidate_identity: tuple[int, int, int, int]
+    reference_seal: Any
+    missing_session_count: int = 0
+    first_missing_session_id: str | None = None
+
+    def close(self) -> None:
+        self.reference_seal.close()
+
+    def __enter__(self) -> PreparedIndexPromotion:
+        return self
+
+    def __exit__(self, exc_type: object, exc: BaseException | None, traceback: object) -> None:
+        try:
+            self.close()
+        except BaseException as close_error:
+            if exc is None:
+                raise
+            exc.add_note(f"promotion proof cleanup also failed: {close_error}")
+
+
 class RebuildLeaseUnavailableError(RuntimeError):
     """Another process owns the archive-wide rebuild lease."""
+
+
+class RebuildLeaseSettlementError(RuntimeError):
+    """Accepted SQL remains unsettled; exclusion stays with this rebuild owner."""
+
+    def __init__(self, lease: RebuildLease) -> None:
+        super().__init__("rebuild SQL remains unsettled; retry owner cleanup before closing exclusion")
+        self.lease = lease
 
 
 class UnpublishedPromotionRecoveryError(RuntimeError):
@@ -336,53 +373,131 @@ def _open_lock_fd(path: Path, lock_type: int, *, unavailable_message: str) -> in
     earlier exclusive owner.  Replacing that still-locked inode would create
     a second lock domain and permit concurrent archive writers.
     """
+    from polylogue.storage.sqlite.write_lease import _validate_custody_directory, _validate_custody_lock
+
     path.parent.mkdir(parents=True, exist_ok=True)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    fd = -1
     try:
-        before = path.stat()
-        before_identity = (before.st_dev, before.st_ino)
-    except FileNotFoundError:
-        before_identity = None
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
+        directory = os.fstat(directory_fd)
+        _validate_custody_directory(directory, path.parent)
+        try:
+            before = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            _validate_custody_lock(before, path)
+            before_identity = (before.st_dev, before.st_ino)
+        except FileNotFoundError:
+            before_identity = None
+        fd = os.open(path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
         after = os.fstat(fd)
+        _validate_custody_lock(after, path)
         if before_identity is not None and (after.st_dev, after.st_ino) != before_identity:
             raise RuntimeError(f"lock path was replaced: {path}")
-        try:
-            path_metadata = path.stat()
-        except OSError as exc:
-            raise RuntimeError(f"cannot verify lock path: {path}") from exc
-        if (path_metadata.st_dev, path_metadata.st_ino) != (after.st_dev, after.st_ino):
-            raise RuntimeError(f"lock path was replaced: {path}")
         fcntl.flock(fd, lock_type | fcntl.LOCK_NB)
+        path_metadata = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        _validate_custody_lock(path_metadata, path)
+        parent_metadata = os.stat(path.parent, follow_symlinks=False)
+        _validate_custody_directory(parent_metadata, path.parent)
+        if (path_metadata.st_dev, path_metadata.st_ino) != (after.st_dev, after.st_ino) or (
+            parent_metadata.st_dev,
+            parent_metadata.st_ino,
+        ) != (directory.st_dev, directory.st_ino):
+            raise RuntimeError(f"lock namespace was replaced: {path}")
         return fd
     except BlockingIOError as exc:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
         holder_pid = _lock_holder_pid(path)
         suffix = f" (recorded pid={holder_pid})" if holder_pid is not None else ""
         raise RebuildLeaseUnavailableError(unavailable_message + suffix) from exc
     except BaseException:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
         raise
+    finally:
+        os.close(directory_fd)
 
 
 class RebuildLease:
     """Process-held exclusive lease for an offline index rebuild."""
 
     def __init__(self, archive_root: Path) -> None:
-        self.path = archive_root / ".index-rebuild.lock"
+        self.archive_root = archive_root.resolve()
+        self.path = self.archive_root / ".index-rebuild.lock"
         self._fd: int | None = None
+        self._owner_pid = os.getpid()
+        self._segments = threading.Condition()
+        self._accepting = False
+        self._retired = False
+        self._pending_segments = 0
+        self._accepted_leases: list[Any] = []
 
     def __enter__(self) -> RebuildLease:
-        fd = _open_lock_fd(
-            self.path,
-            fcntl.LOCK_EX,
-            unavailable_message=f"index rebuild lease is already held: {self.path}",
-        )
-        os.ftruncate(fd, 0)
-        os.write(fd, f"pid={os.getpid()} host={socket.gethostname()}\n".encode())
-        os.fsync(fd)
-        self._fd = fd
-        return self
+        if self._owner_pid != os.getpid():
+            raise RuntimeError("cannot acquire rebuild exclusion inherited across fork")
+        if self._retired or self._fd is not None:
+            raise RuntimeError("a rebuild owner cannot be entered after admission or retirement")
+        from polylogue.storage.sqlite.write_lease import archive_write_custody
+
+        custody_context = archive_write_custody(self.archive_root)
+        custody_context.__enter__()
+        fd: int | None = None
+        try:
+            fd = _open_lock_fd(
+                self.path,
+                fcntl.LOCK_EX,
+                unavailable_message=f"index rebuild lease is already held: {self.path}",
+            )
+            try:
+                os.ftruncate(fd, 0)
+                os.write(fd, f"pid={os.getpid()} host={socket.gethostname()}\n".encode())
+                os.fsync(fd)
+            except BaseException:
+                os.close(fd)
+                fd = None
+                raise
+            self._fd = fd
+            self._accepting = True
+            return self
+        except BaseException:
+            if fd is not None:
+                with suppress(OSError):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                with suppress(OSError):
+                    os.close(fd)
+                self._fd = None
+            raise
+        finally:
+            # EX exclusion persists, but physical custody belongs only to
+            # acquisition and individual SQL segments, never proof preparation.
+            custody_context.__exit__(None, None, None)
+
+    @contextmanager
+    def write_segment(self, actor: str = "offline.index_rebuild") -> Iterator[Any]:
+        """Admit one physical writer after its off-gate preparation completed."""
+        if self._owner_pid != os.getpid():
+            raise RuntimeError("cannot admit rebuild work inherited across fork")
+        from polylogue.storage.sqlite.write_lease import write_lease
+
+        with self._segments:
+            if self._owner_pid != os.getpid() or not self._accepting or self._fd is None:
+                raise RuntimeError("the rebuild owner no longer accepts writer segments")
+            self._pending_segments += 1
+        try:
+            with write_lease(actor, archive_root=self.archive_root) as lease:
+                with self._segments:
+                    if not self._accepting:
+                        raise RuntimeError("the rebuild owner retired before writer admission")
+                    self._accepted_leases.append(lease)
+                yield lease
+        finally:
+            with self._segments:
+                self._pending_segments -= 1
+                self._accepted_leases[:] = [
+                    accepted
+                    for accepted in self._accepted_leases
+                    if accepted.custody is not None and accepted.custody.held
+                ]
+                self._segments.notify_all()
 
     def __exit__(
         self,
@@ -390,11 +505,44 @@ class RebuildLease:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        del exc_type, exc, traceback
+        if self._owner_pid != os.getpid():
+            raise RuntimeError("cannot release rebuild exclusion inherited across fork")
+        interruption: BaseException | None = None
+        with self._segments:
+            self._retired = True
+            self._accepting = False
+            while self._pending_segments:
+                try:
+                    self._segments.wait()
+                except BaseException as error:
+                    interruption = interruption or error
+            accepted = tuple(self._accepted_leases)
+        for lease in accepted:
+            lease.retire()
+            for delegation in tuple(lease.delegations):
+                if delegation.retire():
+                    try:
+                        delegation.wait_until_settled()
+                    except BaseException as error:
+                        interruption = interruption or error
+            for grant in tuple(lease.thread_grants):
+                try:
+                    grant.wait_until_settled()
+                except BaseException as error:
+                    interruption = interruption or error
+            if lease.custody is not None and lease.custody.held:
+                # A failed SQL close still owns physical custody. Keep EX
+                # recoverable on this object; retry close after owner cleanup.
+                raise RebuildLeaseSettlementError(self)
         if self._fd is not None:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-            os.close(self._fd)
-            self._fd = None
+            fd, self._fd = self._fd, None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+        self._accepted_leases.clear()
+        if interruption is not None:
+            raise interruption
 
 
 class ActiveWriterLease:
@@ -403,8 +551,13 @@ class ActiveWriterLease:
     def __init__(self, archive_root: Path) -> None:
         self.path = archive_root / ".index-rebuild.lock"
         self._fd: int | None = None
+        self._owner_pid = os.getpid()
 
     def acquire(self) -> None:
+        if self._owner_pid != os.getpid():
+            raise RuntimeError("cannot acquire active-writer exclusion inherited across fork")
+        if self._fd is not None:
+            raise RuntimeError("active-writer exclusion is already acquired")
         self._fd = _open_lock_fd(
             self.path,
             fcntl.LOCK_SH,
@@ -412,10 +565,14 @@ class ActiveWriterLease:
         )
 
     def close(self) -> None:
+        if self._owner_pid != os.getpid():
+            raise RuntimeError("cannot release active-writer exclusion inherited across fork")
         if self._fd is not None:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-            os.close(self._fd)
-            self._fd = None
+            fd, self._fd = self._fd, None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 
 @dataclass(frozen=True, slots=True)
@@ -797,18 +954,100 @@ class IndexGenerationStore:
         self._validate_generation(generation, generation_id)
         return generation
 
-    def promote(self, generation: IndexGeneration) -> IndexGeneration:
-        """Promote a candidate while holding the lifecycle inode lock."""
+    def prepare_promotion(self, generation: IndexGeneration) -> PreparedIndexPromotion:
+        """Prepare all archive-sized promotion proofs before writer admission."""
+        from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+        current = self.load(generation.generation_id)
+        if current.owner_id != generation.owner_id or current.state != "inactive":
+            raise RuntimeError("only the owning inactive generation can be promoted")
+        candidate_path = Path(current.index_path).resolve(strict=True)
+        pointer = self.active_pointer
+        prior_active_path = pointer.resolve(strict=True) if (pointer.exists() or pointer.is_symlink()) else None
+        # On a first generation the candidate is also the only index against
+        # which durable references can be interpreted. It cannot remove a
+        # previously resolved target, and the retained candidate observer
+        # still proves its schema/incarnation through pointer admission.
+        proof_index = prior_active_path or candidate_path
+        seal = PreparedIndexMutation(proof_index, archive_root=self.archive_root)
+        try:
+            candidate_identity = seal.prepare_candidate_reachability(candidate_path)
+            return PreparedIndexPromotion(
+                generation_id=current.generation_id,
+                candidate_path=candidate_path,
+                prior_active_path=prior_active_path,
+                candidate_identity=candidate_identity,
+                reference_seal=seal,
+                missing_session_count=seal.candidate_missing_session_count,
+                first_missing_session_id=seal.candidate_first_missing_session_id,
+            )
+        except BaseException:
+            seal.close()
+            raise
+
+    def promote(
+        self,
+        generation: IndexGeneration,
+        prepared: PreparedIndexPromotion | None = None,
+    ) -> IndexGeneration:
+        """Promote only with off-gate typed-reference and coverage proof."""
         from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        if prepared is None:
+            # Direct/offline callers may use the convenience form only when
+            # they have not already entered archive writer custody. Production
+            # daemon publication passes a retained proof prepared on its
+            # managed compute worker before bridge admission.
+            from polylogue.core.write_lease import current_write_lease
+
+            if current_write_lease() is not None:
+                raise RuntimeError("promotion proof must be prepared before writer admission")
+            require_write_lease(
+                f"IndexGenerationStore.promote(index={generation.index_path})",
+                archive_root=self.archive_root,
+            )
+            with self.prepare_promotion(generation) as off_gate:
+                from polylogue.storage.sqlite.write_lease import write_lease
+
+                with write_lease("storage.index_generation.promote", archive_root=self.archive_root):
+                    return self.promote(generation, off_gate)
 
         require_write_lease(
             f"IndexGenerationStore.promote(index={generation.index_path})",
             archive_root=self.archive_root,
         )
+        pointer = self.active_pointer
+        if not isinstance(prepared, PreparedIndexPromotion):
+            raise RuntimeError("promotion requires a prepared index proof")
+        if prepared.generation_id != generation.generation_id:
+            raise RuntimeError("promotion proof belongs to another generation")
+        if prepared.reference_seal.archive_root != self.archive_root.resolve():
+            raise RuntimeError("promotion proof belongs to another archive")
+        if Path(generation.index_path).resolve(strict=True) != prepared.candidate_path:
+            raise RuntimeError("promotion candidate path changed after proof preparation")
         with self._lifecycle_lock():
+            if prepared.prior_active_path is None:
+                if pointer.exists() or pointer.is_symlink():
+                    raise RuntimeError("active index pointer appeared during promotion preparation")
+            elif (
+                not (pointer.exists() or pointer.is_symlink())
+                or pointer.resolve(strict=True) != prepared.prior_active_path
+            ):
+                raise RuntimeError("active index pointer changed during promotion preparation")
+            prepared.reference_seal.validate_observers_current()
+            candidate_identity = prepared.reference_seal.validate_candidate_current(prepared.candidate_path)
+            if candidate_identity != prepared.candidate_identity:
+                raise RuntimeError("promotion candidate changed after durable-reference validation")
             return self._promote_unlocked(generation)
 
     def _promote_unlocked(self, generation: IndexGeneration) -> IndexGeneration:
+        from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
+        from polylogue.storage.sqlite.write_lease import current_sql_custody
+
+        custody = current_sql_custody()
+        if custody is None:
+            raise RuntimeError("Index promotion requires current physical archive custody")
+        settle_cached_connections_on_current_thread(custody)
         current = self.load(generation.generation_id)
         if current.owner_id != generation.owner_id or current.state != "inactive":
             raise RuntimeError("only the owning inactive generation can be promoted")
@@ -1540,6 +1779,12 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     target, expected_identity, is_directory = _stable_link_target(path, label="source snapshot")
     if is_directory:
         raise RuntimeError(f"source snapshot is not a regular file: {path}")
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        NativeSQLCustodyOwner,
+        _close_failed_native_construction,
+    )
+
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(target, flags)
     try:
@@ -1550,12 +1795,36 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for source snapshot: {path}")
-        with closing(
-            open_readonly_connection(path, opened_main_fd=fd, timeout_class="background-read", validate_schema=False)
-        ) as conn:
+        try:
+            conn = open_readonly_connection(
+                path,
+                opened_main_fd=fd,
+                timeout_class="background-read",
+                validate_schema=False,
+            )
+        except NativeConnectionSettlementError as cleanup:
+            cleanup.owner.anchored_descriptors += (fd,)
+            fd = -1
+            raise
+        owned_fd, fd = fd, -1
+        owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
+        try:
             yield conn
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
+        else:
+            owner.close()
     finally:
-        os.close(fd)
+        if fd >= 0:
+            primary = sys.exception()
+            try:
+                os.close(fd)
+            except OSError as cleanup:
+                if primary is not None:
+                    primary.add_note(f"source descriptor cleanup also failed: {type(cleanup).__name__}")
+                else:
+                    raise
 
 
 def source_revision_snapshot(archive_root: Path) -> str:
@@ -1703,31 +1972,51 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
     assertion, and every caller already knows which archive it is promoting
     into (polylogue-8qm4k AC1).
     """
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
     from polylogue.storage.sqlite.write_lease import require_write_lease
 
     require_write_lease(f"index generation {label} WAL checkpoint({path})", archive_root=archive_root)
+    fd = reopened_fd = -1
     try:
-        open_path = path.resolve(strict=True)
-        fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
-        before = os.fstat(fd)
-        reopened_fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
-        after = os.fstat(reopened_fd)
-    except OSError as exc:
-        raise RuntimeError(f"cannot securely open {label}: {path}") from exc
-    try:
+        try:
+            open_path = path.resolve(strict=True)
+            fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
+            before = os.fstat(fd)
+            reopened_fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
+            after = os.fstat(reopened_fd)
+        except OSError as exc:
+            raise RuntimeError(f"cannot securely open {label}: {path}") from exc
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise RuntimeError(f"{label} changed during descriptor validation: {path}")
-        os.close(reopened_fd)
-        reopened_fd = -1
+        consumed_fd, reopened_fd = reopened_fd, -1
+        os.close(consumed_fd)
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for {label}: {path}")
-        with closing(sqlite3.connect(str(alias))) as conn:
+        conn = sqlite3.connect(str(alias))
+        owned_fd, fd = fd, -1
+        owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
+        try:
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
+        else:
+            owner.close()
     finally:
-        if reopened_fd >= 0:
-            os.close(reopened_fd)
-        os.close(fd)
+        primary = sys.exception()
+        descriptors = tuple(descriptor for descriptor in (reopened_fd, fd) if descriptor >= 0)
+        failure = None
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                failure = failure or error
+        if failure is not None:
+            if primary is not None:
+                primary.add_note(f"checkpoint descriptor cleanup also failed: {type(failure).__name__}")
+            else:
+                raise failure
     if int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
 

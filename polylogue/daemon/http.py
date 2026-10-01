@@ -12,7 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
-from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
@@ -88,6 +88,7 @@ from polylogue.daemon.webui_data import (
 )
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
+    DaemonWriterSettlementError,
     DaemonWriteThreadBridge,
     register_write_coordinator,
 )
@@ -1127,7 +1128,7 @@ def _write_route_exception_answer(handler: DaemonAPIHandler, exc: Exception, *, 
             extra_headers={"Retry-After": "2"},
         )
         return
-    if isinstance(exc, DaemonBackpressureError):
+    if isinstance(exc, (DaemonBackpressureError, DaemonWriterSettlementError)):
         handler._send_json(
             HTTPStatus.SERVICE_UNAVAILABLE,
             QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
@@ -1769,42 +1770,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         async with Polylogue() as polylogue:
             return await handler(polylogue)
 
-    @contextlib.contextmanager
-    def _write_authorization(self) -> Iterator[None]:
-        """Adopt the gate's grant for a write issued on this request thread.
-
-        Most gated routes hand their body to :meth:`_sync_run`, which adopts
-        the grant on the worker that actually runs it. A route that opens a
-        write connection inline is its own execution unit and presents the
-        grant here.
-        """
-        delegation = getattr(self, "_write_delegation", None)
-        if delegation is None:
-            yield
-            return
-        from polylogue.core.write_lease import WriteLeaseDelegation, adopt_write_lease
-
-        with adopt_write_lease(cast(WriteLeaseDelegation, delegation)):
-            yield
-
-    async def _run_leased_archive_query(self, handler: Callable, delegation: object) -> object:  # type: ignore[type-arg]
-        """Run one mutating route body under the write gate's explicit grant.
-
-        Adoption happens *inside* the freshly created loop's task, because that
-        task is the execution unit the delegation authorizes; adopting outside
-        it would bind the wrong task identity and be refused again.
-        """
-        from polylogue.core.write_lease import WriteLeaseDelegation, adopt_write_lease
-
-        with adopt_write_lease(cast(WriteLeaseDelegation, delegation)):
-            return await self._run_archive_query(handler)
-
-    def _archive_query_coroutine(self, handler: Callable) -> Coroutine[object, object, object]:  # type: ignore[type-arg]
-        delegation = getattr(self, "_write_delegation", None)
-        if delegation is None:
-            return cast("Coroutine[object, object, object]", self._run_archive_query(handler))
-        return self._run_leased_archive_query(handler, delegation)
-
     def _mutation_wait_budget_s(self) -> float:
         """The bound this request's mutating wait carries.
 
@@ -1824,88 +1789,74 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return declared_s
 
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
-        """Run one route body through the daemon's single bounded scheduler.
-
-        Reads carry the interactive class and the request-thread timeout;
-        mutations carry the control class and wait for the substrate call,
-        because a route-level writer lease may not outlive its own work.
-        """
-
-        kernel = getattr(self.server, "execution_kernel", None)
+        """Run reads on compute workers and admitted writes on writer workers."""
         mutating = getattr(self, "_write_gate_depth", 0) > 0
-        if isinstance(kernel, BoundedComputeAdapter):
-            from polylogue.daemon.execution import AdmissionClass, CancellationHandle
+        if mutating:
+            from polylogue.core.write_lease import WriteLeaseDelegation
 
-            cancellation = CancellationHandle()
-            admission_class: AdmissionClass = "control" if mutating else "interactive-read"
+            bridge = getattr(self.server, "write_bridge", None)
+            delegation = getattr(self, "_write_delegation", None)
+            if not isinstance(bridge, DaemonWriteThreadBridge) or delegation is None:
+                raise RuntimeError("a mutating route needs its admitted writer delegation")
+            budget_s = self._mutation_wait_budget_s()
             with log_span(
                 "daemon.http.scheduled_route",
-                # Observability must never be the thing that breaks a route:
-                # narrow in-process handler doubles carry no request line.
                 route=_request_path_for_log(getattr(self, "path", "") or ""),
                 method=getattr(self, "command", "") or "",
-                domain=admission_class,
+                domain="control",
+            ) as route_span:
+                self._last_queue_delay_ms = 0
+                try:
+                    result = bridge.run_admitted_async(
+                        cast(WriteLeaseDelegation, delegation),
+                        lambda: self._run_archive_query(handler),
+                        timeout=budget_s,
+                    )
+                except FutureTimeoutError as error:
+                    route_span.set(reason="mutation_indeterminate", timeout_ms=round(budget_s * 1000, 3))
+                    raise DaemonMutationIndeterminate(
+                        f"mutation did not complete within {budget_s:.0f}s; "
+                        "it may still be in flight -- re-read before retrying"
+                    ) from error
+                route_span.ok()
+                return result
+
+        kernel = getattr(self.server, "execution_kernel", None)
+        if isinstance(kernel, BoundedComputeAdapter):
+            from polylogue.daemon.execution import CancellationHandle
+
+            cancellation = CancellationHandle()
+            with log_span(
+                "daemon.http.scheduled_route",
+                route=_request_path_for_log(getattr(self, "path", "") or ""),
+                method=getattr(self, "command", "") or "",
+                domain="interactive-read",
             ) as route_span:
                 submitted = kernel.submit(
-                    # The kernel's ThreadPoolExecutor predates every bind, so
-                    # this callable would otherwise run with no correlation
-                    # context and its events could not be joined to this span.
-                    propagate(lambda: asyncio.run(self._archive_query_coroutine(handler))),
-                    admission_class=admission_class,
+                    propagate(lambda: asyncio.run(self._run_archive_query(handler))),
+                    admission_class="interactive-read",
                     estimated_bytes=1024 * 1024,
                     cancellation=cancellation,
                 )
                 try:
-                    if mutating:
-                        # The control class reserves capacity, so queueing is
-                        # bounded by the mutation itself rather than by read
-                        # pressure -- but the mutation can still block behind a
-                        # writer lease held by a convergence pass, and an
-                        # unbounded ``result()`` gave the client no
-                        # observable bound at all (polylogue-8r4zq). The wait
-                        # carries the request deadline; exceeding it is a
-                        # typed *indeterminate* outcome, never a cancellation:
-                        # the submitted write may still land, so claiming it
-                        # did not would be the same lie in the other
-                        # direction.
-                        budget_s = self._mutation_wait_budget_s()
-                        try:
-                            result = submitted.future.result(timeout=budget_s)
-                        except FutureTimeoutError as exc:
-                            route_span.set(
-                                reason="mutation_indeterminate",
-                                timeout_ms=round(budget_s * 1000, 3),
-                            )
-                            raise DaemonMutationIndeterminate(
-                                f"mutation did not complete within {budget_s:.0f}s; "
-                                "it may still be in flight -- re-read before retrying"
-                            ) from exc
-                        route_span.ok()
-                        return result
                     try:
                         result = submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-                    except FutureTimeoutError as exc:
+                    except FutureTimeoutError as error:
                         cancellation.cancel()
                         submitted.future.cancel()
-                        # The raised TimeoutError makes the span emit its own
-                        # ``.error`` terminal event; these fields ride along.
                         route_span.set(
-                            reason="archive_query_timeout",
-                            timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3),
+                            reason="archive_query_timeout", timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3)
                         )
                         raise TimeoutError(
                             f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
                             "the daemon may be busy with catch-up ingestion/embedding"
-                        ) from exc
+                        ) from error
                     route_span.ok()
                     return result
                 finally:
                     self._last_queue_delay_ms = int(submitted.queue_delay_s * 1000)
                     route_span.set(elapsed_ms=round(submitted.queue_delay_s * 1000, 3))
-
-        # Narrow in-process handler doubles construct no kernel. They have no
-        # concurrency to schedule, so the work runs on this thread.
-        return asyncio.run(self._archive_query_coroutine(handler))
+        return asyncio.run(self._run_archive_query(handler))
 
     @contextlib.contextmanager
     def _write_gate(self, actor: str) -> Iterator[None]:
@@ -1921,7 +1872,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         with cast(DaemonWriteThreadBridge, bridge).hold(actor) as delegation:
             self._write_gate_depth = depth + 1
             # The gate admits this request; the delegation is what authorizes
-            # its body, which runs on a kernel worker in its own event loop.
+            # its body, which runs on the admitted writer worker in its own event loop.
             self._write_delegation = delegation
             try:
                 yield
@@ -5448,13 +5399,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.paths import archive_root
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
-        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+        from polylogue.storage.sqlite.connection_profile import owned_daemon_connection
 
         ops_db = archive_root() / "ops.db"
-        with self._write_authorization():
+
+        async def record_call(_archive: object) -> None:
             if not ops_db.exists():
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
-            with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
+            with owned_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
                 table_count = int(
                     conn.execute(
                         """
@@ -5466,22 +5418,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
             if table_count != 2:
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
-            try:
-                with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
-                    record_mcp_call(
-                        conn,
-                        call_id=call_id,
-                        tool_name=tool_name,
-                        session_id=session_id,
-                        session_ids=session_ids,
-                        started_at_ms=started_at_ms,
-                        finished_at_ms=finished_at_ms,
-                        success=success,
-                        error_detail=error_detail,
-                    )
-            except ValueError:
-                self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
-                return
+            with owned_daemon_connection(ops_db, archive_root=ops_db.parent) as conn, conn:
+                record_mcp_call(
+                    conn,
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    session_id=session_id,
+                    session_ids=session_ids,
+                    started_at_ms=started_at_ms,
+                    finished_at_ms=finished_at_ms,
+                    success=success,
+                    error_detail=error_detail,
+                )
+
+        try:
+            self._sync_run(record_call)
+        except ValueError:
+            self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
+            return
         self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
 
     @daemon_safe_handler

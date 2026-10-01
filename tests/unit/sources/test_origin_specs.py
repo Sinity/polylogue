@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.assembly import get_assembly_spec
 from polylogue.sources.detection import DetectorBinding, DetectorBindingError, compile_detector_registry
@@ -32,6 +33,7 @@ from polylogue.sources.origin_specs import (
     detector_registry,
     lowering_fingerprint,
     parser_fingerprint_for_origin,
+    parser_semantic_authority_fingerprint,
     public_origin_descriptions,
     public_origin_meanings,
     public_origin_tokens,
@@ -499,6 +501,135 @@ def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp
     assert before != after
 
 
+def test_dispatch_closure_traverses_implicit_parser_namespace_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Namespace-imported parser modules contribute to shared lowering identity."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    source_root = tmp_path / "source-root"
+    sources = source_root / "polylogue" / "sources"
+    parser_namespace = sources / "parsers"
+    parser_namespace.mkdir(parents=True)
+    dispatch = sources / "dispatch.py"
+    dispatch.write_text(
+        "from .parsers import alpha, beta\n\ndef route(value):\n    return alpha.parse(value), beta.parse(value)\n"
+    )
+    alpha = parser_namespace / "alpha.py"
+    beta = parser_namespace / "beta.py"
+    alpha.write_text("def parse(value):\n    return value\n", encoding="utf-8")
+    beta.write_text("def parse(value):\n    return {'beta': value}\n", encoding="utf-8")
+
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/dispatch.py",))
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+
+    closure = set(origin_specs._semantic_source_paths(("polylogue/sources/dispatch.py",)))
+    assert alpha.resolve() in closure
+    assert beta.resolve() in closure
+    before = origin_specs.lowering_fingerprint()
+
+    beta.write_text("def parse(value):\n    return {'beta': value, 'changed': True}\n", encoding="utf-8")
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    assert origin_specs.lowering_fingerprint() != before
+
+
+def test_composed_raw_authority_fingerprint_tracks_origin_spec_parser_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The persisted authority stamp includes the executable OriginSpec parser closure."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    parser = tmp_path / "parser.py"
+    helper = tmp_path / "helper.py"
+    parser.write_text(
+        "from .helper import normalize\n\ndef parse(value):\n    return normalize(value)\n", encoding="utf-8"
+    )
+    helper.write_text("def normalize(value):\n    return value.strip()\n", encoding="utf-8")
+    target = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
+    monkeypatch.setattr(
+        origin_specs,
+        "ORIGIN_SPECS",
+        tuple(replace(spec, parser_paths=(str(parser),)) if spec is target else spec for spec in ORIGIN_SPECS),
+    )
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    before = parser_semantic_authority_fingerprint()
+
+    helper.write_text("def normalize(value):\n    return value.casefold()\n", encoding="utf-8")
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    assert parser_semantic_authority_fingerprint() != before
+
+
+def test_composed_raw_authority_fingerprint_tracks_declared_database_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A changed database member contract changes which retained source bytes mean parser input."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    target = next(spec for spec in ORIGIN_SPECS if spec.lifecycle == "executable" and spec.database_capability)
+    assert target.database_capability is not None
+    changed_capability = replace(
+        target.database_capability,
+        revision_identity=f"{target.database_capability.revision_identity}:changed",
+    )
+    monkeypatch.setattr(
+        origin_specs,
+        "ORIGIN_SPECS",
+        tuple(
+            replace(spec, database_capability=changed_capability) if spec is target else spec for spec in ORIGIN_SPECS
+        ),
+    )
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    changed = parser_semantic_authority_fingerprint()
+
+    monkeypatch.undo()
+    origin_specs.parser_semantic_authority_fingerprint.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
+    current = parser_semantic_authority_fingerprint()
+    assert changed != current
+
+
+def test_database_consumer_implementation_is_in_origin_parser_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Executable database consumers are parser routes even when their module is not imported by dispatch."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    source_root = tmp_path / "source-root"
+    package = source_root / "polylogue" / "sources"
+    package.mkdir(parents=True)
+    reader = package / "database_reader.py"
+    reader.write_text("def read(connection):\n    return connection.execute('select 1')\n", encoding="utf-8")
+    capability_origin = next(spec for spec in ORIGIN_SPECS if spec.database_capability is not None)
+    assert capability_origin.database_capability is not None
+    capability = replace(
+        capability_origin.database_capability,
+        members=(
+            replace(
+                capability_origin.database_capability.members[0], consumer="polylogue/sources/database_reader.py:read"
+            ),
+            *capability_origin.database_capability.members[1:],
+        ),
+    )
+    synthetic = replace(capability_origin, database_capability=capability)
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    origin_specs._invalidate_source_signatures()
+
+    before = synthetic.parser_fingerprint()
+    reader.write_text("def read(connection):\n    return connection.execute('select 2')\n", encoding="utf-8")
+    origin_specs._invalidate_source_signatures()
+    after = synthetic.parser_fingerprint()
+
+    assert before != after
+
+
 def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materializer_do_not(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -639,6 +770,8 @@ def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None
 
     assert restarted == current_parser
     assert len(lowering_fingerprint()) == 64
+    assert raw_authority_parser_fingerprint() == parser_semantic_authority_fingerprint()
+    assert raw_authority_parser_fingerprint() != "revision-membership-v5"
 
 
 def test_origin_specs_compile_the_production_detector_registry() -> None:

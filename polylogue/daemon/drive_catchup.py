@@ -6,17 +6,27 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from polylogue.core.write_lease import current_write_lease
-from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+from polylogue.core.write_lease import adopt_write_lease, current_write_lease
+from polylogue.daemon.execution import BoundedComputeAdapter, daemon_compute_adapter
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.logging import propagate
 
 T = TypeVar("T")
+P = TypeVar("P")
 
 
 class DriveCatchupExecution:
     """Keep acquisition and completed parse preparation outside writer ownership."""
 
-    def __init__(self, coordinator: DaemonWriteCoordinator) -> None:
+    def __init__(
+        self,
+        coordinator: DaemonWriteCoordinator,
+        *,
+        compute_adapter: BoundedComputeAdapter | None = None,
+    ) -> None:
         self.coordinator = coordinator
+        self._compute_adapter = compute_adapter or daemon_compute_adapter()
+        self._bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
 
     async def settle(self, pending: Awaitable[T], *, label: str = "settle") -> T:
         """Wait for cancellation to settle before closing operation resources.
@@ -58,3 +68,56 @@ class DriveCatchupExecution:
         if current_write_lease() is not None:
             return await self.coordinator.run_sync(f"maintenance.drive_catchup.{actor}", operation)
         return await self.settle(self.coordinator.run_sync(f"maintenance.drive_catchup.{actor}", operation))
+
+    async def publish_prepared_sync(
+        self,
+        actor: str,
+        prepare: Callable[[], P],
+        operation: Callable[[P], T],
+        *,
+        estimated_bytes: int = 0,
+    ) -> T:
+        """Prepare off-gate and publish on that same managed compute worker.
+
+        A reference seal owns live SQLite observers, so it cannot be moved
+        between threads. This one compute unit retains those handles from its
+        read-only census through bridge admission, writer settlement, and
+        cleanup.
+        """
+        if current_write_lease() is not None:
+            raise RuntimeError("prepared publication cannot begin inside writer admission")
+
+        def prepare_and_publish() -> T:
+            prepared = prepare()
+            try:
+                with (
+                    self._bridge.hold(f"maintenance.drive_catchup.{actor}") as delegation,
+                    adopt_write_lease(delegation),
+                ):
+                    return operation(prepared)
+            finally:
+                close = getattr(prepared, "close", None)
+                if callable(close):
+                    close()
+
+        submitted = self._compute_adapter.submit(
+            propagate(prepare_and_publish),
+            admission_class="incremental-background",
+            estimated_bytes=estimated_bytes,
+        )
+        pending = asyncio.wrap_future(submitted.future)
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            # Once admitted, the observer-owning callable must settle on its
+            # worker before this owner unwinds or the bridge can be released.
+            while not pending.done():
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not pending.cancelled():
+                pending.exception()
+            raise

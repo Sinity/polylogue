@@ -13,28 +13,35 @@ import contextlib
 import contextvars
 import functools
 import heapq
+import os
+import queue
 import threading
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterator, Mapping
-from concurrent.futures import CancelledError, InvalidStateError
 from concurrent.futures import Future as ConcurrentFuture
+from concurrent.futures import InvalidStateError
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 
 from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 from polylogue.core.write_lease import (
     WriteLeaseDelegation,
+    adopt_write_lease,
+    async_write_lease,
     bind_write_lease_thread,
     current_write_lease,
     delegate_write_lease,
     grant_write_lease_thread,
-    write_lease,
 )
 from polylogue.logging import ERROR, INFO, WARNING, emit
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.write_lease import SQLCustodyOwner
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -247,6 +254,9 @@ class DaemonWriteSnapshot:
     #: Nonzero means some writer held the single gate long enough to starve a
     #: non-gated one (polylogue-8qm4k).
     over_budget_holds: int = 0
+    unsettled_writer_workers: int = 0
+    unsettled_async_backends: int = 0
+    sql_settlement_state: str = "idle"
 
 
 @dataclass(slots=True)
@@ -272,6 +282,9 @@ _LATEST_TELEMETRY: dict[str, object] = {
     "detached_writer_failures": 0,
     "detached_writer_failures_by_actor": {},
     "over_budget_holds": 0,
+    "unsettled_writer_workers": 0,
+    "unsettled_async_backends": 0,
+    "sql_settlement_state": "idle",
 }
 
 
@@ -286,6 +299,112 @@ def daemon_write_lease_active() -> bool:
     return _ACTIVE_LEASE.get() is not None
 
 
+class DaemonWriterSettlementError(RuntimeError):
+    """An original writer still owns SQL; a later admission may retry cleanup."""
+
+    code = "writer_sql_unsettled"
+    retryable = True
+    is_transient = True
+
+
+def _report_terminal_settlement(attempt: ConcurrentFuture[None]) -> None:
+    """Preserve the actual cleanup result even when its waiter cancelled."""
+    if attempt.cancelled():
+        return
+    error = attempt.exception()
+    if error is not None:
+        emit(
+            "daemon.writer.terminal_settlement_failed",
+            level=WARNING,
+            outcome="error",
+            reason="sql_cleanup_failed",
+            error_type=type(error).__name__,
+        )
+
+
+class _TerminalWriter:
+    """A cleanup-only mailbox for one existing admitted worker."""
+
+    def __init__(
+        self,
+        cleanup: Callable[[], None],
+        pending: Callable[[], bool],
+        retire: Callable[[], None],
+        settled: Callable[[], None],
+    ) -> None:
+        self._pid = os.getpid()
+        self._cleanup = cleanup
+        self._pending = pending
+        self._retire = retire
+        self._settled = settled
+        self._guard = threading.Lock()
+        self._requests: queue.SimpleQueue[ConcurrentFuture[None]] = queue.SimpleQueue()
+        self._attempt: ConcurrentFuture[None] | None = None
+        self._retired = False
+
+    def _require_process(self) -> None:
+        if self._pid != os.getpid():
+            raise DaemonWriterSettlementError("cannot settle an inherited writer thread")
+
+    @property
+    def retired(self) -> bool:
+        self._require_process()
+        with self._guard:
+            return self._retired
+
+    @property
+    def settling(self) -> bool:
+        self._require_process()
+        with self._guard:
+            return self._attempt is not None and not self._attempt.done()
+
+    def request_settlement(self) -> ConcurrentFuture[None]:
+        self._require_process()
+        with self._guard:
+            if self._attempt is not None and not self._attempt.done():
+                return self._attempt
+            attempt: ConcurrentFuture[None] = ConcurrentFuture()
+            if self._retired:
+                attempt.set_result(None)
+            else:
+                self._requests.put(attempt)
+            attempt.add_done_callback(_report_terminal_settlement)
+            self._attempt = attempt
+            return attempt
+
+    def serve(self) -> None:
+        """Stay on the original Thread until its actual SQL owners settle."""
+        self._require_process()
+        while True:
+            attempt = self._requests.get()
+            error: BaseException | None = None
+            try:
+                self._cleanup()
+            except BaseException as exc:
+                error = exc
+            pending = self._pending()
+            if not pending:
+                try:
+                    self._retire()
+                except BaseException as exc:
+                    error = error or exc
+                    pending = True
+                else:
+                    with self._guard:
+                        self._retired = True
+            if error is not None:
+                refusal = DaemonWriterSettlementError("original writer SQL cleanup failed; retry settlement")
+                refusal.__cause__ = error
+                attempt.set_exception(refusal)
+            elif pending:
+                attempt.set_exception(DaemonWriterSettlementError("original writer SQL remains unsettled"))
+            else:
+                attempt.set_result(None)
+            self._settled()
+            if not pending:
+                return
+
+
 class DaemonWriteCoordinator:
     """Fair async gate around every archive write actor in one daemon.
 
@@ -298,12 +417,17 @@ class DaemonWriteCoordinator:
     def __init__(
         self,
         *,
+        archive_root: str | Path,
         observer: WriteEventObserver | None = None,
-        archive_root: str | Path | None = None,
     ) -> None:
+        self._owner_pid = os.getpid()
+        self._terminal_guard = threading.Lock()
+        self._terminal_workers: set[_TerminalWriter] = set()
+        self._terminal_async_backends: dict[int, SQLiteBackend] = {}
+        self._terminal_async_attempt: asyncio.Task[None] | None = None
         self._lock = _PriorityGate()
         self._observer = observer
-        self._archive_root = archive_root
+        self._archive_root = Path(archive_root).resolve()
         self._sequence = 0
         self._active_actor: str | None = None
         self._queued: list[tuple[int, str]] = []
@@ -311,11 +435,122 @@ class DaemonWriteCoordinator:
         self._over_budget_holds = 0
         self._accepting = True
         self._executions: set[asyncio.Task[object]] = set()
+        self._terminal_changed = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
         self._detached_writer_failures = 0
         self._detached_writer_failures_by_actor: dict[str, int] = {}
         self._publish_telemetry()
+
+    def _require_process(self) -> None:
+        if self._owner_pid != os.getpid():
+            raise DaemonWriterSettlementError("cannot use a coordinator inherited across fork")
+
+    def _retained_workers(self) -> tuple[_TerminalWriter, ...]:
+        self._require_process()
+        with self._terminal_guard:
+            return tuple(self._terminal_workers)
+
+    def _retain_terminal_worker(self, worker: _TerminalWriter, loop: asyncio.AbstractEventLoop) -> None:
+        self._require_process()
+        with self._terminal_guard:
+            self._terminal_workers.add(worker)
+        if not loop.is_closed():
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._terminal_changed.set)
+
+    def _terminal_worker_completed(self, worker: _TerminalWriter) -> None:
+        if worker.retired:
+            with self._terminal_guard:
+                self._terminal_workers.discard(worker)
+        self._terminal_changed.set()
+        if not self._executions and not self._has_unsettled_sql():
+            self._idle.set()
+        self._publish_telemetry()
+
+    def _retained_async_backends(self) -> tuple[SQLiteBackend, ...]:
+        self._require_process()
+        with self._terminal_guard:
+            return tuple(self._terminal_async_backends.values())
+
+    def _has_unsettled_sql(self) -> bool:
+        return bool(self._retained_workers() or self._retained_async_backends())
+
+    async def _settle_async_backends(self) -> None:
+        from polylogue.storage.sqlite.async_sqlite import retained_write_backends_on_current_thread
+
+        first_error: BaseException | None = None
+        cancellation: asyncio.CancelledError | None = None
+        for backend in self._retained_async_backends():
+            try:
+                await backend.close()
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+            except BaseException as exc:
+                first_error = first_error or exc
+            if not any(owner is backend for owner in retained_write_backends_on_current_thread()):
+                with self._terminal_guard:
+                    self._terminal_async_backends.pop(id(backend), None)
+        if first_error is not None:
+            raise DaemonWriterSettlementError("original async writer cleanup failed; retry settlement") from first_error
+        if cancellation is not None:
+            raise cancellation
+
+    def _async_settlement_completed(self, attempt: asyncio.Task[None]) -> None:
+        self._terminal_changed.set()
+        if not attempt.cancelled():
+            error = attempt.exception()
+            if error is not None:
+                emit(
+                    "daemon.writer.terminal_settlement_failed",
+                    level=WARNING,
+                    outcome="error",
+                    reason="sql_cleanup_failed",
+                    error_type=type(error).__name__,
+                )
+        if not self._executions and not self._has_unsettled_sql():
+            self._idle.set()
+        self._publish_telemetry()
+
+    async def _settle_terminal_workers(self) -> None:
+        first_error: BaseException | None = None
+        for worker in self._retained_workers():
+            attempt = worker.request_settlement()
+            try:
+                await asyncio.shield(asyncio.wrap_future(attempt))
+            except asyncio.CancelledError:
+                # The accepted cleanup remains owned by its original worker.
+                raise
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            if worker.retired:
+                with self._terminal_guard:
+                    self._terminal_workers.discard(worker)
+        if self._retained_async_backends():
+            attempt = self._terminal_async_attempt
+            if attempt is None or attempt.done():
+                attempt = asyncio.create_task(self._settle_async_backends())
+                self._terminal_async_attempt = attempt
+                attempt.add_done_callback(self._async_settlement_completed)
+            try:
+                await asyncio.shield(attempt)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                first_error = first_error or exc
+        if not self._executions and not self._has_unsettled_sql():
+            self._idle.set()
+        self._publish_telemetry()
+        if first_error is not None:
+            raise first_error
+
+    def _sql_settlement_state(self) -> str:
+        if any(worker.settling for worker in self._retained_workers()) or (
+            self._terminal_async_attempt is not None and not self._terminal_async_attempt.done()
+        ):
+            return "settling"
+        return "required" if self._has_unsettled_sql() else "idle"
 
     def snapshot(self) -> DaemonWriteSnapshot:
         return DaemonWriteSnapshot(
@@ -326,6 +561,9 @@ class DaemonWriteCoordinator:
             detached_writer_failures=self._detached_writer_failures,
             detached_writer_failures_by_actor=tuple(sorted(self._detached_writer_failures_by_actor.items())),
             over_budget_holds=self._over_budget_holds,
+            unsettled_writer_workers=len(self._retained_workers()),
+            unsettled_async_backends=len(self._retained_async_backends()),
+            sql_settlement_state=self._sql_settlement_state(),
         )
 
     async def run(
@@ -343,6 +581,7 @@ class DaemonWriteCoordinator:
         if actor_label.startswith(_DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX):
             raise ValueError("daemon write actor uses a reserved telemetry label")
 
+        self._require_process()
         current_task = asyncio.current_task()
         if current_task is None:
             raise RuntimeError("daemon write coordination requires an asyncio task")
@@ -389,6 +628,7 @@ class DaemonWriteCoordinator:
         operation: Callable[[], Awaitable[T]],
         on_admit: Callable[[], None] | None = None,
     ) -> T:
+        self._require_process()
         try:
             await self._lock.acquire(_actor_priority(request.actor))
         except BaseException:
@@ -409,47 +649,6 @@ class DaemonWriteCoordinator:
                 wait_seconds=wait_seconds,
             )
         )
-        if on_admit is not None:
-            try:
-                on_admit()
-            except BaseException:
-                # Admission is itself an owned transition.  Even when the
-                # admission hook refuses the operation before its body starts,
-                # publish the matching terminal event so observers never see
-                # an acquired request with no settlement evidence.
-                hold_seconds = time.perf_counter() - acquired_at
-                budget_s = write_hold_budget_s(request.actor)
-                over_budget = hold_seconds > budget_s
-                if over_budget:
-                    self._over_budget_holds += 1
-                self._active_actor = None
-                self._lock.release()
-                self._emit(
-                    DaemonWriteEvent(
-                        phase="released",
-                        actor=request.actor,
-                        sequence=request.sequence,
-                        queue_depth=len(self._queued),
-                        wait_seconds=wait_seconds,
-                        hold_seconds=hold_seconds,
-                        outcome="error",
-                        hold_budget_s=budget_s,
-                        hold_over_budget=over_budget,
-                    )
-                )
-                emit(
-                    "daemon.writer.released",
-                    level=WARNING if over_budget else INFO,
-                    outcome="degraded" if over_budget else "error",
-                    reason="hold_over_budget" if over_budget else "admission_hook_failed",
-                    actor=request.actor,
-                    status="error",
-                    wait_ms=round(wait_seconds * 1000, 3),
-                    hold_ms=round(hold_seconds * 1000, 3),
-                    budget_ms=round(budget_s * 1000, 3),
-                    queued=len(self._queued),
-                )
-                raise
         owner = asyncio.current_task()
         if owner is None:  # pragma: no cover - asyncio always owns created tasks
             self._lock.release()
@@ -458,13 +657,34 @@ class DaemonWriteCoordinator:
         budget_s = write_hold_budget_s(request.actor)
         hold_token = enter_write_hold(request.actor, budget_s)
         outcome: WriteOutcome = "success"
+        admission_failed = False
+        settlement_complete = False
         try:
+            await self._settle_terminal_workers()
+            settlement_complete = True
+            if on_admit is not None:
+                try:
+                    on_admit()
+                except BaseException:
+                    admission_failed = True
+                    raise
             # Establish the storage-side authorization in the coordinator-owned
             # task.  ``_run_in_daemon_thread`` copies this context into the
             # actual writer thread, so every writable open remains behind the
             # same gate even when the callable is synchronous.
-            with write_lease(request.actor, archive_root=self._archive_root, coordinator=self):
-                return await operation()
+            async with async_write_lease(request.actor, archive_root=self._archive_root, coordinator=self) as lease:
+                from polylogue.storage.sqlite.async_sqlite import retained_write_backends_on_current_thread
+
+                try:
+                    value = await operation()
+                finally:
+                    retained = retained_write_backends_on_current_thread(lease=lease)
+                    if retained:
+                        with self._terminal_guard:
+                            self._terminal_async_backends.update((id(backend), backend) for backend in retained)
+                if retained:
+                    raise DaemonWriterSettlementError("async writer returned with unsettled SQL")
+                return value
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
@@ -499,8 +719,16 @@ class DaemonWriteCoordinator:
             emit(
                 "daemon.writer.released",
                 level=WARNING if over_budget else INFO,
-                outcome="degraded" if over_budget else "ok",
-                reason="hold_over_budget" if over_budget else "within_budget",
+                outcome="degraded" if over_budget else ("ok" if outcome == "success" else outcome),
+                reason=(
+                    "hold_over_budget"
+                    if over_budget
+                    else "terminal_settlement_failed"
+                    if not settlement_complete
+                    else "admission_hook_failed"
+                    if admission_failed
+                    else "within_budget"
+                ),
                 actor=request.actor,
                 status=outcome,
                 wait_ms=round(wait_seconds * 1000, 3),
@@ -538,6 +766,7 @@ class DaemonWriteCoordinator:
     ) -> T:
         async def operation() -> T:
             return await _run_in_daemon_thread(
+                self,
                 function,
                 f"polylogue-writer:{actor}",
                 *args,
@@ -553,13 +782,23 @@ class DaemonWriteCoordinator:
         deliberately leaves it held; releasing an uncooperative sync writer is
         not a safe shutdown operation.
         """
+        self._require_process()
         if timeout < 0:
             raise ValueError("shutdown timeout must be non-negative")
         self._accepting = False
         self._publish_telemetry()
         try:
             async with asyncio.timeout(timeout):
-                await self._idle.wait()
+                while True:
+                    self._terminal_changed.clear()
+                    if self._has_unsettled_sql():
+                        try:
+                            await self._settle_terminal_workers()
+                        except DaemonWriterSettlementError:
+                            return False
+                    if not self._executions and not self._has_unsettled_sql():
+                        return True
+                    await self._terminal_changed.wait()
         except TimeoutError:
             return False
         return True
@@ -596,6 +835,7 @@ class DaemonWriteCoordinator:
             self._publish_telemetry()
 
         def completed(done: asyncio.Task[object]) -> None:
+            self._terminal_changed.set()
             self._executions.discard(done)
             if done.cancelled():
                 if on_complete is not None and (request is None or request.acquired):
@@ -609,7 +849,7 @@ class DaemonWriteCoordinator:
                             reason="completion_callback_raised",
                             actor=actor,
                         )
-                if not self._executions:
+                if not self._executions and not self._has_unsettled_sql():
                     self._idle.set()
                 return
             try:
@@ -654,7 +894,7 @@ class DaemonWriteCoordinator:
                         reason="completion_callback_raised",
                         actor=actor,
                     )
-            if not self._executions:
+            if not self._executions and not self._has_unsettled_sql():
                 self._idle.set()
 
         task.add_done_callback(completed)
@@ -697,6 +937,9 @@ class DaemonWriteCoordinator:
             # the counter only lived on ``snapshot()`` it disappeared at the
             # production boundary.
             "over_budget_holds": snapshot.over_budget_holds,
+            "unsettled_writer_workers": snapshot.unsettled_writer_workers,
+            "unsettled_async_backends": snapshot.unsettled_async_backends,
+            "sql_settlement_state": snapshot.sql_settlement_state,
         }
         if event is not None:
             payload["last_event"] = {
@@ -716,6 +959,7 @@ class DaemonWriteCoordinator:
 
 
 async def _run_in_daemon_thread(
+    coordinator: DaemonWriteCoordinator,
     function: Callable[P, T],
     thread_name: str,
     /,
@@ -734,27 +978,101 @@ async def _run_in_daemon_thread(
     thread_grant = grant_write_lease_thread() if current_write_lease() is not None else None
 
     def worker() -> None:
+        from polylogue.storage.sqlite.async_sqlite import retained_write_backends_on_current_thread
+
+        custody = thread_grant.lease.custody if thread_grant is not None else None
+
+        def sql_owners() -> tuple[SQLCustodyOwner, ...]:
+            return custody.retained_sql_owners_on_current_thread() if custody is not None else ()
+
+        def reconcile_cached_handles() -> None:
+            from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
+
+            if custody is not None:
+                settle_cached_connections_on_current_thread(custody)
+
+        def pending() -> bool:
+            return bool(sql_owners() or retained_write_backends_on_current_thread())
+
+        def cleanup() -> None:
+            first_error: BaseException | None = None
+            for owner in sql_owners():
+                try:
+                    owner.close()
+                except BaseException as exc:
+                    first_error = first_error or exc
+
+            async def close_async_owners() -> None:
+                nonlocal first_error
+                for backend in retained_write_backends_on_current_thread():
+                    try:
+                        await backend.close()
+                    except BaseException as exc:
+                        first_error = first_error or exc
+
+            if retained_write_backends_on_current_thread():
+                asyncio.run(close_async_owners())
+            if first_error is not None:
+                raise first_error
+
+        def retire() -> None:
+            if thread_grant is not None:
+                thread_grant.complete()
+
         error: BaseException | None = None
+        value: T
         try:
-            # The context copied from the coordinator task carries the lease;
-            # bind this concrete worker thread before any SQLite factory runs.
+
             def invoke() -> T:
-                if thread_grant is not None:
-                    bind_write_lease_thread(thread_grant)
-                return function(*args, **kwargs)
+                try:
+                    if thread_grant is not None:
+                        bind_write_lease_thread(thread_grant)
+                    return function(*args, **kwargs)
+                finally:
+                    if thread_grant is not None:
+                        thread_grant.complete()
 
             value = context.run(invoke)
         except BaseException as exc:
             error = exc
+
+        try:
+            context.run(reconcile_cached_handles)
+        except BaseException as exc:
+            error = error or exc
+
+        terminal: _TerminalWriter | None = None
+        if pending():
+
+            def settled() -> None:
+                assert terminal is not None
+                if not loop.is_closed():
+                    with contextlib.suppress(RuntimeError):
+                        loop.call_soon_threadsafe(coordinator._terminal_worker_completed, terminal)
+
+            terminal = _TerminalWriter(lambda: context.run(cleanup), pending, retire, settled)
+            coordinator._retain_terminal_worker(terminal, loop)
+            refusal = DaemonWriterSettlementError("writer returned with unsettled SQL; retry terminal settlement")
+            if error is not None:
+                refusal.__cause__ = error
+            error = refusal
+        else:
+            try:
+                retire()
+            except BaseException as exc:
+                error = error or exc
+
+        if error is not None:
             with contextlib.suppress(InvalidStateError):
-                result.set_exception(exc)
+                result.set_exception(error)
         else:
             with contextlib.suppress(InvalidStateError):
                 result.set_result(value)
 
+        if terminal is not None:
+            terminal.serve()
+
         if loop.is_closed():
-            # The result future is abandoned either way; the error lane keeps
-            # the original failure attached instead of dropping it.
             emit(
                 "daemon.writer.result_abandoned",
                 level=WARNING,
@@ -765,7 +1083,12 @@ async def _run_in_daemon_thread(
                 error_detail=str(error) if error is not None else None,
             )
 
-    threading.Thread(target=worker, name=thread_name, daemon=True).start()
+    try:
+        threading.Thread(target=worker, name=thread_name, daemon=True).start()
+    except BaseException:
+        if thread_grant is not None:
+            thread_grant.complete()
+        raise
     return await asyncio.wrap_future(result, loop=loop)
 
 
@@ -782,6 +1105,50 @@ class DaemonWriteThreadBridge:
         self._coordinator = coordinator
         self._loop = loop
         self._timeout = timeout
+
+    def run_admitted_async(
+        self,
+        delegation: WriteLeaseDelegation,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        timeout: float | None,
+    ) -> T:
+        """Run an already-admitted body on the existing writer worker route."""
+        self._coordinator._require_process()
+        if delegation.lease.coordinator is not self._coordinator:
+            raise RuntimeError("the admitted body belongs to another coordinator")
+        if self._loop.is_closed() or not self._loop.is_running():
+            raise DaemonWriterOwnerLoopStopped("the admitted body's writer owner loop stopped")
+
+        async def admitted() -> T:
+            task = asyncio.current_task()
+            assert task is not None
+            self._coordinator._track_execution(task, actor=delegation.actor)
+            token = _ACTIVE_LEASE.set((self._coordinator, task))
+            try:
+                with adopt_write_lease(delegation):
+                    child_delegation = delegate_write_lease()
+
+                    def work() -> T:
+                        async def child() -> T:
+                            with adopt_write_lease(child_delegation):
+                                return await operation()
+
+                        return asyncio.run(child())
+
+                    return await _run_in_daemon_thread(self._coordinator, work, f"polylogue-writer:{delegation.actor}")
+            finally:
+                _ACTIVE_LEASE.reset(token)
+
+        coroutine = admitted()
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        except RuntimeError as error:
+            coroutine.close()
+            raise DaemonWriterOwnerLoopStopped("the admitted body's writer owner loop stopped") from error
+        if timeout is not None:
+            return future.result(timeout=timeout)
+        return self._await_owner_settlement(delegation.actor, future)
 
     @contextmanager
     def hold(self, actor: str) -> Iterator[WriteLeaseDelegation]:
@@ -820,15 +1187,20 @@ class DaemonWriteThreadBridge:
             finally:
                 settled.set()
 
+        if self._loop.is_closed() or not self._loop.is_running():
+            raise DaemonWriterOwnerLoopStopped(
+                f"daemon writer owner loop closed before {actor} was admitted; the write did not start"
+            )
         future = asyncio.run_coroutine_threadsafe(hold_lease(), self._loop)
-        if not settled.wait(self._timeout):
-            self._loop.call_soon_threadsafe(release.set)
-            future.cancel()
-            with contextlib.suppress(TimeoutError, CancelledError):
-                future.result(timeout=self._timeout)
-            raise TimeoutError(f"timed out waiting for daemon write gate actor={actor}")
+        future.add_done_callback(lambda _future: settled.set())
+        while not settled.wait(_DELEGATION_SETTLEMENT_POLL_S):
+            # This observes an actual stopped execution owner, not elapsed
+            # work time. A running loop may queue valid writes indefinitely.
+            if not self._loop.is_running():
+                future.cancel()
+                raise DaemonWriterOwnerLoopStopped(f"daemon writer owner loop stopped before {actor} was admitted")
         if not entered.is_set():
-            future.result(timeout=self._timeout)
+            future.result()
             raise RuntimeError(f"daemon write gate ended before acquisition actor={actor}")
         try:
             yield granted[0]
@@ -856,18 +1228,7 @@ class DaemonWriteThreadBridge:
                     actor=actor,
                 )
             else:
-                try:
-                    future.result(timeout=self._timeout)
-                except TimeoutError:
-                    future.cancel()
-                    emit(
-                        "daemon.writer.release_timed_out",
-                        level=WARNING,
-                        outcome="degraded",
-                        reason="release_timeout",
-                        actor=actor,
-                        timeout_ms=round(self._timeout * 1000, 3),
-                    )
+                future.result()
 
     async def _retain_until_delegation_settles(self, actor: str, delegation: WriteLeaseDelegation) -> None:
         """Keep the admitted hold until the delegated execution really leaves.

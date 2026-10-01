@@ -17,6 +17,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+
 __all__ = ["sqlite_connection"]
 
 
@@ -24,8 +26,12 @@ __all__ = ["sqlite_connection"]
 def sqlite_connection(*args: Any, **kwargs: Any) -> Iterator[sqlite3.Connection]:
     """Open a ``sqlite3`` connection, commit or roll back, then always close."""
     connection = sqlite3.connect(*args, **kwargs)
+    owner = NativeSQLCustodyOwner(connection)
     try:
         with connection:
             yield connection
-    finally:
-        connection.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()

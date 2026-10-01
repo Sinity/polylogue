@@ -17,11 +17,10 @@ import sqlite3
 import tempfile
 import threading
 import time
-import unicodedata
 import uuid
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
-from contextlib import AbstractContextManager, closing, contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime
@@ -86,6 +85,7 @@ from polylogue.pipeline.ids import (
     message_content_identities,
     message_content_identity,
     message_owner_resolution,
+    message_semantic_content_address,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
@@ -147,6 +147,14 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     open_session_shard,
 )
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_sessions
+from polylogue.storage.sqlite.reference_seal import (
+    IndexMutationScope,
+    PreparedIndexMutation,
+    index_path_for_connection,
+    note_current_deleted_message_ids,
+    note_current_deleted_session,
+    note_current_lineage_change,
+)
 from polylogue.storage.usage import provider_usage_event_identity
 
 
@@ -2144,6 +2152,8 @@ def write_parsed_session_to_archive(
     child_source_path: str | None = None,
     write_outcome: list[ArchiveWriteOutcome] | None = None,
     unit_accounting: ParseAccounting | None = None,
+    archive_root: Path | None = None,
+    mutation_scope: IndexMutationScope | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
@@ -2484,13 +2494,30 @@ def write_parsed_session_to_archive(
             identity_scope.__exit__(None, None, None)
         raise PreparedSessionWriteRefusedError("prepared replay lowering is stale or unavailable")
     add_timing("index.prepare", t0)
-    # When the caller owns the transaction (bulk batching) we must not commit
-    # per session; nullcontext leaves BEGIN/COMMIT to the caller.
-    transaction = conn if manage_transaction else nullcontext()
+    if mutation_scope is not None:
+        mutation_scope.require_connection(conn)
+        if not conn.in_transaction:
+            raise RuntimeError("a borrowed index mutation scope requires its active outer transaction")
+    elif archive_root is not None and not manage_transaction:
+        raise RuntimeError("manage_transaction=False requires the caller's live index mutation scope")
+    elif archive_root is not None and conn.in_transaction:
+        raise RuntimeError("a prepared index mutation must be opened before the outer transaction begins")
+    mutation_seal = (
+        PreparedIndexMutation(index_path_for_connection(conn), archive_root=archive_root)
+        if archive_root is not None and mutation_scope is None
+        else None
+    )
+    # An owned scope, not ``with conn``, decides the actual outer commit after
+    # checking that every formerly resolved typed anchor still resolves.
     invalidated_identity_children: set[str] = set()
     prefix_guard: _InheritedPrefixGuard | None = None
     try:
-        with transaction:
+        with ExitStack() as mutation_stack:
+            if mutation_seal is not None:
+                mutation_stack.enter_context(mutation_seal)
+                mutation_stack.enter_context(mutation_seal.mutation_scope(conn))
+            elif mutation_scope is None and manage_transaction:
+                mutation_stack.enter_context(conn)
             if prepared_write is not None:
                 prepared_union = prepared_write.cross_acquisition_union
                 if prepared_union is not None:
@@ -4341,53 +4368,12 @@ def _row_fields_digest(row: Sequence[object], m_idx: Mapping[str, int]) -> bytes
 
 
 def _message_content_address(message: ParsedMessage) -> bytes:
-    """Return an identity-free witness for one message's semantic content.
+    """Return the complete current semantic witness used at branch points.
 
-    It follows content identity's rules (``_NFC_TEXT_FIELDS`` in
-    ``pipeline/ids.py``): prose text is NFC-folded, identifiers and tool
-    arguments stay exact, and an absent field frames differently from an
-    empty one.
+    This delegates to the content-hash projection so newly hashed message or
+    block fields cannot be omitted from branch verification.
     """
-    parts: list[str] = [
-        _enum_value(message.role) or "",
-        _enum_value(message.message_type) or "",
-        _enum_value(message.material_origin) or "",
-        _content_address_prose(message.text),
-        _content_address_prose(message.user_context_text),
-        _enum_value(message.stop_reason) or "",
-    ]
-    for block in _message_blocks(message):
-        parts.extend(
-            (
-                _block_type(block).value,
-                _content_address_prose(block.text),
-                _content_address_text(block.tool_name),
-                _content_address_text(block.tool_id),
-                _content_address_text(None if block.tool_input is None else _json_dumps(block.tool_input)),
-                _content_address_text(_semantic_type(block)),
-                _content_address_text(block.media_type),
-                _content_address_text(_block_language(block)),
-                "" if block.is_error is None else str(int(block.is_error)),
-                "" if block.exit_code is None else str(block.exit_code),
-                _enum_value(block.tool_outcome) or "",
-            )
-        )
-    return _hash_bytes("message-content-address", *parts)
-
-
-def _content_address_text(value: str | None) -> str:
-    """An exact optional part: absence is the empty part, a present value is tagged.
-
-    Every present value, the empty string included, gains a leading ``=``, so
-    no value can frame like an absent one.
-    """
-    text = _sqlite_text(value)
-    return "" if text is None else "=" + text
-
-
-def _content_address_prose(value: str | None) -> str:
-    """:func:`_content_address_text` of a prose field, NFC-folded."""
-    return _content_address_text(None if value is None else unicodedata.normalize("NFC", value))
+    return message_semantic_content_address(message)
 
 
 def _block_content_hash(
@@ -6630,6 +6616,15 @@ def _replace_full_session_messages_and_blocks(
     t0 = time.perf_counter()
     use_scoped_fts_rebuild = not bulk_build and message_fts_triggers_present_sync(conn)
     add_timing("fts_probe", t0)
+    if session_membership_existed:
+        note_current_lineage_change(conn, session_id)
+        note_current_deleted_message_ids(
+            conn,
+            (
+                str(row[0])
+                for row in conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,))
+            ),
+        )
     if use_scoped_fts_rebuild:
         # These deletes are keyed by session_id exactly like the base-table
         # cascade below. With neither a prior session row nor messages, they
@@ -13124,6 +13119,8 @@ def _delete_all_session_message_dependents(
     survive. Empty-tail re-extraction can use the existing session indexes
     instead, avoiding huge ``IN (...)`` cleanup for replayed long sessions.
     """
+    note_current_deleted_session(conn, session_id)
+    note_current_lineage_change(conn, session_id)
     if not prefix_message_ids:
         return
     placeholders = ",".join("?" for _ in prefix_message_ids)
@@ -13149,6 +13146,7 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
     """Mirror message FK side effects when bulk ingest has foreign keys off."""
     if not prefix_message_ids:
         return
+    note_current_deleted_message_ids(conn, (str(message_id) for message_id in prefix_message_ids))
     placeholders = ",".join("?" for _ in prefix_message_ids)
     params = tuple(prefix_message_ids)
     _clear_prefix_message_id_references(conn, placeholders, params)

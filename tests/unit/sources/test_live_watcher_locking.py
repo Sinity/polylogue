@@ -62,7 +62,7 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             source_root.mkdir()
             path = source_root / "session.jsonl"
             path.write_text('{{"type":"session_meta","payload":{{"id":"exit-proof"}}}}\\n')
-            coordinator = DaemonWriteCoordinator()
+            coordinator = DaemonWriteCoordinator(archive_root=root)
             cursor = CursorStore(root / "index.db")
             polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
             watcher = LiveWatcher(
@@ -257,7 +257,7 @@ async def test_default_cursor_initialization_waits_for_batch_writer_lease(
         if event.phase == "queued" and event.actor.startswith("watcher."):
             watcher_queued.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=root, observer=observe)
     polylogue = cast(
         Any,
         SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db")),
@@ -332,7 +332,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
         return original_set(*args, **kwargs)
 
     monkeypatch.setattr(cursor, "set", observed_set)
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=root, observer=observe)
     watcher = _make_watcher(tmp_path, root)
     watcher._cursor = cursor
     watcher._batch_processor._cursor = cursor
@@ -384,7 +384,7 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
     so ``maintenance_entered`` never sets and pytest-timeout fails the test.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     source_root = tmp_path / "sources"
     source_root.mkdir()
     source = source_root / "session.jsonl"

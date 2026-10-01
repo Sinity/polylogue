@@ -22,6 +22,7 @@ from polylogue.storage.index_generation import (
     rebuild_lease_status,
     source_revision_snapshot,
 )
+from polylogue.storage.sqlite.write_lease import write_lease
 
 # A pid guaranteed to never correspond to a running process: it exceeds any
 # realistic pid_max (Linux defaults to <= 4194304 even with 64-bit pids).
@@ -32,6 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_custody_probe import archive_custody_available
 from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 
 _ARCHIVE_TEMPLATE: Path | None = None
@@ -847,6 +849,254 @@ def test_promotion_refuses_ownerless_predecessor_before_pointer_swap(tmp_path: P
     assert store.load(candidate.generation_id).state == "inactive"
 
 
+def test_promotion_refuses_candidate_that_orphans_a_resolved_user_message_ref(tmp_path: Path) -> None:
+    """Promotion preserves refs resolved by the previous active generation."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.core.refs import ObjectRef
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    _archive(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="durable-ref-target",
+        title="durable-ref-target",
+        messages=[
+            ParsedMessage(
+                provider_message_id="message-one",
+                role=Role.USER,
+                text="retained content",
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=True,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="retained content")],
+            )
+        ],
+    )
+    with write_lease("test.seed-promotion-reference", archive_root=tmp_path):
+        conn = sqlite3.connect(tmp_path / "index.db")
+        conn.row_factory = sqlite3.Row
+        try:
+            session_id = write_parsed_session_to_archive(conn, session)
+            message_id = str(
+                conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        user = sqlite3.connect(tmp_path / "user.db")
+        try:
+            user.execute(
+                "INSERT INTO assertions(assertion_id, target_ref, kind, created_at_ms, updated_at_ms) "
+                "VALUES (?, ?, 'fact', 0, 0)",
+                ("assertion-preserve-message", ObjectRef("message", message_id).format()),
+            )
+            user.commit()
+        finally:
+            user.close()
+
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    active_before = Path(store.active_pointer).resolve(strict=True)
+    candidate = store.create(owner_id="candidate-owner", source_snapshot="snapshot-b")
+    with pytest.raises(ReferenceSealError, match="promotion would orphan"):
+        store.prepare_promotion(candidate)
+
+    assert Path(store.active_pointer).resolve(strict=True) == active_before
+    assert store.load(candidate.generation_id).state == "inactive"
+
+    preserving_candidate = store.create(owner_id="preserving-owner", source_snapshot="snapshot-c")
+    with write_lease("test.seed-preserving-candidate", archive_root=tmp_path):
+        candidate_conn = sqlite3.connect(preserving_candidate.index_path)
+        candidate_conn.row_factory = sqlite3.Row
+        try:
+            write_parsed_session_to_archive(candidate_conn, session)
+            candidate_conn.commit()
+        finally:
+            candidate_conn.close()
+    with store.prepare_promotion(preserving_candidate) as prepared:
+        with write_lease("test.promote-preserving-candidate", archive_root=tmp_path):
+            promoted = store.promote(preserving_candidate, prepared)
+    assert promoted.state == "active"
+    assert Path(store.active_pointer).resolve(strict=True) == Path(preserving_candidate.index_path).resolve()
+
+
+def test_promotion_candidate_change_after_off_gate_proof_is_refused(tmp_path: Path) -> None:
+    """The retained candidate observer detects writes before pointer admission."""
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    active_before = Path(store.active_pointer).resolve(strict=True)
+    candidate = store.create(owner_id="candidate-owner", source_snapshot="snapshot-b")
+    with store.prepare_promotion(candidate) as prepared:
+        changed = sqlite3.connect(candidate.index_path)
+        try:
+            changed.execute("CREATE TABLE promotion_race(value TEXT NOT NULL)")
+            changed.commit()
+        finally:
+            changed.close()
+
+        with write_lease("test.promote-changed-candidate", archive_root=tmp_path):
+            with pytest.raises(ReferenceSealStaleError, match="candidate incarnation changed"):
+                store.promote(candidate, prepared)
+
+    assert Path(store.active_pointer).resolve(strict=True) == active_before
+    assert store.load(candidate.generation_id).state == "inactive"
+
+
+def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) -> None:
+    """A typed EvidenceRef remains reachable through its exact composed scope."""
+    import json
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.session.branch_type import BranchType
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.core.refs import EvidenceRef, ObjectRef
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        read_archive_session_envelope,
+        write_parsed_session_to_archive,
+    )
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+
+    def parent_and_child(child_id: str) -> tuple[ParsedSession, ParsedSession]:
+        parent = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="composed-parent",
+            title="composed-parent",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="prefix",
+                    role=Role.USER,
+                    text="prefix",
+                    position=0,
+                    variant_index=0,
+                    is_active_path=True,
+                    is_active_leaf=False,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="prefix")],
+                )
+            ],
+        )
+        child = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=child_id,
+            title=child_id,
+            parent_session_provider_id="composed-parent",
+            branch_type=BranchType.FORK,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="prefix",
+                    role=Role.USER,
+                    text="prefix",
+                    position=0,
+                    variant_index=0,
+                    is_active_path=True,
+                    is_active_leaf=False,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="prefix")],
+                ),
+                ParsedMessage(
+                    provider_message_id="child-tail",
+                    role=Role.ASSISTANT,
+                    text="tail",
+                    position=1,
+                    variant_index=0,
+                    is_active_path=True,
+                    is_active_leaf=True,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="tail")],
+                ),
+            ],
+        )
+        return parent, child
+
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    active = sqlite3.connect(tmp_path / "index.db")
+    active.row_factory = sqlite3.Row
+    try:
+        parent, child = parent_and_child("composed-child")
+        with write_lease("test.seed-composed-reference", archive_root=tmp_path):
+            parent_id = write_parsed_session_to_archive(active, parent)
+            child_id = write_parsed_session_to_archive(active, child)
+            parent_message = active.execute(
+                "SELECT message_id FROM messages WHERE session_id = ?", (parent_id,)
+            ).fetchone()
+            composed = read_archive_session_envelope(active, child_id)
+            assert str(parent_message[0]) in {message.message_id for message in composed.messages}
+            # This parent-owned message is visible only through the child's
+            # prefix-sharing composed scope.
+            evidence = EvidenceRef(session_id=child_id, message_id=str(parent_message[0])).format()
+            active.commit()
+            user = sqlite3.connect(tmp_path / "user.db")
+            try:
+                user.execute(
+                    "INSERT INTO assertions(assertion_id, target_ref, evidence_refs_json, kind, "
+                    "created_at_ms, updated_at_ms) VALUES (?, ?, ?, 'fact', 0, 0)",
+                    (
+                        "assertion-composed-evidence",
+                        ObjectRef("message", str(parent_message[0])).format(),
+                        json.dumps([evidence]),
+                    ),
+                )
+                user.commit()
+            finally:
+                user.close()
+    finally:
+        active.close()
+
+    candidate = store.create(owner_id="candidate-owner", source_snapshot="snapshot-b")
+    candidate_conn = sqlite3.connect(candidate.index_path)
+    candidate_conn.row_factory = sqlite3.Row
+    try:
+        # The candidate has the same physical target row, but the child has no
+        # composed prefix edge. A global message-id-only guard would accept it.
+        child_without_parent = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="composed-child",
+            title="composed-child",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="child-tail",
+                    role=Role.ASSISTANT,
+                    text="tail",
+                    position=1,
+                    variant_index=0,
+                    is_active_path=True,
+                    is_active_leaf=True,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="tail")],
+                )
+            ],
+        )
+        # Parent's target is present in the candidate, but the child's scoped
+        # EvidenceRef must remain composed through the child-parent edge.
+        write_parsed_session_to_archive(candidate_conn, parent)
+        write_parsed_session_to_archive(candidate_conn, child_without_parent)
+        candidate_conn.commit()
+    finally:
+        candidate_conn.close()
+    with pytest.raises(ReferenceSealError, match="promotion would orphan"):
+        store.prepare_promotion(candidate)
+
+    preserving = store.create(owner_id="preserving-owner", source_snapshot="snapshot-c")
+    preserving_conn = sqlite3.connect(preserving.index_path)
+    preserving_conn.row_factory = sqlite3.Row
+    try:
+        parent, child = parent_and_child("composed-child")
+        write_parsed_session_to_archive(preserving_conn, parent)
+        write_parsed_session_to_archive(preserving_conn, child)
+        preserving_conn.commit()
+    finally:
+        preserving_conn.close()
+    with store.prepare_promotion(preserving) as prepared:
+        with write_lease("test.promote-composed-evidence", archive_root=tmp_path):
+            promoted = store.promote(preserving, prepared)
+    assert promoted.state == "active"
+
+
 def test_pruning_never_removes_a_never_promoted_rebuild_candidate(tmp_path: Path) -> None:
     """An in-flight cold-build candidate is `inactive` -- never promoted --
     and must survive an unrelated promotion's housekeeping.
@@ -1058,3 +1308,286 @@ def test_page_size_cannot_be_applied_to_an_existing_tier(tmp_path: Path) -> None
             allow_create=False,
             page_size=8192,
         )
+
+
+@pytest.mark.uses_real_clock("independent process probes custody between actual rebuild commits")
+def test_rebuild_preparation_is_off_custody_between_committed_segments(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+    from polylogue.storage.sqlite.write_lease import current_write_lease
+
+    _archive(tmp_path)
+    with RebuildLease(tmp_path) as rebuild:
+        for _segment in range(2):
+            assert current_write_lease() is None
+            assert archive_custody_available(tmp_path)
+            with rebuild.write_segment("test.rebuild.commit"):
+                assert not archive_custody_available(tmp_path)
+                connection = open_isolated_write_connection(
+                    tmp_path / "index.db", purpose="test.rebuild.commit", archive_root=tmp_path
+                )
+                try:
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute("UPDATE sessions SET session_id = session_id WHERE 0")
+                    assert connection.in_transaction
+                    connection.commit()
+                    assert not connection.in_transaction
+                finally:
+                    connection.close()
+            assert current_write_lease() is None
+            assert archive_custody_available(tmp_path)
+        writer = ActiveWriterLease(tmp_path)
+        with pytest.raises(RebuildLeaseUnavailableError):
+            writer.acquire()
+    writer.acquire()
+    writer.close()
+
+
+def _refused_rebuild_keeps_process_alive(
+    root: str,
+    refused: multiprocessing.synchronize.Event,
+    release: multiprocessing.synchronize.Event,
+) -> None:
+    try:
+        with RebuildLease(Path(root)):
+            raise AssertionError("the existing Store SH owner must exclude rebuild")
+    except RebuildLeaseUnavailableError:
+        refused.set()
+        release.wait(_CHILD_HOLD_TIMEOUT_S)
+
+
+@pytest.mark.uses_real_clock("two processes exercise SH ownership and prompt EX refusal")
+def test_refused_rebuild_releases_custody_while_existing_sh_owner_remains(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    writer = ActiveWriterLease(tmp_path)
+    writer.acquire()
+    refused = multiprocessing.Event()
+    release = multiprocessing.Event()
+    process = multiprocessing.Process(
+        target=_refused_rebuild_keeps_process_alive, args=(str(tmp_path), refused, release)
+    )
+    process.start()
+    try:
+        assert refused.wait(_CHILD_READY_TIMEOUT_S)
+        assert process.is_alive()
+        with write_lease("test.existing-store.after-rebuild-refusal", archive_root=tmp_path):
+            assert process.is_alive()
+    finally:
+        release.set()
+        process.join(_CHILD_READY_TIMEOUT_S)
+        if process.is_alive():
+            process.terminate()
+            process.join(_CHILD_READY_TIMEOUT_S)
+        writer.close()
+    assert process.exitcode == 0
+
+
+@pytest.mark.uses_real_clock("independent process probes retained SQL after outer owner retires")
+def test_outer_lease_retirement_keeps_store_sql_until_actual_commit(tmp_path: Path) -> None:
+    from polylogue.core.sources import Provider
+    from polylogue.storage.sqlite.write_lease import UnleasedWriteError, current_write_lease, write_lease
+
+    _archive(tmp_path)
+    archive = ArchiveStore(tmp_path, initialize=False)
+    try:
+        with write_lease("test.store.outer", archive_root=tmp_path):
+            archive._enter_mutation_lease()
+            archive._conn.execute("BEGIN IMMEDIATE")
+            archive._conn.execute("UPDATE sessions SET session_id = session_id WHERE 0")
+        assert current_write_lease() is None
+        assert archive._conn.in_transaction
+        assert not archive_custody_available(tmp_path)
+        with pytest.raises(UnleasedWriteError):
+            archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=b"{}",
+                source_path="synthetic/retired-owner.jsonl",
+                acquired_at_ms=1,
+            )
+        archive.commit()
+        assert not archive._conn.in_transaction
+        assert current_write_lease() is None
+        assert archive_custody_available(tmp_path)
+    finally:
+        archive.close()
+
+
+@pytest.mark.parametrize("pending", ["idle", "transaction", "failed_close"])
+def test_promotion_settles_operation_cache_before_artifact_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pending: str,
+) -> None:
+    from polylogue.schemas.validation import artifacts
+    from polylogue.schemas.validation.requests import ArtifactObservationQuery
+    from polylogue.storage.sqlite import connection as cached
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-cache")
+    for path, marker in ((tmp_path / "index.db", "old"), (Path(generation.index_path), "new")):
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("CREATE TABLE cache_generation_probe(value TEXT NOT NULL)")
+            connection.execute("INSERT INTO cache_generation_probe VALUES (?)", (marker,))
+            connection.commit()
+        finally:
+            connection.close()
+    seen: list[str] = []
+    actual_materialize = artifacts.materialize_artifact_observations
+
+    def materialize(connection: sqlite3.Connection) -> object:
+        seen.append(connection.execute("SELECT value FROM cache_generation_probe").fetchone()[0])
+        return actual_materialize(connection)
+
+    monkeypatch.setattr(artifacts, "materialize_artifact_observations", materialize)
+    with write_lease("test.promotion_cache", archive_root=tmp_path):
+        with cached.connection_context(tmp_path / "index.db") as old:
+            assert old.execute("SELECT value FROM cache_generation_probe").fetchone()[0] == "old"
+        cache = cached._connection_cache.conns
+        owner = cache[str(tmp_path / "index.db")]
+        handle: SettlementHandle | None = None
+        if pending == "transaction":
+            old.execute("BEGIN")
+            old.execute("SELECT * FROM cache_generation_probe").fetchall()
+        elif pending == "failed_close":
+            handle = SettlementHandle(old)
+            owner.connection = handle  # type: ignore[assignment]
+        if pending != "idle":
+            with pytest.raises(NativeConnectionSettlementError):
+                store.promote(generation)
+            assert not (tmp_path / "index.db").is_symlink()
+            assert owner.connection is not None
+            assert not archive_custody_available(tmp_path)
+            if handle is not None:
+                handle.allow_cleanup.set()
+                owner.close()
+            else:
+                old.rollback()
+        store.promote(generation)
+        with pytest.raises(sqlite3.ProgrammingError):
+            old.execute("SELECT 1")
+        assert (
+            artifacts.list_artifact_observation_rows(
+                db_path=tmp_path / "index.db",
+                request=ArtifactObservationQuery(),
+            )
+            == []
+        )
+        assert (
+            artifacts.list_artifact_cohort_rows(
+                db_path=tmp_path / "index.db",
+                request=ArtifactObservationQuery(),
+            )
+            == []
+        )
+        assert seen == ["new", "new"]
+    assert archive_custody_available(tmp_path)
+
+
+@pytest.mark.parametrize("read_only", [True, False])
+def test_async_promoted_index_keeps_configured_durable_siblings(tmp_path: Path, read_only: bool) -> None:
+    import asyncio
+
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-async-siblings")
+    store.promote(generation)
+    backend = SQLiteBackend(tmp_path / "index.db")
+
+    async def observe() -> None:
+        try:
+            context = backend.read_connection() if read_only else backend.connection()
+            async with context as connection:
+                cursor = await connection.execute("PRAGMA database_list")
+                databases = {str(row[1]): Path(row[2]).resolve() for row in await cursor.fetchall()}
+                assert databases["main"] == Path(generation.index_path).resolve()
+                for alias, filename in (
+                    ("source_tier", "source.db"),
+                    ("user_tier", "user.db"),
+                    ("ops_tier", "ops.db"),
+                ):
+                    assert databases[alias] == (tmp_path / filename).resolve()
+                cursor = await connection.execute("SELECT COUNT(*) FROM source_tier.raw_sessions")
+                row = await cursor.fetchone()
+                assert row is not None and row[0] == 0
+        finally:
+            await backend.close()
+
+    asyncio.run(observe())
+    assert archive_custody_available(tmp_path)
+
+
+def test_explicit_offline_generation_uses_owned_archive_siblings(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite import connection as cached
+    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-offline-siblings")
+    with write_lease("test.offline_generation", archive_root=tmp_path):
+        connection = open_connection(generation.index_path, archive_root=tmp_path)
+        try:
+            assert connection.execute("SELECT COUNT(*) FROM source_tier.raw_sessions").fetchone()[0] == 0
+        finally:
+            connection.close()
+        with cached.connection_context(Path(generation.index_path), archive_root=tmp_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM source_tier.raw_sessions").fetchone()[0] == 0
+    assert not (Path(generation.index_path).parent / "source.db").exists()
+    assert archive_custody_available(tmp_path)
+
+
+@pytest.mark.parametrize("route", ["checkpoint", "source_snapshot"])
+def test_generation_native_failed_close_retains_selected_descriptor_and_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    from polylogue.storage import index_generation as generations
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    _archive(tmp_path)
+    handles: list[SettlementHandle] = []
+    actual_connect = generations.sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        handle = SettlementHandle(actual_connect(*args, **kwargs))  # type: ignore[arg-type]
+        handles.append(handle)
+        return handle  # type: ignore[return-value]
+
+    monkeypatch.setattr(generations.sqlite3, "connect", connect)
+    owner = None
+    try:
+        with write_lease("test.generation_anchor", archive_root=tmp_path):
+            with pytest.raises(NativeConnectionSettlementError) as refused:
+                if route == "checkpoint":
+                    generations._checkpoint_truncate(tmp_path / "index.db", label="test index", archive_root=tmp_path)
+                else:
+                    with generations._open_source_snapshot(tmp_path) as connection:
+                        assert connection.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+            owner = refused.value.owner
+            assert len(owner.anchored_descriptors) == 1
+            metadata = os.fstat(owner.anchored_descriptors[0])
+            selected = (tmp_path / ("index.db" if route == "checkpoint" else "source.db")).stat()
+            assert (metadata.st_dev, metadata.st_ino) == (selected.st_dev, selected.st_ino)
+        assert not archive_custody_available(tmp_path)
+        assert owner.connection is not None
+        for handle in handles:
+            handle.allow_cleanup.set()
+        owner.close()
+        assert not owner.anchored_descriptors
+        assert owner.connection is None
+        assert archive_custody_available(tmp_path)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        if owner is not None:
+            owner.close()

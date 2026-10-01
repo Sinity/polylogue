@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -4692,7 +4693,7 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """OFF publication keeps the public index-only repository route usable."""
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     raw_id = "raw-off-index-only"
     blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(b"index-only ingest payload")
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))

@@ -442,12 +442,14 @@ class SessionUsageRollupDerivation:
         write_connection: Callable[[], sqlite3.Connection],
         *,
         session_scope: Callable[[object], Sequence[str] | None],
+        archive_root: Path,
         quiet_key: Callable[[object, str], bool] | None = None,
         generation_binding: Callable[[], str] | None = None,
     ) -> None:
         self._read_connection = read_connection
         self._write_connection = write_connection
         self._session_scope = session_scope
+        self._archive_root = archive_root.resolve()
         self._quiet_key = quiet_key
         self._generation_binding = generation_binding
 
@@ -571,7 +573,7 @@ class SessionUsageRollupDerivation:
         if not isinstance(replacement, SessionUsageRollupReplacement):
             raise TypeError(f"expected SessionUsageRollupReplacement, got {type(replacement).__name__}")
         generation_binding = self._generation_binding
-        with write_lease(f"derivation.{self.domain}"):
+        with write_lease(f"derivation.{self.domain}", archive_root=self._archive_root):
             if (
                 replacement.generation_binding is not None
                 and generation_binding is not None

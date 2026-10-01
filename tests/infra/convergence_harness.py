@@ -356,7 +356,7 @@ def converge_session_profiles(
 
     async def run() -> DerivationReport:
         compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-        coordinator = DaemonWriteCoordinator()
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root)
         try:
             adapter = make_session_profile_derivation(
                 index_db,

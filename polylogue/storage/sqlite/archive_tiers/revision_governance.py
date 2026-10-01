@@ -104,7 +104,7 @@ import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -116,7 +116,6 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -127,6 +126,7 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     is_work_event_raw_id,
     parser_census_is_complete,
+    raw_authority_parser_fingerprint,
     revision_authority_for_census_detail,
 )
 from polylogue.archive.revision_replay import (
@@ -280,6 +280,7 @@ class RawRevisionGovernanceHost(Protocol):
 
     _conn: sqlite3.Connection
     archive_root: Path
+    _write_lease_archive_root: Path
     _blob_publisher: ArchiveBlobPublisher | None
     _inactive_candidate_durable_read_only: bool
     _pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]]
@@ -529,10 +530,24 @@ def _write_parsed_precedence_result(
     def write_with_reparse_receipt(*, force_replace: bool) -> None:
         """Keep a reparse receipt and its session replacement in one index txn."""
         starts_transaction = not store._conn.in_transaction
-        commits_transaction = manage_transaction and starts_transaction
-        if starts_transaction:
-            store._conn.execute("BEGIN")
+        mutation_stack = ExitStack()
+        mutation_scope = None
         try:
+            if starts_transaction:
+                if not manage_transaction:
+                    raise RuntimeError("manage_transaction=False requires the caller's live index mutation scope")
+                from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+                seal = PreparedIndexMutation(store.index_db_path, archive_root=store._write_lease_archive_root)
+                mutation_stack.enter_context(seal)
+                mutation_scope = mutation_stack.enter_context(seal.mutation_scope(store._conn))
+            else:
+                from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+                mutation_scope = current_index_mutation_scope()
+                if mutation_scope is None:
+                    raise RuntimeError("an existing index transaction requires its outer mutation scope")
+                mutation_scope.require_connection(store._conn)
             _reissue_accepted_head_reparse_receipt(
                 store,
                 raw_id=raw_id,
@@ -556,6 +571,7 @@ def _write_parsed_precedence_result(
                 # otherwise the caller owns it. Do not let the session
                 # writer's own ``with conn`` commit an outer transaction.
                 manage_transaction=False,
+                mutation_scope=mutation_scope,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
                 fresh_build=fresh_build,
@@ -573,13 +589,11 @@ def _write_parsed_precedence_result(
             )
             if not (writer_outcomes and writer_outcomes[-1].suppression_skipped):
                 _bind_retained_enrichment(store, session, session_id=session_id, raw_id=raw_id)
-        except BaseException:
-            if commits_transaction:
-                store._conn.rollback()
+        except BaseException as exc:
+            mutation_stack.__exit__(type(exc), exc, exc.__traceback__)
             raise
         else:
-            if commits_transaction:
-                store._conn.commit()
+            mutation_stack.close()
 
     if revision_authoritative:
         write_with_reparse_receipt(force_replace=source_index >= 0 and not fresh_build)
@@ -2378,13 +2392,13 @@ def raw_membership_census_rows(
     """
     if raw_ids is None:
         rows = conn.execute(
-            f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id", (RAW_AUTHORITY_PARSER_FINGERPRINT,)
+            f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id", (raw_authority_parser_fingerprint(),)
         ).fetchall()
     elif raw_ids:
         placeholders = ",".join("?" for _ in raw_ids)
         rows = conn.execute(
             f"SELECT {columns} FROM raw_sessions AS r WHERE r.raw_id IN ({placeholders}) ORDER BY r.raw_id",
-            (RAW_AUTHORITY_PARSER_FINGERPRINT, *raw_ids),
+            (raw_authority_parser_fingerprint(), *raw_ids),
         ).fetchall()
     else:
         rows = []
@@ -2671,7 +2685,7 @@ def record_current_parser_source_census(
         SELECT status, revision_authority FROM raw_membership_census
         WHERE raw_id = ? AND parser_fingerprint = ?
         """,
-        (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        (raw_id, raw_authority_parser_fingerprint()),
     ).fetchone()
     if parser_sessions is not None:
         durable_valid, identities_match, observed_count, observed_keys_json = _file_backed_parser_census_keys(
@@ -2774,7 +2788,7 @@ def record_current_parser_source_census(
         """,
         (
             raw_id,
-            RAW_AUTHORITY_PARSER_FINGERPRINT,
+            raw_authority_parser_fingerprint(),
             "complete" if complete else "failed",
             logical_keys_json,
             detail,
@@ -3776,7 +3790,7 @@ def apply_raw_revision_replay(
                 for row in source_conn.execute(
                     "SELECT raw_id FROM raw_authority_parser_census "
                     f"WHERE raw_id IN ({placeholders}) AND parser_fingerprint = ? AND status = 'complete'",
-                    (*raw_ids, RAW_AUTHORITY_PARSER_FINGERPRINT),
+                    (*raw_ids, raw_authority_parser_fingerprint()),
                 )
             )
         for raw_id in plan.accepted_raw_ids:

@@ -29,7 +29,7 @@ def test_attached_embeddings_are_measurable_on_async_index_connections(tmp_path:
     async def measure() -> tuple[int, int | None]:
         target, uri = (f"file:{index_db}?mode=ro", True) if read_only else (str(index_db), False)
         async with aiosqlite.connect(target, uri=uri) as conn:
-            await (configure_read_connection if read_only else configure_connection)(conn)
+            await (configure_read_connection if read_only else configure_connection)(conn, archive_root=root)
             cursor = await conn.execute("SELECT COUNT(*) FROM message_embeddings")
             row = await cursor.fetchone()
             assert row is not None

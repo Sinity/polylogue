@@ -55,7 +55,7 @@ def _admit(root: Path, native_id: str = "owner") -> str:
 
 async def _owner(root: Path) -> tuple[RawObservationConvergenceOwner, BoundedComputeAdapter, DaemonWriteCoordinator]:
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=root)
     return (
         RawObservationConvergenceOwner(
             root,
@@ -107,7 +107,7 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
             acquired_at_ms=1,
         )
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = RawObservationConvergenceOwner(
         tmp_path,
         compute_adapter=compute,

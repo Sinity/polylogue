@@ -7,7 +7,7 @@ import json
 import sqlite3
 import tempfile
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence, Set
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -17,7 +17,7 @@ from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast, overload
 
-from polylogue.core.digest import QUERY
+from polylogue.core.digest import QUERY, canonical_bytes
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
 from polylogue.core.json import JSONValue
@@ -146,12 +146,16 @@ _EVENT_PAYLOAD_EXCLUDED_KEYS: dict[str, dict[str, str]] = {
 }
 
 
-def _hashed_event_payload(event_type: str, payload: Mapping[str, object]) -> object:
-    """Normalize an event payload for hashing, without its declared replay-volatile keys."""
+def _event_payload_hash(event_type: str, payload: Mapping[str, object]) -> str:
+    """Hash event content with typed framing only for lossy legacy values."""
     excluded = _EVENT_PAYLOAD_EXCLUDED_KEYS.get(event_type)
-    if excluded:
-        payload = {key: value for key, value in payload.items() if key not in excluded}
-    return _normalize_nested_for_hash(payload)
+    content = {key: value for key, value in payload.items() if key not in excluded} if excluded else payload
+    normalized = _normalize_nested_for_hash(content)
+    legacy = canonical_bytes(normalized, QUERY)
+    if not _has_typed_lowering_collision(content):
+        return hashlib.sha256(legacy).hexdigest()
+    typed = canonical_bytes(_typed_identity_value(content), QUERY)
+    return hashlib.sha256(legacy + b"\x00polylogue-event-typed-lowering-v1\x00" + typed).hexdigest()
 
 
 _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
@@ -280,9 +284,9 @@ def _hash_field_value(value: object, *, prose: bool) -> JSONValue:
         # walk, without the ``model_dump`` probe or the ``Mapping`` ABC check.
         return cast(JSONValue, _normalize_nested_for_hash(value))
     if hasattr(value, "model_dump"):
-        value = value.model_dump(mode="json")
+        value = value.model_dump(mode="python")
     elif isinstance(value, list):
-        value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
+        value = [item.model_dump(mode="python") if hasattr(item, "model_dump") else item for item in value]
     if isinstance(value, Mapping) and type(value) is not dict:
         value = dict(value)
     return cast(JSONValue, _normalize_nested_for_hash(value))
@@ -556,7 +560,7 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
     the parser boundary constrains them to JSON-native shapes. This walk makes
     the declared vocabulary *total* over what parsers emit, and nothing more:
 
-    - Strings and mapping keys stay exact. A nested payload is operational
+    - String values and string mapping keys stay exact. A nested payload is operational
       data (tool arguments, paths, provider metadata), stored byte-exact by
       the writer, and two spellings that are canonically equivalent Unicode
       can still name two files; see ``_NFC_TEXT_FIELDS`` for why only prose
@@ -564,6 +568,12 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
       only in normalization form remain two slots, and the encoder's
       ``sort_keys`` orders them by code point, so neither a field nor the
       key insertion order can change the result (polylogue-sf7ii).
+      A nested ``object`` may also carry a Python mapping key that is not a
+      string. QUERY lowers that key with ``str``; the canonical hash and
+      content-derived ID therefore include a typed witness whenever such a
+      lowering would discard key type or merge associations. Declared
+      string-key model fields refuse those keys before Pydantic can coerce and
+      overwrite them.
     - ``None`` and ``""`` stay the encoder's ``null`` and ``""``, disjoint
       from every admitted string (polylogue-vp5qk).
 
@@ -614,19 +624,6 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
 _DECIMAL_TAG = "$decimal"
 
 
-def _hash_key(key: object) -> object:
-    """Keep a key exact, escaping any spelling of the reserved ``$decimal`` tag.
-
-    The escape prepends one ``$`` to ``$decimal``, ``$$decimal``, ... and is
-    injective, so a mapping key can never produce the tag itself.
-    """
-    if not isinstance(key, str):
-        return key
-    if key.endswith(_DECIMAL_TAG) and not key[: -len(_DECIMAL_TAG)].strip("$"):
-        return "$" + key
-    return key
-
-
 class _OutsidePlainVocabularyError(Exception):
     """Internal signal: the path-free fast walk met a value it cannot lower."""
 
@@ -644,7 +641,7 @@ def _normalize_plain_for_hash(value: object) -> object:
     if value is None or isinstance(value, str):
         return value
     if isinstance(value, dict):
-        return {_hash_key(key): _normalize_plain_for_hash(item) for key, item in value.items()}
+        return _normalize_mapping_for_hash(value, lambda _key, item: _normalize_plain_for_hash(item))
     if isinstance(value, (list, tuple)):
         return [_normalize_plain_for_hash(item) for item in value]
     cls = type(value)
@@ -660,7 +657,10 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
     if value is None or isinstance(value, str):
         return value
     if isinstance(value, Mapping):
-        return {_hash_key(key): _normalize_declared_for_hash(item, path=f"{path}.{key}") for key, item in value.items()}
+        return _normalize_mapping_for_hash(
+            value,
+            lambda key, item: _normalize_declared_for_hash(item, path=f"{path}.{key!r}"),
+        )
     if isinstance(value, (list, tuple)):
         return [_normalize_declared_for_hash(item, path=f"{path}[]") for item in value]
     if isinstance(value, (set, frozenset)):
@@ -687,6 +687,23 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
         f"{type(value).__name__} at {path} is outside the declared hash vocabulary "
         f"(polylogue/pipeline/ids.py:_normalize_nested_for_hash); declare its canonical form there"
     )
+
+
+def _normalize_mapping_for_hash(
+    value: Mapping[object, object], normalize_value: Callable[[object, object], object]
+) -> dict[str, object]:
+    """Lower nested Python mappings through QUERY's string-key contract deterministically."""
+    entries = list(value.items())
+    entries.sort(
+        key=lambda pair: (
+            canonical_bytes(_legacy_json_key(pair[0]), QUERY),
+            canonical_bytes(_typed_identity_value(pair[0]), QUERY),
+        )
+    )
+    result: dict[str, object] = {}
+    for key, item in entries:
+        result[_legacy_json_key(key)] = normalize_value(key, item)
+    return result
 
 
 def session_id(source_name: Provider | Origin | str, provider_session_id: str) -> SessionId:
@@ -824,7 +841,26 @@ def _message_payload(message: ParsedMessage, fields: frozenset[str]) -> dict[str
         payload["blocks"] = [_content_block_payload(b) for b in message.blocks]
     else:
         payload["blocks"] = []
+    if _message_has_typed_lowering_collision(message, fields):
+        # This key is outside the declared parser field partition and cannot
+        # be supplied by an input object. It preserves the actual Python key
+        # and value types whenever QUERY's historical JSON lowering would
+        # merge them, while leaving native JSON payload hashes unchanged.
+        payload[_TYPED_LOWERING_FIELD] = _typed_message_identity_payload(message, fields)
     return payload
+
+
+def _message_has_typed_lowering_collision(message: ParsedMessage, fields: frozenset[str]) -> bool:
+    scalar_fields = _message_scalar_fields(fields)
+    if any(_has_typed_lowering_collision(getattr(message, field)) for field in scalar_fields):
+        return True
+    if "blocks" not in fields or not message.blocks or _is_redundant_text_only_block(message):
+        return False
+    return any(
+        _has_typed_lowering_collision(getattr(block, field))
+        for block in message.blocks
+        for field in _HASHED_FIELDS["ParsedContentBlock"]
+    )
 
 
 @cache
@@ -837,6 +873,18 @@ def _message_semantic_payload(message: ParsedMessage) -> dict[str, JSONValue]:
     return _message_payload(message, _HASHED_FIELDS["ParsedMessage"])
 
 
+def message_semantic_content_address(message: ParsedMessage) -> bytes:
+    """Return the current identity-free semantic witness for a message.
+
+    Unlike the durable fallback ID, this address follows the current declared
+    content-hash partition, including exact operational fields and native JSON
+    null/empty distinctions. Branch-point composition uses the same projection
+    as session revision hashing so every hashed parent field invalidates its
+    prior witness.
+    """
+    return bytes.fromhex(hash_item_payload(_message_semantic_payload(message)))
+
+
 #: Hex characters retained from the message semantic digest when it stands in
 #: for an absent provider id. The value only has to distinguish messages
 #: *within one session*, so 128 bits is an enormous margin; keeping it short
@@ -847,6 +895,276 @@ MESSAGE_CONTENT_IDENTITY_HEX_CHARS = 32
 #: the occurrence ordinal that separates two messages whose declared semantic
 #: fields are byte-identical.
 MessageContentIdentity: TypeAlias = tuple[str, int]
+
+# These markers are retained only in the preimage used for content-derived
+# message IDs.  Ordinary values therefore keep their pre-a44 digest.  Literal
+# values equal to either marker are disambiguated with a framed sidecar below;
+# content hashes continue to use native JSON null and empty values.
+_ID_NULL_SENTINEL = "__POLYLOGUE_NULL__"
+_ID_EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
+_ID_ESCAPE_FRAME = b"\x00polylogue-message-id-literal-v1\x00"
+_TYPED_LOWERING_FIELD = "__polylogue_typed_lowering_v1__"
+
+
+def _identity_key(key: object) -> object:
+    """Apply the established Decimal-tag key escape without normalizing keys."""
+    if not isinstance(key, str):
+        return key
+    if key.endswith(_DECIMAL_TAG) and not key[: -len(_DECIMAL_TAG)].strip("$"):
+        return "$" + key
+    return key
+
+
+def _legacy_json_key(key: object) -> str:
+    """Return the key token QUERY's permissive JSON lowering would emit."""
+    escaped = _identity_key(key)
+    return escaped if isinstance(escaped, str) else str(escaped)
+
+
+def _has_typed_lowering_collision(value: object) -> bool:
+    """Whether a declared value loses type/association under legacy JSON lowering."""
+    if isinstance(value, str) or value is None:
+        return False
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="python")
+    if isinstance(value, Mapping):
+        return any(not isinstance(key, str) or _has_typed_lowering_collision(item) for key, item in value.items())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(_has_typed_lowering_collision(item) for item in value)
+    if isinstance(value, (bytes, bytearray, memoryview, datetime, date, time)):
+        return True
+    if isinstance(value, Enum):
+        # Enum values are the declared wire scalar; this is an intentional
+        # equivalence shared by content and fallback identity.
+        return _has_typed_lowering_collision(value.value)
+    return False
+
+
+def _identity_normalize_value(
+    value: object,
+    *,
+    path: tuple[tuple[object, ...], ...],
+    escape_reasons: list[tuple[tuple[tuple[object, ...], ...], str]],
+    prose: bool = False,
+) -> object:
+    """Build the old marker preimage while noticing lossy legacy lowers.
+
+    The JSON preimage is byte-identical to the former all-NFC encoder for
+    ordinary payloads. When an admitted value lowers non-injectively, the
+    caller adds a fully typed projection of the whole message as a sidecar.
+    This keeps the old digest for ordinary values without pretending a local
+    path marker can distinguish values inside an unordered set.
+    """
+    if value is None:
+        return _ID_NULL_SENTINEL
+    if isinstance(value, str):
+        normalized = nfc(value) if prose else value
+        if normalized == "":
+            return _ID_EMPTY_SENTINEL
+        if normalized in {_ID_NULL_SENTINEL, _ID_EMPTY_SENTINEL}:
+            escape_reasons.append((path, "marker-string-value"))
+        return normalized
+
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="python")
+    elif isinstance(value, list):
+        value = [item.model_dump(mode="python") if hasattr(item, "model_dump") else item for item in value]
+    if isinstance(value, Mapping):
+        entries = list(value.items())
+        # JSON mappings have string keys. Nested ``object`` values can still
+        # contain other Python key types, so tie-break equal legacy key tokens
+        # with their typed identity instead of relying on insertion order.
+        entries.sort(
+            key=lambda pair: (
+                canonical_bytes(_legacy_json_key(pair[0]), QUERY),
+                canonical_bytes(_typed_identity_value(pair[0]), QUERY),
+            )
+        )
+        result: dict[str, object] = {}
+        for key, item in entries:
+            normalized_key = _legacy_json_key(key)
+            if not isinstance(key, str):
+                escape_reasons.append((path + (("key", _legacy_json_key(key)),), "non-string-mapping-key"))
+            key_path = path + (("key", normalized_key),)
+            if isinstance(key, str) and key in {_ID_NULL_SENTINEL, _ID_EMPTY_SENTINEL}:
+                escape_reasons.append((key_path, "marker-string-key"))
+            result[normalized_key] = _identity_normalize_value(
+                item,
+                path=key_path,
+                escape_reasons=escape_reasons,
+            )
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            _identity_normalize_value(item, path=path + (("index", index),), escape_reasons=escape_reasons)
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, (set, frozenset)):
+        normalized_items = [
+            _identity_normalize_value(item, path=path + (("set-item",),), escape_reasons=escape_reasons)
+            for item in value
+        ]
+        return sorted(normalized_items, key=_canonical_sort_key)
+
+    cls = type(value)
+    if cls is int or cls is bool or cls is float:
+        return value
+    if isinstance(value, Enum):
+        return _identity_normalize_value(
+            value.value,
+            path=path + (("enum", type(value).__qualname__),),
+            escape_reasons=escape_reasons,
+        )
+    if isinstance(value, Decimal):
+        as_float = float(value)
+        return as_float if Decimal(as_float) == value else {_DECIMAL_TAG: str(value)}
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        escape_reasons.append((path, "bytes-to-hex"))
+        return bytes(value).hex()
+    if isinstance(value, (datetime, date, time)):
+        escape_reasons.append((path, f"{type(value).__name__}-to-iso"))
+        return value.isoformat()
+    if isinstance(value, int | float):
+        return value
+    raise UnhashablePayloadValueError(
+        f"{type(value).__name__} at {'/'.join(str(part) for part in path)} is outside the declared hash vocabulary "
+        "(polylogue/pipeline/ids.py:_normalize_nested_for_hash); declare its canonical form there"
+    )
+
+
+def _typed_identity_value(value: object, *, prose: bool = False) -> object:
+    """Return an injective tagged form of an ID field's admitted value.
+
+    This sidecar is emitted only when the legacy preimage contains a
+    non-injective conversion. It preserves the declared equivalences for
+    enum wire scalars, tuples/lists, unordered sets with their historical
+    canonical ordering, and exactly representable decimals; byte and temporal
+    values retain their type so they cannot collide with an equal hex/ISO
+    string. The tags are arrays, so user mappings cannot forge a tag.
+    """
+    if value is None:
+        return ["null"]
+    if isinstance(value, str):
+        return ["string", nfc(value) if prose else value]
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="python")
+    elif isinstance(value, list):
+        value = [item.model_dump(mode="python") if hasattr(item, "model_dump") else item for item in value]
+    if isinstance(value, Mapping):
+        entries = [(_identity_key(key), item) for key, item in value.items()]
+        entries.sort(
+            key=lambda pair: (
+                canonical_bytes(_legacy_json_key(pair[0]), QUERY),
+                canonical_bytes(_typed_identity_value(pair[0]), QUERY),
+            )
+        )
+        return [
+            "object",
+            [[_typed_identity_value(key), _typed_identity_value(item)] for key, item in entries],
+        ]
+    if isinstance(value, (list, tuple)):
+        return ["array", [_typed_identity_value(item) for item in value]]
+    if isinstance(value, (set, frozenset)):
+        # Match the historical set-to-sorted-array contract. Legacy-normalized
+        # ties need the typed encoding as a deterministic secondary key.
+        rows = [(_identity_normalize_value(item, path=(), escape_reasons=[]), item) for item in value]
+        rows.sort(
+            key=lambda pair: (_canonical_sort_key(pair[0]), canonical_bytes(_typed_identity_value(pair[1]), QUERY))
+        )
+        return ["array", [_typed_identity_value(item) for _, item in rows]]
+    if isinstance(value, Enum):
+        # Parser enums are their wire scalar by contract, not a distinct value.
+        return _typed_identity_value(value.value)
+    if isinstance(value, Decimal):
+        as_float = float(value)
+        if Decimal(as_float) == value:
+            return ["float", as_float]
+        return ["decimal", str(value)]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return ["bytes", bytes(value).hex()]
+    if isinstance(value, datetime):
+        return ["datetime", value.isoformat()]
+    if isinstance(value, date):
+        return ["date", value.isoformat()]
+    if isinstance(value, time):
+        return ["time", value.isoformat()]
+    cls = type(value)
+    if cls is bool:
+        return ["bool", value]
+    if cls is int:
+        return ["int", value]
+    if cls is float:
+        return ["float", value]
+    if isinstance(value, int | float):
+        return ["number", value]
+    raise UnhashablePayloadValueError(f"{type(value).__name__} is outside the declared message identity vocabulary")
+
+
+def _message_identity_payload(
+    message: ParsedMessage,
+) -> tuple[dict[str, object], tuple[tuple[tuple[object, ...], str], ...]]:
+    """Project the historical message-ID fields under the current text policy."""
+    escape_reasons: list[tuple[tuple[tuple[object, ...], ...], str]] = []
+    payload: dict[str, object] = {}
+    prose_fields = _NFC_TEXT_FIELDS["ParsedMessage"]
+    scalar_fields = _message_scalar_fields(_HASHED_FIELDS["ParsedMessage"])
+    for field in _sorted_hash_fields(scalar_fields):
+        value = getattr(message, field)
+        payload[field] = _identity_normalize_value(
+            value,
+            path=(("field", field),),
+            escape_reasons=escape_reasons,
+            prose=field in prose_fields and isinstance(value, str),
+        )
+
+    if message.blocks and not _is_redundant_text_only_block(message):
+        blocks: list[dict[str, object]] = []
+        for block_index, block in enumerate(message.blocks):
+            block_payload: dict[str, object] = {}
+            for field in _sorted_hash_fields(_HASHED_FIELDS["ParsedContentBlock"]):
+                value = getattr(block, field)
+                block_payload[field] = _identity_normalize_value(
+                    value,
+                    path=(("field", "blocks"), ("index", block_index), ("field", field)),
+                    escape_reasons=escape_reasons,
+                    prose=field in _NFC_TEXT_FIELDS["ParsedContentBlock"] and isinstance(value, str),
+                )
+            blocks.append(block_payload)
+        payload["blocks"] = blocks
+    else:
+        # This is the pre-a44 empty-block-list marker.  It is an encoder token,
+        # not a caller-supplied literal, so it does not enter the escape list.
+        payload["blocks"] = _ID_EMPTY_SENTINEL
+    return payload, tuple(escape_reasons)
+
+
+def _typed_message_identity_payload(
+    message: ParsedMessage, fields: frozenset[str] = _HASHED_FIELDS["ParsedMessage"]
+) -> dict[str, object]:
+    """Project the same ID fields with explicit tags for lossy legacy values."""
+    typed_payload: dict[str, object] = {}
+    prose_fields = _NFC_TEXT_FIELDS["ParsedMessage"]
+    for field in _sorted_hash_fields(_message_scalar_fields(fields)):
+        value = getattr(message, field)
+        typed_payload[field] = _typed_identity_value(
+            value,
+            prose=field in prose_fields and isinstance(value, str),
+        )
+    if "blocks" in fields and message.blocks and not _is_redundant_text_only_block(message):
+        typed_blocks: list[dict[str, object]] = []
+        for block in message.blocks:
+            typed_block: dict[str, object] = {}
+            for field in _sorted_hash_fields(_HASHED_FIELDS["ParsedContentBlock"]):
+                value = getattr(block, field)
+                typed_block[field] = _typed_identity_value(
+                    value,
+                    prose=field in _NFC_TEXT_FIELDS["ParsedContentBlock"] and isinstance(value, str),
+                )
+            typed_blocks.append(typed_block)
+        typed_payload["blocks"] = ["array", typed_blocks]
+    else:
+        typed_payload["blocks"] = ["array", []]
+    return typed_payload
 
 
 def message_content_identity(message: ParsedMessage) -> str:
@@ -861,7 +1179,16 @@ def message_content_identity(message: ParsedMessage) -> str:
     message that is inserted, removed or reordered *elsewhere* in the export
     must not change the identity of this one (polylogue-eqsri).
     """
-    return hash_item_payload(_message_semantic_payload(message))[:MESSAGE_CONTENT_IDENTITY_HEX_CHARS]
+    payload, escape_reasons = _message_identity_payload(message)
+    if escape_reasons:
+        # The complete tagged projection binds each lossy value to its exact
+        # parent/set member and covers every non-injective legacy lowering.
+        typed_payload = _typed_message_identity_payload(message)
+        encoded = canonical_bytes(payload, QUERY) + _ID_ESCAPE_FRAME + canonical_bytes(typed_payload, QUERY)
+        digest = hashlib.sha256(encoded).hexdigest()
+    else:
+        digest = hash_item_payload(payload)
+    return digest[:MESSAGE_CONTENT_IDENTITY_HEX_CHARS]
 
 
 def message_content_identities(
@@ -1520,7 +1847,7 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
         "event_type": event.event_type,
         "timestamp": timestamp,
         "source_message_provider_id": event.source_message_provider_id,
-        "payload": hash_item_payload(_hashed_event_payload(event.event_type, payload)),
+        "payload": _event_payload_hash(event.event_type, payload),
     }
 
 
@@ -1661,7 +1988,7 @@ def _session_hash_components(
             "event_type": event.event_type,
             "timestamp": event.timestamp,
             "source_message_provider_id": event.source_message_provider_id,
-            "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
+            "payload": _event_payload_hash(event.event_type, event.payload),
         }
         for event_index, event in enumerate(convo.session_events)
     ]
@@ -1690,15 +2017,26 @@ def _session_tree_hash(
 
 
 def _session_semantic_fields(convo: ParsedSession) -> dict[str, JSONValue]:
+    semantic_fields = _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
     fields = _model_hash_payload(
         convo,
-        _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"},
+        semantic_fields,
         _NFC_TEXT_FIELDS["ParsedSession"],
     )
     # Provider aliases can map to the same public source identity. Hash that
     # canonical identity so replay through an alternate supported route does
     # not create a content revision for identical session content.
     fields["source_name"] = origin_from_provider(convo.source_name).value
+    typed_fields = {
+        field: _typed_identity_value(
+            getattr(convo, field),
+            prose=field in _NFC_TEXT_FIELDS["ParsedSession"] and isinstance(getattr(convo, field), str),
+        )
+        for field in _sorted_hash_fields(semantic_fields)
+        if _has_typed_lowering_collision(getattr(convo, field))
+    }
+    if typed_fields:
+        fields[_TYPED_LOWERING_FIELD] = typed_fields
     return fields
 
 
@@ -1785,7 +2123,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                 "event_type": event.event_type,
                 "timestamp": event.timestamp,
                 "source_message_provider_id": event.source_message_provider_id,
-                "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
+                "payload": _event_payload_hash(event.event_type, event.payload),
             }
         )
     literal('],"title":')
@@ -1865,7 +2203,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                 "event_type": event.event_type,
                 "timestamp": event.timestamp,
                 "source_message_provider_id": event.source_message_provider_id,
-                "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
+                "payload": _event_payload_hash(event.event_type, event.payload),
             }
             conn.execute(
                 "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_item_payload(payload)))

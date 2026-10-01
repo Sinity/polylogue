@@ -75,6 +75,25 @@ def write_lease(
         yield lease
 
 
+def async_write_lease(
+    actor: str,
+    *,
+    max_hold_seconds: float | None = None,
+    archive_root: str | Path,
+    coordinator: object | None = None,
+) -> Any:
+    return _implementation().async_write_lease(
+        actor,
+        max_hold_seconds=max_hold_seconds,
+        archive_root=archive_root,
+        coordinator=coordinator,
+    )
+
+
+def archive_write_custody(archive_root: str | Path) -> Any:
+    return _implementation().archive_write_custody(archive_root)
+
+
 def delegate_write_lease() -> Any:
     return _implementation().delegate_write_lease()
 
@@ -88,11 +107,11 @@ def adopt_write_lease(delegation: Any) -> Iterator[Any]:
 def __getattr__(name: str) -> Any:
     """Expose the implementation's lease types without a ring-crossing import."""
     if name in {
+        "ArchiveWriteCustody",
         "WriteLease",
         "WriteLeaseDelegation",
         "WriteLeaseThreadGrant",
         "UnleasedWriteError",
-        "WriteHoldExceededError",
     }:
         return getattr(_implementation(), name)
     raise AttributeError(name)
