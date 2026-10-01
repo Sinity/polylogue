@@ -259,6 +259,9 @@ npm run test:watch    # watch mode
 npm run lint          # eslint
 npm run validate      # in-tree manifest validation
 npm run build         # build Chrome .zip + Firefox .xpi under dist/
+npm install --no-save playwright@1
+npx playwright install chromium
+npm run test:screenshots # execute the popup HTML and verify all screenshot sizes
 npm run screenshots   # capture store-submission screenshots (Playwright)
 ```
 
@@ -298,3 +301,5 @@ ls dist/
 
 `scripts/build.mjs` accepts `--version X.Y.Z` and `--out DIR` for ad-hoc
 runs (release smoke testing, manual store submission, etc.).
+
+The screenshot command loads the actual popup HTML and its declared scripts once, with neutral synthetic extension state. It waits for popup initialization and fails on script errors or missing Playwright dependencies. The default destination is `dist/screenshots`; `--out DIR` selects another destination. On systems that package Chromium with its runtime libraries (such as NixOS), pass `--browser-executable /path/to/chromium`. Playwright launches it headlessly with a temporary profile. The screenshot test accepts the same executable through `POLYLOGUE_SCREENSHOT_TEST_BROWSER`.
