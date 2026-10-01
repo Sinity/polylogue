@@ -1,14 +1,13 @@
 name: Homebrew Bump
 
 # Auto-bumps the polylogue formula in the separate `Sinity/homebrew-tap`
-# repository whenever a `vX.Y.Z` tag is pushed in this repo. The PyPI
-# publish in `.github/workflows/release.yml` runs first (this workflow
-# blocks on the sdist being downloadable from PyPI), then this workflow
+# repository after the main PyPI upload in `.github/workflows/release.yml`.
+# This workflow waits for the sdist to become downloadable, then it
 # rewrites url/sha256/version in `Formula/polylogue.rb` and opens a PR
 # against the tap.
 #
 # Trigger surface:
-# - `push` on a `vX.Y.Z` tag                       — normal release path
+# - dispatch from successful PyPI upload              — normal release path
 # - `workflow_dispatch` with an existing `release_tag` — recovery / backfill
 #
 # Required secrets:
@@ -18,13 +17,10 @@ name: Homebrew Bump
 #   one-time setup checklist.
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing vX.Y.Z release tag to backfill (empty = selected tag push)"
+        description: "Existing vX.Y.Z release tag to backfill (empty = selected tag ref)"
         required: false
         default: ""
 
@@ -39,7 +35,6 @@ jobs:
   bump:
     name: bump-tap-formula
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - name: Resolve target release tag
         id: release
@@ -131,19 +126,10 @@ jobs:
           url="https://files.pythonhosted.org/packages/source/p/polylogue/${sdist}"
           echo "Resolving ${url}"
 
-          # PyPI propagation can lag the GitHub release by a couple of
-          # minutes. Poll every 30s for up to 10 minutes before giving up.
-          attempts=20
-          for i in $(seq 1 "${attempts}"); do
-            if curl -fsSLo "${sdist}" "${url}"; then
-              echo "Downloaded sdist on attempt ${i}"
-              break
-            fi
-            if [[ "${i}" -eq "${attempts}" ]]; then
-              echo "::error::sdist still unavailable on PyPI after ${attempts} attempts"
-              exit 1
-            fi
-            echo "Attempt ${i} failed; sleeping 30s"
+          # Publication completes before automatic dispatch. CDN propagation
+          # may still lag; keep waiting until it is downloadable or cancelled.
+          until curl -fsSLo "${sdist}" "${url}"; do
+            echo "sdist not downloadable yet; waiting for PyPI propagation"
             sleep 30
           done
 
@@ -188,7 +174,7 @@ jobs:
           diff -u upstream/nix/homebrew-tap-template/Formula/polylogue.rb tap/Formula/polylogue.rb || true
 
       - name: Set up Homebrew for resource regeneration
-        uses: Homebrew/actions/setup-homebrew@master
+        uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478
 
       - name: Regenerate Python resource blocks from the bumped sdist
         env:

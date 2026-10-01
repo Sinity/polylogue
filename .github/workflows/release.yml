@@ -445,6 +445,22 @@ jobs:
           skip-existing: true
           verbose: true
 
+  dispatch-homebrew:
+    name: Dispatch Homebrew after main package publication
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch exact published tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: v${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run homebrew-bump.yml --ref "${RELEASE_TAG}" -f "release_tag=${RELEASE_TAG}"
+
   publish-pypi-mcp:
     # Independent Trusted Publisher binding on PyPI is required for this
     # project name. Register it once via PyPI → Publishing → Add a new pending

@@ -28,6 +28,8 @@ jobs:
     name: release-please
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_created == 'true' && steps.release.outputs.tag_name || '' }}
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
@@ -35,19 +37,29 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Dispatch released tag consumers
-        if: steps.release.outputs.release_created == 'true'
+
+  dispatch:
+    name: Dispatch ${{ matrix.workflow }}
+    needs: release-please
+    if: needs.release-please.outputs.release_tag != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workflow: [release.yml, container.yml, extension-release.yml, flakehub.yml, cachix.yml]
+    steps:
+      - name: Dispatch released tag consumer
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
-        # workflow_dispatch is an explicit GITHUB_TOKEN event exception.
-        # Each consumer checks out and verifies this immutable release tag.
+          RELEASE_TAG: ${{ needs.release-please.outputs.release_tag }}
+          WORKFLOW: ${{ matrix.workflow }}
+        # Separate jobs retain the successful producer's outputs when failed
+        # jobs are rerun. One rejected dispatch cannot prevent other consumers.
         run: |
           set -euo pipefail
-          gh workflow run release.yml --ref master -f "release_tag=${RELEASE_TAG}" -f publish=true
-          gh workflow run container.yml --ref master -f "release_tag=${RELEASE_TAG}" -f push=true
-          gh workflow run extension-release.yml --ref master -f "release_tag=${RELEASE_TAG}"
-          gh workflow run homebrew-bump.yml --ref master -f "release_tag=${RELEASE_TAG}"
-          gh workflow run flakehub.yml --ref "${RELEASE_TAG}"
-          gh workflow run cachix.yml --ref "${RELEASE_TAG}"
+          case "${WORKFLOW}" in
+            release.yml) gh workflow run "${WORKFLOW}" --ref "${RELEASE_TAG}" -f "release_tag=${RELEASE_TAG}" -f publish=true ;;
+            container.yml) gh workflow run "${WORKFLOW}" --ref "${RELEASE_TAG}" -f push=true ;;
+            *) gh workflow run "${WORKFLOW}" --ref "${RELEASE_TAG}" ;;
+          esac

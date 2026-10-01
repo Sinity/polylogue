@@ -33,10 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa
       - name: Push flake to FlakeHub
-        uses: DeterminateSystems/flakehub-push@main
+        uses: DeterminateSystems/flakehub-push@e001ee821cdb763ef120c01f1048bfb2f938bb9c
         with:
+          source-revision: e001ee821cdb763ef120c01f1048bfb2f938bb9c
           visibility: public
           rolling: ${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' }}
           rolling-minor: ${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' && inputs.tag || '' }}

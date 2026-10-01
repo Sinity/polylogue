@@ -48,20 +48,38 @@ def test_nightly_audit_propagates_findings_and_collection_errors(tmp_path: Path,
 
 
 @pytest.mark.parametrize("dispatch_exit", [0, 1])
-def test_release_please_dispatches_exact_tag_using_existing_authority(tmp_path: Path, dispatch_exit: int) -> None:
-    """Execute the production dispatch command; a suppressed tag push cannot replace it."""
+@pytest.mark.parametrize(
+    "consumer", ["release.yml", "container.yml", "extension-release.yml", "flakehub.yml", "cachix.yml"]
+)
+def test_release_please_dispatches_exact_tag_using_existing_authority(
+    tmp_path: Path, dispatch_exit: int, consumer: str
+) -> None:
+    """Execute each production lane, including failures, without contacting GitHub."""
     producer = workflow("release-please.yml")
-    steps = producer["jobs"]["release-please"]["steps"]
-    action = next(step for step in steps if step.get("uses", "").startswith("googleapis/release-please-action@"))
-    dispatch = next(step for step in steps if "run" in step)
+    action = producer["jobs"]["release-please"]["steps"][0]
     assert re.fullmatch(r"googleapis/release-please-action@[0-9a-f]{40}", action["uses"])
     assert action["id"] == "release"
     assert action["with"]["token"] == "${{ secrets.GITHUB_TOKEN }}"
-    assert dispatch["if"] == "steps.release.outputs.release_created == 'true'"
+    assert producer["jobs"]["release-please"]["outputs"]["release_tag"] == (
+        "${{ steps.release.outputs.release_created == 'true' && steps.release.outputs.tag_name || '' }}"
+    )
+    lane = producer["jobs"]["dispatch"]
+    assert lane["needs"] == "release-please"
+    assert lane["if"] == "needs.release-please.outputs.release_tag != ''"
+    assert lane["strategy"]["fail-fast"] == "false"
+    assert lane["strategy"]["matrix"]["workflow"] == [
+        "release.yml",
+        "container.yml",
+        "extension-release.yml",
+        "flakehub.yml",
+        "cachix.yml",
+    ]
+    dispatch = lane["steps"][0]
     assert dispatch["env"] == {
         "GH_TOKEN": "${{ github.token }}",
         "GH_REPO": "${{ github.repository }}",
-        "RELEASE_TAG": "${{ steps.release.outputs.tag_name }}",
+        "RELEASE_TAG": "${{ needs.release-please.outputs.release_tag }}",
+        "WORKFLOW": "${{ matrix.workflow }}",
     }
     assert producer["permissions"]["actions"] == "write"
     gh = tmp_path / "gh"
@@ -80,6 +98,7 @@ def test_release_please_dispatches_exact_tag_using_existing_authority(tmp_path: 
             **os.environ,
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "RELEASE_TAG": "v1.2.3",
+            "WORKFLOW": consumer,
             "CALLS": str(calls),
             "DISPATCH_EXIT": str(dispatch_exit),
         },
@@ -88,23 +107,73 @@ def test_release_please_dispatches_exact_tag_using_existing_authority(tmp_path: 
         check=False,
     )
     assert result.returncode == dispatch_exit, result.stderr
-    actual = [json.loads(line) for line in calls.read_text().splitlines()]
-    expected = [
-        ["workflow", "run", "release.yml", "--ref", "master", "-f", "release_tag=v1.2.3", "-f", "publish=true"],
-        ["workflow", "run", "container.yml", "--ref", "master", "-f", "release_tag=v1.2.3", "-f", "push=true"],
-        ["workflow", "run", "extension-release.yml", "--ref", "master", "-f", "release_tag=v1.2.3"],
-        ["workflow", "run", "homebrew-bump.yml", "--ref", "master", "-f", "release_tag=v1.2.3"],
-        ["workflow", "run", "flakehub.yml", "--ref", "v1.2.3"],
-        ["workflow", "run", "cachix.yml", "--ref", "v1.2.3"],
-    ]
-    assert actual == (expected if dispatch_exit == 0 else expected[:1])
-    for call in expected:
-        consumer = workflow(call[2])
-        assert "workflow_dispatch" in consumer["on"]
-        if call[4] == "master":
-            assert "release_tag" in consumer["on"]["workflow_dispatch"]["inputs"]
-        if call[-1] in {"publish=true", "push=true"}:
-            assert call[-1].split("=")[0] in consumer["on"]["workflow_dispatch"]["inputs"]
+    expected = ["workflow", "run", consumer, "--ref", "v1.2.3"]
+    if consumer == "release.yml":
+        expected += ["-f", "release_tag=v1.2.3", "-f", "publish=true"]
+    elif consumer == "container.yml":
+        expected += ["-f", "push=true"]
+    assert [json.loads(line) for line in calls.read_text().splitlines()] == [expected]
+    assert "workflow_dispatch" in workflow(consumer)["on"]
+
+
+def test_homebrew_waits_for_main_publication_and_cdn_propagation(tmp_path: Path) -> None:
+    """Removing the success edge races publication; a fixed polling cap rejects slow CDN propagation."""
+    lane = workflow("release.yml")["jobs"]["dispatch-homebrew"]
+    assert lane["needs"] == ["build", "publish-pypi"]
+    assert "if" not in lane
+    assert lane["permissions"]["actions"] == "write"
+    dispatch = lane["steps"][0]
+    assert dispatch["env"]["RELEASE_TAG"] == "v${{ needs.build.outputs.version }}"
+    assert '--ref "${RELEASE_TAG}"' in dispatch["run"]
+    bump = workflow("homebrew-bump.yml")["jobs"]["bump"]
+    assert "timeout-minutes" not in bump
+    poll = next(step["run"] for step in bump["steps"] if step.get("id") == "pypi")
+    assert 'until curl -fsSLo "${sdist}" "${url}"; do' in poll
+    assert "attempts=" not in poll
+    assert "push" not in workflow("homebrew-bump.yml")["on"]
+    curl = tmp_path / "curl"
+    curl.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "count = pathlib.Path('count')\n"
+        "n = int(count.read_text()) + 1 if count.exists() else 1\n"
+        "count.write_text(str(n))\n"
+        "if n <= 21: sys.exit(22)\n"
+        "pathlib.Path(sys.argv[2]).write_text('synthetic sdist')\n"
+    )
+    curl.chmod(0o755)
+    sleep = tmp_path / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n")
+    sleep.chmod(0o755)
+    output = tmp_path / "outputs"
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", poll],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "VERSION": "1.2.3",
+            "GITHUB_OUTPUT": str(output),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "count").read_text() == "22"
+    assert "sha256=" in output.read_text()
+
+
+def test_newly_automatic_credential_bearing_actions_are_pinned() -> None:
+    actions: list[str] = []
+    for name, job in [("flakehub.yml", "publish"), ("homebrew-bump.yml", "bump")]:
+        actions.extend(
+            step["uses"]
+            for step in workflow(name)["jobs"][job]["steps"]
+            if step.get("uses", "").startswith(("DeterminateSystems/", "Homebrew/"))
+        )
+    assert len(actions) == 3
+    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in actions)
 
 
 def test_exact_main_package_dependents_wait_for_successful_main_upload() -> None:
@@ -134,3 +203,4 @@ def test_flakehub_tag_dispatch_publishes_the_selected_tag_instead_of_rolling() -
         == "${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' && inputs.tag || '' }}"
     )
     assert push["tag"] == "${{ github.ref_type == 'tag' && github.ref_name || '' }}"
+    assert push["source-revision"] == "e001ee821cdb763ef120c01f1048bfb2f938bb9c"
