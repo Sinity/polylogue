@@ -196,3 +196,20 @@ def test_candidate_capture_evidence_is_not_capped_by_count() -> None:
         {"body_text": "note", "kind": "lesson", "evidence_refs": refs}
     )
     assert request.evidence_refs == refs
+
+
+def test_discovery_declares_unbounded_reads_and_preserves_other_authority_deadlines() -> None:
+    """A missed read sibling or a changed control deadline changes the public contract."""
+    from polylogue.operations.daemon_protocol import DaemonAuthority
+
+    discovery = daemon_operation_schema()
+    for spec in DAEMON_OPERATION_SPECS:
+        if spec.authority is DaemonAuthority.READ:
+            assert spec.deadline_s is None
+            assert discovery[spec.name]["deadline_s"] is None
+        else:
+            assert spec.deadline_s is not None and spec.deadline_s > 0
+    assert discovery["operation.status"]["deadline_s"] == 2.0
+    assert discovery["operation.await"]["deadline_s"] == 30.0
+    assert discovery["operation.cancel"]["deadline_s"] == 2.0
+    assert discovery["ingest"]["deadline_s"] == 300.0

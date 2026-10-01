@@ -37,7 +37,7 @@ from polylogue.operations.daemon_protocol import (
     DaemonOperationRequest,
     daemon_operation_spec,
 )
-from polylogue.operations.daemon_reads import DaemonReadDependencies, operation_deadline_s, read_is_archive_scan
+from polylogue.operations.daemon_reads import DaemonReadDependencies, read_is_archive_scan
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
@@ -138,8 +138,8 @@ class _StagedTask(Generic[_T]):
 class _Exchange:
     request: DaemonOperationRequest
     context: OperationContext
-    deadline: float
-    deadline_unix_ms: int
+    deadline: float | None
+    deadline_unix_ms: int | None
     future: Future[DaemonOperationEnvelope] | None = None
     cancellation: CancellationHandle = field(default_factory=CancellationHandle)
     acceptance_started: bool = False
@@ -380,13 +380,15 @@ class DaemonOperationRuntime:
                 exchange.cancellation.add_listener(snapshot.archive.interrupt_reads)
 
     def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int:
-        return self._exchanges[str(request.request_id)].deadline_unix_ms
+        deadline = self._exchanges[str(request.request_id)].deadline_unix_ms
+        assert deadline is not None  # only write owners request durable deadline evidence
+        return deadline
 
     def stop_reason(self, request: DaemonOperationRequest) -> str | None:
         exchange = self._exchanges[str(request.request_id)]
         if exchange.cancellation.cancelled:
             return "cancelled"
-        return "deadline" if monotonic() >= exchange.deadline else None
+        return "deadline" if (exchange.deadline is not None and monotonic() >= exchange.deadline) else None
 
     def _notify(self) -> None:
         with self._condition:
@@ -439,7 +441,9 @@ class DaemonOperationRuntime:
 
         def before_prepare() -> None:
             with self._condition:
-                if exchange.cancellation.cancelled or monotonic() >= exchange.deadline:
+                if exchange.cancellation.cancelled or (
+                    exchange.deadline is not None and monotonic() >= exchange.deadline
+                ):
                     raise BeforeAcceptanceCancelledError("operation cancelled before durable acceptance")
                 exchange.acceptance_started = True
 
@@ -454,7 +458,7 @@ class DaemonOperationRuntime:
         """Fence a snapshotless filesystem write before its first possible effect."""
         with self._condition:
             exchange = self._exchanges[str(request.request_id)]
-            if exchange.cancellation.cancelled or monotonic() >= exchange.deadline:
+            if exchange.cancellation.cancelled or (exchange.deadline is not None and monotonic() >= exchange.deadline):
                 raise BeforeAcceptanceCancelledError("operation cancelled before backup admission")
             exchange.acceptance_started = True
             self._condition.notify_all()
@@ -536,8 +540,11 @@ class DaemonOperationRuntime:
         archive_scan = spec.authority is DaemonAuthority.READ and read_is_archive_scan(
             request.operation, request.payload
         )
-        deadline_s = operation_deadline_s(request.operation, request.payload)
-        deadline = started + min(deadline_s, (request.deadline_ms or int(deadline_s * 1000)) / 1000)
+        deadline_s = spec.deadline_s
+        if request.deadline_ms is not None:
+            caller_deadline_s = request.deadline_ms / 1000
+            deadline_s = caller_deadline_s if deadline_s is None else min(deadline_s, caller_deadline_s)
+        deadline = None if deadline_s is None else started + deadline_s
         read_control = (
             QueryExecutionContext(
                 call_id=str(request.request_id),
@@ -721,7 +728,7 @@ class DaemonOperationRuntime:
                     request,
                     context,
                     deadline,
-                    int((time() + max(0, deadline - monotonic())) * 1000),
+                    None if deadline is None else int((time() + max(0, deadline - monotonic())) * 1000),
                     started_at=started,
                 )
                 self._exchanges[request_id] = exchange
@@ -896,8 +903,8 @@ class DaemonOperationRuntime:
                     return envelope
                 if record is not None:
                     return self._pending_envelope(exchange, outcome="accepted", record=record)
-                remaining = deadline - monotonic()
-                if remaining <= 0:
+                remaining = None if deadline is None else deadline - monotonic()
+                if remaining is not None and remaining <= 0:
                     if not exchange.acceptance_started:
                         exchange.cancellation.cancel()
                         return self._pending_envelope(exchange, outcome="timed-out")

@@ -12,7 +12,7 @@ from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
-from polylogue.daemon.derivation import Budget, DerivationReport, Outcome, WorkCounters
+from polylogue.daemon.derivation import Budget, DerivationReport, DomainCursor, Outcome, WorkCounters
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance, make_session_insight_maintenance
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
@@ -47,6 +47,7 @@ class ComposedSessionProfiles:
     async def converge_backlog(self, budget_s: float) -> DerivationReport:
         """Run bounded passes back to back until the audit sweep finishes.
 
+        Failed and unchanged passes leave the audit owed for its next tick.
         Each pass keeps its page and publication bounds, so no writer hold
         grows; what changes is that a promoted generation's sweep no longer
         advances one bounded pass per periodic tick. At 64 keys per pass and
@@ -60,11 +61,28 @@ class ComposedSessionProfiles:
         # Every further pass carries the remaining time as its derivation
         # deadline, so the kernel stops inside the pass rather than a pass
         # started near the end overrunning the tick's budget.
+        positions: dict[str, DomainCursor] = {}
+        frame_binding: tuple[str, str, dict[str, str]] | None = None
         while deadline > time.monotonic():
             passed = await self.audit_pass(deadline)
             if passed is None:
                 break
             report = passed
+            # A failed acquisition cannot improve by immediately acquiring the
+            # same relation again. The audit keeps it owed for a later tick.
+            if passed.failed:
+                break
+            binding = (passed.frame.archive_root, passed.frame.source_revision, dict(passed.frame.recipe_versions))
+            if binding != frame_binding:
+                positions.clear()
+                frame_binding = binding
+            advanced = any(positions.get(domain) != cursor for domain, cursor in passed.cursor.positions.items())
+            positions.update(passed.cursor.positions)
+            if not advanced:
+                # Counts can change while the same pending cursor is retried.
+                # Only walking a new part of the declared domains keeps this
+                # backlog invocation productive; no key-count cap is involved.
+                break
         return report
 
     async def converge_promoted(self) -> DerivationReport:
@@ -137,8 +155,8 @@ def compose_session_profile_callback(
             resume=not audit_reset,
         )
         audit_reset = False
-        if report.cursor.position(domain).swept:
-            if report.pending:
+        if report.cursor.position(domain).swept or report.failed:
+            if report.pending or report.failed:
                 retried_domains.add(domain)
             else:
                 owed_domains.discard(domain)
