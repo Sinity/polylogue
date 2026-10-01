@@ -286,7 +286,17 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
     """A byte fragment with a durable key still needs an exact current index witness."""
     source, index, _item_id = _connections()
     source.execute("DELETE FROM raw_session_memberships WHERE raw_id = 'raw-1'")
-    source.execute("UPDATE raw_sessions SET source_index = -1 WHERE raw_id = 'raw-1'")
+    source.execute(
+        "INSERT INTO raw_sessions(raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
+        "logical_source_key, revision_kind, source_revision, acquisition_generation, revision_authority) "
+        "VALUES ('raw-0', 'codex-session', '/synthetic/export.json', ?, 1, 0, "
+        "'codex:session-1', 'full', 'revision-0', 0, 'byte_proven')",
+        (b"q" * 32,),
+    )
+    source.execute(
+        "UPDATE raw_sessions SET source_index=-1, revision_kind='append', revision_authority='byte_proven', "
+        "predecessor_raw_id='raw-0', baseline_raw_id='raw-0' WHERE raw_id='raw-1'"
+    )
     source.execute(
         """
         UPDATE raw_membership_census
@@ -623,6 +633,25 @@ def test_byte_fragment_receipt_requires_the_exact_durable_baseline_chain(corrupt
             assert receipt.parser_blockers == (
                 () if corruption is None else (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
             )
+        if corruption is None:
+            chain_read = False
+
+            def trace(statement: str) -> None:
+                nonlocal chain_read
+                if "SELECT logical_source_key, revision_kind, revision_authority, source_index" in statement:
+                    chain_read = True
+
+            def stop() -> None:
+                if chain_read:
+                    raise InterruptedError("synthetic byte-chain cancellation")
+
+            source.set_trace_callback(trace)
+            with pytest.raises(InterruptedError):
+                with _raw_receipt(source, index, "raw-2", check_stop=stop):
+                    pytest.fail("cancelled chain published a receipt")
+            assert chain_read
+            source.set_trace_callback(None)
+            assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 2
     finally:
         source.close()
         index.close()

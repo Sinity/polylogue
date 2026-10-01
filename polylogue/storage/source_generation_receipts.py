@@ -538,6 +538,7 @@ def _logical_receipt(
                 membership_content_hash=membership_content_hash,
                 head=current_head,
                 applications=observed,
+                check_stop=check_stop,
             )
         else:
             for _ in observed:
@@ -611,6 +612,7 @@ def _count_current_or_prefix_applications(
     membership_content_hash: bytes | None,
     head: tuple[object, ...],
     applications: Iterable[tuple[object, ...]],
+    check_stop: Callable[[], None] | None,
 ) -> int:
     """Count exact application receipts that prove this raw's current effect.
 
@@ -674,6 +676,7 @@ def _count_current_or_prefix_applications(
                     source_revision=source_revision,
                     acquisition_generation=acquisition_generation,
                     application=application,
+                    check_stop=check_stop,
                 )
             )
         )
@@ -721,6 +724,7 @@ def _byte_prefix_metadata_is_exact(
     source_revision: str | None,
     acquisition_generation: int | None,
     application: tuple[object, ...],
+    check_stop: Callable[[], None] | None,
 ) -> bool:
     """Require a byte append's own frontier receipt and exact source chain."""
     if source_revision is None or acquisition_generation is None:
@@ -763,7 +767,7 @@ def _byte_prefix_metadata_is_exact(
         and application_content_hash is not None
         and str(application[7]) == "byte"
         and application_end == candidate_append_end
-        and _byte_append_chain_is_exact(source_conn, raw_id=raw_id)
+        and _byte_append_chain_is_exact(source_conn, raw_id=raw_id, check_stop=check_stop)
     )
 
 
