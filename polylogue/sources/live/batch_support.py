@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import json
 import re
 import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Protocol, cast
+from typing import IO, TYPE_CHECKING, BinaryIO, Protocol, cast
 
 import ijson
+
+if TYPE_CHECKING:
+    from polylogue.sources.source_staging import SourceInputBinding
+    from polylogue.sources.sqlite_inspection import SQLiteClassification
 
 from polylogue.archive.artifact_taxonomy import (
     classify_artifact,
@@ -323,6 +329,7 @@ class _FullIngestResult:
     raw_source_fingerprints: dict[Path, str] = field(default_factory=dict)
     captured_content_hashes: dict[Path, str] = field(default_factory=dict)
     captured_canonical_source_paths: dict[Path, str] = field(default_factory=dict)
+    captured_profile_keys: dict[Path, str] = field(default_factory=dict)
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = field(default_factory=dict)
     #: Wall-clock ns taken just before each captured observation's ``stat``.
     captured_observation_times_ns: dict[Path, int] = field(default_factory=dict)
@@ -371,6 +378,7 @@ def _full_ingest_result_from_summary(
     raw_source_fingerprints: dict[Path, str] | None = None,
     captured_content_hashes: dict[Path, str] | None = None,
     captured_canonical_source_paths: dict[Path, str] | None = None,
+    captured_profile_keys: dict[Path, str] | None = None,
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     captured_observation_times_ns: dict[Path, int] | None = None,
     summary: object | None,
@@ -396,6 +404,7 @@ def _full_ingest_result_from_summary(
         raw_source_fingerprints=raw_source_fingerprints or {},
         captured_content_hashes=captured_content_hashes or {},
         captured_canonical_source_paths=captured_canonical_source_paths or {},
+        captured_profile_keys=captured_profile_keys or {},
         captured_file_observations=captured_file_observations or {},
         captured_observation_times_ns=captured_observation_times_ns or {},
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
@@ -493,9 +502,7 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
 
     candidate_start, candidate = tail
     unterminated_tail = final_newline < 0 or candidate_start == final_newline + 1
-    try:
-        json.loads(candidate)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    if not _valid_jsonl_tail(io.BytesIO(candidate), 0, len(candidate)):
         # An unterminated final line is an append in progress, not a malformed
         # record: the producer has not written its delimiter yet. Reporting it
         # as ``malformed_record`` suppressed ``complete_prefix_size`` in
@@ -545,39 +552,39 @@ def jsonl_complete_prefix_path(path: Path) -> JsonlFrontier:
         return jsonl_frontier_of_handle(handle, path.stat().st_size)
 
 
-def jsonl_frontier_of_handle(handle: IO[bytes], size: int) -> JsonlFrontier:
+def jsonl_frontier_of_handle(
+    handle: IO[bytes], size: int, *, check_stop: Callable[[], None] | None = None
+) -> JsonlFrontier:
     """The JSONL frontier of the first ``size`` bytes of a seekable handle, read from the tail.
 
     A physical newline cannot occur inside a valid JSON string, so the last
     non-blank line decides the frontier; it is located by reading backwards
-    from the end and is the only record decoded. Earlier bytes are never
+    from the end and is the only record whose complete grammar is validated. Earlier bytes are never
     read -- the whole-file line walk this replaces read a 440 MB rollout in
     full, under the writer hold, to count records no caller used. This is
     the one file-side owner of the rule; :func:`jsonl_complete_prefix` is
     its in-memory twin, and the two are held equal by a differential test.
     """
-    last_newline = _last_newline_before(handle, size)
+    last_newline = _last_newline_before(handle, size, check_stop=check_stop)
     complete_end = last_newline + 1
-    last_content = _last_content_byte_before(handle, size)
+    last_content = _last_content_byte_before(handle, size, check_stop=check_stop)
     if last_content < 0:
         return JsonlFrontier(complete_end, complete_end != size)
-    candidate_start = _last_newline_before(handle, last_content) + 1
-    candidate_end = _next_newline_at_or_after(handle, last_content + 1, size)
+    candidate_start = _last_newline_before(handle, last_content, check_stop=check_stop) + 1
+    candidate_end = _next_newline_at_or_after(handle, last_content + 1, size, check_stop=check_stop)
     candidate_terminated = candidate_end < size
-    handle.seek(candidate_start)
-    candidate = handle.read(candidate_end - candidate_start).strip()
-    try:
-        json.loads(candidate)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    if not _valid_jsonl_tail(handle, candidate_start, last_content + 1, check_stop=check_stop):
         return JsonlFrontier(candidate_start, True, candidate_terminated)
     if candidate_terminated:
         return JsonlFrontier(complete_end, complete_end != size)
     return JsonlFrontier(size, False)
 
 
-def _last_newline_before(handle: IO[bytes], end: int) -> int:
+def _last_newline_before(handle: IO[bytes], end: int, *, check_stop: Callable[[], None] | None = None) -> int:
     """Offset of the last ``\\n`` before ``end``, or ``-1``."""
     while end > 0:
+        if check_stop is not None:
+            check_stop()
         start = max(0, end - _JSONL_TAIL_READ_BYTES)
         handle.seek(start)
         index = handle.read(end - start).rfind(b"\n")
@@ -587,9 +594,11 @@ def _last_newline_before(handle: IO[bytes], end: int) -> int:
     return -1
 
 
-def _last_content_byte_before(handle: IO[bytes], end: int) -> int:
+def _last_content_byte_before(handle: IO[bytes], end: int, *, check_stop: Callable[[], None] | None = None) -> int:
     """Offset of the last byte before ``end`` that ``bytes.strip`` keeps, or ``-1``."""
     while end > 0:
+        if check_stop is not None:
+            check_stop()
         start = max(0, end - _JSONL_TAIL_READ_BYTES)
         handle.seek(start)
         kept = handle.read(end - start).rstrip(_JSONL_STRIP_BYTES)
@@ -599,10 +608,14 @@ def _last_content_byte_before(handle: IO[bytes], end: int) -> int:
     return -1
 
 
-def _next_newline_at_or_after(handle: IO[bytes], start: int, size: int) -> int:
+def _next_newline_at_or_after(
+    handle: IO[bytes], start: int, size: int, *, check_stop: Callable[[], None] | None = None
+) -> int:
     """Offset of the first ``\\n`` at or after ``start``, or ``size``."""
     offset = start
     while offset < size:
+        if check_stop is not None:
+            check_stop()
         handle.seek(offset)
         window = handle.read(min(_JSONL_TAIL_READ_BYTES, size - offset))
         if not window:
@@ -612,6 +625,121 @@ def _next_newline_at_or_after(handle: IO[bytes], start: int, size: int) -> int:
             return offset + index
         offset += len(window)
     return size
+
+
+class _JsonlParsePrefix(io.RawIOBase):
+    """Read the parser-accepted prefix without taking the opened input's custody."""
+
+    def __init__(self, handle: IO[bytes], prefix_size: int) -> None:
+        super().__init__()
+        self._handle = handle
+        self._size = prefix_size
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        self._checkClosed()
+        return min(self._size, max(0, self._handle.tell()))
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        self._checkClosed()
+        if whence == io.SEEK_CUR:
+            offset += self.tell()
+        elif whence == io.SEEK_END:
+            offset += self._size
+        elif whence != io.SEEK_SET:
+            raise ValueError("invalid JSONL prefix seek origin")
+        return self._handle.seek(min(self._size, max(0, offset)))
+
+    def read(self, size: int = -1) -> bytes:
+        remaining = self._size - self.tell()
+        return self._handle.read(remaining if size < 0 else min(size, remaining))
+
+    def readinto(self, buffer: bytearray | memoryview) -> int:
+        data = self.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+
+@contextmanager
+def jsonl_parse_input_of_handle(
+    handle: BinaryIO, *, check_stop: Callable[[], None] | None = None
+) -> Iterator[BinaryIO]:
+    """Expose the existing accepted-prefix law and restore the caller's offset.
+
+    A malformed finished record remains in the view. Only the boundary owner
+    can exclude an incomplete tail; neither the detector nor this adapter
+    chooses a byte budget. Closing the view never closes its input.
+    """
+    original = handle.tell()
+    view: _JsonlParsePrefix | None = None
+    try:
+        prefix_size = jsonl_parse_prefix_size_of_handle(handle, check_stop=check_stop)
+        if prefix_size is None:
+            yield handle
+        else:
+            view = _JsonlParsePrefix(handle, prefix_size)
+            yield cast(BinaryIO, view)
+    finally:
+        if view is not None:
+            view.close()
+        handle.seek(original)
+
+
+def _valid_jsonl_tail(handle: IO[bytes], start: int, end: int, *, check_stop: Callable[[], None] | None = None) -> bool:
+    """Validate complete tail grammar without interpreting a record's identity."""
+    from ijson.backends import python as exact_backend
+
+    from polylogue.core.json_envelope import _PrefixStringReader
+
+    # Match the bytes.strip() law of the in-memory frontier before decoding.
+    while start < end:
+        if check_stop is not None:
+            check_stop()
+        handle.seek(start)
+        chunk = handle.read(min(_JSONL_TAIL_READ_BYTES, end - start))
+        leading = len(chunk) - len(chunk.lstrip(_JSONL_STRIP_BYTES))
+        start += leading
+        if leading != len(chunk):
+            break
+    handle.seek(start)
+    view = _JsonlParsePrefix(handle, end)
+    first = view.read(4)
+    view.seek(start)
+    text = io.TextIOWrapper(io.BufferedReader(view), encoding=json.detect_encoding(first), errors="surrogatepass")
+
+    callback_failure: BaseException | None = None
+
+    class Utf8Input:
+        def read(self, size: int = -1) -> bytes:
+            if size == 0:
+                return b""
+            nonlocal callback_failure
+            if check_stop is not None:
+                try:
+                    check_stop()
+                except BaseException as exc:
+                    callback_failure = exc
+                    raise
+            return text.read(16384).encode("utf-8", "surrogatepass")
+
+    try:
+        events = iter(exact_backend.basic_parse(_PrefixStringReader(Utf8Input(), syntax_only=True), use_float=True))
+        if next(events, None) is None:
+            return False
+        for _event in events:
+            pass
+        return True
+    except (UnicodeError, ijson.JSONError, ValueError):
+        if callback_failure is not None:
+            raise callback_failure from None
+        return False
+    finally:
+        text.close()
 
 
 def jsonl_parse_prefix_size(boundary: JsonlBoundary | JsonlFrontier, size: int) -> int | None:
@@ -629,7 +757,7 @@ def jsonl_parse_prefix_size(boundary: JsonlBoundary | JsonlFrontier, size: int) 
     return boundary.prefix_size if 0 <= boundary.prefix_size < size and not boundary.malformed_record else None
 
 
-def jsonl_parse_prefix_size_of_handle(handle: IO[bytes]) -> int | None:
+def jsonl_parse_prefix_size_of_handle(handle: IO[bytes], *, check_stop: Callable[[], None] | None = None) -> int | None:
     """:func:`jsonl_parse_prefix_size` of a whole seekable handle, reading only its tail.
 
     The frontier comes from :func:`jsonl_frontier_of_handle`, the same
@@ -637,7 +765,7 @@ def jsonl_parse_prefix_size_of_handle(handle: IO[bytes]) -> int | None:
     for the decoder.
     """
     size = handle.seek(0, 2)
-    frontier = jsonl_frontier_of_handle(handle, size)
+    frontier = jsonl_frontier_of_handle(handle, size, check_stop=check_stop)
     handle.seek(0)
     return jsonl_parse_prefix_size(frontier, size)
 
@@ -914,21 +1042,12 @@ def _accumulate_stage_timings(target: dict[str, float], update: dict[str, float]
 def _browser_capture_prefix_probe(path: Path) -> tuple[bool, Provider | None]:
     """Detect a browser-capture envelope and its provider for a large file.
 
-    The receiver serializes captures with ``sort_keys=True``
-    (``browser_capture/receiver.py``), so the envelope's ``raw_provider_payload``
-    field (an unbounded copy of the provider's own wire payload) sorts
-    alphabetically *before* ``session`` and therefore before
-    ``session.provider``. Once ``raw_provider_payload`` alone exceeds
-    ``_BROWSER_CAPTURE_PREFIX_PROBE_BYTES``, the provider marker never appears
-    in the leading prefix at all -- a >8MiB capture with a big enough leading
-    payload was permanently stamped ``unknown-export`` regardless of how many
-    times it was re-captured (polylogue-mvq8). The prefix regex below still
-    short-circuits the common case (small ``raw_provider_payload``, provider
-    marker within the first MiB); only when that is inconclusive but the
-    envelope is confirmed to be a browser capture does this fall back to a
-    memory-bounded structural scan (:func:`_browser_capture_provider_from_path`)
-    that finds ``session.provider`` regardless of where it falls in the
-    payload.
+    Externally serialized envelopes can place the unbounded
+    ``raw_provider_payload`` before ``session.provider``. The prefix probe
+    handles envelopes whose provider marker appears near the start. If the
+    prefix confirms a capture but cannot identify its provider, a structural
+    scan (:func:`_browser_capture_provider_from_path`) finds the marker
+    regardless of field order without retaining the complete payload.
     """
     if path.suffix.lower() != ".json":
         return False, None
@@ -1243,15 +1362,6 @@ def retryable_read_fault(exc: BaseException) -> bool:
     )
 
 
-def probe_sqlite_readable(path: Path) -> None:
-    """Raise the read fault of a database about to be excluded, if any."""
-    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
-    try:
-        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
-    finally:
-        conn.close()
-
-
 @dataclass(frozen=True, slots=True)
 class PreAcquisitionDecision:
     """Whether full intake retains a discovered file, and the sniff it used.
@@ -1285,6 +1395,7 @@ def classify_pre_acquisition(
     source_only: bool,
     size_bytes: int,
     checkpoint: Callable[[], None] | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> PreAcquisitionDecision:
     """Decide whether full intake excludes ``path`` before retaining any bytes.
 
@@ -1295,11 +1406,49 @@ def classify_pre_acquisition(
     the batch's acquisition branches: an earlier retaining branch wins over a
     later exclusion rule.
 
-    The structural SQLite recognizers read an unreadable database as "not
-    ours". Before a database is excluded, a retryable read fault is raised
-    instead, so the caller retries the file rather than excluding a valid
-    database for good; bytes that are not a readable database stay excluded.
+    SQLite structural claims come from one proved connection to the accepted
+    input. Its captured semantic coordinate owns declaration rules. Retryable
+    read faults propagate before exclusion; invalid database bytes retain the
+    ordinary unsupported classification.
     """
+    sqlite_classification = None
+    if is_sqlite_path(path):
+        from polylogue.sources.source_staging import bind_source_input
+        from polylogue.sources.sqlite_inspection import SQLiteClassification, classify_sqlite_source
+
+        if source_binding is None:
+            try:
+                with bind_source_input(path) as binding:
+                    return classify_pre_acquisition(
+                        binding.source_path,
+                        fallback_provider=fallback_provider,
+                        source_only=source_only,
+                        size_bytes=size_bytes,
+                        checkpoint=checkpoint,
+                        source_binding=binding,
+                    )
+            except (OSError, sqlite3.Error) as exc:
+                if retryable_read_fault(exc):
+                    raise RetryableSourceReadError(path, exc) from exc
+                raise
+        path = source_binding.source_path
+        try:
+            refuse_declared_foreign(path.name, fallback_provider)
+        except ForeignOriginContentError as exc:
+            return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
+        if checkpoint is not None:
+            checkpoint()
+        try:
+            sqlite_classification = classify_sqlite_source(source_binding.source, source_binding=source_binding)
+        except (OSError, sqlite3.Error) as exc:
+            if retryable_read_fault(exc):
+                raise RetryableSourceReadError(path, exc) from exc
+            if not isinstance(exc, sqlite3.DatabaseError) or getattr(exc, "sqlite_errorcode", None) not in {
+                None,
+                sqlite3.SQLITE_NOTADB,
+            }:
+                raise
+            sqlite_classification = SQLiteClassification(False, False, False, "unknown")
     try:
         decision = _classify_pre_acquisition(
             path,
@@ -1307,27 +1456,13 @@ def classify_pre_acquisition(
             source_only=source_only,
             size_bytes=size_bytes,
             checkpoint=checkpoint,
+            sqlite_classification=sqlite_classification,
         )
     except (OSError, sqlite3.Error) as exc:
         if retryable_read_fault(exc):
             raise RetryableSourceReadError(path, exc) from exc
         raise
-    if decision.excluded_reason is not None and is_sqlite_path(path):
-        _raise_retryable_probe_fault(path)
     return decision
-
-
-def _raise_retryable_probe_fault(path: Path) -> None:
-    """Raise :class:`RetryableSourceReadError` if the database cannot be read now.
-
-    Any other probe failure (bytes that are not a database) leaves the
-    exclusion standing, so it is deliberately not raised.
-    """
-    try:
-        probe_sqlite_readable(path)
-    except (OSError, sqlite3.Error) as exc:
-        if retryable_read_fault(exc):
-            raise RetryableSourceReadError(path, exc) from exc
 
 
 def _classify_pre_acquisition(
@@ -1337,6 +1472,7 @@ def _classify_pre_acquisition(
     source_only: bool,
     size_bytes: int,
     checkpoint: Callable[[], None] | None,
+    sqlite_classification: SQLiteClassification | None,
 ) -> PreAcquisitionDecision:
     from polylogue.sources.origin_specs import (
         artifact_rule_for_path,
@@ -1367,26 +1503,29 @@ def _classify_pre_acquisition(
         and hermes_member is not None
         and hermes_member.disposition != "out-of-scope"
     )
-    source_class = recognize_source_class(fallback_provider, path, source_only=source_only)
+    source_class = recognize_source_class(
+        fallback_provider, path, source_only=source_only, sqlite_classification=sqlite_classification
+    )
     if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
         # Unknown/config/cache material under a broad root is a typed
         # non-session observation -- unless the boundary finds another
         # origin's records in it, which is a refusal. A read fault raises.
         try:
-            refuse_foreign_path(path, fallback_provider)
+            if sqlite_classification is None:
+                refuse_foreign_path(path, fallback_provider)
         except ForeignOriginContentError as exc:
             return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
         return PreAcquisitionDecision("unsupported source class")
-    if fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN} and antigravity.looks_like_trajectory_db_path(
-        path
+    if (
+        fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN}
+        and sqlite_classification is not None
+        and sqlite_classification.antigravity
     ):
         return PreAcquisitionDecision(None)
     if hermes_owned_sqlite_name or (
         not source_only
-        and (
-            hermes_state.looks_like_state_db_path(path)
-            or hermes_verification.looks_like_verification_evidence_db_path(path)
-        )
+        and sqlite_classification is not None
+        and (sqlite_classification.hermes_state or sqlite_classification.hermes_verification)
     ):
         return PreAcquisitionDecision(None)
     codex_capability = database_capability_for_provider(Provider.CODEX)
@@ -1394,13 +1533,18 @@ def _classify_pre_acquisition(
     if (
         codex_member is not None
         and codex_member.disposition != "out-of-scope"
-        and ((source_only and fallback_provider is Provider.CODEX) or codex_state.is_in_scope_codex_sqlite_path(path))
+        and (
+            (source_only and fallback_provider is Provider.CODEX)
+            or (sqlite_classification is not None and sqlite_classification.codex_kind in codex_state.IN_SCOPE_KINDS)
+        )
     ):
         return PreAcquisitionDecision(None)
     if codex_member is not None:
         return PreAcquisitionDecision("declared out-of-scope or structurally unverified state database")
     if source_only:
         return PreAcquisitionDecision(None)
+    if sqlite_classification is not None:
+        return PreAcquisitionDecision("path rule refuses session parsing", fallback_provider)
     origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
     jsonl = is_jsonl_source_path(str(path))
     if origin_artifact_rule is None and not jsonl:

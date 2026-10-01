@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import errno
 import hashlib
-import json
 import os
 import sqlite3
 import stat
-import tempfile
-from collections.abc import Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from collections.abc import Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
+from polylogue.core.provider_identity import captured_hermes_profile_key
+from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_export import (
     MemberExportScope,
     _write_logical_export_bound,
@@ -31,8 +31,6 @@ if TYPE_CHECKING:
 
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
-_STAGING_METADATA_SUFFIX = ".polylogue-import"
-_STAGING_METADATA_VERSION = 2
 _HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v3\0"
 _CODEX_STATE_RAW_ID_DOMAIN = b"polylogue:codex-state-raw:v2\0"
 # Re-exported for existing call sites; canonical constant now lives on the
@@ -55,257 +53,6 @@ class SQLiteBlobSnapshot:
     captured_profile_root: Path
     captured_profile_source_path: Path
     blob_publication_receipt_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SQLiteSourceBinding:
-    """Declaration and provenance for the exact main inode the reader must open."""
-
-    source: Path
-    physical_path: Path
-    source_path: Path
-    identity_path: Path
-    captured_profile_key: str
-    captured_profile_root: Path
-    captured_profile_source_path: Path
-    parent_anchor: int
-    metadata_anchor: int
-    main_identity: tuple[int, int]
-    provenance: dict[str, Any]
-    staged: bool
-
-
-def _staging_provenance(
-    directory: int, name: str, main: tuple[int, int]
-) -> tuple[dict[str, str] | None, dict[str, Any]]:
-    from polylogue.sources.sqlite_export import _identity, _named_identity
-
-    metadata_name = name + _STAGING_METADATA_SUFFIX
-    try:
-        descriptor = os.open(metadata_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-    except FileNotFoundError:
-        return None, {"name": metadata_name, "identity": None}
-    with os.fdopen(descriptor, "rb") as handle:
-        before = os.fstat(handle.fileno())
-        if not stat.S_ISREG(before.st_mode):
-            raise OSError(errno.ESTALE, "SQLite staging provenance is not a regular file", metadata_name)
-        payload_bytes = handle.read()
-        after = os.fstat(handle.fileno())
-        if (before.st_dev, before.st_ino, before.st_ctime_ns, before.st_size) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_ctime_ns,
-            after.st_size,
-        ) or _named_identity(directory, metadata_name) != _identity(before):
-            raise OSError(errno.ESTALE, "SQLite staging provenance changed", metadata_name)
-    try:
-        payload = json.loads(payload_bytes)
-        if (
-            not isinstance(payload, dict)
-            or payload.get("version") != _STAGING_METADATA_VERSION
-            or not isinstance(payload.get("original_source_path"), str)
-            or not payload["original_source_path"]
-            or not Path(payload["original_source_path"]).is_absolute()
-            or type(payload.get("version")) is not int
-            or not isinstance(payload.get("database_identity"), list)
-            or any(type(value) is not int for value in payload["database_identity"])
-            or payload.get("database_identity") != list(main)
-            or not isinstance(payload.get("declared_source_path"), str)
-            or not Path(payload["declared_source_path"]).is_absolute()
-            or not isinstance(payload.get("profile_root"), str)
-            or not Path(payload["profile_root"]).is_absolute()
-            or not isinstance(payload.get("profile_key"), str)
-            or len(payload["profile_key"]) != 12
-            or any(character not in "0123456789abcdef" for character in payload["profile_key"])
-            or not isinstance(payload.get("profile_source_path"), str)
-            or not Path(payload["profile_source_path"]).is_absolute()
-        ):
-            raise ValueError("invalid or mismatched staging provenance")
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise OSError(errno.ESTALE, "invalid SQLite staging provenance", metadata_name) from exc
-    return {
-        "source_path": payload["declared_source_path"],
-        "identity_path": payload["original_source_path"],
-        "profile_root": payload["profile_root"],
-        "profile_key": payload["profile_key"],
-        "profile_source_path": payload["profile_source_path"],
-    }, {
-        "name": metadata_name,
-        "identity": list(_identity(before)),
-        "digest": hashlib.sha256(payload_bytes).hexdigest(),
-        "observation": [before.st_ctime_ns, before.st_mtime_ns, before.st_size],
-    }
-
-
-def _verify_staging_provenance(directory: int, expected: dict[str, Any], main: tuple[int, int]) -> None:
-    _, current = _staging_provenance(directory, expected["name"][: -len(_STAGING_METADATA_SUFFIX)], main)
-    if current != expected:
-        raise OSError(errno.ESTALE, "SQLite staging provenance changed", expected["name"])
-
-
-def _verify_staging_metadata_name(directory: int, expected: dict[str, Any]) -> None:
-    """Parent metadata-only proof; an ordinary FD close could release SQLite locks."""
-    from polylogue.sources.sqlite_export import _identity
-
-    identity = expected.get("identity")
-    absent = identity is None
-    if (
-        set(expected) != ({"name", "identity"} if absent else {"name", "identity", "digest", "observation"})
-        or not isinstance(expected.get("name"), str)
-        or (
-            not absent
-            and (
-                not isinstance(identity, list)
-                or len(identity) != 3
-                or any(type(value) is not int for value in identity)
-                or not isinstance(expected.get("observation"), list)
-                or len(expected["observation"]) != 3
-                or any(type(value) is not int for value in expected["observation"])
-                or not isinstance(expected.get("digest"), str)
-                or len(expected["digest"]) != 64
-            )
-        )
-    ):
-        raise OSError(errno.EPROTO, "invalid SQLite staging metadata proof")
-    try:
-        current = os.stat(expected["name"], dir_fd=directory, follow_symlinks=False)
-    except FileNotFoundError:
-        if expected["identity"] is None:
-            return
-        raise
-    if (
-        expected["identity"] is None
-        or list(_identity(current)) != expected["identity"]
-        or [current.st_ctime_ns, current.st_mtime_ns, current.st_size] != expected["observation"]
-    ):
-        raise OSError(errno.ESTALE, "SQLite staging metadata changed", expected["name"])
-
-
-@contextmanager
-def bind_sqlite_source(
-    path: Path, *, parent_anchor: int | None = None, semantic_parent: Path | None = None
-) -> Iterator[SQLiteSourceBinding]:
-    """Capture provenance once without opening an ordinary parent database FD."""
-    from polylogue.sources.sqlite_export import _exchange_source_worker, _identity, _named_identity
-
-    path = path.absolute()
-    physical_path = path.resolve(strict=True) if parent_anchor is None else path
-    if parent_anchor is not None and semantic_parent is None:
-        raise OSError(errno.EINVAL, "anchored SQLite source requires its captured semantic parent", str(path))
-    declared_parent = path.parent.resolve(strict=True) if parent_anchor is None else semantic_parent
-    assert declared_parent is not None
-    semantic_path = declared_parent / path.name
-    parent = physical_path.parent
-    descriptor = (
-        os.open(parent, getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW)
-        if parent_anchor is None
-        else os.dup(parent_anchor)
-    )
-    try:
-        metadata_descriptor = (
-            os.open(
-                declared_parent,
-                getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW,
-            )
-            if parent_anchor is None
-            else os.dup(parent_anchor)
-        )
-    except BaseException:
-        os.close(descriptor)
-        raise
-    try:
-        if _identity(os.fstat(descriptor)) != _identity(physical_path.parent.stat()):
-            raise OSError(errno.ESTALE, "SQLite source parent changed", str(path))
-        if _identity(os.fstat(metadata_descriptor)) != _identity(path.parent.stat()):
-            raise OSError(errno.ESTALE, "SQLite declared parent changed", str(path))
-        main = _named_identity(descriptor, physical_path.name)
-        result = _exchange_source_worker(
-            {
-                "operation": "binding",
-                "source": str(physical_path),
-                "directory": descriptor,
-                "metadata_directory": metadata_descriptor,
-                "metadata_name": path.name,
-                "semantic_source": str(semantic_path),
-                "identities": {"": main},
-            }
-        )
-        if (
-            set(result) != {"source_path", "provenance", "staged", "profile"}
-            or not isinstance(result["source_path"], str)
-            or not Path(result["source_path"]).is_absolute()
-            or not isinstance(result["provenance"], dict)
-            or type(result["staged"]) is not bool
-        ):
-            raise OSError(errno.EPROTO, "invalid SQLite source binding result")
-        provenance = result["provenance"]
-        if provenance.get("name") != path.name + _STAGING_METADATA_SUFFIX:
-            raise OSError(errno.EPROTO, "invalid SQLite source binding metadata name")
-        _verify_staging_metadata_name(metadata_descriptor, provenance)
-        if result["staged"] != (provenance["identity"] is not None):
-            raise OSError(errno.EPROTO, "inconsistent SQLite source binding provenance")
-        if not result["staged"] and Path(result["source_path"]) != semantic_path:
-            raise OSError(errno.EPROTO, "inconsistent SQLite source binding coordinate")
-        actual = path.stat()
-        if (actual.st_dev, actual.st_ino) != main[:2]:
-            raise OSError(errno.ESTALE, "SQLite declared root changed", str(path))
-        from polylogue.sources.parsers.hermes_identity import capture_profile_namespace
-
-        with ExitStack() as profile_stack:
-            if result["staged"]:
-                from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
-
-                receipt = result["profile"]
-                if (
-                    not isinstance(receipt, dict)
-                    or set(receipt)
-                    != {
-                        "source_path",
-                        "identity_path",
-                        "profile_root",
-                        "profile_key",
-                        "profile_source_path",
-                    }
-                    or any(not isinstance(value, str) for value in receipt.values())
-                ):
-                    raise OSError(errno.EPROTO, "invalid staged profile identity receipt")
-                from polylogue.sources.parsers.hermes_identity import _captured_profile_key, profile_root_for_artifact
-
-                profile_root = Path(receipt["profile_root"])
-                profile_source = Path(receipt["profile_source_path"])
-                if (
-                    not profile_root.is_absolute()
-                    or not profile_source.is_absolute()
-                    or not Path(receipt["identity_path"]).is_absolute()
-                    or receipt["source_path"] != result["source_path"]
-                    or profile_root_for_artifact(profile_source) != profile_root
-                    or _captured_profile_key(profile_root) != receipt["profile_key"]
-                ):
-                    raise OSError(errno.EPROTO, "inconsistent staged profile identity receipt")
-                profile = CapturedHermesProfile(
-                    Path(receipt["profile_root"]), receipt["profile_key"], Path(receipt["profile_source_path"])
-                )
-                identity_path = Path(receipt["identity_path"])
-            else:
-                profile = profile_stack.enter_context(capture_profile_namespace(path, metadata_descriptor))
-                identity_path = physical_path if parent_anchor is None else declared_parent / path.name
-            yield SQLiteSourceBinding(
-                path,
-                physical_path,
-                Path(result["source_path"]),
-                identity_path,
-                profile.key,
-                profile.root,
-                profile.source_path,
-                descriptor,
-                metadata_descriptor,
-                main[:2],
-                provenance,
-                result["staged"],
-            )
-    finally:
-        os.close(metadata_descriptor)
-        os.close(descriptor)
 
 
 class _SQLiteSnapshotFailureAsOSError:
@@ -352,10 +99,10 @@ def hermes_profile_raw_id(
     commit, checkpoint or vacuum; keying identity on those bytes mints a new
     raw revision for a source that did not change.
     """
-    from polylogue.sources.parsers.hermes_identity import _captured_profile_key, profile_root_for_artifact
+    from polylogue.sources.parsers.hermes_identity import profile_root_for_artifact
 
     normalized = identity_path
-    if _captured_profile_key(profile_root_for_artifact(normalized)) != profile_identity:
+    if captured_hermes_profile_key(profile_root_for_artifact(normalized)) != profile_identity:
         raise ValueError("Hermes raw identity requires its matching captured profile namespace")
     digest = hashlib.sha256()
     digest.update(_HERMES_RAW_ID_DOMAIN)
@@ -418,18 +165,28 @@ def sqlite_database_for_sidecar(path: Path) -> Path | None:
     return None
 
 
-def sqlite_source_revision(path: Path) -> str:
-    """Fingerprint main/WAL filesystem state without reading mutable DB bytes."""
+def sqlite_source_revision(path: Path, *, source_binding: SourceInputBinding | None = None) -> str:
+    """Fingerprint the accepted physical main/WAL under its anchored parent."""
+    if source_binding is None:
+        with bind_source_input(path) as binding:
+            return sqlite_source_revision(path, source_binding=binding)
     hasher = hashlib.sha256()
-    for candidate in (path, path.with_name(f"{path.name}-wal")):
-        hasher.update(candidate.name.encode("utf-8", errors="surrogateescape"))
+    for suffix in ("", "-wal"):
+        name = source_binding.physical_path.name + suffix
+        hasher.update((source_binding.source_path.name + suffix).encode("utf-8", errors="surrogateescape"))
         hasher.update(b"\0")
         try:
-            stat = candidate.stat()
+            info = os.stat(name, dir_fd=source_binding.parent_anchor, follow_symlinks=False)
         except FileNotFoundError:
+            if not suffix:
+                raise
             hasher.update(b"missing")
         else:
-            hasher.update(f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError(errno.ELOOP, "SQLite source observation requires a regular file", name)
+            if not suffix and (info.st_dev, info.st_ino) != source_binding.main_identity:
+                raise OSError(errno.ESTALE, "SQLite main identity changed", name)
+            hasher.update(f"{info.st_dev}:{info.st_ino}:{info.st_size}:{info.st_mtime_ns}".encode())
         hasher.update(b"\0")
     return hasher.hexdigest()
 
@@ -438,7 +195,7 @@ def declared_database_member(path: Path) -> DatabaseMemberBinding | None:
     """Return the declared member rule acquisition applies to *path*.
 
     This coordinate is already accepted acquisition evidence. Live staged
-    inputs resolve their provenance through ``bind_sqlite_source`` first;
+    inputs resolve their provenance through ``bind_source_input`` first;
     retained evidence never consults a mutable filesystem sidecar.
     """
     from polylogue.sources.origin_specs import database_member_for_filename
@@ -494,22 +251,24 @@ def sqlite_logical_revision(
     return logical_export_digest(path, tables=tables, immutable=immutable)
 
 
-def sqlite_member_revision(path: Path, *, immutable: bool = False) -> str:
+def sqlite_member_revision(
+    path: Path, *, immutable: bool = False, source_binding: SourceInputBinding | None = None
+) -> str:
     """Digest the logical revision acquisition records for *path*.
 
     Acquisition retains one export per declared member, so the freshness gate
     and the raw identity must both be scoped to that member's logical tables.
     A whole-database digest would move for a commit in a table nothing reads.
     """
-    return sqlite_member_revision_and_size(path, immutable=immutable)[0]
+    return sqlite_member_revision_and_size(path, immutable=immutable, source_binding=source_binding)[0]
 
 
 def sqlite_member_revision_and_size(
-    path: Path, *, immutable: bool = False, source_binding: SQLiteSourceBinding | None = None
+    path: Path, *, immutable: bool = False, source_binding: SourceInputBinding | None = None
 ) -> tuple[str, int]:
     """Return the retained logical export's revision and byte length together."""
     if source_binding is None:
-        with bind_sqlite_source(path) as binding:
+        with bind_source_input(path) as binding:
             return sqlite_member_revision_and_size(path, immutable=immutable, source_binding=binding)
     from polylogue.sources.sqlite_export import _HashingSink
 
@@ -611,73 +370,35 @@ def snapshot_sqlite_database(source: Path, destination: Path) -> None:
     _snapshot_sqlite_database_bound(source, destination)
 
 
-def _snapshot_sqlite_database_bound(source: Path, destination: Path) -> dict[str, Any]:
+def _snapshot_sqlite_database_bound(
+    source: Path,
+    destination: Path,
+    *,
+    source_binding: SourceInputBinding | None = None,
+    expected_identity: tuple[int, int] | None = None,
+    heartbeat: Heartbeat | None = None,
+) -> dict[str, Any]:
     """Carry the actual backup owner's accepted coordinate to staging provenance."""
-    if source.resolve() == destination.resolve():
-        raise ValueError("a SQLite backup cannot replace its source")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.unlink(missing_ok=True)
     from polylogue.sources.sqlite_export import _backup_source_database
 
-    try:
-        return _backup_source_database(source, destination)
-    except BaseException:
+    with ExitStack() as owners:
+        if source_binding is None:
+            source_binding = owners.enter_context(bind_source_input(source))
+        if source_binding.physical_path == destination.resolve():
+            raise ValueError("a SQLite backup cannot replace its source")
+        destination.parent.mkdir(parents=True, exist_ok=True)
         destination.unlink(missing_ok=True)
-        raise
-
-
-def sqlite_staging_metadata_path(staged_path: Path) -> Path:
-    """Return the non-ingestible provenance sidecar for a staged database."""
-    return staged_path.with_name(f"{staged_path.name}{_STAGING_METADATA_SUFFIX}")
-
-
-def stage_sqlite_snapshot(source: Path, destination: Path) -> None:
-    """Publish a proven snapshot; readers refuse either incomplete replacement."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".staging",
-    )
-    os.close(fd)
-    temporary_path = Path(temporary_name)
-    temporary_path.unlink()
-    metadata_path = sqlite_staging_metadata_path(destination)
-    metadata_temporary_path = metadata_path.with_name(f".{metadata_path.name}.{os.getpid()}.tmp")
-    try:
-        accepted = _snapshot_sqlite_database_bound(source, temporary_path)
-        accepted_source = Path(accepted["source_path"])
-        database_identity = tuple(accepted["database_identity"])
-        metadata_temporary_path.write_text(
-            json.dumps(
-                {
-                    "version": _STAGING_METADATA_VERSION,
-                    "original_source_path": str(accepted_source),
-                    "database_identity": list(database_identity),
-                    "declared_source_path": accepted["declared_source_path"],
-                    "profile_key": accepted["profile_key"],
-                    "profile_root": accepted["profile_root"],
-                    "profile_source_path": accepted["profile_source_path"],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
-        )
-        os.chmod(metadata_temporary_path, 0o600)
-        os.replace(metadata_temporary_path, metadata_path)
-        os.replace(temporary_path, destination)
-        with bind_sqlite_source(destination) as published:
-            if (
-                published.main_identity != database_identity
-                or published.identity_path != accepted_source
-                or str(published.source_path) != accepted["declared_source_path"]
-                or published.captured_profile_key != accepted["profile_key"]
-            ):
-                raise OSError(errno.ESTALE, "staged SQLite publication changed", str(destination))
-    finally:
-        temporary_path.unlink(missing_ok=True)
-        metadata_temporary_path.unlink(missing_ok=True)
+        try:
+            return _backup_source_database(
+                source,
+                destination,
+                source_binding=source_binding,
+                expected_identity=expected_identity,
+                heartbeat=heartbeat,
+            )
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
 
 
 def snapshot_sqlite_to_blob(
@@ -685,7 +406,7 @@ def snapshot_sqlite_to_blob(
     blob_store: BlobStore,
     *,
     heartbeat: Heartbeat | None = None,
-    source_binding: SQLiteSourceBinding | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> SQLiteBlobSnapshot:
     """Retain *source* as one canonical logical export and return its revision.
 
@@ -709,9 +430,9 @@ def snapshot_sqlite_to_blob(
     # already present is either included in the export or causes one harmless
     # extra acquisition when the token was sampled just before it.
     if source_binding is None:
-        with bind_sqlite_source(source) as binding:
+        with bind_source_input(source) as binding:
             return snapshot_sqlite_to_blob(source, blob_store, heartbeat=heartbeat, source_binding=binding)
-    source_fingerprint = sqlite_source_revision(source)
+    source_fingerprint = sqlite_source_revision(source, source_binding=source_binding)
     # The export is written straight into the blob store's own staging file:
     # exporting to a work file and copying it would hold two full-size copies
     # on the blob filesystem at once, which capacity preflight never budgets.
@@ -752,14 +473,10 @@ __all__ = [
     "is_sqlite_page_image",
     "is_undeclared_logical_export",
     "is_sqlite_path",
-    "SQLiteSourceBinding",
-    "bind_sqlite_source",
     "retained_content_revision",
     "snapshot_sqlite_database",
     "snapshot_sqlite_to_blob",
     "sqlite_snapshot_failure_as_oserror",
-    "sqlite_staging_metadata_path",
-    "stage_sqlite_snapshot",
     "sqlite_database_for_sidecar",
     "sqlite_logical_revision",
     "sqlite_member_revision",

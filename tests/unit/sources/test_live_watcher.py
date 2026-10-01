@@ -10,7 +10,7 @@ import sqlite3
 import time
 import zipfile
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -1547,6 +1547,140 @@ def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
     assert record is None or record.byte_offset == 0
 
 
+@pytest.mark.parametrize("sqlite_input", [False, True], ids=["jsonl", "sqlite"])
+@pytest.mark.parametrize("cursor_state", ["settled", "excluded", "deferred", "failed"])
+def test_hermes_profile_retarget_reopens_same_inode_cursor(
+    tmp_path: Path, sqlite_input: bool, cursor_state: str
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.acquisition_boundary import capture_bound_path
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+    first = tmp_path / "profile-a"
+    second = tmp_path / "profile-b"
+    external = tmp_path / "external"
+    for root in (first, second, external):
+        root.mkdir()
+    for root in (first, second):
+        (root / "sessions").symlink_to(external, target_is_directory=True)
+    name = "state.db" if sqlite_input else "session_shared.jsonl"
+    actual = external / name
+    if sqlite_input:
+        with sqlite3.connect(actual) as connection:
+            connection.execute("CREATE TABLE state (value TEXT)")
+            connection.execute("INSERT INTO state VALUES ('same accepted input')")
+    else:
+        actual.write_text(
+            json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same"}]}) + "\n"
+        )
+    alias = tmp_path / "profile"
+    alias.symlink_to(first, target_is_directory=True)
+    path = alias / "sessions" / name
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(WatchSource(name="hermes", root=alias),))
+    store = BlobStore(tmp_path / "blobs")
+
+    def acquire() -> tuple[str, str]:
+        if sqlite_input:
+            capture = snapshot_sqlite_to_blob(path, store)
+        else:
+            capture = capture_bound_path(store, path, Provider.HERMES)
+        assert capture.captured_profile_key is not None
+        return capture.blob_hash, capture.captured_profile_key
+
+    original_stat = path.stat()
+    blob_hash, original_profile = acquire()
+
+    def stamp(profile: str) -> None:
+        watcher._cursor.set(
+            path,
+            original_stat.st_size,
+            source_name="hermes",
+            captured_profile_key=profile,
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+            content_fingerprint=None if cursor_state == "deferred" else blob_hash,
+            tail_hash=sqlite_source_revision(path),
+            st_dev=original_stat.st_dev,
+            st_ino=original_stat.st_ino,
+            mtime_ns=original_stat.st_mtime_ns,
+            excluded=cursor_state == "excluded",
+            failure_count=int(cursor_state == "failed"),
+            next_retry_at=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+        )
+
+    stamp(original_profile)
+    assert not watcher._needs_work(path)
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+    assert (path.stat().st_dev, path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns) == (
+        original_stat.st_dev,
+        original_stat.st_ino,
+        original_stat.st_size,
+        original_stat.st_mtime_ns,
+    )
+    assert watcher._needs_work(path)
+    new_blob, new_profile = acquire()
+    assert new_blob == blob_hash
+    assert new_profile != original_profile
+    stamp(new_profile)
+    assert not watcher._needs_work(path)
+    alias.unlink()
+    alias.symlink_to(first, target_is_directory=True)
+    assert watcher._needs_work(path)
+    assert acquire() == (blob_hash, original_profile)
+
+
+def test_hermes_sqlite_profile_retarget_between_probe_and_bound_gate_requires_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+    external = tmp_path / "external"
+    external.mkdir()
+    actual = external / "state.db"
+    with sqlite3.connect(actual) as connection:
+        connection.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO sessions VALUES ('same inode and logical bytes')")
+    profiles = (tmp_path / "profile-a", tmp_path / "profile-b")
+    for profile in profiles:
+        profile.mkdir()
+        (profile / "sessions").symlink_to(external, target_is_directory=True)
+    alias = tmp_path / "profile"
+    alias.symlink_to(profiles[0], target_is_directory=True)
+    declared = alias / "sessions" / "state.db"
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(WatchSource(name="hermes", root=alias),))
+    store = BlobStore(tmp_path / "blobs")
+    accepted = snapshot_sqlite_to_blob(declared, store)
+    before = declared.stat()
+    watcher._cursor.set(
+        declared,
+        before.st_size,
+        source_name="hermes",
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint=accepted.source_revision,
+        tail_hash=accepted.source_fingerprint,
+        captured_profile_key=accepted.captured_profile_key,
+        st_dev=before.st_dev,
+        st_ino=before.st_ino,
+        mtime_ns=before.st_mtime_ns,
+    )
+    original_bind = live_watcher.bind_source_input
+
+    @contextmanager
+    def retarget_then_bind(path: Path):
+        alias.unlink()
+        alias.symlink_to(profiles[1], target_is_directory=True)
+        with original_bind(path) as binding:
+            yield binding
+
+    monkeypatch.setattr(live_watcher, "bind_source_input", retarget_then_bind)
+    assert watcher._needs_work(declared)
+    captured = snapshot_sqlite_to_blob(declared, store)
+    assert captured.blob_hash == accepted.blob_hash
+    assert captured.captured_profile_key != accepted.captured_profile_key
+
+
 def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path: Path) -> None:
     root = tmp_path / "hermes"
     root.mkdir()
@@ -1565,6 +1699,9 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
             sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
         )
         initial_revision = sqlite_source_revision(state_db)
+        from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+        accepted = snapshot_sqlite_to_blob(state_db, BlobStore(tmp_path / "blobs"))
         stat = state_db.stat()
         watcher._cursor.set(
             state_db,
@@ -1572,6 +1709,7 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
             content_fingerprint="snapshot-hash",
             tail_hash=initial_revision,
+            captured_profile_key=accepted.captured_profile_key,
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
@@ -1586,6 +1724,54 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
         assert watcher._watch_filter(object(), str(wal_path)) is True
         assert watcher._canonical_watch_path(wal_path) == state_db
         assert watcher._needs_work(state_db) is True
+    finally:
+        writer.close()
+
+
+def test_hermes_file_alias_wal_commit_reopens_actual_acquired_cursor(tmp_path: Path) -> None:
+    """Using state.db-wal instead of the opened bundle.data-wal hides this commit."""
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    actual = tmp_path / "bundle.data"
+    declared = root / "state.db"
+    declared.symlink_to(actual)
+    writer = sqlite3.connect(actual)
+    try:
+        writer.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY)")
+        writer.commit()
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        watcher, _ = _make_watcher(tmp_path, root, sources=(WatchSource(name="hermes", root=root),))
+        accepted = snapshot_sqlite_to_blob(declared, BlobStore(tmp_path / "blobs"))
+        before = declared.stat()
+        watcher._cursor.set(
+            declared,
+            before.st_size,
+            source_name="hermes",
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+            content_fingerprint=accepted.source_revision,
+            tail_hash=accepted.source_fingerprint,
+            captured_profile_key=accepted.captured_profile_key,
+            st_dev=before.st_dev,
+            st_ino=before.st_ino,
+            mtime_ns=before.st_mtime_ns,
+        )
+        assert not watcher._needs_work(declared)
+        writer.execute("INSERT INTO sessions VALUES ('committed-only-in-physical-wal')")
+        writer.commit()
+        after = declared.stat()
+        assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        assert not declared.with_name("state.db-wal").exists()
+        assert actual.with_name("bundle.data-wal").stat().st_size > 0
+        assert watcher._needs_work(declared)
     finally:
         writer.close()
 

@@ -25,13 +25,14 @@ of inventing a second, incompatible scheme.
 from __future__ import annotations
 
 import errno
-import hashlib
 import os
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+from polylogue.core.provider_identity import captured_hermes_profile_key
 
 __all__ = [
     "profile_key",
@@ -47,12 +48,7 @@ def profile_key(profile_root: Path) -> str:
     Raw profile paths are never exposed in archive identity -- only this
     truncated SHA-256 digest of the normalized (expanded, resolved) path.
     """
-    return _captured_profile_key(profile_root.expanduser().resolve(strict=False))
-
-
-def _captured_profile_key(profile_root: Path) -> str:
-    normalized = str(profile_root)
-    return hashlib.sha256(normalized.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
+    return captured_hermes_profile_key(profile_root.expanduser().resolve(strict=False))
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,11 +91,40 @@ def capture_profile_namespace(artifact_path: Path, declared_parent: int) -> Iter
         named = declared_root.stat()
         if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (accepted.st_dev, accepted.st_ino):
             raise OSError(errno.ESTALE, "Hermes declared profile namespace changed", str(artifact_path))
-        yield CapturedHermesProfile(root, _captured_profile_key(root), root / artifact_path.relative_to(declared_root))
+        yield CapturedHermesProfile(
+            root, captured_hermes_profile_key(root), root / artifact_path.relative_to(declared_root)
+        )
     finally:
         for _, _, descriptor in reversed(components):
             os.close(descriptor)
         os.close(anchor)
+
+
+def observe_profile_namespace(artifact_path: Path, expected: os.stat_result) -> CapturedHermesProfile:
+    """Measure a namespace for a cursor comparison, without opening database bytes.
+
+    This is observation evidence only. Acquisition captures its own receipt
+    from its actual accepted input and never stamps this observation instead.
+    """
+    source = artifact_path.absolute()
+    flags = getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent = os.open(source.parent.resolve(strict=True), flags)
+    try:
+        with capture_profile_namespace(source, parent) as profile:
+            current = os.stat(source.name, dir_fd=parent)
+            named_parent = source.parent.stat()
+            opened_parent = os.fstat(parent)
+            if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns) != (
+                expected.st_dev,
+                expected.st_ino,
+                expected.st_size,
+                expected.st_mtime_ns,
+                expected.st_ctime_ns,
+            ) or (named_parent.st_dev, named_parent.st_ino) != (opened_parent.st_dev, opened_parent.st_ino):
+                raise OSError(errno.ESTALE, "Hermes cursor namespace observation changed", str(source))
+            return profile
+    finally:
+        os.close(parent)
 
 
 #: Directory names Hermes interposes between its install root and a raw

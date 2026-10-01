@@ -27,6 +27,7 @@ from polylogue.browser_capture.models import (
 from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource
 from polylogue.core.hashing import hash_bytes
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
@@ -937,3 +938,15 @@ __all__ = [
     "looks_like",
     "parse",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Preserve the capture discriminator and declared provider, consuming all payload bytes."""
+    return DetectorProjection(
+        fields={
+            "polylogue_capture_kind": DetectorProjection(),
+            "schema_version": DetectorProjection(),
+            "session": DetectorProjection(fields={"provider": DetectorProjection()}),
+            "provenance": DetectorProjection(),
+        }
+    )

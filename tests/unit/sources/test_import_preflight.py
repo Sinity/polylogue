@@ -9,10 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive import zip_admission as zip_admission_module
 from polylogue.core.enums import Provider
-from polylogue.sources import import_preflight as import_preflight_module
-from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
+from polylogue.operations.import_operations import prepare_import_source_admission
+from polylogue.sources.import_preflight import ImportPreflightStatus
 
 
 def _chatgpt_payload() -> dict[str, object]:
@@ -40,7 +39,7 @@ def test_preflight_accepts_supported_json_file(tmp_path: Path) -> None:
     source = tmp_path / "chatgpt.json"
     source.write_text(json.dumps(_chatgpt_payload()))
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.SUPPORTED
     assert result.admissible is True
@@ -61,7 +60,7 @@ def test_preflight_accepts_antigravity_trajectory_sqlite(tmp_path: Path) -> None
             """
         )
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.SUPPORTED
     assert result.providers == (Provider.ANTIGRAVITY,)
@@ -98,7 +97,7 @@ def test_preflight_refuses_what_the_production_evidence_gate_refuses(tmp_path: P
         )
     sessions = list(antigravity.parse_trajectory_db(source, fallback_id=source.stem))
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert require_positive_conversational_evidence(sessions, provider=Provider.ANTIGRAVITY, source_path=None) == []
     assert result.admissible is False
@@ -108,7 +107,7 @@ def test_preflight_rejects_unknown_json_shape(tmp_path: Path) -> None:
     source = tmp_path / "unknown.json"
     source.write_text(json.dumps({"not": "an export"}))
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.UNSUPPORTED
     assert result.admissible is False
@@ -121,7 +120,7 @@ def test_preflight_rejects_malformed_json(tmp_path: Path) -> None:
     source = tmp_path / "broken.json"
     source.write_text('{"mapping": ')
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.MALFORMED
     assert result.admissible is False
@@ -134,7 +133,7 @@ def test_preflight_accepts_supported_zip_member(tmp_path: Path) -> None:
     with zipfile.ZipFile(source, "w") as zf:
         zf.writestr("conversations.json", json.dumps(_chatgpt_payload()))
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.SUPPORTED
     assert result.supported_count == 1
@@ -148,7 +147,7 @@ def test_preflight_marks_mixed_directory_as_degraded(tmp_path: Path) -> None:
     (source / "chatgpt.json").write_text(json.dumps(_chatgpt_payload()))
     (source / "unknown.json").write_text(json.dumps({"not": "an export"}))
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.DEGRADED
     assert result.admissible is True
@@ -162,33 +161,28 @@ def test_preflight_rejects_zip_without_parseable_members(tmp_path: Path) -> None
     with zipfile.ZipFile(source, "w") as zf:
         zf.writestr("README.txt", "not an export")
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.UNSUPPORTED
     assert result.admissible is False
     assert result.error_code == "unsupported_import_source"
 
 
-def test_preflight_rejects_oversized_json_before_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "oversized-preflight.zip"
-    with zipfile.ZipFile(source, "w") as zf:
-        zf.writestr("conversations.json", b"{}")
+def test_preflight_accepts_complete_high_ratio_conversation(tmp_path: Path) -> None:
+    source = tmp_path / "compressed-preflight.zip"
+    payload = _chatgpt_payload()
+    payload["padding"] = "x" * (2 * 1024 * 1024)
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("conversations.json", json.dumps(payload))
+    with zipfile.ZipFile(source) as archive:
+        member = archive.infolist()[0]
+        assert member.file_size / member.compress_size > 1000
 
-    monkeypatch.setattr(zip_admission_module, "MAX_UNCOMPRESSED_SIZE", 1)
-    monkeypatch.setattr(import_preflight_module, "MAX_UNCOMPRESSED_SIZE", 1)
-    opened: list[object] = []
+    result = prepare_import_source_admission(source).preflight
 
-    def fail_if_open(_archive: zipfile.ZipFile, member: object, *args: object, **kwargs: object) -> object:
-        opened.append(member)
-        raise AssertionError("preflight must admit JSON before opening it")
-
-    monkeypatch.setattr(zipfile.ZipFile, "open", fail_if_open)
-
-    result = preflight_import_source(source)
-
-    assert opened == []
-    assert result.status is ImportPreflightStatus.MALFORMED
-    assert result.malformed_count == 1
+    assert result.status is ImportPreflightStatus.SUPPORTED
+    assert result.supported_count == 1
+    assert result.providers == (Provider.CHATGPT,)
 
 
 def test_preflight_inspects_conversational_evidence_after_the_former_prefix(tmp_path: Path) -> None:
@@ -212,7 +206,7 @@ def test_preflight_inspects_conversational_evidence_after_the_former_prefix(tmp_
                     (f"trajectory-{index:03d}",),
                 )
 
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
 
     assert result.status is ImportPreflightStatus.DEGRADED
     assert result.providers == (Provider.ANTIGRAVITY,)

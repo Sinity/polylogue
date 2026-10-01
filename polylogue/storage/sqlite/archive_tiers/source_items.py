@@ -11,8 +11,10 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.core.provider_identity import captured_hermes_profile_key
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
@@ -75,6 +77,66 @@ class SourceItem:
 
 
 @dataclass(frozen=True, slots=True)
+class CapturedSourceInputIdentity:
+    """Original opened input namespace retained with the exact accepted blob."""
+
+    canonical_source_path: str
+    semantic_source_path: str
+    profile_root: str
+    profile_key: str
+    profile_source_path: str
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.canonical_source_path,
+            self.semantic_source_path,
+            self.profile_root,
+            self.profile_source_path,
+        ):
+            if (
+                not isinstance(value, str)
+                or not Path(value).is_absolute()
+                or ".." in Path(value).parts
+                or "\0" in value
+            ):
+                raise ValueError("captured source input coordinates must be absolute")
+        if captured_hermes_profile_key(Path(self.profile_root)) != self.profile_key:
+            raise ValueError("captured source input profile key does not match its accepted namespace")
+        try:
+            Path(self.profile_source_path).relative_to(self.profile_root)
+        except ValueError as exc:
+            raise ValueError("captured profile member is outside its accepted namespace") from exc
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "canonical_source_path": self.canonical_source_path,
+            "semantic_source_path": self.semantic_source_path,
+            "profile_root": self.profile_root,
+            "profile_key": self.profile_key,
+            "profile_source_path": self.profile_source_path,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> CapturedSourceInputIdentity:
+        fields = {"canonical_source_path", "semantic_source_path", "profile_root", "profile_key", "profile_source_path"}
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != fields
+            or any(not isinstance(value, str) for value in payload.values())
+        ):
+            raise ValueError("invalid captured source input identity")
+        return cls(**payload)
+
+
+def _captured_input_json(identity: CapturedSourceInputIdentity | None) -> str | None:
+    return json.dumps(identity.to_dict(), ensure_ascii=False, separators=(",", ":")) if identity is not None else None
+
+
+def _captured_input_from_json(payload: str | None) -> CapturedSourceInputIdentity | None:
+    return CapturedSourceInputIdentity.from_dict(json.loads(payload)) if payload is not None else None
+
+
+@dataclass(frozen=True, slots=True)
 class FrozenSourceInput:
     """One retained physical input, never an actuator payload or bearer secret."""
 
@@ -82,13 +144,15 @@ class FrozenSourceInput:
     source_path: str
     blob_hash: str
     publication_receipt_id: str
+    captured_identity: CapturedSourceInputIdentity | None = None
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "coordinate": self.coordinate,
             "source_path": self.source_path,
             "blob_hash": self.blob_hash,
             "publication_receipt_id": self.publication_receipt_id,
+            "captured_identity": self.captured_identity.to_dict() if self.captured_identity is not None else None,
         }
 
 
@@ -103,6 +167,7 @@ class RetainedSourceInput:
     enumeration_complete: bool
     stage: str
     revision: int
+    captured_identity: CapturedSourceInputIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +212,7 @@ def page_retained_source_inputs(
         raise ValueError("accepted input page limit must be between 1 and 256")
     rows = conn.execute(
         "SELECT source_item_id, logical_coordinate, source_path, blob_hash, enumeration_fingerprint, "
-        "enumerated_at_ms, stage, revision FROM source_items WHERE source_generation_id=? "
+        "enumerated_at_ms, stage, revision, captured_input_identity FROM source_items WHERE source_generation_id=? "
         "AND (logical_coordinate, source_item_id) > (?, ?) ORDER BY logical_coordinate, source_item_id LIMIT ?",
         (source_generation_id, *(after or ("", "")), limit),
     ).fetchall()
@@ -158,7 +223,14 @@ def page_retained_source_inputs(
         result.append(
             (
                 RetainedSourceInput(
-                    str(row[0]), str(row[1]), str(row[2]), row[3].hex(), row[5] is not None, str(row[6]), int(row[7])
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    row[3].hex(),
+                    row[5] is not None,
+                    str(row[6]),
+                    int(row[7]),
+                    _captured_input_from_json(row[8]),
                 ),
                 str(row[4]),
             )
@@ -194,7 +266,11 @@ class FrozenSourceManifest:
         # its independently generated ID from this immutable content digest.
         content = [
             self.enumeration_fingerprint,
-            [(item.coordinate, item.source_path, item.blob_hash) for item in self.inputs],
+            [
+                [item.coordinate, item.source_path, item.blob_hash]
+                + ([item.captured_identity.to_dict()] if item.captured_identity is not None else [])
+                for item in self.inputs
+            ],
         ]
         if self.source_name is not None:
             content.append(["source_name", self.source_name])
@@ -225,13 +301,24 @@ class FrozenSourceManifest:
             raise ValueError("frozen source inputs must be a list")
         inputs = []
         for item in raw_inputs:
+            fields = {"coordinate", "source_path", "blob_hash", "publication_receipt_id"}
             if (
                 not isinstance(item, dict)
-                or set(item) != {"coordinate", "source_path", "blob_hash", "publication_receipt_id"}
-                or any(not isinstance(field, str) for field in item.values())
+                or not fields <= set(item)
+                or set(item) - fields - {"captured_identity"}
+                or any(not isinstance(item[field], str) for field in fields)
             ):
                 raise ValueError("invalid frozen source input fields")
-            inputs.append(FrozenSourceInput(**item))
+            captured = item.get("captured_identity")
+            inputs.append(
+                FrozenSourceInput(
+                    item["coordinate"],
+                    item["source_path"],
+                    item["blob_hash"],
+                    item["publication_receipt_id"],
+                    CapturedSourceInputIdentity.from_dict(captured) if captured is not None else None,
+                )
+            )
         return cls(value["source_generation_id"], value["enumeration_fingerprint"], tuple(inputs), source_name)
 
 
@@ -382,7 +469,8 @@ def append_prepared_source_inputs(
         if not item.coordinate.strip() or not item.source_path.strip() or not item.publication_receipt_id:
             raise ValueError("prepared source input is incomplete")
         conn.execute(
-            "INSERT INTO prepared_source_manifest_members VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO prepared_source_manifest_members(source_generation_id, ordinal, coordinate, source_path, "
+            "blob_hash, publication_receipt_id, captured_input_identity) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 source_generation_id,
                 start_ordinal + offset,
@@ -390,6 +478,7 @@ def append_prepared_source_inputs(
                 item.source_path,
                 bytes.fromhex(item.blob_hash),
                 item.publication_receipt_id,
+                _captured_input_json(item.captured_identity),
             ),
         )
     conn.execute(
@@ -408,14 +497,17 @@ def _prepared_manifest_digests(
         json.dumps([generation_id, fingerprint, source_name], ensure_ascii=False, separators=(",", ":")).encode()
     )
     count = 0
-    for ordinal, coordinate, source_path, blob_hash, receipt_id in conn.execute(
-        "SELECT ordinal, coordinate, source_path, blob_hash, publication_receipt_id "
+    for ordinal, coordinate, source_path, blob_hash, receipt_id, captured in conn.execute(
+        "SELECT ordinal, coordinate, source_path, blob_hash, publication_receipt_id, captured_input_identity "
         "FROM prepared_source_manifest_members WHERE source_generation_id=? ORDER BY ordinal",
         (generation_id,),
     ):
         if type(ordinal) is not int or ordinal != count or not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
             raise ValueError("prepared source manifest has a missing or malformed ordinal")
-        item = [str(coordinate), str(source_path), blob_hash.hex()]
+        item: list[object] = [str(coordinate), str(source_path), blob_hash.hex()]
+        identity = _captured_input_from_json(captured)
+        if identity is not None:
+            item.append(identity.to_dict())
         semantic.update((("," if count else "") + json.dumps(item, ensure_ascii=False, separators=(",", ":"))).encode())
         custody.update(
             ("\n" + json.dumps([ordinal, *item, str(receipt_id)], ensure_ascii=False, separators=(",", ":"))).encode()
@@ -501,7 +593,8 @@ def validate_sealed_source_manifest(conn: sqlite3.Connection, ref: SealedSourceM
             "SELECT 1 FROM prepared_source_manifest_members m LEFT JOIN source_items i "
             "ON i.source_generation_id=m.source_generation_id AND i.logical_coordinate=m.coordinate "
             "WHERE m.source_generation_id=? AND (i.source_item_id IS NULL OR i.source_path<>m.source_path "
-            "OR i.blob_hash<>m.blob_hash OR i.enumeration_fingerprint<>?) LIMIT 1",
+            "OR i.blob_hash<>m.blob_hash OR i.enumeration_fingerprint<>? "
+            "OR i.captured_input_identity IS NOT m.captured_input_identity) LIMIT 1",
             (ref.source_generation_id, ref.enumeration_fingerprint),
         ).fetchone()
         if int(accepted_count) != ref.input_count or mismatch is not None:
@@ -532,8 +625,8 @@ def publish_sealed_source_manifest(
         "VALUES (?, ?, 'physical-file-v1', ?, ?)",
         (ref.source_generation_id, ref.manifest_digest, ref.input_count, prepared_at_ms),
     )
-    for _ordinal, coordinate, source_path, blob_hash, receipt_id in conn.execute(
-        "SELECT ordinal, coordinate, source_path, blob_hash, publication_receipt_id "
+    for _ordinal, coordinate, source_path, blob_hash, receipt_id, captured in conn.execute(
+        "SELECT ordinal, coordinate, source_path, blob_hash, publication_receipt_id, captured_input_identity "
         "FROM prepared_source_manifest_members WHERE source_generation_id=? ORDER BY ordinal",
         (ref.source_generation_id,),
     ):
@@ -544,8 +637,9 @@ def publish_sealed_source_manifest(
         )
         conn.execute(
             "INSERT INTO source_items(source_generation_id, source_item_id, logical_coordinate, addressing_mode, "
-            "source_path, disposition, outcome_code, stage, observed_at_ms, updated_at_ms, blob_hash, enumeration_fingerprint) "
-            "VALUES (?, ?, ?, 'physical-file-v1', ?, 'pending', 'interrupted', 'manifest', ?, ?, ?, ?)",
+            "source_path, disposition, outcome_code, stage, observed_at_ms, updated_at_ms, blob_hash, enumeration_fingerprint, "
+            "captured_input_identity) "
+            "VALUES (?, ?, ?, 'physical-file-v1', ?, 'pending', 'interrupted', 'manifest', ?, ?, ?, ?, ?)",
             (
                 ref.source_generation_id,
                 item_id,
@@ -555,6 +649,7 @@ def publish_sealed_source_manifest(
                 prepared_at_ms,
                 blob_hash,
                 ref.enumeration_fingerprint,
+                _captured_input_json(_captured_input_from_json(captured)),
             ),
         )
         consume_blob_publication_receipt(conn, str(receipt_id), blob_hash)
@@ -597,6 +692,7 @@ def publish_frozen_source_manifest(
         coordinates=tuple(item.coordinate for item in manifest.inputs),
         source_paths={item.coordinate: item.source_path for item in manifest.inputs},
         input_blob_hashes={item.coordinate: bytes.fromhex(item.blob_hash) for item in manifest.inputs},
+        captured_input_identities={item.coordinate: item.captured_identity for item in manifest.inputs},
         enumeration_fingerprint=manifest.enumeration_fingerprint,
         observed_at_ms=prepared_at_ms,
         commit=False,
@@ -628,6 +724,7 @@ def publish_source_generation(
     attachments: tuple[SourceAttachment, ...] = (),
     policy_snapshot: ExcisionPolicySnapshot | None = None,
     input_blob_hashes: Mapping[str, bytes] | None = None,
+    captured_input_identities: Mapping[str, CapturedSourceInputIdentity | None] | None = None,
     enumeration_fingerprint: str | None = None,
     commit: bool = True,
 ) -> tuple[str, ...]:
@@ -645,6 +742,8 @@ def publish_source_generation(
         or any(type(value) is not bytes or len(value) != 32 for value in input_blob_hashes.values())
     ):
         raise ValueError("input_blob_hashes must bind every coordinate to a SHA-256 blob")
+    if captured_input_identities is not None and set(captured_input_identities) != set(coordinates):
+        raise ValueError("captured input identities must bind every coordinate")
     origin_value = require_vocabulary(origin, Origin, field="origin") if origin is not None else None
     _preflight_source_attachments(attachments)
     ids = tuple(
@@ -659,13 +758,19 @@ def publish_source_generation(
         raise ValueError(f"source generation manifest changed: {source_generation_id}")
     if existing is not None:
         expected = {
-            (item_id, coordinate, (input_blob_hashes or {}).get(coordinate), enumeration_fingerprint)
+            (
+                item_id,
+                coordinate,
+                (input_blob_hashes or {}).get(coordinate),
+                enumeration_fingerprint,
+                _captured_input_json((captured_input_identities or {}).get(coordinate)),
+            )
             for item_id, coordinate in zip(ids, coordinates, strict=True)
         }
         actual = {
             tuple(row)
             for row in conn.execute(
-                "SELECT source_item_id, logical_coordinate, blob_hash, enumeration_fingerprint "
+                "SELECT source_item_id, logical_coordinate, blob_hash, enumeration_fingerprint, captured_input_identity "
                 "FROM source_items WHERE source_generation_id=?",
                 (source_generation_id,),
             )
@@ -682,8 +787,8 @@ def publish_source_generation(
             """INSERT INTO source_items(
                  source_generation_id, source_item_id, logical_coordinate, addressing_mode,
                  origin, source_path, disposition, outcome_code, stage, observed_at_ms, updated_at_ms,
-                 blob_hash, enumeration_fingerprint)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 'interrupted', 'manifest', ?, ?, ?, ?)
+                 blob_hash, enumeration_fingerprint, captured_input_identity)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 'interrupted', 'manifest', ?, ?, ?, ?, ?)
                ON CONFLICT(source_generation_id, source_item_id) DO NOTHING""",
             (
                 source_generation_id,
@@ -696,6 +801,7 @@ def publish_source_generation(
                 observed_at_ms,
                 (input_blob_hashes or {}).get(coordinate),
                 enumeration_fingerprint,
+                _captured_input_json((captured_input_identities or {}).get(coordinate)),
             ),
         )
     if policy_snapshot is not None:

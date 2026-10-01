@@ -62,6 +62,8 @@ Key alias rules
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Final
 
 from polylogue.core.schema_subjects import CORE_SCHEMA_PROVIDERS, schema_subject
@@ -153,8 +155,14 @@ __all__ = [
     "canonical_acquisition_provider",
     "canonical_runtime_provider",
     "canonical_schema_provider",
+    "captured_hermes_profile_key",
     "normalize_provider_token",
 ]
+
+
+def captured_hermes_profile_key(profile_root: Path) -> str:
+    """Hash an already accepted Hermes namespace without filesystem discovery."""
+    return hashlib.sha256(str(profile_root).encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
 
 
 def canonical_acquisition_provider(

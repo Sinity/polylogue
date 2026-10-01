@@ -9,13 +9,13 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import IO, TypeAlias, cast
 
 import ijson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
-from polylogue.archive.zip_admission import ZipAdmission, ZipBombError
+from polylogue.archive.zip_admission import ZipAdmission
 from polylogue.config import Source
 from polylogue.core.content_identity import (
     ContentIdentityRefusal,
@@ -26,9 +26,10 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
-from polylogue.core.raw_coordinates import MemberAddressingMode, split_zip_member_text
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode, split_zip_member_text
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
+from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
 
 from . import decoders as _decoders
 from .acquisition_boundary import (
@@ -48,11 +49,16 @@ from .decoder_zip import (
     provider_detection_path,
 )
 from .decoders import _zip_entry_provider_hint
-from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
+from .dispatch import (
+    GROUP_PROVIDERS,
+    detect_provider,
+    detect_provider_from_raw_bytes_evidence,
+    detect_provider_from_stream_evidence,
+)
 from .parsers.base import RawSessionData
-from .sqlite_snapshot import SQLiteSourceBinding, bind_sqlite_source, is_sqlite_path, snapshot_sqlite_to_blob
+from .source_staging import SourceInputBinding, bind_source_input
+from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 
-_ZIP_SNIFF_MEMBER_LIMIT = 64
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
 _REVISION_CHUNK_BYTES = 1024 * 1024
@@ -82,6 +88,7 @@ class SourceReadContext:
     observation_callback: ObservationCallback | None = None
     status_callback: StatusCallback | None = None
     retained_blob: ArtifactIdentity | None = None
+    captured_input_identity: CapturedSourceInputIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +106,8 @@ class ZipEntryReadContext:
     # The origin the archive's location binds; ``None`` for an import-inbox
     # export, whose members classify.
     bound_provider: Provider | None = None
+    captured_input_identity: CapturedSourceInputIdentity | None = None
+    entry_ordinal: int | None = None
 
     @property
     def source_path(self) -> str:
@@ -315,24 +324,14 @@ def iter_entry_payloads(
     """
     handle = bind_stream(handle, stream_name, bound_provider)
     current_provider = provider_hint
-    last_detected_provider: Provider | None = None
-    provider_locked = False
     for payload in _decoders._iter_json_stream(handle, stream_name):
         normalized_payload = _artifact_payload(payload)
-        if provider_locked:
-            yield DetectedEntryPayload(current_provider, normalized_payload, 0.0)
-            continue
-
         detect_start = time.perf_counter()
         detected_provider = detect_provider(normalized_payload)
         detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
         provider = detected_provider or current_provider
         if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
             current_provider = detected_provider
-            if detected_provider == last_detected_provider:
-                provider_locked = True
-            else:
-                last_detected_provider = detected_provider
         yield DetectedEntryPayload(provider, normalized_payload, detect_provider_ms)
 
 
@@ -365,12 +364,12 @@ def make_split_entry_raw_data(
 
 def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
     if is_sqlite_path(context.path) and context.retained_blob is None:
-        with bind_sqlite_source(context.path) as binding:
+        with bind_source_input(context.path) as binding:
             return _read_plain_source_file(context, binding)
     return _read_plain_source_file(context, None)
 
 
-def _read_plain_source_file(context: SourceReadContext, binding: SQLiteSourceBinding | None) -> RawSessionData:
+def _read_plain_source_file(context: SourceReadContext, binding: SourceInputBinding | None) -> RawSessionData:
     """Stream one non-ZIP source file into the blob store.
 
     This is the real per-file production acquisition entry point for the
@@ -397,6 +396,13 @@ def _read_plain_source_file(context: SourceReadContext, binding: SQLiteSourceBin
     captured_profile_source_path: str | None = None
     captured_file_observation: tuple[int, int, int, int, int] | None = None
     original_source_path = binding.source_path if binding is not None and binding.staged else None
+    if context.retained_blob is not None and context.captured_input_identity is not None:
+        receipt = context.captured_input_identity
+        if receipt.semantic_source_path != str(context.path):
+            raise ValueError("retained input coordinate does not match its captured identity")
+        canonical_source_path = receipt.canonical_source_path
+        captured_profile_key = receipt.profile_key
+        captured_profile_source_path = receipt.profile_source_path
     if (
         context.retained_blob is None
         and (context.provider_hint is Provider.HERMES or original_source_path is not None)
@@ -430,6 +436,7 @@ def _read_plain_source_file(context: SourceReadContext, binding: SQLiteSourceBin
                 context.blob_store,
                 context.path,
                 context.provider_hint,
+                source_binding=binding,
                 heartbeat=make_status_heartbeat(
                     context.status_callback,
                     source_name=context.source.name,
@@ -495,11 +502,19 @@ def _read_plain_source_file(context: SourceReadContext, binding: SQLiteSourceBin
         evidence=detection_evidence,
         stage_timings=stage_timings,
     )
+    if context.retained_blob is not None and detected_provider is Provider.HERMES and captured_profile_key is None:
+        from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
+
+        raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
     return raw_data_record(
         source_path=str(original_source_path or context.path),
         canonical_source_path=canonical_source_path,
-        captured_profile_key=captured_profile_key if detected_provider is Provider.HERMES else None,
-        captured_profile_source_path=captured_profile_source_path if detected_provider is Provider.HERMES else None,
+        captured_profile_key=(
+            captured_profile_key if detected_provider in {Provider.HERMES, Provider.UNKNOWN} else None
+        ),
+        captured_profile_source_path=(
+            captured_profile_source_path if detected_provider in {Provider.HERMES, Provider.UNKNOWN} else None
+        ),
         captured_file_observation=captured_file_observation,
         file_mtime=context.file_mtime,
         provider_hint=detected_provider,
@@ -597,20 +612,23 @@ def stream_preserved_zip_entry_raw_data(
         blob_size=blob_size,
         blob_publication_receipt_id=publication_id,
     )
-    return raw_data_record(
-        source_path=context.source_path,
-        file_mtime=context.file_mtime,
-        provider_hint=provider_hint,
-        blob_hash=blob_hash,
-        blob_size=blob_size,
-        # A preserved member is addressed as the document itself.  Callers
-        # may still carry a ZIP-coordinate hint for their own raw-row keying,
-        # but publishing it on ``RawSessionData`` would make a whole member
-        # look like element ``N`` and invite positional replay.
-        source_index=None,
-        blob_publication_receipt_id=publication_id,
-        addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-        content_identity=content_identity,
+    return _captured_zip_record(
+        raw_data_record(
+            source_path=context.source_path,
+            file_mtime=context.file_mtime,
+            provider_hint=provider_hint,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            # A preserved member is addressed as the document itself.  Callers
+            # may still carry a ZIP-coordinate hint for their own raw-row keying,
+            # but publishing it on ``RawSessionData`` would make a whole member
+            # look like element ``N`` and invite positional replay.
+            source_index=None,
+            blob_publication_receipt_id=publication_id,
+            addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+            content_identity=content_identity,
+        ),
+        context,
     )
 
 
@@ -863,49 +881,31 @@ def replay_zip_entry_acquisition_revisions(
         yield _stream_member_revision(zf, context.entry, context.bound_provider, checkpoint)
 
 
-def sniff_zip_provider(
-    zf: zipfile.ZipFile,
-    entries: Iterable[zipfile.ZipInfo],
-) -> Provider | None:
-    """Detect a ZIP's dominant provider by weight, never by entry order.
+def _zip_entry_detected_provider(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> Provider | None:
+    """Classify an exact entry after complete JSON and CRC validation."""
+    if not info.filename.lower().endswith(ZIP_JSON_SUFFIXES) or not info.file_size:
+        return None
+    try:
+        with _decoders.open_zip_entry(zf, info) as handle:
+            provider, _evidence = detect_provider_from_stream_evidence(handle)
+            # Projection retries seek backwards. Read to EOF once more so the
+            # accepted shape and this exact entry's CRC both settle.
+            while handle.read(_REVISION_CHUNK_BYTES):
+                pass
+            return provider
+    except (ijson.JSONError, UnicodeError, ValueError):
+        # A malformed JSON member has no provider proof. Its acquisition
+        # still owns the visible decode disposition; storage/CRC faults are
+        # not silently converted into a healthy negative shape observation.
+        return None
 
-    Reads only ``_DETECTION_PREFIX_SIZE`` of each JSON/JSONL member, up to
-    ``_ZIP_SNIFF_MEMBER_LIMIT`` members, and tallies each positive detection by
-    that member's uncompressed size. The heaviest provider wins, and only when
-    it is strictly heavier than every other detected provider.
 
-    The returned provider becomes *every* member's hint, so establishing it
-    from whichever member happened to sort first in the central directory was
-    wrong: an export ZIP whose first ``aaa.json`` detects as a grouped provider
-    made the real ``conversations.json`` raw-preserved and never parsed into
-    sessions. Weight is what "dominant" meant; an archive with no strict winner
-    is the genuinely-mixed case this returns ``None`` for, leaving the caller's
-    ``Provider.UNKNOWN`` fallback and its declared per-entry rules in place.
-    """
+def sniff_zip_provider(zf: zipfile.ZipFile, entries: Iterable[zipfile.ZipInfo]) -> Provider | None:
+    """Find the strict heaviest complete JSON-member claim, preserving ties."""
     weights: dict[Provider, int] = {}
-    inspected = 0
     for info in entries:
-        if inspected >= _ZIP_SNIFF_MEMBER_LIMIT:
-            break
-        if not info.filename.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
-            continue
-        try:
-            with _decoders.open_bounded_zip_entry(zf, info) as handle:
-                prefix = handle.read(_DETECTION_PREFIX_SIZE)
-        except (zipfile.BadZipFile, OSError, ZipBombError):
-            continue
-        if not prefix:
-            continue
-        inspected += 1
-        detected, _evidence = detect_provider_from_raw_bytes_evidence(
-            prefix,
-            info.filename,
-            Provider.UNKNOWN,
-            truncated_tail_ok=True,
-        )
-        if detected is not Provider.UNKNOWN:
-            # ``max(1, ...)``: a member with an unrecorded size still counts as
-            # one observation rather than weighing nothing.
+        detected = _zip_entry_detected_provider(zf, info)
+        if detected is not None and detected is not Provider.UNKNOWN:
             weights[detected] = weights.get(detected, 0) + max(1, int(info.file_size))
     if not weights:
         return None
@@ -917,17 +917,21 @@ def sniff_zip_provider(
 
 @dataclass(frozen=True, slots=True)
 class ZipMemberAdmission:
-    """The provider a ZIP's members are admitted under, fixed before any is read."""
+    """Container hint and independent member admission under its declared location."""
 
     provider_hint: Provider
-    #: Member relevance when no provider is known: declared artifact paths.
     allowed_path: Callable[[str], bool] | None
+    bound_provider: Provider | None
 
-    def entry_provider_hint(self, filename: str) -> Provider:
-        """A member's hint: the ZIP's provider, or its path declaration's."""
-        if self.provider_hint is Provider.UNKNOWN:
-            return declared_artifact_provider(filename) or self.provider_hint
-        return self.provider_hint
+    def entry_provider_hint(self, zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> Provider:
+        if self.bound_provider is not None:
+            return self.bound_provider
+        # A container winner never erases a known minority provider. Declared
+        # non-session assets keep their own owner without a JSON shape claim.
+        declared = declared_artifact_provider(info.filename)
+        if not provider_detection_path(info.filename):
+            return declared or self.provider_hint
+        return _zip_entry_detected_provider(zf, info) or declared or self.provider_hint
 
 
 def zip_member_admission(
@@ -936,27 +940,83 @@ def zip_member_admission(
     central_directory: list[zipfile.ZipInfo],
     fallback_provider: Provider,
 ) -> ZipMemberAdmission:
-    """Resolve an export ZIP's provider before its members are admitted.
+    """A weighted winner hints metadata; each unbound member keeps its own provider."""
+    from polylogue.sources.dispatch import bound_location_provider
 
-    A provider-agnostic location (an import inbox) names no provider, and a
-    member validator without one relates no member to an artifact rule, so a
-    raw-only export member (a ChatGPT ``file-*`` asset) would be filtered out
-    before acquisition. The dominant provider is sniffed from the safe JSON
-    members first; a ZIP with no strict winner is admitted by declared
-    artifact paths, each member hinted by its own declaration.
-    """
-    provider = fallback_provider
-    if fallback_provider is Provider.UNKNOWN:
-        safe_json_entries = ZipAdmission(zip_path=zip_path).filter_entries(
-            central_directory,
-            allowed_suffixes=ZIP_JSON_SUFFIXES,
-        )
-        detection_entries = [info for info in safe_json_entries if provider_detection_path(info.filename)]
-        provider = sniff_zip_provider(zf, detection_entries) or fallback_provider
-    return ZipMemberAdmission(provider, is_declared_artifact_path if provider is Provider.UNKNOWN else None)
+    bound = bound_location_provider(fallback_provider)
+    if bound is not None:
+        return ZipMemberAdmission(fallback_provider, None, bound)
+    safe_json_entries = ZipAdmission(zip_path=zip_path).filter_entries(
+        central_directory,
+        allowed_suffixes=ZIP_JSON_SUFFIXES,
+    )
+    provider = sniff_zip_provider(zf, (info for info in safe_json_entries if provider_detection_path(info.filename)))
+    return ZipMemberAdmission(provider or Provider.UNKNOWN, is_declared_artifact_path, None)
+
+
+def zip_member_profile_identity(
+    receipt: CapturedSourceInputIdentity,
+    member_name: str,
+) -> tuple[Path, Path] | None:
+    """Resolve a relative virtual member only within the accepted namespace."""
+    member = PurePosixPath(member_name)
+    if member.is_absolute() or ".." in member.parts:
+        return None
+    from polylogue.sources.parsers.hermes_identity import profile_root_for_artifact
+
+    profile_path = Path(receipt.profile_source_path).parent.joinpath(*member.parts)
+    return profile_root_for_artifact(profile_path), profile_path
+
+
+def _captured_zip_record(data: RawSessionData, context: ZipEntryReadContext) -> RawSessionData:
+    """Carry exact member evidence from the accepted physical container."""
+    receipt = context.captured_input_identity
+    if data.captured_zip_coordinate is not None:
+        return data
+    if receipt is None:
+        return data
+    if context.entry_ordinal is None:
+        raise ValueError("captured ZIP member lacks its central-directory ordinal")
+    if data.addressing_mode is None:
+        raise ValueError("captured ZIP member lacks its addressing mode")
+    namespace: Path | None = None
+    profile_path: Path | None = None
+    profile = zip_member_profile_identity(receipt, context.entry.filename)
+    if profile is not None:
+        namespace, profile_path = profile
+    coordinate = CapturedZipMemberCoordinate(
+        receipt.canonical_source_path,
+        receipt.semantic_source_path,
+        context.entry.filename,
+        context.entry_ordinal,
+        data.source_index or 0,
+        data.addressing_mode,
+        None if namespace is None else str(namespace),
+    )
+    from polylogue.core.provider_identity import captured_hermes_profile_key
+
+    return data.model_copy(
+        update={
+            "source_path": f"{receipt.semantic_source_path}:{context.entry.filename}",
+            "source_index": coordinate.source_index,
+            "canonical_source_path": coordinate.canonical_member,
+            "captured_zip_coordinate": coordinate,
+            "captured_profile_key": None if namespace is None else captured_hermes_profile_key(namespace),
+            "captured_profile_source_path": None if profile_path is None else str(profile_path),
+        }
+    )
 
 
 def iter_zip_entry_raw_data(
+    zf: zipfile.ZipFile,
+    context: ZipEntryReadContext,
+) -> Iterable[RawSessionData]:
+    """Decode one member and preserve its accepted container receipt."""
+    for data in _iter_zip_entry_raw_data(zf, context):
+        yield _captured_zip_record(data, context)
+
+
+def _iter_zip_entry_raw_data(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
 ) -> Iterable[RawSessionData]:

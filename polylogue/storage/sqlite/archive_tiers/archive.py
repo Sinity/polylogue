@@ -124,7 +124,7 @@ from polylogue.core.errors import (
     UnsupportedInsightFilterError,
 )
 from polylogue.core.json import require_json_value
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sqlite_introspection import relation_exists as _relation_exists
@@ -2016,6 +2016,9 @@ class ArchiveStore:
         source_path: str,
         canonical_source_path: str | None = None,
         captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         source_index: int = 0,
@@ -2034,6 +2037,9 @@ class ArchiveStore:
             source_path=source_path,
             canonical_source_path=canonical_source_path,
             captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             source_index=source_index,
@@ -2108,6 +2114,9 @@ class ArchiveStore:
         source_path: str,
         canonical_source_path: str | None = None,
         captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         classification: ArtifactClassification,
@@ -2125,6 +2134,9 @@ class ArchiveStore:
             source_path=source_path,
             canonical_source_path=canonical_source_path,
             captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             classification=classification,

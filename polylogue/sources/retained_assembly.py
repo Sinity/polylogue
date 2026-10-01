@@ -49,6 +49,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TypeVar, cast
 
+import ijson
+
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import split_zip_member_text
@@ -414,11 +416,11 @@ def retained_chatgpt_sidecars(
     scope = chatgpt_export_scope(session_source_path)
     if scope is None:
         return cast(SidecarData, {})
-    from .assembly_chatgpt import _member_asset_id, _record_asset_blob
+    from .assembly_chatgpt import _member_asset_id
     from .parsers.chatgpt_sidecars import ChatGPTAssetIndex
 
-    library_payload: object | None = None
-    asset_names_payload: object | None = None
+    index = ChatGPTAssetIndex()
+    claimed: set[str] = set()
     indexes = _select_retained(
         source_conn,
         origin=Origin.CHATGPT_EXPORT,
@@ -426,54 +428,53 @@ def retained_chatgpt_sidecars(
         where="a.source_path LIKE ? ESCAPE '\\'",
         parameters=[_like_prefix(scope)],
     )
-    for path, artifact in sorted(indexes.items()):
-        payload = _read(blob_store, artifact)
-        if payload is None:
-            continue
-        from polylogue.core.json import JSONDecodeError
-        from polylogue.core.json import loads as json_loads
+    try:
+        for path, artifact in sorted(indexes.items()):
+            name = _member_basename(path)
+            if name not in {"library_files.json", "conversation_asset_file_names.json"} or name in claimed:
+                continue
+            try:
+                with blob_store.open(artifact.blob_hash) as source:
+                    if index.load_stream(source, library=name == "library_files.json"):
+                        claimed.add(name)
+            except (OSError, ValueError, ijson.JSONError) as exc:
+                logger.debug("retained chatgpt asset index unavailable (%s): %s", path, exc)
+    except BaseException:
+        index.close()
+        raise
 
-        try:
-            document = json_loads(payload)
-        except (JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-            logger.debug("retained chatgpt asset index is not JSON (%s): %s", path, exc)
-            continue
-        name = _member_basename(path)
-        if name == "library_files.json" and library_payload is None:
-            library_payload = document
-        elif name == "conversation_asset_file_names.json" and asset_names_payload is None:
-            asset_names_payload = document
-
-    asset_blobs: dict[str, tuple[str, int]] = {}
-    assets = _select_retained(
-        source_conn,
-        origin=Origin.CHATGPT_EXPORT,
-        artifact_kind=ArtifactKind.EXPORT_ASSET,
-        where="a.source_path LIKE ? ESCAPE '\\'",
-        parameters=[_like_prefix(scope)],
-    )
-    # Key members exactly as live discovery does: the bare asset id until a
-    # second member proves it ambiguous, then ``asset_id#member`` for every
-    # member, with the member named relative to its export scope.
-    member_by_asset: dict[str, str] = {}
-    for path, artifact in sorted(assets.items()):
-        asset_id = _member_asset_id(_member_basename(path))
-        if asset_id is None:
-            continue
-        member = path[len(scope) :] if path.startswith(scope) else _member_basename(path)
-        _record_asset_blob(asset_blobs, member_by_asset, asset_id, member, (artifact.blob_hash, artifact.blob_size))
-
-    if library_payload is None and asset_names_payload is None and not asset_blobs:
-        return cast(SidecarData, {})
-    resolved: SidecarData = {
-        "chatgpt_asset_index": ChatGPTAssetIndex.build(
-            library_files_payload=library_payload,
-            asset_file_names_payload=asset_names_payload,
+    try:
+        group = index.begin_asset_group()
+        assets = _select_retained(
+            source_conn,
+            origin=Origin.CHATGPT_EXPORT,
+            artifact_kind=ArtifactKind.EXPORT_ASSET,
+            where="a.source_path LIKE ? ESCAPE '\\'",
+            parameters=[_like_prefix(scope)],
         )
-    }
-    if asset_blobs:
-        resolved["chatgpt_asset_blobs"] = asset_blobs
-    return resolved
+        # Key members exactly as live discovery does: the bare asset id until a
+        # second member proves it ambiguous, then ``asset_id#member`` for every
+        # member, with the member named relative to its export scope.
+        for path, artifact in sorted(assets.items()):
+            asset_id = _member_asset_id(_member_basename(path))
+            if asset_id is None:
+                continue
+            member = path[len(scope) :] if path.startswith(scope) else _member_basename(path)
+            index.record_asset(group, asset_id, member, (artifact.blob_hash, artifact.blob_size))
+
+        index.finish_asset_group(group)
+        index.seal()
+        asset_blobs = index.asset_blobs
+        if not claimed and not asset_blobs:
+            index.close()
+            return cast(SidecarData, {})
+        resolved: SidecarData = {"chatgpt_asset_index": index}
+        if asset_blobs:
+            resolved["chatgpt_asset_blobs"] = asset_blobs
+        return resolved
+    except BaseException:
+        index.close()
+        raise
 
 
 # --------------------------------------------------------------------------
@@ -526,7 +527,14 @@ def with_retained_assembly_evidence(
     merged: dict[str, object] = dict(sidecar_data)
     for key, value in retained.items():
         merged.setdefault(key, value)
-    return cast(SidecarData, merged)
+    result = cast(SidecarData, merged)
+    from .assembly import close_sidecar_data
+
+    # A supplement whose keys were all already authoritative must settle its
+    # private artifact. Any retained asset view kept in result carries that
+    # same owner through the last consumer instead.
+    close_sidecar_data(retained, borrowed=result)
+    return result
 
 
 def resolve_retained_assembly_evidence(

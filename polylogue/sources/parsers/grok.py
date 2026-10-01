@@ -48,6 +48,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.pipeline.ids import idless_session_identity
+from polylogue.sources.detection_projection import DetectorProjection
 
 from .base import (
     ParsedContentBlock,
@@ -253,3 +254,13 @@ __all__ = [
     "looks_like_export",
     "parse_conversation",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Consume every conversation and retain an exact existential shape witness."""
+    item = DetectorProjection(fields={"conversation": DetectorProjection(), "responses": DetectorProjection()})
+    return DetectorProjection(
+        fields={
+            "conversations": DetectorProjection(item=item, array_fold="any", array_predicate=looks_like_conversation),
+        }
+    )

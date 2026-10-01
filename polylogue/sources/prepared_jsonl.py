@@ -27,6 +27,7 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.acquisition_boundary import bound_profile_identity, open_bound_path
 from polylogue.sources.decoder_json import (
     JsonlDecodeError,
     PartialJsonStreamError,
@@ -80,6 +81,7 @@ from polylogue.sources.parsers.base_support import (
     otel_genai_unknown_wire_type,
 )
 from polylogue.sources.parsers.claude.ai_parser import parse_ai_stream, parse_design_stream
+from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
     ClaudeAttachmentScratch,
@@ -223,7 +225,7 @@ def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str
 
 
 @contextmanager
-def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str]]:
+def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str, CapturedHermesProfile]]:
     """Copy one revision of ``source`` into private scratch and name its digest.
 
     Everything that decides how a revision is interpreted -- provider
@@ -239,12 +241,15 @@ def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str]]
     snapshot = holder / source.name
     try:
         digest = hashlib.sha256()
-        with source.open("rb") as reader, snapshot.open("xb") as writer:
+        with open_bound_path(source, None) as reader, snapshot.open("xb") as writer:
+            profile = bound_profile_identity(reader)
+            if profile is None:
+                raise OSError("source snapshot has no bound declared namespace")
             for chunk in iter(lambda: reader.read(1024 * 1024), b""):
                 digest.update(chunk)
                 writer.write(chunk)
         os.chmod(snapshot, 0o400)
-        yield snapshot, digest.hexdigest()
+        yield snapshot, digest.hexdigest(), profile
     finally:
         with suppress(FileNotFoundError):
             shutil.rmtree(holder)
@@ -669,6 +674,7 @@ class PreparedJsonl:
     #: ``None`` when the failure was not a decode failure.
     decode_failure: DecodeFailure | None = None
     missing_profile_identity: bool = False
+    captured_profile_key: str | None = None
 
     @classmethod
     def seal(
@@ -681,6 +687,7 @@ class PreparedJsonl:
         enrichment_index_path: str | None = None,
         parsed_prefix_size: int | None = None,
         resolved_provider: Provider | None = None,
+        captured_profile_key: str | None = None,
         positive_evidence_filtered: bool = False,
         attempt_directory: Path | None = None,
     ) -> PreparedJsonl:
@@ -695,6 +702,7 @@ class PreparedJsonl:
             shard_seal=PreparedFileSeal.capture(shard_path),
             parsed_prefix_size=parsed_prefix_size,
             resolved_provider=resolved_provider,
+            captured_profile_key=captured_profile_key,
             positive_evidence_filtered=positive_evidence_filtered,
             attempt_directory=attempt_directory,
         )
@@ -2150,6 +2158,7 @@ def prepare_jsonl_blob(
             enrichment_index_path=enrichment_index_path,
             parsed_prefix_size=parse_prefix_size,
             resolved_provider=provider,
+            captured_profile_key=profile_identity,
             # Every branch above admits its sessions before sealing.
             positive_evidence_filtered=True,
             attempt_directory=attempt_directory,
@@ -2183,6 +2192,7 @@ def prepare_jsonl_blob(
             # provider token parsed before the source was hashed.
             resolved_provider=Provider.from_string(provider_value) if error_hash is not None else None,
             decode_failure=None if retryable else classify_decode_failure(exc),
+            captured_profile_key=profile_identity,
         )
     finally:
         if store is not None:

@@ -48,10 +48,10 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
 )
 from polylogue.storage.source_blob_restoration import (
-    is_legacy_append_without_window,
-    is_recorded_container_member,
+    read_prior_full_source_receipts,
     read_raw_source_evidence,
     retained_blob_source_candidates,
+    retained_source_location,
     stage_exact_blob,
     stage_exact_source_window_blob,
 )
@@ -1097,20 +1097,11 @@ class RawObservationDerivation:
         row = read_raw_source_evidence(conn, raw_id)
         if row is None:
             raise KeyError(raw_id)
-        prior_full_observations: list[tuple[int, int]] = []
-        if is_legacy_append_without_window(row):
-            prior_full_observations = [
-                (int(acquired_at_ms), int(size))
-                for acquired_at_ms, size in conn.execute(
-                    "SELECT acquired_at_ms, blob_size FROM raw_sessions "
-                    "WHERE source_path = ? AND source_index = 0 AND revision_kind IN ('full', 'unknown') "
-                    "AND acquired_at_ms IS NOT NULL AND blob_size IS NOT NULL",
-                    (source_path,),
-                )
-            ]
+        prior_full_observations = read_prior_full_source_receipts(conn, row)
+        source_path, container_member = retained_source_location(row, self.archive_root)
         candidates = retained_blob_source_candidates(
             row,
-            container_member=is_recorded_container_member(row),
+            container_member=container_member,
             prior_full_observations=prior_full_observations,
         )
         if not candidates:

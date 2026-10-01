@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.archive.revision_authority import RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 
 
 class RawSessionRecord(BaseModel):
@@ -20,6 +20,7 @@ class RawSessionRecord(BaseModel):
     # Frozen by acquisition; publication never resolves a mutable source alias.
     canonical_source_path: str | None = None
     captured_profile_key: str | None = None
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = Field(default=None, exclude=True)
     source_index: int | None = None
     # Container-member address kind, carried from acquisition so the source
     # tier records how this payload is addressed rather than inferring it

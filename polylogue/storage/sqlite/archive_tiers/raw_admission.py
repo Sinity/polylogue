@@ -105,6 +105,7 @@ from typing import Literal, TypeAlias
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, captured_zip_member_raw_id
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.artifacts.inspection import artifact_observation_id
@@ -184,6 +185,7 @@ class PendingPreParseRawAdmissionRequest:
     acquired_at_ms: int
     canonical_source_path: str | None = None
     captured_profile_key: str | None = None
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None
     addressing_mode: str | None = None
     content_identity: str | None = None
     file_mtime_ms: int | None = None
@@ -292,7 +294,53 @@ def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
     )
 
 
+def _validate_captured_zip_observation(request: PendingPreParseRawAdmissionRequest, raw_id: str) -> None:
+    coordinate = request.captured_zip_coordinate
+    if coordinate is not None and (
+        request.source_path != f"{coordinate.declared_container}:{coordinate.member_name}"
+        or request.canonical_source_path != coordinate.canonical_member
+        or request.source_index != coordinate.source_index
+        or request.addressing_mode != coordinate.addressing_mode.value
+        or raw_id != captured_zip_member_raw_id(coordinate, request.blob_hash.hex())
+    ):
+        raise ValueError("raw admission differs from its captured ZIP coordinate")
+
+
 def execute_raw_admission_plan_sync(
+    conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
+) -> RawAdmissionResult:
+    """Publish a raw observation and its captured member coordinate atomically."""
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
+
+    if not manage_transaction and not conn.in_transaction:
+        raise ValueError("participating raw admission requires an existing source transaction")
+    coordinate = plan.request.captured_zip_coordinate
+    _validate_captured_zip_observation(plan.request, plan.raw_id)
+    conn.execute("SAVEPOINT captured_raw_admission")
+    try:
+        result = _execute_raw_admission_plan_sync(conn, plan, manage_transaction=False)
+        if coordinate is not None:
+            record_raw_container_coordinate(
+                conn,
+                result.raw_id,
+                coordinate_format="zip-v2",
+                entry_ordinal=coordinate.entry_ordinal,
+                split_index=coordinate.split_index,
+                addressing_mode=coordinate.addressing_mode.value,
+                content_identity=plan.request.content_identity,
+                manage_transaction=False,
+            )
+    except BaseException:
+        conn.execute("ROLLBACK TO captured_raw_admission")
+        conn.execute("RELEASE captured_raw_admission")
+        raise
+    conn.execute("RELEASE captured_raw_admission")
+    if manage_transaction:
+        conn.commit()
+    return result
+
+
+def _execute_raw_admission_plan_sync(
     conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
 ) -> RawAdmissionResult:
     """Apply a precomputed plan through the canonical synchronous writer."""
@@ -362,6 +410,14 @@ def execute_source_item_admission(
 
     if not conn.in_transaction:
         raise ValueError("source-item admission requires the caller's source transaction")
+    coordinate = plan.request.captured_zip_coordinate
+    if coordinate is not None and (
+        member.entry_ordinal != coordinate.entry_ordinal
+        or member.split_index != coordinate.split_index
+        or member.addressing_mode != coordinate.addressing_mode.value
+        or member.content_identity != plan.request.content_identity
+    ):
+        raise ValueError("source input membership differs from its captured ZIP coordinate")
     conn.execute("SAVEPOINT source_item_raw_admission")
     try:
         if member.entry_ordinal is not None:
@@ -856,6 +912,9 @@ def admit_raw_blob_observation(
     source_path: str,
     canonical_source_path: str | None = None,
     captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -876,6 +935,9 @@ def admit_raw_blob_observation(
                 source_path=source_path,
                 canonical_source_path=canonical_source_path,
                 captured_profile_key=captured_profile_key,
+                captured_zip_coordinate=captured_zip_coordinate,
+                addressing_mode=addressing_mode,
+                content_identity=content_identity,
                 source_index=source_index,
                 blob_hash=blob_hash,
                 blob_size=blob_size,
@@ -898,6 +960,9 @@ def admit_raw_artifact_blob_observation(
     source_path: str,
     canonical_source_path: str | None = None,
     captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -918,37 +983,75 @@ def admit_raw_artifact_blob_observation(
         source_path=source_path,
         source_index=source_index,
     )
-    admitted_raw_id = write_source_raw_session_blob_ref(
-        conn,
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
+
+    request = PendingPreParseRawAdmissionRequest(
         origin=origin,
         capture_mode=capture_mode,
         source_path=source_path,
         canonical_source_path=canonical_source_path,
         captured_profile_key=captured_profile_key,
+        captured_zip_coordinate=captured_zip_coordinate,
+        addressing_mode=addressing_mode,
+        content_identity=content_identity,
         source_index=source_index,
         blob_hash=blob_hash,
         blob_size=blob_size,
         acquired_at_ms=acquired_at_ms,
-        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        artifact=ArchiveSourceArtifact(
-            artifact_id=artifact_id,
-            origin=origin,
-            source_path=source_path,
-            artifact_kind=classification.cohort,
-            classification_reason=classification.reason,
-            support_status=ArtifactSupportStatus.UNKNOWN,
-            parse_as_session=False,
-            schema_eligible=classification.schema_eligible,
-            first_observed_at_ms=acquired_at_ms,
-            last_observed_at_ms=acquired_at_ms,
-            source_index=source_index,
-        ),
-        revision=None,
-        manage_transaction=True,
-        policy_snapshot=policy_snapshot,
     )
+    plan = plan_raw_admission(request)
+    _validate_captured_zip_observation(request, plan.raw_id)
+    conn.execute("SAVEPOINT captured_artifact_admission")
+    try:
+        admitted_raw_id = write_source_raw_session_blob_ref(
+            conn,
+            origin=origin,
+            capture_mode=capture_mode,
+            source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            source_index=source_index,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            artifact=ArchiveSourceArtifact(
+                artifact_id=artifact_id,
+                origin=origin,
+                source_path=source_path,
+                artifact_kind=classification.cohort,
+                classification_reason=classification.reason,
+                support_status=ArtifactSupportStatus.UNKNOWN,
+                parse_as_session=False,
+                schema_eligible=classification.schema_eligible,
+                first_observed_at_ms=acquired_at_ms,
+                last_observed_at_ms=acquired_at_ms,
+                source_index=source_index,
+            ),
+            revision=None,
+            manage_transaction=False,
+            policy_snapshot=policy_snapshot,
+        )
+        if captured_zip_coordinate is not None:
+            record_raw_container_coordinate(
+                conn,
+                admitted_raw_id,
+                coordinate_format="zip-v2",
+                entry_ordinal=captured_zip_coordinate.entry_ordinal,
+                split_index=captured_zip_coordinate.split_index,
+                addressing_mode=captured_zip_coordinate.addressing_mode.value,
+                content_identity=content_identity,
+                manage_transaction=False,
+            )
+    except BaseException:
+        conn.execute("ROLLBACK TO captured_artifact_admission")
+        conn.execute("RELEASE captured_artifact_admission")
+        raise
+    conn.execute("RELEASE captured_artifact_admission")
+    conn.commit()
     return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=admitted_raw_id, artifact_id=artifact_id)
 
 

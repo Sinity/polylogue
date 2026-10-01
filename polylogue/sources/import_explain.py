@@ -10,18 +10,20 @@ from collections.abc import Iterable
 from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact, classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
+from polylogue.core.provider_identity import captured_hermes_profile_key
 from polylogue.core.sources import origin_from_provider
+from polylogue.sources.acquisition_boundary import open_bound_container
 from polylogue.sources.decoder_zip import (
-    MAX_UNCOMPRESSED_SIZE,
-    ZipBombError,
     ZipEntryValidator,
-    open_bounded_zip_entry,
+    open_zip_entry,
+    prepare_zip_entry,
     zip_entry_session_artifact,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
@@ -35,9 +37,15 @@ from polylogue.sources.dispatch import (
 )
 from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.source_acquisition_components import sniff_zip_provider
+from polylogue.sources.source_acquisition_components import (
+    sniff_zip_provider,
+    zip_member_admission,
+    zip_member_profile_identity,
+)
+from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.sources.sqlite_inspection import SQLiteInspection, inspect_sqlite_source
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.source_write import read_capture_mode_resolution
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import read_frame
@@ -555,7 +563,15 @@ def _explain_zip(
     ]
     container_provider = provider_hint
     try:
-        with zipfile.ZipFile(path) as archive:
+        with (
+            TemporaryDirectory(prefix="polylogue-zip-explain-") as scratch,
+            bind_source_input(path) as captured,
+            open_bound_container(
+                BlobStore(Path(scratch)),
+                captured,
+            ) as physical,
+            zipfile.ZipFile(physical) as archive,
+        ):
             if container_provider is Provider.UNKNOWN:
                 # The container carried no origin identity while its contents
                 # did: a claude.ai GDPR export ZIP reported
@@ -573,27 +589,25 @@ def _explain_zip(
                             reason=f"dominant member provider: {sniffed.value}",
                         )
                     )
-            validator = ZipEntryValidator(provider_hint, cursor_state=None, zip_path=path)
+            central_directory = archive.infolist()
+            admission = zip_member_admission(archive, path, central_directory, provider_hint)
+            validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
 
-            def record_rejection(info: zipfile.ZipInfo, reason: str) -> None:
-                skipped.append(
-                    ImportSkippedRowPayload(
-                        reason=reason,
-                        source_path=f"{path}:{info.filename}",
-                    )
-                )
-
-            for info in validator.filter_entries(archive.infolist(), on_rejected=record_rejection):
-                path_classification = classify_artifact_path(info.filename, provider=provider_hint)
+            for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
+                entry_provider = admission.entry_provider_hint(archive, info)
+                profile = zip_member_profile_identity(captured.captured_identity, info.filename)
+                profile_identity = None if profile is None else captured_hermes_profile_key(profile[0])
+                path_classification = classify_artifact_path(info.filename, provider=entry_provider)
                 decoded_session_artifact: ArtifactClassification | None = None
                 if path_classification is not None and not path_classification.parse_as_session:
                     try:
                         decoded_session_artifact = zip_entry_session_artifact(
                             archive,
                             info,
-                            provider=provider_hint,
+                            provider=entry_provider,
+                            profile_identity=profile_identity,
                         )
-                    except ZipBombError as exc:
+                    except zipfile.BadZipFile as exc:
                         skipped.append(
                             ImportSkippedRowPayload(
                                 reason=f"zip entry rejected: {exc}",
@@ -614,15 +628,14 @@ def _explain_zip(
                     )
                     continue
                 try:
-                    with open_bounded_zip_entry(archive, info) as handle:
-                        entry = _explain_bytes(
-                            handle.read(MAX_UNCOMPRESSED_SIZE + 1),
-                            stream_name=info.filename,
-                            source_path=f"{path}:{info.filename}",
-                            provider_hint=provider_hint,
-                            path_classification=None,
-                        )
-                except ZipBombError as exc:
+                    entry = _explain_zip_entry(
+                        archive,
+                        info,
+                        source_path=f"{path}:{info.filename}",
+                        provider_hint=entry_provider,
+                        profile_identity=profile_identity,
+                    )
+                except zipfile.BadZipFile as exc:
                     skipped.append(
                         ImportSkippedRowPayload(
                             reason=f"zip entry rejected: {exc}",
@@ -661,6 +674,93 @@ def _explain_zip(
         produced=produced,
         skipped=tuple(skipped),
         caveats=("ZIP explanation summarizes supported entries; raw bytes are omitted.",),
+    )
+
+
+def _explain_zip_entry(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    source_path: str,
+    provider_hint: Provider,
+    profile_identity: str | None = None,
+) -> ImportExplainEntryPayload:
+    """Aggregate the existing sealed parser artifact without a session list."""
+    from polylogue.sources.detection_projection import DetectorProjection, project_detection_input
+    from polylogue.sources.dispatch import detect_provider_from_stream_evidence
+
+    with open_zip_entry(archive, info) as source:
+        detected, evidence = detect_provider_from_stream_evidence(source)
+        shape, mode_view = project_detection_input(source, DetectorProjection(fields={"sessions": None}))
+    provider = detected or provider_hint
+    refs: list[str] = []
+    session_count = messages = blocks = actions = 0
+    observer: ParsedSession | None = None
+    with prepare_zip_entry(
+        archive,
+        info,
+        provider=provider,
+        source_path=source_path,
+        profile_identity=profile_identity,
+    ) as prepared:
+        if prepared.error is not None or prepared.deferred or prepared.blob_hash is None:
+            return _skipped_entry(
+                Path(source_path),
+                provider_hint=provider_hint,
+                artifact=None,
+                reason=prepared.error or "source preparation deferred",
+                detected_provider=provider,
+            )
+        for session in prepared.iter_sessions():
+            session_count += 1
+            refs.append(f"session:{session.source_name.value}:{session.provider_session_id}")
+            if observer is None and {"hermes:atif-trajectory", "hermes:atof-observer"}.intersection(
+                session.ingest_flags
+            ):
+                observer = session
+            for message in session.messages:
+                messages += 1
+                for block in message.blocks:
+                    blocks += 1
+                    actions += block.type.value == "tool_use"
+        fidelity = None
+        if provider is Provider.HERMES:
+            fidelity = _fidelity_payload(
+                hermes_spans.import_fidelity_declaration(observer)
+                if observer is not None
+                else hermes_state.json_fallback_fidelity_counts(sessions=session_count, messages=messages)
+            )
+    parser_mode = (
+        "grouped_records"
+        if provider in GROUP_PROVIDERS
+        else "bundle_record"
+        if shape == "sequence"
+        else "session_bundle"
+        if isinstance(mode_view, dict) and "sessions" in mode_view
+        else "single_record"
+    )
+    return ImportExplainEntryPayload(
+        source_path=source_path,
+        artifact_kind="session_record_stream" if provider in GROUP_PROVIDERS else "session_document",
+        provider_hint=provider_hint.value,
+        detected_origin=_origin_value(provider),
+        detected_provider=provider.value,
+        detector="provider_shape",
+        detector_evidence=(_evidence(evidence, matched=provider is not Provider.UNKNOWN, reason=provider.value),),
+        parser=provider.value,
+        parser_mode=parser_mode,
+        produced=ImportProducedRowsPayload(
+            sessions=session_count,
+            messages=messages,
+            blocks=blocks,
+            actions=actions,
+            raw_records=session_count,
+            session_refs=tuple(refs),
+        ),
+        caveats=(() if session_count else ("parser produced no sessions",))
+        + (() if fidelity is None else fidelity.caveats),
+        raw_evidence_refs=(),
+        fidelity=fidelity,
     )
 
 

@@ -795,18 +795,24 @@ def _enrich_parsed_sessions(
     # ChatGPT asset maps are retained source artifacts, so the worker resolves
     # them from the archive under the same no-rediscovery contract the Codex
     # lane above already keeps. An acquisition-carried key stays authoritative.
+    borrowed_sidecars = sidecar_data
     sidecar_data = resolve_retained_assembly_evidence(
         sidecar_data,
         provider=plan.provider,
         archive_root=context.archive_root,
         source_path=context.raw_record.source_path,
     )
+    from polylogue.sources.assembly import close_sidecar_data
     from polylogue.sources.revision_backfill import stamp_enrichment_evidence
 
-    return [
-        stamp_enrichment_evidence(plan.provider, sidecar_data, spec.enrich_session(convo, sidecar_data))
-        for convo in parsed_sessions
-    ]
+    try:
+        return [
+            stamp_enrichment_evidence(plan.provider, sidecar_data, spec.enrich_session(convo, sidecar_data))
+            for convo in parsed_sessions
+        ]
+
+    finally:
+        close_sidecar_data(sidecar_data, borrowed=borrowed_sidecars)
 
 
 def _with_retained_codex_state_titles(

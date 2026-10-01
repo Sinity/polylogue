@@ -46,6 +46,7 @@ class PreparedLiveRetainedRaw:
                 descriptor != self.descriptor
                 or native_id != self.native_id
                 or archive.raw_revision_file_mtime(self.raw_id) != self.fallback_timestamp
+                or archive.raw_profile_identity(self.raw_id) != self.artifact.captured_profile_key
             ):
                 return False
         except (KeyError, ValueError):

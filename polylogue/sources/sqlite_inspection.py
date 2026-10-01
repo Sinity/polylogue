@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import errno
 import sqlite3
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from polylogue.core.enums import SOURCE_FIDELITY_STATUS_VALUES, Provider
-from polylogue.sources.parsers import antigravity, hermes_identity, hermes_state, hermes_verification
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.core.enums import SOURCE_FIDELITY_STATUS_VALUES
+from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
+
+if TYPE_CHECKING:
+    from polylogue.sources.source_staging import SourceInputBinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,14 +39,24 @@ def _inspect_connection(
     fidelity = None
     if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} and antigravity._trajectory_schema_matches(conn):
         domain = "antigravity_trajectory_db"
-        sessions: Iterable[ParsedSession] = antigravity._parse_trajectory_connection(conn, path, path.stem)
+        if grouping is None:
+            raise OSError(errno.EPROTO, "trajectory inspection has no private grouping store")
+        produced, admitted, degraded = antigravity._inspect_trajectory_connection(
+            conn, grouping, path, preflight=preflight
+        )
+        return SQLiteInspection(domain, produced, admitted, degraded)
     elif not preflight and hermes_state._has_required_tables(conn):
         domain = "hermes_state_db"
-        state_sessions = hermes_state._parse_state_connection(
-            conn, path, profile_root=hermes_identity.profile_root_for_artifact(path), profile_identity=profile_identity
+        if grouping is None:
+            raise OSError(errno.EPROTO, "state inspection has no private grouping store")
+        produced, fidelity = hermes_state._inspect_state_connection(
+            conn,
+            grouping,
+            path,
+            profile_root=hermes_identity.profile_root_for_artifact(path),
+            profile_identity=profile_identity,
         )
-        fidelity = hermes_state.import_fidelity_declaration(state_sessions, acquisition_method="logical_export")
-        sessions = state_sessions
+        return SQLiteInspection(domain, produced, degraded=bool(produced["sessions"]), fidelity=fidelity)
     elif not preflight and hermes_verification._has_required_tables(conn):
         domain = "hermes_verification_evidence_db"
         if grouping is None:
@@ -60,35 +71,6 @@ def _inspect_connection(
         return SQLiteInspection(domain, produced, degraded=bool(produced["sessions"]), fidelity=fidelity)
     else:
         return SQLiteInspection(None, {})
-    produced: dict[str, Any] = {
-        "sessions": 0,
-        "messages": 0,
-        "blocks": 0,
-        "actions": 0,
-        "raw_records": 0,
-        "session_refs": [],
-    }
-    admitted = 0
-    degraded = False
-    for session in sessions:
-        produced["sessions"] += 1
-        produced["raw_records"] += 1
-        if not preflight:
-            produced["session_refs"].append(f"session:{session.source_name.value}:{session.provider_session_id}")
-        produced["messages"] += len(session.messages)
-        for message in session.messages:
-            produced["blocks"] += len(message.blocks)
-            produced["actions"] += sum(block.type.value == "tool_use" for block in message.blocks)
-        degraded |= bool(session.ingest_flags)
-        if preflight:
-            from polylogue.sources.dispatch import require_positive_conversational_evidence
-
-            positive = require_positive_conversational_evidence(
-                [session], provider=Provider.ANTIGRAVITY, source_path=str(path)
-            )
-            admitted += len(positive)
-            degraded |= not positive
-    return SQLiteInspection(domain, produced, admitted, degraded, fidelity)
 
 
 def _decode_inspection(value: dict[str, Any], *, preflight: bool = False) -> SQLiteInspection:
@@ -159,9 +141,47 @@ def _decode_inspection(value: dict[str, Any], *, preflight: bool = False) -> SQL
         raise OSError(errno.EPROTO, "invalid SQLite inspection result") from exc
 
 
-def inspect_sqlite_source(path: Path, *, preflight: bool = False) -> SQLiteInspection:
+def inspect_sqlite_source(
+    path: Path, *, preflight: bool = False, source_binding: SourceInputBinding | None = None
+) -> SQLiteInspection:
     """Inspect supported provider domains on one bound connection and snapshot."""
     from polylogue.sources.sqlite_export import _run_source_worker
 
     operation = "inspect_preflight" if preflight else "inspect_explain"
-    return _decode_inspection(_run_source_worker(path, operation), preflight=preflight)
+    return _decode_inspection(_run_source_worker(path, operation, source_binding=source_binding), preflight=preflight)
+
+
+@dataclass(frozen=True, slots=True)
+class SQLiteClassification:
+    """Structural claims from the accepted input's one proved connection."""
+
+    antigravity: bool
+    hermes_state: bool
+    hermes_verification: bool
+    codex_kind: str
+
+
+def _classify_connection(conn: sqlite3.Connection) -> SQLiteClassification:
+    conn.text_factory = str
+    conn.row_factory = None
+    tables = frozenset(str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"))
+    return SQLiteClassification(
+        antigravity._trajectory_schema_matches(conn),
+        hermes_state._has_required_tables(conn),
+        hermes_verification._has_required_tables(conn),
+        codex_state.classify_codex_sqlite_tables(tables),
+    )
+
+
+def classify_sqlite_source(path: Path, *, source_binding: SourceInputBinding | None = None) -> SQLiteClassification:
+    """Classify actual opened bytes without reopening a mutable operator alias."""
+    from polylogue.sources.sqlite_export import _run_source_worker
+
+    value = _run_source_worker(path, "classify", source_binding=source_binding)
+    if (
+        set(value) != {"antigravity", "hermes_state", "hermes_verification", "codex_kind"}
+        or any(type(value[name]) is not bool for name in ("antigravity", "hermes_state", "hermes_verification"))
+        or value["codex_kind"] not in {"unknown", *(kind for kind, _tables in codex_state._KIND_REQUIRED_TABLES)}
+    ):
+        raise OSError(errno.EPROTO, "invalid SQLite classification result")
+    return SQLiteClassification(**value)

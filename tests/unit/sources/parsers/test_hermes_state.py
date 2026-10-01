@@ -87,6 +87,87 @@ def _tool_result_blocks(path: Path, *, tool_contents: list[str]) -> list[ParsedC
     ]
 
 
+@pytest.mark.parametrize(
+    ("parents", "positions"),
+    [
+        ({"a": "b", "b": None}, {"a": 1, "b": 0}),
+        ({"a": "b", "b": "c", "c": None}, {"a": 2, "b": 1, "c": 0}),
+        ({"a": "b", "b": "a"}, {"a": 0, "b": 1}),
+    ],
+    ids=["later-parent", "later-multilevel-parents", "actual-cycle"],
+)
+def test_compression_parent_order_and_bound_preview_agree(
+    tmp_path: Path, parents: dict[str, str | None], positions: dict[str, int]
+) -> None:
+    from polylogue.sources.parsers.hermes_identity import profile_key
+    from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+    path = tmp_path / "state.db"
+    _write_state_db(path, tool_contents=[])
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("ALTER TABLE sessions ADD COLUMN end_reason TEXT")
+        conn.execute("DELETE FROM messages")
+        conn.execute("DELETE FROM sessions")
+        for order, (session_id, parent) in enumerate(parents.items()):
+            conn.execute(
+                "INSERT INTO sessions (id, source, model_config, parent_session_id, started_at, end_reason) "
+                "VALUES (?, 'hermes', '{}', ?, ?, 'compression')",
+                (session_id, parent, order),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)",
+                (session_id, f"message-{session_id}", order),
+            )
+    sessions = parse_state_db(path)
+    qualifier = profile_key(tmp_path)
+    by_id = {session.provider_session_id: session for session in sessions}
+    for native_id, position in positions.items():
+        session = by_id[hermes_state._qualified_session_id(native_id, qualifier)]
+        assert session.messages[0].position == position
+        if position:
+            parent = by_id[session.parent_session_provider_id]
+            assert session.branch_point_provider_message_id == parent.messages[-1].provider_message_id
+    inspection = inspect_sqlite_source(path)
+    assert inspection.produced["sessions"] == len(sessions)
+    assert inspection.produced["messages"] == sum(len(session.messages) for session in sessions)
+    assert inspection.produced["blocks"] == sum(
+        len(message.blocks) for session in sessions for message in session.messages
+    )
+    assert inspection.produced["session_refs"] == [
+        f"session:{session.source_name.value}:{session.provider_session_id}" for session in sessions
+    ]
+    assert inspection.fidelity == hermes_state._logical_export_fidelity(sessions)
+
+
+def test_bound_state_preview_preserves_python_identity_grouping_and_native_collation(tmp_path: Path) -> None:
+    from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+    path = tmp_path / "state.db"
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.executescript(
+            "CREATE TABLE schema_version (version INTEGER);"
+            "INSERT INTO schema_version VALUES (16);"
+            "CREATE TABLE sessions (id, started_at REAL, model_config TEXT, source TEXT, parent_session_id TEXT);"
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT COLLATE NOCASE, "
+            "role TEXT, content TEXT, timestamp REAL, active INTEGER, observed INTEGER, compacted INTEGER, tool_calls TEXT);"
+        )
+        conn.executemany(
+            "INSERT INTO sessions VALUES (?, ?, '{}', 'hermes', NULL)", [(1, 0), ("1", 1), ("a", 2), ("A", 3)]
+        )
+        conn.executemany(
+            "INSERT INTO messages VALUES (?, ?, 'user', ?, ?, 1, 0, 0, NULL)",
+            [(1, "1", "numeric identity", 0), (2, "a", "lowercase", 1), (3, "A", "uppercase", 2)],
+        )
+    sessions = parse_state_db(path)
+    inspection = inspect_sqlite_source(path)
+    assert len(sessions) == 4
+    assert inspection.produced["messages"] == sum(len(session.messages) for session in sessions) == 6
+    assert inspection.produced["session_refs"] == [
+        f"session:{session.source_name.value}:{session.provider_session_id}" for session in sessions
+    ]
+    assert inspection.fidelity == hermes_state._logical_export_fidelity(sessions)
+
+
 def test_exit_code_zero_is_not_an_error(tmp_path: Path) -> None:
     blocks = _tool_result_blocks(tmp_path / "state.db", tool_contents=[json.dumps({"output": "ok", "exit_code": 0})])
     assert blocks[0].is_error is False

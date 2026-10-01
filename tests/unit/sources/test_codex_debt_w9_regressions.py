@@ -20,9 +20,10 @@ import pytest
 from polylogue.config import Source
 from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 from polylogue.core.enums import Provider
+from polylogue.operations.import_operations import prepare_import_source_admission
 from polylogue.sources import assembly_chatgpt, dispatch, drive, revision_backfill
 from polylogue.sources.drive.types import DriveFile
-from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
+from polylogue.sources.import_preflight import ImportPreflightStatus
 from polylogue.sources.live import WatchSource, cold_build, hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import jsonl_complete_prefix
@@ -75,11 +76,18 @@ def test_w9_asset_acquisition_rejects_symlink_leaves(tmp_path: Path) -> None:
     good = audio / "file_def.wav"
     good.write_bytes(b"selected regular file")
 
-    acquired = assembly_chatgpt._acquire_asset_blobs_from_directory(export, BlobStore(tmp_path / "blob"))
+    from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 
-    assert acquired
-    assert {blob[0] for blob in acquired.values()} == {sha256(good.read_bytes()).hexdigest()}
-    assert all("abc" not in key for key in acquired)
+    index = ChatGPTAssetIndex()
+    try:
+        assembly_chatgpt._acquire_asset_blobs_from_directory(export, BlobStore(tmp_path / "blob"), index)
+        index.seal()
+        acquired = index.asset_blobs
+        assert acquired
+        assert {blob[0] for blob in acquired.values()} == {sha256(good.read_bytes()).hexdigest()}
+        assert all("abc" not in key for key in acquired)
+    finally:
+        index.close()
 
 
 def test_w9_retained_unknown_project_is_detected_beyond_prefix() -> None:
@@ -256,7 +264,7 @@ def test_w9_trajectory_preflight_reports_degraded_steps(tmp_path: Path) -> None:
             INSERT INTO steps VALUES (0, 'message', 'v1', '{"role":"user","text":"hello"}');
             INSERT INTO steps VALUES (1, 'future-step', 'v999', '{}');
         """)
-    result = preflight_import_source(source)
+    result = prepare_import_source_admission(source).preflight
     assert result.supported_count == 1
     assert result.caveats
     assert result.status is ImportPreflightStatus.DEGRADED

@@ -35,22 +35,26 @@ __all__ = [
 
 
 def initialize_runtime_source_fixture(path: Path) -> None:
-    """Build a synthetic Source through baseline DDL and installed numbered proof."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+    """Build an empty unit schema through the installed numbered probe authority.
 
-    current = 0
-    if path.exists():
-        with closing(sqlite3.connect(path)) as probe:
-            current = int(probe.execute("PRAGMA user_version").fetchone()[0])
-    if current == 0:
-        initialize_archive_database(path, ArchiveTier.SOURCE, expected_version=1)
-    elif current != 1:
-        initialize_archive_database(path, ArchiveTier.SOURCE)
-        return
+    This fixture is not an archive migration. Tests for populated historical
+    archives use the actual owned train and authenticated package instead.
+    """
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        initialize_archive_database,
+        initialize_runtime_tier_probe,
+    )
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as source:
-        migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None)
+        current = int(source.execute("PRAGMA user_version").fetchone()[0])
+        if current == 0:
+            initialize_runtime_tier_probe(source, ArchiveTier.SOURCE, probe_path=path)
+        elif current != ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]:
+            raise ValueError("historical Source fixture requires its owned migration train")
+    initialize_archive_database(path, ArchiveTier.SOURCE)
 
 
 def bootstrap_baseline_archive(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

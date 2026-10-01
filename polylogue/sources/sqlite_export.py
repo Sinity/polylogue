@@ -43,14 +43,14 @@ import struct
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, closing, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 
 if TYPE_CHECKING:
-    from polylogue.sources.sqlite_snapshot import SQLiteSourceBinding
+    from polylogue.sources.source_staging import SourceInputBinding
 from urllib.parse import quote_from_bytes
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
@@ -358,6 +358,9 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
             stderr=subprocess.DEVNULL,
             close_fds=True,
             pass_fds=tuple({request["directory"], request["metadata_directory"]}),
+            # Every private worker artifact stays below the parent-owned
+            # operation directory, which is removed only after actual reap.
+            env={**os.environ, "TMPDIR": scratch},
         )
         try:
             assert process.stdin is not None and process.stdout is not None
@@ -367,8 +370,13 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
             while True:
                 kind, size = _FRAME_HEADER.unpack(_read_exact(process.stdout, _FRAME_HEADER.size))
                 if kind == b"D":
-                    if operation != "export" or handle is None:
+                    if (
+                        operation not in {"export", "bytes", "preflight_bytes", "staging_receipt", "copy", "backup"}
+                        or handle is None
+                    ):
                         raise OSError(errno.EPROTO, "unexpected SQLite export frame")
+                    if not size:
+                        handle.write(b"")
                     while size:
                         chunk = _read_exact(process.stdout, min(size, _STREAM_CHUNK))
                         handle.write(chunk)
@@ -377,7 +385,20 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
                     process.stdin.flush()
                 elif kind == b"R":
                     if (
-                        operation not in {"shape", "inspect_explain", "inspect_preflight", "backup", "binding"}
+                        operation
+                        not in {
+                            "shape",
+                            "inspect_explain",
+                            "inspect_preflight",
+                            "classify",
+                            "backup",
+                            "binding",
+                            "copy",
+                            "bytes",
+                            "preflight_bytes",
+                            "zip_container",
+                            "staging_receipt",
+                        }
                         or got_result
                     ):
                         raise OSError(errno.EPROTO, "unexpected SQLite shape frame")
@@ -389,7 +410,20 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
                     _raise_worker_error(_read_exact(process.stdout, size))
                 elif kind == b"S" and size == 0:
                     if (
-                        operation in {"shape", "inspect_explain", "inspect_preflight", "backup", "binding"}
+                        operation
+                        in {
+                            "shape",
+                            "inspect_explain",
+                            "inspect_preflight",
+                            "classify",
+                            "backup",
+                            "binding",
+                            "copy",
+                            "bytes",
+                            "preflight_bytes",
+                            "zip_container",
+                            "staging_receipt",
+                        }
                         and not got_result
                     ):
                         raise OSError(errno.EPROTO, "SQLite worker omitted its shape result")
@@ -416,6 +450,19 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
                     process.stdout.close()
 
 
+class _ProgressSink:
+    """Cancellation ACKs for private copy operations carry no payload bytes."""
+
+    def __init__(self, heartbeat: Callable[[], None]) -> None:
+        self.heartbeat = heartbeat
+
+    def write(self, data: bytes) -> int:
+        if data:
+            raise OSError(errno.EPROTO, "private copy progress unexpectedly contains payload")
+        self.heartbeat()
+        return 0
+
+
 def _run_source_worker(
     source: Path,
     operation: str,
@@ -426,12 +473,13 @@ def _run_source_worker(
     expected_identity: tuple[int, int] | None = None,
     destination: Path | None = None,
     parent_anchor: int | None = None,
-    source_binding: SQLiteSourceBinding | None = None,
+    source_binding: SourceInputBinding | None = None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    from polylogue.sources.sqlite_snapshot import _verify_staging_metadata_name, bind_sqlite_source
+    from polylogue.sources.source_staging import _verify_staging_metadata_name, bind_source_input
 
     if source_binding is None:
-        with bind_sqlite_source(source, parent_anchor=parent_anchor) as binding:
+        with bind_source_input(source, parent_anchor=parent_anchor) as binding:
             return _run_source_worker(
                 source,
                 operation,
@@ -442,25 +490,20 @@ def _run_source_worker(
                 destination=destination,
                 parent_anchor=binding.parent_anchor,
                 source_binding=binding,
+                heartbeat=heartbeat,
             )
     source = source.absolute()
     if source_binding.source != source:
         raise OSError(errno.ESTALE, "SQLite binding belongs to another coordinate", str(source))
     source = source_binding.physical_path
-    metadata_open = getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY))
-    if parent_anchor is None:
-        parent = source.parent.resolve(strict=True)
-        parent_identity = _identity(parent.stat())
-        directory = os.open(parent, metadata_open | os.O_DIRECTORY | os.O_NOFOLLOW)
-    else:
-        directory = os.dup(parent_anchor)
-        parent_identity = _identity(os.fstat(directory))
-        parent = source.parent
+    parent_identity = _identity(os.fstat(source_binding.parent_anchor))
+    if parent_anchor is not None and _identity(os.fstat(parent_anchor)) != parent_identity:
+        raise OSError(errno.ESTALE, "SQLite source parent differs from its accepted binding", str(source))
+    directory = os.dup(source_binding.parent_anchor)
+    parent = source.parent
     try:
-        if _identity(os.fstat(directory)) != parent_identity or _identity(source.parent.stat()) != parent_identity:
+        if _identity(os.fstat(directory)) != parent_identity:
             raise OSError(errno.ESTALE, "SQLite source parent changed", str(source))
-        if _identity(os.fstat(source_binding.metadata_anchor)) != _identity(source_binding.source.parent.stat()):
-            raise OSError(errno.ESTALE, "SQLite declared parent changed", str(source))
         accepted: dict[str, _FileIdentity | None] = {"": _named_identity(directory, source.name)}
         main = accepted[""]
         assert main is not None
@@ -487,22 +530,19 @@ def _run_source_worker(
             "metadata_directory": source_binding.metadata_anchor,
             "identities": accepted,
             "operation": operation,
+            "progress": heartbeat is not None,
             "scope": asdict(scope or MemberExportScope()),
             "immutable": immutable,
             "destination": None if destination is None else str(destination.absolute()),
             "provenance": source_binding.provenance,
+            "expected_content_kind": source_binding.expected_content_kind,
+            "expected_content_revision": source_binding.expected_content_revision,
             "accepted_source_path": str(
                 source_binding.source_path if source_binding.staged else source_binding.physical_path
             ),
         }
-        result = _exchange_source_worker(request, handle)
-        if (
-            _identity(source.parent.stat()) != parent_identity
-            or _named_identity(directory, source.name) != main
-            or _identity(os.fstat(source_binding.metadata_anchor)) != _identity(source_binding.source.parent.stat())
-            or source_binding.source.stat().st_ino != main[1]
-            or source_binding.source.stat().st_dev != main[0]
-        ):
+        result = _exchange_source_worker(request, _ProgressSink(heartbeat) if heartbeat is not None else handle)
+        if _identity(os.fstat(directory)) != parent_identity or _named_identity(directory, source.name) != main:
             raise OSError(errno.ESTALE, "SQLite source coordinate changed", str(source))
         _verify_staging_metadata_name(source_binding.metadata_anchor, source_binding.provenance)
         return result
@@ -572,10 +612,11 @@ def _inspect_export_at(
     inspection_path: Path,
     profile_identity: str,
     scratch: Path,
+    classify: bool = False,
 ) -> dict[str, Any] | None:
     """Reconstruct retained exports from their accepted descriptor, preserving read semantics."""
     from polylogue.sources.parsers.hermes_state import _MESSAGE_READ_INDEXES
-    from polylogue.sources.sqlite_inspection import SQLiteInspection, _inspect_connection
+    from polylogue.sources.sqlite_inspection import SQLiteInspection, _classify_connection, _inspect_connection
 
     descriptor = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     with os.fdopen(descriptor, "rb") as handle:
@@ -586,6 +627,8 @@ def _inspect_export_at(
         if prefix.startswith(SQLITE_MAGIC_HEADER):
             return None
         if not prefix.startswith(EXPORT_MAGIC):
+            if classify:
+                raise sqlite3.DatabaseError("not a SQLite database or logical export")
             return asdict(SQLiteInspection(None, {}))
         handle.seek(0)
         temporary, name = tempfile.mkstemp(prefix=".polylogue-export.", suffix=".sqlite", dir=scratch)
@@ -596,7 +639,7 @@ def _inspect_export_at(
             parent_fd = os.open(reconstruction.parent, getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY)
             try:
                 with ExitStack() as stack:
-                    grouping = None if preflight else _prepare_inspection_grouping(stack, scratch)
+                    grouping = None if classify else _prepare_inspection_grouping(stack, scratch)
                     identities: dict[str, _FileIdentity | None] = {
                         "": _identity(reconstruction.lstat()),
                         **dict.fromkeys(_SIDECARS),
@@ -607,13 +650,17 @@ def _inspect_export_at(
                         conn.execute("BEGIN").close()
                         _source_schema(conn)
                         proof.validate()
-                        result = asdict(
-                            _inspect_connection(
-                                conn,
-                                inspection_path,
-                                preflight=preflight,
-                                profile_identity=profile_identity,
-                                grouping=None if grouping is None else grouping.connection,
+                        result = (
+                            asdict(_classify_connection(conn))
+                            if classify
+                            else asdict(
+                                _inspect_connection(
+                                    conn,
+                                    inspection_path,
+                                    preflight=preflight,
+                                    profile_identity=profile_identity,
+                                    grouping=None if grouping is None else grouping.connection,
+                                )
                             )
                         )
                         proof.validate()
@@ -643,15 +690,43 @@ def _source_worker_main() -> None:
             name: None if identity is None else cast(_FileIdentity, tuple(identity))
             for name, identity in request["identities"].items()
         }
-        if request["operation"] == "binding":
-            from polylogue.sources.sqlite_snapshot import _staging_provenance
+        if request["operation"] == "staging_receipt":
+            from polylogue.sources.source_staging import _read_staging_receipt_in_worker
 
+            result = _read_staging_receipt_in_worker(request, _WorkerSink())
+            _write_frame(sys.stdout.buffer, b"R", _control_bytes(result))
+            _write_frame(sys.stdout.buffer, b"S")
+            return
+        if request["operation"] == "zip_container":
+            from polylogue.sources.source_staging import _probe_zip_container_in_worker
+
+            result = _probe_zip_container_in_worker(request)
+            _write_frame(sys.stdout.buffer, b"R", _control_bytes(result))
+            _write_frame(sys.stdout.buffer, b"S")
+            return
+        if request["operation"] == "binding":
             main = accepted[""]
             if main is None or _named_identity(request["directory"], source.name) != main:
                 raise OSError(errno.ESTALE, "SQLite binding input changed", str(source))
-            original, provenance = _staging_provenance(
-                request["metadata_directory"], request["metadata_name"], main[:2]
-            )
+            if request.get("staged_input") is None:
+                original, provenance = None, None
+            else:
+                from polylogue.sources.source_staging import _verify_staging_metadata_name
+                from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
+
+                staged = request["staged_input"]
+                if not isinstance(staged, dict) or set(staged) != {"identity", "provenance"}:
+                    raise OSError(errno.EPROTO, "invalid captured staging input")
+                receipt = CapturedSourceInputIdentity.from_dict(staged["identity"])
+                provenance = staged["provenance"]
+                _verify_staging_metadata_name(request["metadata_directory"], provenance)
+                original = {
+                    "source_path": receipt.semantic_source_path,
+                    "identity_path": receipt.canonical_source_path,
+                    "profile_root": receipt.profile_root,
+                    "profile_key": receipt.profile_key,
+                    "profile_source_path": receipt.profile_source_path,
+                }
             if _named_identity(request["directory"], source.name) != main:
                 raise OSError(errno.ESTALE, "SQLite binding input changed", str(source))
             _write_frame(
@@ -668,18 +743,36 @@ def _source_worker_main() -> None:
             )
             _write_frame(sys.stdout.buffer, b"S")
             return
-        scope = MemberExportScope(**request["scope"])
-        from polylogue.sources.sqlite_snapshot import _verify_staging_provenance
+        if request["operation"] in {"bytes", "preflight_bytes"}:
+            from polylogue.sources.source_staging import _read_bound_input_in_worker
 
-        _verify_staging_provenance(request["metadata_directory"], request["provenance"], accepted[""][:2])
+            result = _read_bound_input_in_worker(request, _WorkerSink() if request["operation"] == "bytes" else None)
+            _write_frame(sys.stdout.buffer, b"R", _control_bytes(result))
+            _write_frame(sys.stdout.buffer, b"S")
+            return
+        if request["operation"] == "copy":
+            from polylogue.sources.source_staging import _copy_bound_input_in_worker
+
+            result = _copy_bound_input_in_worker(request)
+            _write_frame(sys.stdout.buffer, b"R", _control_bytes(result))
+            _write_frame(sys.stdout.buffer, b"S")
+            return
+        scope = MemberExportScope(**request["scope"])
+        from polylogue.sources.source_staging import _verify_staging_provenance
+
+        def progress() -> None:
+            if request.get("progress"):
+                _WorkerSink().write(b"")
+
+        _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
         if request["operation"] == "shape":
             export_shape = _export_shape_at(request["directory"], source.name, accepted[""])
             if export_shape is not None:
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], accepted[""][:2])
+                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
                 _write_frame(sys.stdout.buffer, b"R", _control_bytes(export_shape))
                 _write_frame(sys.stdout.buffer, b"S")
                 return
-        if request["operation"] in {"inspect_explain", "inspect_preflight"}:
+        if request["operation"] in {"inspect_explain", "inspect_preflight", "classify"}:
             export_inspection = _inspect_export_at(
                 request["directory"],
                 source,
@@ -688,9 +781,10 @@ def _source_worker_main() -> None:
                 inspection_path=Path(request["inspection_path"]),
                 profile_identity=request["profile_identity"],
                 scratch=Path(request["scratch"]),
+                classify=request["operation"] == "classify",
             )
             if export_inspection is not None:
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], accepted[""][:2])
+                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
                 _write_frame(sys.stdout.buffer, b"R", _control_bytes(export_inspection))
                 _write_frame(sys.stdout.buffer, b"S")
                 return
@@ -701,7 +795,7 @@ def _source_worker_main() -> None:
             output_descriptors: dict[int, _FileIdentity] = {}
             grouping = (
                 _prepare_inspection_grouping(stack, Path(request["scratch"]))
-                if request["operation"] == "inspect_explain"
+                if request["operation"] in {"inspect_explain", "inspect_preflight"}
                 else None
             )
             if request["operation"] == "backup":
@@ -724,11 +818,20 @@ def _source_worker_main() -> None:
                 _connect_source(source, immutable=request["immutable"], directory=request["directory"])
             ) as conn:
                 proof.validate()
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], accepted[""][:2])
+                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
                 conn.text_factory = bytes
                 conn.execute("BEGIN").close()
                 schema = _source_schema(conn)
                 proof.validate()
+                expected_revision = request.get("expected_content_revision")
+                if expected_revision is not None:
+                    if request.get("expected_content_kind") != "sqlite":
+                        raise OSError(errno.ESTALE, "staged source is not the accepted SQLite input", str(source))
+                    accepted_revision = _HashingSink(progress if request.get("progress") else None)
+                    _write_export_connection(conn, accepted_revision, scope, schema)
+                    proof.validate()
+                    if accepted_revision.hexdigest() != expected_revision:
+                        raise OSError(errno.ESTALE, "staged SQLite differs from the accepted input", str(source))
                 if request["operation"] == "export":
                     _write_export_connection(conn, _WorkerSink(), scope, schema)
                 elif request["operation"] == "shape":
@@ -739,6 +842,10 @@ def _source_worker_main() -> None:
                             quoted = '"' + table.replace('"', '""') + '"'
                             with closing(conn.execute(f"PRAGMA table_info({quoted})")) as cursor:
                                 shape[table] = [_schema_text(item[1]) for item in cursor.fetchall()]
+                elif request["operation"] == "classify":
+                    from polylogue.sources.sqlite_inspection import _classify_connection
+
+                    shape = asdict(_classify_connection(conn))
                 elif request["operation"] in {"inspect_explain", "inspect_preflight"}:
                     from polylogue.sources.sqlite_inspection import _inspect_connection
 
@@ -752,7 +859,9 @@ def _source_worker_main() -> None:
                         )
                     )
                 elif request["operation"] == "backup" and output is not None:
-                    conn.backup(output)
+                    retained_revision = _HashingSink(progress if request.get("progress") else None)
+                    _write_export_connection(conn, retained_revision, scope, schema)
+                    conn.backup(output, pages=256, progress=lambda *_counts: progress())
                     shape = {
                         "source_path": request["accepted_source_path"],
                         "declared_source_path": request["inspection_path"],
@@ -760,11 +869,12 @@ def _source_worker_main() -> None:
                         "profile_root": request["profile_root"],
                         "profile_source_path": request["profile_source_path"],
                         "database_identity": list(output_identity[:2]),
+                        "logical_revision": retained_revision.hexdigest(),
                     }
                 else:
                     raise OSError(errno.EPROTO, "invalid SQLite source operation")
                 proof.validate()
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], accepted[""][:2])
+                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
                 if grouping is not None:
                     grouping.verify()
                 if output_descriptors:
@@ -774,7 +884,7 @@ def _source_worker_main() -> None:
                         or _identity(Path(request["destination"]).lstat()) != output_identity
                     ):
                         raise OSError(errno.ESTALE, "SQLite backup destination changed")
-            if request["operation"] in {"shape", "inspect_explain", "inspect_preflight", "backup"}:
+            if request["operation"] in {"shape", "inspect_explain", "inspect_preflight", "classify", "backup"}:
                 _write_frame(sys.stdout.buffer, b"R", _control_bytes(shape))
         _write_frame(sys.stdout.buffer, b"S")
     except Exception as exc:
@@ -782,8 +892,31 @@ def _source_worker_main() -> None:
         raise SystemExit(1) from None
 
 
-def _backup_source_database(source: Path, destination: Path) -> dict[str, Any]:
-    result = _run_source_worker(source, "backup", destination=destination)
+def _backup_source_database(
+    source: Path,
+    destination: Path,
+    *,
+    source_binding: SourceInputBinding | None = None,
+    expected_identity: tuple[int, int] | None = None,
+    heartbeat: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    from polylogue.sources.source_staging import bind_source_input
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+
+    if source_binding is None:
+        with bind_source_input(source) as binding:
+            return _backup_source_database(
+                source, destination, source_binding=binding, expected_identity=expected_identity, heartbeat=heartbeat
+            )
+    result = _run_source_worker(
+        source,
+        "backup",
+        destination=destination,
+        source_binding=source_binding,
+        expected_identity=expected_identity,
+        scope=member_export_scope(source_binding.source_path),
+        heartbeat=heartbeat,
+    )
     identity = result.get("database_identity")
     if (
         set(result)
@@ -794,7 +927,11 @@ def _backup_source_database(source: Path, destination: Path) -> dict[str, Any]:
             "profile_root",
             "profile_source_path",
             "database_identity",
+            "logical_revision",
         }
+        or not isinstance(result.get("logical_revision"), str)
+        or len(result["logical_revision"]) != 64
+        or any(character not in "0123456789abcdef" for character in result["logical_revision"])
         or not isinstance(result.get("declared_source_path"), str)
         or not Path(result["declared_source_path"]).is_absolute()
         or not isinstance(result.get("profile_root"), str)
@@ -993,7 +1130,7 @@ def _write_logical_export_bound(
     immutable: bool = False,
     expected_identity: tuple[int, int] | None = None,
     parent_anchor: int | None = None,
-    source_binding: SQLiteSourceBinding | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> None:
     scope = scope or MemberExportScope()
     if tables is not None:
@@ -1022,16 +1159,24 @@ def logical_export_bytes(source: Path, **kwargs: Any) -> bytes:
 class _HashingSink:
     """A write-only sink that keeps the digest and discards the bytes."""
 
-    def __init__(self) -> None:
+    def __init__(self, heartbeat: Callable[[], None] | None = None) -> None:
         self._digest = hashlib.sha256()
         self.byte_count = 0
+        self._heartbeat = heartbeat
+        self._progress_bytes = 0
 
     def write(self, payload: bytes) -> int:
         self._digest.update(payload)
         self.byte_count += len(payload)
+        self._progress_bytes += len(payload)
+        if self._heartbeat is not None and self._progress_bytes >= _STREAM_CHUNK:
+            self._heartbeat()
+            self._progress_bytes = 0
         return len(payload)
 
     def hexdigest(self) -> str:
+        if self._heartbeat is not None:
+            self._heartbeat()
         return self._digest.hexdigest()
 
 
@@ -1048,7 +1193,7 @@ def _logical_export_digest_bound(
     scope: MemberExportScope,
     expected_identity: tuple[int, int],
     parent_anchor: int | None = None,
-    source_binding: SQLiteSourceBinding | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> str:
     sink = _HashingSink()
     _write_logical_export_bound(

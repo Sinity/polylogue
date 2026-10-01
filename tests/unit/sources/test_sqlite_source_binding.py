@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import io
 import os
 import sqlite3
 import subprocess
@@ -18,7 +19,7 @@ from polylogue.maintenance.source_manifest_continuity import (
     SourceRole,
     build_source_frontier,
 )
-from polylogue.sources import sqlite_export, sqlite_snapshot
+from polylogue.sources import source_staging, sqlite_export, sqlite_snapshot
 from polylogue.storage.blob_store import BlobStore
 
 pytestmark = pytest.mark.uses_real_clock("source worker settlement uses actual OS processes")
@@ -113,6 +114,62 @@ def test_nested_family_directory_alias_keeps_the_shared_profile_namespace(tmp_pa
     )
 
 
+@pytest.mark.parametrize("operation", ["export", "shape", "backup"])
+@pytest.mark.parametrize("replace_anchored_file", [False, True], ids=["alias-only", "actual-file"])
+def test_completed_sqlite_read_keeps_accepted_alias_but_refuses_anchored_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, replace_anchored_file: bool
+) -> None:
+    original = tmp_path / "original"
+    replacement = tmp_path / "replacement"
+    for root in (original, replacement):
+        root.mkdir()
+        _database(root / "declared.sqlite", root.name)
+    with closing(sqlite3.connect(replacement / "declared.sqlite")) as connection, connection:
+        connection.execute("CREATE TABLE replacement_marker(value TEXT)")
+    alias = tmp_path / "Documents"
+    alias.symlink_to(original, target_is_directory=True)
+    source = alias / "declared.sqlite"
+    destination = tmp_path / "backup.sqlite"
+    exchange = sqlite_export._exchange_source_worker
+
+    def change_after_settled_read(request: dict[str, Any], handle: Any = None) -> dict[str, Any]:
+        result = exchange(request, handle)
+        if request["operation"] == operation:
+            if replace_anchored_file:
+                os.replace(replacement / "declared.sqlite", original / "declared.sqlite")
+            else:
+                alias.unlink()
+                alias.symlink_to(replacement, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(sqlite_export, "_exchange_source_worker", change_after_settled_read)
+
+    def acquire() -> object:
+        if operation == "export":
+            return sqlite_export.logical_export_bytes(source)
+        if operation == "shape":
+            return sqlite_export.logical_source_shape(source)
+        return sqlite_snapshot._snapshot_sqlite_database_bound(source, destination)
+
+    if replace_anchored_file:
+        with pytest.raises(OSError) as refused:
+            acquire()
+        assert refused.value.errno == errno.ESTALE
+        assert not destination.exists()
+    else:
+        result = acquire()
+        if operation == "export":
+            assert isinstance(result, bytes)
+            assert b"original" in result and b"replacement" not in result
+        elif operation == "shape":
+            assert result == {"state": ("value",)}
+        else:
+            assert isinstance(result, dict)
+            assert result["source_path"] == str(original / "declared.sqlite")
+            with closing(sqlite3.connect(destination)) as connection:
+                assert connection.execute("SELECT value FROM state").fetchone() == ("original",)
+
+
 def _attack_worker(monkeypatch: pytest.MonkeyPatch, source: Path, external: Path, attack: str) -> None:
     fixture = Path(__file__).resolve().parents[2] / "fixtures" / "sqlite_source" / "worker_attack.py"
     monkeypatch.setenv("POLYLOGUE_TEST_SQLITE_SOURCE", str(source))
@@ -146,10 +203,11 @@ def test_actual_connect_aba_cannot_attribute_external_database(
             elif operation == "backup":
                 sqlite_snapshot.snapshot_sqlite_database(source, tmp_path / "backup.sqlite")
             else:
-                sqlite_snapshot.stage_sqlite_snapshot(source, tmp_path / "backup.sqlite")
+                source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
         assert failure.value.errno == errno.ESTALE
         assert not (tmp_path / "backup.sqlite").exists()
-        assert not sqlite_snapshot.sqlite_staging_metadata_path(tmp_path / "backup.sqlite").exists()
+        if operation == "staging":
+            assert list((tmp_path / "staging").iterdir()) == []
     assert not (tmp_path / "foreign-sql").exists()
     with closing(sqlite3.connect(source)) as conn:
         assert conn.execute("SELECT value FROM state").fetchone() == ("declared",)
@@ -201,12 +259,23 @@ def test_bound_worker_preserves_logical_bytes_shape_and_staged_backup(tmp_path: 
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+@pytest.mark.parametrize("operation", ["export", "bytes", "preflight_bytes", "copy", "backup", "staging_receipt"])
 def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException], operation: str
 ) -> None:
     """Returning before child settlement leaves a live source transaction and zombie."""
-    source = tmp_path / "declared.sqlite"
-    _database(source, "declared")
+    source = tmp_path / ("declared.json" if operation == "preflight_bytes" else "declared.sqlite")
+    if operation == "preflight_bytes":
+        source.write_bytes(
+            (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
+        )
+    else:
+        _database(source, "declared")
+    staged = (
+        source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+        if operation == "staging_receipt"
+        else None
+    )
     original_directory = sqlite_export.tempfile.TemporaryDirectory
     scratch_paths: list[Path] = []
 
@@ -228,10 +297,29 @@ def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
         def write(self, payload: bytes) -> int:
             raise failure()
 
+    def fail_callback(*_args: Any) -> None:
+        raise failure()
+
     monkeypatch.setattr(sqlite_export.subprocess, "Popen", launch)
     with pytest.raises(failure):
-        sqlite_export.write_logical_export(source, FailingSink())
-    assert len(children) == 2
+        if operation == "export":
+            sqlite_export.write_logical_export(source, FailingSink())
+        elif operation == "staging_receipt":
+            assert staged is not None
+            source_staging.read_staging_receipt(staged, on_member=fail_callback, check_stop=lambda: None)
+        else:
+            with source_staging.bind_source_input(source) as binding:
+                if operation == "bytes":
+                    source_staging.write_bound_input(binding, FailingSink())
+                elif operation == "preflight_bytes":
+                    source_staging.preflight_bound_bytes(binding, check_stop=fail_callback)
+                elif operation == "copy":
+                    source_staging.copy_bound_input(binding, tmp_path / "copy", heartbeat=fail_callback)
+                else:
+                    sqlite_snapshot._snapshot_sqlite_database_bound(
+                        source, tmp_path / "backup", source_binding=binding, heartbeat=fail_callback
+                    )
+    assert len(children) == (1 if operation == "staging_receipt" else 2)
     assert all(child.returncode is not None and child.poll() is not None for child in children)
     assert scratch_paths and all(not path.exists() for path in scratch_paths)
 
@@ -254,7 +342,8 @@ def test_malformed_worker_frames_refuse_and_reap(tmp_path: Path, monkeypatch: py
     assert failure.value.errno == errno.EPROTO
 
 
-def test_final_binding_failure_discards_the_private_blob_prefix(tmp_path: Path) -> None:
+@pytest.mark.parametrize("operation", ["export", "bytes"])
+def test_final_binding_failure_discards_the_private_blob_prefix(tmp_path: Path, operation: str) -> None:
     """Final descriptor proof must complete before a blob is published."""
     source, external = tmp_path / "declared.sqlite", tmp_path / "external.sqlite"
     _database(source, "declared")
@@ -272,7 +361,11 @@ def test_final_binding_failure_discards_the_private_blob_prefix(tmp_path: Path) 
                     source.symlink_to(external)
                 return handle.write(payload)
 
-        sqlite_export.write_logical_export(source, SubstitutingSink())
+        if operation == "export":
+            sqlite_export.write_logical_export(source, SubstitutingSink())
+        else:
+            with source_staging.bind_source_input(source) as binding:
+                source_staging.write_bound_input(binding, SubstitutingSink())
 
     with pytest.raises(OSError):
         store.write_from_writer(write)
@@ -325,18 +418,22 @@ def test_staged_backup_provenance_uses_its_accepted_parent_alias(
     source = alias / "declared.sqlite"
     backup = sqlite_snapshot._snapshot_sqlite_database_bound
 
-    def replace_alias_after_backup(source: Path, destination: Path) -> tuple[Path, tuple[int, int]]:
-        accepted = backup(source, destination)
+    def replace_alias_after_backup(source: Path, destination: Path, **kwargs: Any) -> dict[str, Any]:
+        accepted = backup(source, destination, **kwargs)
         alias.unlink()
         alias.symlink_to(replacement_parent, target_is_directory=True)
         return accepted
 
     monkeypatch.setattr(sqlite_snapshot, "_snapshot_sqlite_database_bound", replace_alias_after_backup)
-    staged = tmp_path / "staged.sqlite"
-    sqlite_snapshot.stage_sqlite_snapshot(source, staged)
-    with sqlite_snapshot.bind_sqlite_source(staged) as binding:
+    from tests.infra.source_staging import single_staged_binding
+
+    staged = source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+    with single_staged_binding(staged) as binding:
         assert binding.source_path == original_parent / "declared.sqlite"
-    assert b"original" in sqlite_export.logical_export_bytes(staged)
+        snapshot = sqlite_snapshot.snapshot_sqlite_to_blob(
+            binding.source, BlobStore(tmp_path / "blobs"), source_binding=binding
+        )
+    assert b"original" in BlobStore(tmp_path / "blobs").read_all(snapshot.blob_hash)
 
 
 def _trajectory_database(path: Path, identity: str) -> None:
@@ -355,8 +452,9 @@ def test_actual_preview_cannot_attribute_an_unrelated_restored_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attack: str, operation: str
 ) -> None:
     """Both public preview routes previously detected A and parsed substituted B."""
+    from polylogue.operations.import_operations import prepare_import_source_admission
     from polylogue.sources.import_explain import explain_import_path
-    from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
+    from polylogue.sources.import_preflight import ImportPreflightStatus
 
     source, external = tmp_path / "declared.sqlite", tmp_path / "external.sqlite"
     _trajectory_database(source, "declared-session")
@@ -375,7 +473,7 @@ def test_actual_preview_cannot_attribute_an_unrelated_restored_source(
             assert payload.produced.session_refs == ()
             assert payload.skipped
         else:
-            result = preflight_import_source(source)
+            result = prepare_import_source_admission(source).preflight
             assert result.status is ImportPreflightStatus.MALFORMED
             assert result.supported_count == 0
         if attack.startswith("main-"):
@@ -385,8 +483,9 @@ def test_actual_preview_cannot_attribute_an_unrelated_restored_source(
 @pytest.mark.parametrize("semantics", ["nocase", "affinity", "view", "rowid"])
 def test_bound_public_preview_preserves_native_sqlite_query_semantics(tmp_path: Path, semantics: str) -> None:
     """Replacing a live native read with untyped logical reconstruction drops these rows."""
+    from polylogue.operations.import_operations import prepare_import_source_admission
     from polylogue.sources.import_explain import explain_import_path
-    from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
+    from polylogue.sources.import_preflight import ImportPreflightStatus
 
     source = tmp_path / "declared.sqlite"
     with closing(sqlite3.connect(source)) as conn, conn:
@@ -418,13 +517,14 @@ def test_bound_public_preview_preserves_native_sqlite_query_semantics(tmp_path: 
         else (f"session:antigravity:{native_id}",)
     )
     assert payload.produced.session_refs == expected_refs
-    assert preflight_import_source(source).status is ImportPreflightStatus.SUPPORTED
+    assert prepare_import_source_admission(source).preflight.status is ImportPreflightStatus.SUPPORTED
 
 
 def test_retained_export_preview_uses_the_existing_private_reconstruction(tmp_path: Path) -> None:
     """The worker must not replace retained export semantics with a native page copy."""
+    from polylogue.operations.import_operations import prepare_import_source_admission
     from polylogue.sources.import_explain import explain_import_path
-    from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
+    from polylogue.sources.import_preflight import ImportPreflightStatus
 
     source = tmp_path / "source.sqlite"
     _trajectory_database(source, "retained-session")
@@ -433,7 +533,7 @@ def test_retained_export_preview_uses_the_existing_private_reconstruction(tmp_pa
     payload = explain_import_path(retained)
     assert payload.produced.session_refs == ("session:antigravity:retained-session",)
     assert payload.produced.messages == 1
-    assert preflight_import_source(retained).status is ImportPreflightStatus.SUPPORTED
+    assert prepare_import_source_admission(retained).preflight.status is ImportPreflightStatus.SUPPORTED
 
 
 def test_sqlite_directory_frontier_refuses_a_substituted_ancestor_with_the_same_main_inode(
@@ -474,12 +574,23 @@ def test_sqlite_directory_frontier_refuses_a_substituted_ancestor_with_the_same_
     assert not frontier.complete
 
 
+@pytest.mark.parametrize("operation", ["export", "bytes", "preflight_bytes", "copy", "backup", "staging_receipt"])
 def test_malformed_callback_ack_refuses_reaps_and_removes_private_scratch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     """An ACK failure cannot leave a completed export or a live reader transaction."""
-    source = tmp_path / "declared.sqlite"
-    _database(source, "declared")
+    source = tmp_path / ("declared.json" if operation == "preflight_bytes" else "declared.sqlite")
+    if operation == "preflight_bytes":
+        source.write_bytes(
+            (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
+        )
+    else:
+        _database(source, "declared")
+    staged = (
+        source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+        if operation == "staging_receipt"
+        else None
+    )
     original = subprocess.Popen
     original_directory = sqlite_export.tempfile.TemporaryDirectory
     children: list[subprocess.Popen[bytes]] = []
@@ -512,17 +623,33 @@ def test_malformed_callback_ack_refuses_reaps_and_removes_private_scratch(
     monkeypatch.setattr(sqlite_export.subprocess, "Popen", launch)
     monkeypatch.setattr(sqlite_export.tempfile, "TemporaryDirectory", temporary_directory)
     with pytest.raises(OSError) as failure:
-        sqlite_export.logical_export_bytes(source)
+        if operation == "export":
+            sqlite_export.logical_export_bytes(source)
+        elif operation == "staging_receipt":
+            assert staged is not None
+            source_staging.read_staging_receipt(staged, on_member=lambda _member: None, check_stop=lambda: None)
+        else:
+            with source_staging.bind_source_input(source) as binding:
+                if operation == "bytes":
+                    source_staging.write_bound_input(binding, io.BytesIO())
+                elif operation == "preflight_bytes":
+                    source_staging.preflight_bound_bytes(binding, check_stop=lambda: None)
+                elif operation == "copy":
+                    source_staging.copy_bound_input(binding, tmp_path / "copy", heartbeat=lambda: None)
+                else:
+                    sqlite_snapshot._snapshot_sqlite_database_bound(
+                        source, tmp_path / "backup", source_binding=binding, heartbeat=lambda: None
+                    )
     assert failure.value.errno == errno.EPROTO
-    assert len(children) == 2 and all(child.poll() is not None for child in children)
+    assert len(children) == (1 if operation == "staging_receipt" else 2) and all(
+        child.poll() is not None for child in children
+    )
     assert scratch_paths and all(not path.exists() for path in scratch_paths)
     assert source.exists()
 
 
-def test_staging_provenance_follows_the_actual_accepted_backup_coordinate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A disconnected pre-backup resolve would label backed-up B as source A."""
+def test_staging_binding_precedes_backup_parent_alias_retarget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rebinding in the backup would copy B under the already accepted A receipt."""
     original_parent, replacement_parent = tmp_path / "original", tmp_path / "replacement"
     for parent in (original_parent, replacement_parent):
         parent.mkdir()
@@ -532,22 +659,26 @@ def test_staging_provenance_follows_the_actual_accepted_backup_coordinate(
     source = alias / "declared.sqlite"
     backup = sqlite_snapshot._snapshot_sqlite_database_bound
 
-    def replace_alias_before_acceptance(source: Path, destination: Path) -> tuple[Path, tuple[int, int]]:
+    def replace_alias_before_acceptance(source: Path, destination: Path, **kwargs: Any) -> dict[str, Any]:
         alias.unlink()
         alias.symlink_to(replacement_parent, target_is_directory=True)
         try:
-            return backup(source, destination)
+            return backup(source, destination, **kwargs)
         finally:
             alias.unlink()
             alias.symlink_to(original_parent, target_is_directory=True)
 
     monkeypatch.setattr(sqlite_snapshot, "_snapshot_sqlite_database_bound", replace_alias_before_acceptance)
-    staged = tmp_path / "staged.sqlite"
-    sqlite_snapshot.stage_sqlite_snapshot(source, staged)
-    with sqlite_snapshot.bind_sqlite_source(staged) as binding:
-        assert binding.source_path == replacement_parent / "declared.sqlite"
-    assert b"replacement" in sqlite_export.logical_export_bytes(staged)
-    assert b"original" not in sqlite_export.logical_export_bytes(staged)
+    from tests.infra.source_staging import single_staged_binding
+
+    staged = source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+    with single_staged_binding(staged) as binding:
+        assert binding.source_path == original_parent / "declared.sqlite"
+        snapshot = sqlite_snapshot.snapshot_sqlite_to_blob(
+            binding.source, BlobStore(tmp_path / "blobs"), source_binding=binding
+        )
+    retained = BlobStore(tmp_path / "blobs").read_all(snapshot.blob_hash)
+    assert b"original" in retained and b"replacement" not in retained
 
 
 @pytest.mark.parametrize("name", ["déclared:%#?.sqlite", "declared-\udcff.sqlite"])
@@ -559,15 +690,15 @@ def test_bound_worker_preserves_os_filename_bytes_and_uri_metacharacters(tmp_pat
     assert sqlite_export.logical_source_shape(source) == {"state": ("value",)}
 
 
-def test_staged_reader_refuses_both_publication_gaps_and_recovers_on_retry(
+def test_failed_receipt_publication_preserves_the_previous_generation_and_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Metadata B cannot select B's tables or attribution while the opened database is A."""
-    from polylogue.sources.import_explain import explain_import_path
-    from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
+    """A failed new slot cannot replace A or expose unproved B attribution."""
+    from polylogue.operations.ingest_inputs import discover_ingest_input_spool, retain_input_page
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from tests.infra.source_staging import single_staged_binding
 
-    original = tmp_path / "state_5.sqlite"
-    replacement = tmp_path / "state.db"
+    original, replacement = tmp_path / "state_5.sqlite", tmp_path / "state.db"
     for source in (original, replacement):
         with closing(sqlite3.connect(source)) as connection, connection:
             connection.executescript(
@@ -575,42 +706,44 @@ def test_staged_reader_refuses_both_publication_gaps_and_recovers_on_retry(
                 "CREATE TABLE sessions(value TEXT); INSERT INTO sessions VALUES ('session');"
                 "CREATE TABLE messages(value TEXT); INSERT INTO messages VALUES ('message');"
             )
-    staged = tmp_path / "staged.sqlite"
-    sqlite_snapshot.stage_sqlite_snapshot(original, staged)
-    old_inode = staged.stat().st_ino
-    metadata = sqlite_snapshot.sqlite_staging_metadata_path(staged)
+    staging = tmp_path / "staging"
+    first = source_staging.stage_source_input(original, staging, check_stop=lambda: None)
+    initial_entries = set(staging.iterdir())
     replace = os.replace
-    refused = []
+    refused: list[bool] = []
 
-    def inspect_gap() -> None:
-        with pytest.raises(OSError) as failure:
-            sqlite_snapshot.snapshot_sqlite_to_blob(staged, BlobStore(tmp_path / "blobs"))
-        assert failure.value.errno == errno.ESTALE
-        explanation = explain_import_path(staged, source_name="hermes")
-        assert explanation.produced.sessions == 0
-        assert explanation.produced.session_refs == ()
-        assert explanation.skipped
-        assert preflight_import_source(staged).status is ImportPreflightStatus.MALFORMED
-        refused.append(True)
-
-    def replace_then_fail(source: str | Path, target: str | Path) -> None:
-        if Path(target) == staged:
-            inspect_gap()
-            raise OSError(errno.EIO, "synthetic database publication failure")
+    def fail_receipt(source: str | Path, target: str | Path) -> None:
+        target_path = Path(target)
+        if target_path.suffix == ".polylogue-import":
+            slot = target_path.with_name(target_path.name.removesuffix(".polylogue-import"))
+            spool = discover_ingest_input_spool(slot, source_path=str(replacement), check_stop=lambda: None)
+            publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blobs")
+            try:
+                with pytest.raises(ValueError):
+                    retain_input_page(spool, after_coordinate=None, publisher=publisher, check_stop=lambda: None)
+                assert not publisher.has_pending
+                refused.append(True)
+            finally:
+                spool.unlink()
+                publisher.discard_pending()
+            raise OSError(errno.EIO, "synthetic receipt publication failure")
         replace(source, target)
-        if Path(target) == metadata:
-            inspect_gap()
 
-    monkeypatch.setattr(sqlite_snapshot.os, "replace", replace_then_fail)
+    monkeypatch.setattr(source_staging.os, "replace", fail_receipt)
     with pytest.raises(OSError) as failure:
-        sqlite_snapshot.stage_sqlite_snapshot(replacement, staged)
+        source_staging.stage_source_input(replacement, staging, check_stop=lambda: None)
     assert failure.value.errno == errno.EIO
-    assert staged.stat().st_ino == old_inode
-    assert len(refused) == 2
-    inspect_gap()
-    monkeypatch.setattr(sqlite_snapshot.os, "replace", replace)
-    sqlite_snapshot.stage_sqlite_snapshot(replacement, staged)
-    snapshot = sqlite_snapshot.snapshot_sqlite_to_blob(staged, BlobStore(tmp_path / "blobs"))
+    assert refused == [True]
+    assert set(staging.iterdir()) == initial_entries
+    with single_staged_binding(first) as binding:
+        assert binding.source_path == original
+        assert sqlite_snapshot.member_export_scope(binding.source_path).tables == ("threads", "thread_spawn_edges")
+    monkeypatch.setattr(source_staging.os, "replace", replace)
+    second = source_staging.stage_source_input(replacement, staging, check_stop=lambda: None)
+    with single_staged_binding(second) as binding:
+        snapshot = sqlite_snapshot.snapshot_sqlite_to_blob(
+            binding.source, BlobStore(tmp_path / "blobs"), source_binding=binding
+        )
     assert snapshot.source_path == replacement
     header = sqlite_export.read_export_header(BlobStore(tmp_path / "blobs").blob_path(snapshot.blob_hash))
     assert header.member == "state.db"
@@ -618,38 +751,44 @@ def test_staged_reader_refuses_both_publication_gaps_and_recovers_on_retry(
     assert "threads" not in header.tables
 
 
-def test_captured_staging_binding_refuses_replaced_metadata_before_any_export(
-    tmp_path: Path,
-) -> None:
-    """A pathname-only metadata check would apply the previous declaration to a new sidecar."""
+def test_captured_staging_binding_refuses_replaced_metadata_before_any_export(tmp_path: Path) -> None:
+    """A pathname-only check would apply an accepted declaration to new metadata."""
+    from tests.infra.source_staging import single_staged_binding
+
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    staged = tmp_path / "staged.sqlite"
-    sqlite_snapshot.stage_sqlite_snapshot(source, staged)
-    with sqlite_snapshot.bind_sqlite_source(staged) as binding:
-        metadata = sqlite_snapshot.sqlite_staging_metadata_path(staged)
+    staged = source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+    with single_staged_binding(staged) as binding:
+        metadata = source_staging.staging_metadata_path(staged)
         metadata.write_text('{"version":1,"original_source_path":"/synthetic/state.db"}')
         with pytest.raises(OSError) as failure:
-            sqlite_snapshot.snapshot_sqlite_to_blob(staged, BlobStore(tmp_path / "blobs"), source_binding=binding)
+            sqlite_snapshot.snapshot_sqlite_to_blob(
+                binding.source, BlobStore(tmp_path / "blobs"), source_binding=binding
+            )
         assert failure.value.errno == errno.ESTALE
     assert staged.exists() and source.exists()
 
 
-def test_metadata_substitution_cannot_release_a_parent_sqlite_readers_locks(tmp_path: Path) -> None:
-    """Closing an ordinary metadata FD aliased to this DB would release the parent's read lock."""
+@pytest.mark.parametrize("inspection", ["metadata", "zip_container"])
+def test_source_inspection_cannot_release_a_parent_sqlite_readers_locks(tmp_path: Path, inspection: str) -> None:
+    """Ordinary candidate/metadata FD closes must stay outside the parent reader."""
     import sys
 
     source, locked = tmp_path / "declared.sqlite", tmp_path / "locked.sqlite"
     _database(source, "declared")
     _database(locked, "locked")
-    metadata = sqlite_snapshot.sqlite_staging_metadata_path(source)
+    slot = tmp_path / "private-slot"
+    slot.mkdir()
+    metadata = source_staging.staging_metadata_path(slot)
     with closing(sqlite3.connect(locked)) as reader:
         reader.execute("BEGIN").close()
         assert reader.execute("SELECT value FROM state").fetchone() == ("locked",)
         os.link(locked, metadata)
-        with pytest.raises(OSError) as failure, sqlite_snapshot.bind_sqlite_source(source):
-            pytest.fail("SQLite bytes cannot be staging JSON")
-        assert failure.value.errno == errno.ESTALE
+        if inspection == "metadata":
+            with pytest.raises(ValueError):
+                source_staging.read_staging_receipt(slot, on_member=lambda _member: None, check_stop=lambda: None)
+        else:
+            assert source_staging.probe_zip_container(metadata) is False
         writer = subprocess.run(
             [
                 sys.executable,
@@ -689,10 +828,10 @@ def test_explicit_stable_sqlite_root_alias_uses_the_accepted_actual_root(tmp_pat
 def test_nonregular_staging_metadata_is_unavailable_before_read(tmp_path: Path) -> None:
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    metadata = source.with_name(source.name + sqlite_snapshot._STAGING_METADATA_SUFFIX)
+    metadata = source_staging.staging_metadata_path(source)
     os.mkfifo(metadata)
     with pytest.raises(OSError) as refused:
-        with sqlite_snapshot.bind_sqlite_source(source):
+        with source_staging.bind_source_input(source):
             pytest.fail("nonregular provenance cannot bind a source")
     assert refused.value.errno == errno.ESTALE
 
@@ -704,7 +843,7 @@ def test_nonregular_staging_metadata_is_unavailable_before_read(tmp_path: Path) 
 def test_present_invalid_staging_provenance_never_falls_back_to_filename(tmp_path: Path, payload: bytes) -> None:
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    sqlite_snapshot.sqlite_staging_metadata_path(source).write_bytes(payload)
+    source_staging.staging_metadata_path(source).write_bytes(payload)
     with pytest.raises(OSError) as refused:
         sqlite_snapshot.snapshot_sqlite_to_blob(source, BlobStore(tmp_path / "blobs"))
     assert refused.value.errno == errno.ESTALE
@@ -714,12 +853,12 @@ def test_present_invalid_staging_provenance_never_falls_back_to_filename(tmp_pat
 def test_present_unreadable_provenance_is_unavailable(tmp_path: Path) -> None:
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    metadata = sqlite_snapshot.sqlite_staging_metadata_path(source)
+    metadata = source_staging.staging_metadata_path(source)
     metadata.write_text("{}")
     metadata.chmod(0)
     try:
         with pytest.raises(OSError) as refused:
-            with sqlite_snapshot.bind_sqlite_source(source):
+            with source_staging.bind_source_input(source):
                 pytest.fail("unreadable provenance cannot become an ordinary source")
         assert refused.value.errno == errno.EACCES
     finally:
@@ -729,7 +868,86 @@ def test_present_unreadable_provenance_is_unavailable(tmp_path: Path) -> None:
 def test_absent_provenance_preserves_ordinary_declared_semantics(tmp_path: Path) -> None:
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    with sqlite_snapshot.bind_sqlite_source(source) as binding:
+    with source_staging.bind_source_input(source) as binding:
         assert not binding.staged
         assert binding.source_path == source
         assert binding.identity_path == source
+
+
+@pytest.mark.parametrize("operation", ["bytes", "copy"])
+@pytest.mark.parametrize("replace_actual", [False, True])
+def test_byte_owner_keeps_accepted_parent_after_alias_retarget(
+    tmp_path: Path, operation: str, replace_actual: bool
+) -> None:
+    """Reopening Documents attributes B bytes to an input already bound to A."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "payload.json").write_bytes(b'{"accepted":"first"}')
+    (second / "payload.json").write_bytes(b'{"accepted":"second"}')
+    documents = tmp_path / "Documents"
+    documents.symlink_to(first, target_is_directory=True)
+    output = io.BytesIO()
+    destination = tmp_path / "private-copy.json"
+    with source_staging.bind_source_input(documents / "payload.json") as binding:
+        receipt = binding.captured_identity
+        documents.unlink()
+        documents.symlink_to(second, target_is_directory=True)
+        if replace_actual:
+            os.replace(second / "payload.json", first / "payload.json")
+        if replace_actual:
+            with pytest.raises(OSError) as failure:
+                if operation == "bytes":
+                    source_staging.write_bound_input(binding, output)
+                else:
+                    source_staging.copy_bound_input(binding, destination)
+            assert failure.value.errno == errno.ESTALE
+            assert not output.getvalue()
+            assert not destination.exists()
+        else:
+            if operation == "bytes":
+                result = source_staging.write_bound_input(binding, output)
+                accepted = output.getvalue()
+            else:
+                result = source_staging.copy_bound_input(binding, destination)
+                accepted = destination.read_bytes()
+            assert accepted == b'{"accepted":"first"}'
+            assert result["size_bytes"] == len(accepted)
+            assert receipt == binding.captured_identity
+            assert receipt.canonical_source_path == str(first / "payload.json")
+            assert receipt.profile_root == str(first)
+
+
+def test_pre_acquisition_classifies_the_bound_database_after_alias_retarget(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.live.batch_support import classify_pre_acquisition
+
+    accepted = tmp_path / "accepted.sqlite"
+    alternate = tmp_path / "alternate.sqlite"
+    alias = tmp_path / "declared.sqlite"
+    _trajectory_database(accepted, "accepted-session")
+    _database(alternate, "unrelated")
+    alias.symlink_to(accepted)
+    with source_staging.bind_source_input(alias) as binding:
+        alias.unlink()
+        alias.symlink_to(alternate)
+        decision = classify_pre_acquisition(
+            binding.source_path,
+            fallback_provider=Provider.UNKNOWN,
+            source_only=False,
+            size_bytes=accepted.stat().st_size,
+            source_binding=binding,
+        )
+        assert decision.excluded_reason is None
+        from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+        result = inspect_sqlite_source(binding.source, source_binding=binding)
+        assert result.produced["session_refs"] == ["session:antigravity:accepted-session"]
+    current = classify_pre_acquisition(
+        alias,
+        fallback_provider=Provider.UNKNOWN,
+        source_only=False,
+        size_bytes=alternate.stat().st_size,
+    )
+    assert current.excluded_reason is not None

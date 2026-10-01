@@ -8,30 +8,26 @@ operator should see before the daemon claims the import is pending?
 
 from __future__ import annotations
 
-import json
 import zipfile
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from io import BytesIO
-from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from polylogue.core.enums import Provider
 from polylogue.sources.decoder_zip import (
-    MAX_UNCOMPRESSED_SIZE,
     ZIP_JSON_SUFFIXES,
-    ZipBombError,
     ZipEntryValidator,
-    open_bounded_zip_entry,
+    open_zip_entry,
 )
-from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.sources.dispatch import detect_provider
+from polylogue.sources.dispatch import detect_provider_from_stream_evidence
 from polylogue.sources.sqlite_inspection import inspect_sqlite_source
 
+if TYPE_CHECKING:
+    from polylogue.sources.source_staging import SourceInputBinding
+
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
-_MAX_DIRECTORY_CANDIDATES = 256
-_MAX_STREAM_RECORDS = 32
 
 
 class ImportPreflightStatus(str, Enum):
@@ -163,55 +159,12 @@ class _PreflightAccumulator:
         return ImportPreflightStatus.UNSUPPORTED
 
 
-def preflight_import_source(path: Path) -> ImportPreflightResult:
-    """Classify a staged import source before the daemon claims acceptance."""
-    resolved = path.resolve()
-    acc = _PreflightAccumulator(source_path=str(resolved))
-    if resolved.is_dir():
-        _preflight_directory(resolved, acc)
-    else:
-        _preflight_file(resolved, acc, label=resolved.name)
-    return acc.result()
-
-
-def _preflight_directory(path: Path, acc: _PreflightAccumulator) -> None:
-    candidates_seen = 0
-    for child in sorted(item for item in path.rglob("*") if item.is_file()):
-        if not _is_candidate_path(child):
-            acc.ignored()
-            continue
-        candidates_seen += 1
-        if candidates_seen > _MAX_DIRECTORY_CANDIDATES:
-            acc._caveat(f"{path}: stopped after {_MAX_DIRECTORY_CANDIDATES} candidate files")
-            break
-        _preflight_file(child, acc, label=str(child.relative_to(path)))
-    if candidates_seen == 0:
-        acc.unsupported(str(path), "directory contains no JSON, JSONL, or ZIP import candidates")
-
-
-def _preflight_file(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
-    lower_name = path.name.lower()
-    if Path(lower_name).suffix in {".db", ".sqlite", ".sqlite3"}:
-        _preflight_sqlite(path, acc, label=label)
-        return
-    if lower_name.endswith(".zip"):
-        _preflight_zip(path, acc, label=label)
-        return
-    if not _is_json_candidate_name(lower_name):
-        acc.unsupported(label, "file extension is not a supported import candidate")
-        return
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        acc.malformed(label, f"could not read file: {exc}")
-        return
-    _preflight_json_bytes(raw, acc, label=label)
-
-
-def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
+def _preflight_sqlite(
+    path: Path, acc: _PreflightAccumulator, *, label: str, source_binding: SourceInputBinding | None = None
+) -> None:
     """Classify a SQLite import by its provider schema, never by its suffix."""
     try:
-        inspection = inspect_sqlite_source(path, preflight=True)
+        inspection = inspect_sqlite_source(path, preflight=True, source_binding=source_binding)
         if inspection.domain == "antigravity_trajectory_db":
             if inspection.admitted:
                 acc.supported(label, Provider.ANTIGRAVITY)
@@ -226,37 +179,32 @@ def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> 
     acc.unsupported(label, "SQLite schema is not a supported Antigravity trajectory store")
 
 
-def _preflight_zip(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
+def _preflight_zip(
+    path: Path,
+    acc: _PreflightAccumulator,
+    *,
+    label: str,
+    handle: BinaryIO | None = None,
+    check_stop: Callable[[], None] | None = None,
+) -> None:
     try:
-        with zipfile.ZipFile(path) as zf:
+        with zipfile.ZipFile(path if handle is None else handle) as zf:
             validator = ZipEntryValidator("unknown", cursor_state=None, zip_path=path)
             admitted = False
-            rejected = False
-
-            def record_rejection(info: zipfile.ZipInfo, reason: str) -> None:
-                nonlocal rejected
-                rejected = True
-                acc.malformed(
-                    f"{label}:{info.filename}",
-                    f"ZIP entry rejected before read: {reason}",
-                )
-
             for info in validator.filter_entries(
                 zf.infolist(),
                 allowed_suffixes=ZIP_JSON_SUFFIXES,
-                on_rejected=record_rejection,
             ):
                 admitted = True
                 entry_label = f"{label}:{info.filename}"
                 try:
-                    with open_bounded_zip_entry(zf, info) as handle:
-                        raw = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
-                except (OSError, KeyError, zipfile.BadZipFile, ZipBombError) as exc:
+                    with open_zip_entry(zf, info) as handle:
+                        _preflight_json_handle(handle, acc, label=entry_label, check_stop=check_stop)
+                except (OSError, KeyError, zipfile.BadZipFile) as exc:
                     acc.malformed(entry_label, f"could not read ZIP entry: {exc}")
                     continue
-                _preflight_json_bytes(raw, acc, label=entry_label)
 
-            if not admitted and not rejected:
+            if not admitted:
                 acc.unsupported(label, "ZIP contains no JSON or JSONL import candidates")
     except zipfile.BadZipFile as exc:
         acc.malformed(label, f"invalid ZIP archive: {exc}")
@@ -264,32 +212,18 @@ def _preflight_zip(path: Path, acc: _PreflightAccumulator, *, label: str) -> Non
         acc.malformed(label, f"could not read ZIP archive: {exc}")
 
 
-def _preflight_json_bytes(raw: bytes, acc: _PreflightAccumulator, *, label: str) -> None:
-    text = _decode_json_bytes(raw)
-    if text is None:
-        acc.malformed(label, "unsupported text encoding")
-        return
+def _preflight_json_handle(
+    handle: BinaryIO, acc: _PreflightAccumulator, *, label: str, check_stop: Callable[[], None] | None = None
+) -> None:
+    import ijson
+
     try:
-        payload: Any = json.loads(text)
-    except json.JSONDecodeError:
-        _preflight_json_stream(raw, acc, label=label)
+        provider, _evidence = detect_provider_from_stream_evidence(handle, check_stop=check_stop)
+    except (ijson.JSONError, UnicodeError, ValueError) as exc:
+        acc.malformed(label, f"could not decode complete JSON input: {type(exc).__name__}")
         return
-    provider = detect_provider(payload)
     if provider is None:
         acc.unsupported(label, "JSON shape is not a supported export")
-        return
-    acc.supported(label, provider)
-
-
-def _preflight_json_stream(raw: bytes, acc: _PreflightAccumulator, *, label: str) -> None:
-    try:
-        payloads = list(islice(_iter_json_stream(BytesIO(raw), label), _MAX_STREAM_RECORDS))
-    except Exception as exc:
-        acc.malformed(label, f"could not decode JSON stream: {type(exc).__name__}")
-        return
-    provider = detect_provider(payloads)
-    if provider is None:
-        acc.unsupported(label, "JSONL shape is not a supported export")
         return
     acc.supported(label, provider)
 
@@ -310,5 +244,95 @@ def _is_json_candidate_name(name: str) -> bool:
 __all__ = [
     "ImportPreflightResult",
     "ImportPreflightStatus",
-    "preflight_import_source",
 ]
+
+
+def _preflight_handle(
+    handle: BinaryIO, semantic_path: Path, *, check_stop: Callable[[], None] | None = None
+) -> ImportPreflightResult:
+    """Inspect the actual accepted byte descriptor in its fresh reader process."""
+    acc = _PreflightAccumulator(str(semantic_path))
+    if semantic_path.suffix.lower() == ".zip":
+        _preflight_zip(semantic_path, acc, label=semantic_path.name, handle=handle, check_stop=check_stop)
+    elif _is_json_candidate_name(semantic_path.name.lower()):
+        _preflight_json_handle(handle, acc, label=semantic_path.name, check_stop=check_stop)
+    else:
+        acc.unsupported(semantic_path.name, "file extension is not a supported import candidate")
+    return acc.result()
+
+
+def _decode_bound_preflight(value: dict[str, Any], semantic_path: Path) -> ImportPreflightResult:
+    names = {
+        "status",
+        "source_path",
+        "candidate_count",
+        "supported_count",
+        "unsupported_count",
+        "malformed_count",
+        "ignored_count",
+        "providers",
+        "caveats",
+        "samples",
+    }
+    if set(value) != names or value["source_path"] != str(semantic_path):
+        raise ValueError("source preflight protocol differs from its accepted coordinate")
+    counts = {name: value[name] for name in names if name.endswith("_count")}
+    if any(type(count) is not int or count < 0 for count in counts.values()):
+        raise ValueError("invalid source preflight counts")
+    if counts["candidate_count"] != sum(
+        counts[name] for name in ("supported_count", "unsupported_count", "malformed_count")
+    ):
+        raise ValueError("inconsistent source preflight counts")
+    if any(
+        not isinstance(value[name], list) or any(not isinstance(item, str) for item in value[name])
+        for name in ("providers", "caveats", "samples")
+    ):
+        raise ValueError("invalid source preflight evidence")
+    acc = _PreflightAccumulator(
+        str(semantic_path),
+        **counts,
+        providers={Provider(provider) for provider in value["providers"]},
+        caveats=value["caveats"],
+        samples=value["samples"],
+    )
+    result = acc.result()
+    if result.status.value != value["status"]:
+        raise ValueError("inconsistent source preflight status")
+    return result
+
+
+def preflight_import_bindings(
+    members: Iterable[tuple[SourceInputBinding, str]],
+    *,
+    source_path: str,
+    single_file: bool,
+    check_stop: Callable[[], None],
+) -> ImportPreflightResult:
+    """Classify every captured member before scheduling, preserving original labels."""
+    from polylogue.sources.source_staging import preflight_bound_bytes
+    from polylogue.sources.sqlite_snapshot import is_sqlite_path
+
+    acc = _PreflightAccumulator(source_path)
+    seen = False
+    for binding, label in members:
+        seen = True
+        if not _is_candidate_path(binding.source_path):
+            if single_file:
+                acc.unsupported(label, "file extension is not a supported import candidate")
+            else:
+                acc.ignored()
+            continue
+        if is_sqlite_path(binding.source_path):
+            _preflight_sqlite(binding.source, acc, label=label, source_binding=binding)
+            continue
+        result = _decode_bound_preflight(preflight_bound_bytes(binding, check_stop=check_stop), binding.source_path)
+        for name in ("candidate_count", "supported_count", "unsupported_count", "malformed_count", "ignored_count"):
+            setattr(acc, name, getattr(acc, name) + getattr(result, name))
+        acc.providers.update(result.providers)
+        for caveat in result.caveats:
+            acc._caveat(f"{label}: {caveat}")
+        for sample in result.samples:
+            acc._sample(f"{label}: {sample}")
+    if not seen or not acc.candidate_count:
+        acc.unsupported(source_path, "directory contains no JSON, JSONL, or ZIP import candidates")
+    return acc.result()

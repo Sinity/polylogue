@@ -20,14 +20,12 @@ from polylogue.core.enums import Provider
 from polylogue.sources import decoder_zip
 from polylogue.sources.decoder_json import JsonlDecodeError
 from polylogue.sources.decoders import (
-    MAX_AGGREGATE_UNCOMPRESSED_SIZE,
-    MAX_UNCOMPRESSED_SIZE,
     _decode_json_bytes,
     _iter_json_stream,
     _ZipEntryValidator,
-    open_bounded_zip_entry,
+    open_zip_entry,
 )
-from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
+from polylogue.storage.cursor_state import CursorStatePayload
 
 # =============================================================================
 # _decode_json_bytes
@@ -222,32 +220,13 @@ class TestZipEntryValidator:
             info.external_attr = 0o40775 << 16  # Directory bit
         return info
 
-    def test_bomb_protection_compression_ratio(self) -> None:
-        """Entries with compression ratio > MAX_COMPRESSION_RATIO are rejected."""
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=_seeded_cursor_state(),
-            zip_path=Path("test.zip"),
-        )
-        # Ratio = 200000 / 1 = 200000, well above MAX_COMPRESSION_RATIO
-        bomb_entry = self._make_zip_info("data.json", file_size=200000, compress_size=1)
-        entries = list(validator.filter_entries([bomb_entry]))
-        assert len(entries) == 0
-
-    def test_size_limit_rejection(self) -> None:
-        """Entries with uncompressed size > MAX_UNCOMPRESSED_SIZE are rejected."""
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=_seeded_cursor_state(),
-            zip_path=Path("test.zip"),
-        )
-        huge_entry = self._make_zip_info(
-            "data.json",
-            file_size=MAX_UNCOMPRESSED_SIZE + 1,
-            compress_size=MAX_UNCOMPRESSED_SIZE,
-        )
-        entries = list(validator.filter_entries([huge_entry]))
-        assert len(entries) == 0
+    def test_declared_size_and_ratio_do_not_drop_relevant_entries(self) -> None:
+        validator = _ZipEntryValidator("chatgpt", cursor_state=None, zip_path=Path("input.zip"))
+        entries = [
+            self._make_zip_info("ratio.json", file_size=200000, compress_size=1),
+            self._make_zip_info("large.json", file_size=11 * 1024**3, compress_size=11 * 1024**3),
+        ]
+        assert list(validator.filter_entries(entries)) == entries
 
     def test_claude_json_entries_are_not_special_cased(self) -> None:
         """Claude ZIP validation now relies on artifact classification, not filename allowlists."""
@@ -317,82 +296,18 @@ class TestZipEntryValidator:
 
         with zipfile.ZipFile(buffer) as zf:
             infos = zf.infolist()
-            with open_bounded_zip_entry(zf, infos[0]) as handle:
+            with open_zip_entry(zf, infos[0]) as handle:
                 assert handle.read() == b"first"
 
-    def test_cursor_state_records_failures(self) -> None:
-        """Rejected entries record failures in cursor_state."""
-        cursor_state = _seeded_cursor_state()
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=cursor_state,
-            zip_path=Path("archive.zip"),
-        )
-        bomb_entry = self._make_zip_info("bomb.json", file_size=500000, compress_size=1)
-        list(validator.filter_entries([bomb_entry]))
-        failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
-        assert cursor_state["failed_count"] >= 1
-        assert len(failed_files) >= 1
-
-    def test_aggregate_size_limit_rejects_many_entries_under_per_entry_cap(self) -> None:
-        """A zip bomb built from many entries, each individually under
-        MAX_UNCOMPRESSED_SIZE, is rejected once their SUM would exceed
-        MAX_AGGREGATE_UNCOMPRESSED_SIZE (polylogue-lqxx).
-
-        Each entry here is deliberately just 1 byte under the per-entry
-        cap, so this proves the aggregate check fires on its own -- the
-        existing per-entry check alone would accept every single one of
-        these entries.
-        """
-        cursor_state = _seeded_cursor_state()
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=cursor_state,
-            zip_path=Path("bomb.zip"),
-        )
-        per_entry_size = MAX_UNCOMPRESSED_SIZE - 1
-        assert per_entry_size <= MAX_UNCOMPRESSED_SIZE  # sanity: never trips the per-entry cap
-
-        # 7 entries * (10 GiB - 1 byte) ~= 70 GiB, comfortably over the
-        # 64 GiB aggregate cap, while no single entry is oversized.
-        entry_count = (MAX_AGGREGATE_UNCOMPRESSED_SIZE // per_entry_size) + 2
+    def test_complete_selection_has_no_aggregate_byte_budget(self) -> None:
+        state = _seeded_cursor_state()
+        validator = _ZipEntryValidator("chatgpt", cursor_state=state, zip_path=Path("input.zip"))
         entries = [
-            self._make_zip_info(f"conversation_{i}.json", file_size=per_entry_size, compress_size=per_entry_size)
-            for i in range(entry_count)
+            self._make_zip_info(f"conversation_{i}.json", file_size=9 * 1024**3, compress_size=9 * 1024**3)
+            for i in range(10)
         ]
-
-        accepted = list(validator.filter_entries(entries))
-
-        # Every accepted entry was individually under the per-entry cap
-        # (proven above), yet not all entries were accepted -- the
-        # aggregate check, not the per-entry check, did the rejecting.
-        assert len(accepted) < entry_count
-        assert sum(info.file_size for info in accepted) <= MAX_AGGREGATE_UNCOMPRESSED_SIZE
-
-        failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
-        assert cursor_state["failed_count"] >= 1
-        assert any("Aggregate uncompressed size" in failure["error"] for failure in failed_files)
-
-    def test_aggregate_size_limit_allows_archive_comfortably_under_cap(self) -> None:
-        """Multiple entries whose sum stays well under the aggregate cap
-        all decode successfully -- no regression for legitimate
-        multi-file exports."""
-        validator = _ZipEntryValidator(
-            "chatgpt",
-            cursor_state=None,
-            zip_path=Path("normal_export.zip"),
-        )
-        # 3 entries of 1 GiB each = 3 GiB total, far under both the 10 GiB
-        # per-entry cap and the 64 GiB aggregate cap.
-        one_gib = 1024 * 1024 * 1024
-        entries = [
-            self._make_zip_info(f"conversation_{i}.json", file_size=one_gib, compress_size=one_gib) for i in range(3)
-        ]
-
-        accepted = list(validator.filter_entries(entries))
-
-        assert len(accepted) == 3
-        assert sum(info.file_size for info in accepted) == 3 * one_gib
+        assert list(validator.filter_entries(entries)) == entries
+        assert state["failed_count"] == 0
 
     def test_validator_leaves_terminal_artifact_classification_to_zip_processing(self) -> None:
         """ZIP validation must not path-exclude entries before payload decoding.
@@ -493,77 +408,24 @@ def _zip_with_member(path: Path, name: str, payload: bytes) -> None:
         archive.writestr(name, payload)
 
 
-def test_zip_json_probe_refuses_an_oversized_member_with_an_event(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A highly compressible JSON member cannot be read whole into memory.
-
-    Anti-vacuity: removing ``max_bytes=ZIP_PROBE_MAX_BYTES`` from the probe's
-    ``open_bounded_zip_entry`` call restores the 10 GiB archival ceiling, so
-    ``handle.read()`` allocates the whole member, no ``ZipBombError`` is raised,
-    and neither the ``sources.zip.artifact_probe_unbounded`` event nor the
-    bounded peak asserted here occurs -- the probe would instead return a
-    classification decoded from the full payload. The ceiling is lowered here
-    rather than building a genuinely multi-gigabyte fixture; the code path under
-    test is identical.
-    """
-    monkeypatch.setattr(decoder_zip, "ZIP_PROBE_MAX_BYTES", 4096)
-    captured: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        decoder_zip,
-        "emit",
-        lambda event, /, **fields: captured.append((event, dict(fields))),
-    )
-
-    archive_path = tmp_path / "crafted.zip"
-    # Well-formed JSON, far above the probe ceiling, ~1000:1 compressible --
-    # exactly what ZIP admission's ratio limit still lets through.
-    payload = b'{"title":"' + b"A" * (512 * 1024) + b'"}'
-    _zip_with_member(archive_path, "assets/blob.json", payload)
-
-    with zipfile.ZipFile(archive_path) as zf:
-        info = zf.getinfo("assets/blob.json")
-        result = decoder_zip.zip_entry_session_artifact(zf, info, provider=Provider.CHATGPT)
-
-    # The path rule stands: content evidence was never examined.
-    assert result is None
-    probe_events = [fields for event, fields in captured if event == "sources.zip.artifact_probe_unbounded"]
-    assert len(probe_events) == 1
-    # The refusal is observable and names what it declined to inspect.
-    assert probe_events[0]["entry"] == "assets/blob.json"
-    assert probe_events[0]["declared_bytes"] == len(payload)
-    assert probe_events[0]["outcome"] == "degraded"
+def test_zip_json_probe_consumes_complete_positive_member(tmp_path: Path) -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json"
+    payload = json.loads(fixture.read_bytes())
+    payload["padding"] = "x" * (2 * 1024 * 1024)
+    archive_path = tmp_path / "compressed.zip"
+    _zip_with_member(archive_path, "assets/conversations.json", json.dumps(payload).encode())
+    with zipfile.ZipFile(archive_path) as archive:
+        info = archive.infolist()[0]
+        assert info.file_size / info.compress_size > 1000
+        artifact = decoder_zip.zip_entry_session_artifact(archive, info, provider=Provider.CHATGPT)
+    assert artifact is not None and artifact.parse_as_session
 
 
-def test_zip_json_probe_still_classifies_a_member_under_the_ceiling(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The ceiling is inert for ordinary members.
-
-    Anti-vacuity: a fix that refused every member -- or that returned ``None``
-    unconditionally -- would satisfy the bound above while destroying content
-    evidence. This asserts the probe still decodes and classifies a normal
-    conversation document, so the ceiling cannot be implemented as a blanket
-    refusal.
-    """
-    captured: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        decoder_zip,
-        "emit",
-        lambda event, /, **fields: captured.append((event, dict(fields))),
-    )
-    archive_path = tmp_path / "ordinary.zip"
-    payload = json.dumps([{"title": "synthetic", "mapping": {}}]).encode("utf-8")
-    _zip_with_member(archive_path, "assets/conversations.json", payload)
-
-    with zipfile.ZipFile(archive_path) as zf:
-        info = zf.getinfo("assets/conversations.json")
-        result = decoder_zip.zip_entry_session_artifact(zf, info, provider=Provider.CHATGPT)
-
-    assert result is not None and result.parse_as_session
-    assert [event for event, _ in captured if event == "sources.zip.artifact_probe_unbounded"] == []
+def test_zip_json_probe_does_not_override_with_empty_session_shape(tmp_path: Path) -> None:
+    archive_path = tmp_path / "empty.zip"
+    _zip_with_member(archive_path, "assets/conversations.json", b'{"title":"empty","mapping":{}}')
+    with zipfile.ZipFile(archive_path) as archive:
+        assert decoder_zip.zip_entry_session_artifact(archive, archive.infolist()[0], provider=Provider.CHATGPT) is None
 
 
 def test_jsonl_session_artifact_forwards_its_record_ceiling() -> None:

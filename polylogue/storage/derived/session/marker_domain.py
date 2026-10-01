@@ -9,7 +9,6 @@ advancing that position commit in the same transaction.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
@@ -38,27 +37,6 @@ SESSION_MARKER_RECIPE_VERSION = "2"
 
 _VALID = "valid"
 _MISSING = "missing"
-
-
-class _SyncSourceCursor:
-    def __init__(self, cursor: sqlite3.Cursor) -> None:
-        self._cursor = cursor
-
-    async def fetchone(self) -> object:
-        return self._cursor.fetchone()
-
-    async def fetchall(self) -> list[object]:
-        return list(self._cursor.fetchall())
-
-
-class _SyncSourceConnection:
-    """Adapt a profiled synchronous source read to the shared async reader."""
-
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
-
-    async def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> _SyncSourceCursor:
-        return _SyncSourceCursor(self._conn.execute(sql, parameters))
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,14 +219,12 @@ class SessionMarkerDerivation:
             conn.close()
 
     def _accepted_page(self, *, after_sequence: int, limit: int) -> tuple[AcceptedMarkerInput, ...]:
-        from polylogue.storage.accepted_marker_inputs import read_accepted_marker_inputs
+        from polylogue.storage.accepted_marker_inputs import read_accepted_marker_inputs_sync
 
         conn = self._source_read_connection()
         try:
-            return asyncio.run(
-                read_accepted_marker_inputs(
-                    _SyncSourceConnection(conn), after_sequence=after_sequence, limit=min(limit, self._page_size)
-                )
+            return read_accepted_marker_inputs_sync(
+                conn, after_sequence=after_sequence, limit=min(limit, self._page_size)
             )
         finally:
             conn.close()

@@ -31,6 +31,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 from polylogue.core.timestamps import iso_from_epoch_ms
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
@@ -848,6 +849,216 @@ def _unused_row_id(candidate: str, native_ids: set[str]) -> str:
     return identity
 
 
+def _trajectory_steps(
+    connection: sqlite3.Connection,
+    step_columns: Collection[str],
+    trajectory_id: str | None,
+    cascade_id: str | None,
+    meta_count: int,
+) -> Iterator[sqlite3.Row]:
+    """Select native step rows without changing SQLite affinity or collation."""
+    predicates: list[str] = []
+    values: list[object] = []
+    for column, value in (("trajectory_id", trajectory_id), ("cascade_id", cascade_id)):
+        if column in step_columns and value is not None:
+            predicates.append(f"{column} = ?")
+            values.append(value)
+    has_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    if predicates:
+        cursor = connection.execute("SELECT * FROM steps WHERE " + " OR ".join(predicates) + " ORDER BY idx", values)
+        try:
+            first = cursor.fetchone()
+            if first is not None:
+                yield first
+                yield from cursor
+                return
+        finally:
+            cursor.close()
+
+    if meta_count == 1 and (not has_identity or not _any_step_carries_a_key(connection, step_columns)):
+        cursor = connection.execute("SELECT * FROM steps ORDER BY idx")
+        try:
+            yield from cursor
+        finally:
+            cursor.close()
+
+
+def _inspect_trajectory_connection(
+    connection: sqlite3.Connection,
+    grouping: sqlite3.Connection,
+    path: Path,
+    *,
+    preflight: bool,
+) -> tuple[dict[str, object], int, bool]:
+    """Count parser evidence, keeping identity reservations in private storage."""
+    from polylogue.sources.dispatch import message_carries_authored_content
+    from polylogue.sources.sqlite_export import LogicalExportError
+
+    if not _trajectory_schema_matches(connection):
+        raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
+    meta_columns = _sqlite_columns(connection, "trajectory_meta")
+    step_columns = _sqlite_columns(connection, "steps")
+    summary_columns = _sqlite_columns(connection, "conversation_summaries")
+    grouping.execute("CREATE TABLE trajectory_native_ids (identity TEXT COLLATE BINARY PRIMARY KEY) WITHOUT ROWID")
+    grouping.execute(
+        "CREATE TABLE trajectory_summaries (ordinal INTEGER PRIMARY KEY, identity TEXT COLLATE BINARY UNIQUE, "
+        "matched INTEGER NOT NULL DEFAULT 0)"
+    )
+
+    def reserve(identity: str) -> None:
+        grouping.execute("INSERT OR IGNORE INTO trajectory_native_ids VALUES (?)", (identity,))
+
+    def reserved(identity: str) -> bool:
+        return (
+            grouping.execute("SELECT 1 FROM trajectory_native_ids WHERE identity = ?", (identity,)).fetchone()
+            is not None
+        )
+
+    if summary_columns:
+        for row in connection.execute("SELECT * FROM conversation_summaries"):
+            key = next(
+                (
+                    row[column]
+                    for column in ("cascade_id", "trajectory_id")
+                    if column in summary_columns and row[column] not in (None, "")
+                ),
+                None,
+            )
+            if key is not None:
+                identity = str(key)
+                grouping.execute("INSERT OR IGNORE INTO trajectory_summaries (identity) VALUES (?)", (identity,))
+                reserve(identity)
+    meta_count = 0
+    anonymous = 0
+    for meta in connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid"):
+        meta_count += 1
+        identities = [
+            str(meta[column])
+            for column in ("trajectory_id", "cascade_id")
+            if column in meta_columns and meta[column] not in (None, "")
+        ]
+        anonymous += not identities
+        for identity in identities:
+            reserve(identity)
+    if anonymous > 1:
+        raise LogicalExportError(
+            f"Antigravity SQLite holds {anonymous} trajectories with no trajectory or cascade id; "
+            "no stable identity tells them apart"
+        )
+    fallback_id = path.stem
+    effective_meta_count = meta_count or 1
+    has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    unattributed = (
+        not has_step_identity
+        and effective_meta_count > 1
+        and bool(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
+    )
+    produced: dict[str, object] = {
+        "sessions": 0,
+        "messages": 0,
+        "blocks": 0,
+        "actions": 0,
+        "raw_records": 0,
+        "session_refs": [],
+    }
+    sessions = messages = blocks = actions = admitted = 0
+    references: list[str] = []
+    degraded = False
+    meta_rows = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid") if meta_count else iter((None,))
+    for meta in meta_rows:
+        trajectory_id = (
+            str(meta["trajectory_id"]) if meta is not None and meta["trajectory_id"] not in (None, "") else None
+        )
+        cascade_id = str(meta["cascade_id"]) if meta is not None and meta["cascade_id"] not in (None, "") else None
+        row_fallback = fallback_id
+        if trajectory_id is None and cascade_id is None and reserved(row_fallback):
+            row_fallback = f"{fallback_id}:trajectory"
+            attempt = 0
+            while reserved(row_fallback):
+                attempt += 1
+                row_fallback = f"{fallback_id}:trajectory~{attempt}"
+        native_id = trajectory_id or cascade_id or row_fallback
+        own_messages = 0
+        positive = False
+        unsupported = False
+        call_count = 0
+        sole_call: tuple[str, str, bool] | None = None
+        for ordinal, row in enumerate(
+            _trajectory_steps(connection, step_columns, trajectory_id, cascade_id, effective_meta_count)
+        ):
+            row_columns = row.keys()
+            row_map = {str(key): row[key] for key in row_columns}
+            payload = _normalized_step_payload(row_map)
+            previous_count, previous_call = call_count, sole_call
+            call_count, sole_call = 0, None
+            answerable_call = (
+                (previous_call[0], previous_call[1])
+                if previous_count == 1 and previous_call is not None and previous_call[2]
+                else None
+            )
+            try:
+                step_ordinal = int(row_map.get("idx", ordinal))
+            except (TypeError, ValueError):
+                step_ordinal = ordinal
+            step_type = str(row_map.get("step_type") or "").strip().lower()
+            step_format = str(row_map.get("step_format") or "").strip().lower()
+            if payload is None or not _trajectory_step_supported(step_type, step_format):
+                unsupported = True
+                continue
+            try:
+                message = _trajectory_message(
+                    row=row_map,
+                    payload=payload,
+                    position=own_messages,
+                    step_ordinal=step_ordinal,
+                    step_type=step_type,
+                    step_format=step_format,
+                    answerable_call=answerable_call,
+                )
+            except ValidationError:
+                unsupported = True
+                continue
+            if message is None:
+                unsupported = True
+                continue
+            own_messages += 1
+            blocks += len(message.blocks)
+            actions += sum(block.type is BlockType.TOOL_USE for block in message.blocks)
+            positive |= message_carries_authored_content(message)
+            call = message.blocks[0] if message.blocks and message.blocks[0].type is BlockType.TOOL_USE else None
+            if call is not None and call.tool_id is not None:
+                call_count = previous_count + 1
+                if call_count == 1:
+                    sole_call = (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)
+        for summary_key in (cascade_id, trajectory_id):
+            if summary_key is not None:
+                cursor = grouping.execute(
+                    "UPDATE trajectory_summaries SET matched = 1 WHERE identity = ?", (summary_key,)
+                )
+                if cursor.rowcount:
+                    break
+        sessions += 1
+        messages += own_messages
+        if not preflight:
+            references.append(f"session:{Provider.ANTIGRAVITY.value}:{native_id}")
+        admitted += positive if preflight else 0
+        degraded |= unsupported or unattributed or (preflight and not positive)
+    for row in grouping.execute("SELECT identity FROM trajectory_summaries WHERE matched = 0 ORDER BY ordinal"):
+        sessions += 1
+        if not preflight:
+            references.append(f"session:{Provider.ANTIGRAVITY.value}:{row[0]}")
+        degraded = True
+    produced.update(
+        sessions=sessions,
+        messages=messages,
+        blocks=blocks,
+        actions=actions,
+        raw_records=sessions,
+        session_refs=references,
+    )
+    return produced, admitted, degraded
+
+
 def parse_trajectory_db(
     path: Path,
     fallback_id: str | None = None,
@@ -981,42 +1192,7 @@ def _parse_trajectory_connection(
         native_id = trajectory_id or cascade_id or row_fallback_id
         if not native_id:
             continue
-        if has_step_identity:
-            predicates: list[str] = []
-            values: list[object] = []
-            if "trajectory_id" in step_columns and trajectory_id is not None:
-                predicates.append("trajectory_id = ?")
-                values.append(trajectory_id)
-            if "cascade_id" in step_columns and cascade_id is not None:
-                predicates.append("cascade_id = ?")
-                values.append(cascade_id)
-            steps = (
-                connection.execute(
-                    "SELECT * FROM steps WHERE " + " OR ".join(predicates) + " ORDER BY idx",
-                    values,
-                ).fetchall()
-                if predicates
-                else []
-            )
-            if not steps and len(meta_rows) == 1 and not _any_step_carries_a_key(connection, step_columns):
-                # A legacy single-trajectory export can declare the key
-                # columns and still leave every cell NULL. The keyed query
-                # then returns nothing and the safe single-meta fallback
-                # below is unreachable, so the parser emitted an empty
-                # session whose own accounting denominator was 0 -- every
-                # real step silently absent from messages AND from
-                # admission. Attribute them to the sole trajectory only
-                # when no step row carries any key at all.
-                steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
-        elif len(meta_rows) == 1:
-            # Older exports have one trajectory_meta row and no key on
-            # steps. That shape is safe only for the single trajectory.
-            steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
-        else:
-            # Multiple native trajectories with unkeyed steps cannot be
-            # separated honestly. Retain the denominator as explicit
-            # source evidence instead of merging it into every session.
-            steps = []
+        steps = list(_trajectory_steps(connection, step_columns, trajectory_id, cascade_id, len(meta_rows)))
         messages: list[ParsedMessage] = []
         outcomes: list[AdmissionOutcome] = []
         events: list[ParsedSessionEvent] = []
@@ -2005,3 +2181,8 @@ __all__ = [
 # Public alias -- ``source_parsing.py`` needs the same disk-truth listing to
 # locate the raw ``.pb`` bytes for blob snapshotting per exported session.
 conversation_pb_paths = _conversation_pb_paths
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep only the exact markdown-export signature fields."""
+    return DetectorProjection(fields={name: DetectorProjection() for name in ("source", "cascadeId", "markdown")})

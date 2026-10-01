@@ -11,8 +11,8 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
@@ -24,7 +24,7 @@ from polylogue.maintenance.receipt_fs import (
     maintenance_receipt_directory,
     read_optional_receipt,
 )
-from polylogue.sources.acquisition_boundary import open_bound_path
+from polylogue.sources.acquisition_boundary import open_bound_container, open_bound_path
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.batch_support import (
@@ -40,12 +40,8 @@ from polylogue.sources.source_acquisition_components import (
     replay_zip_entry_acquisition_revisions,
     zip_member_admission,
 )
-from polylogue.sources.sqlite_snapshot import (
-    SQLiteSourceBinding,
-    bind_sqlite_source,
-    is_sqlite_path,
-    sqlite_member_revision_and_size,
-)
+from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
+from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
 from polylogue.sources.walk_faults import WalkRefusedError
 from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 from polylogue.storage.blob_store import BlobStore
@@ -610,7 +606,7 @@ def _unchanged_member_revision(row: SourceDecision) -> bool:
             return any(
                 unit.revision == row.revision for unit in replay_zip_entry_acquisition_revisions(archive, context)
             )
-    except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile, ContentIdentityRefusal):
+    except (OSError, UnicodeError, ValueError, zipfile.BadZipFile, ContentIdentityRefusal):
         return False
 
 
@@ -619,7 +615,7 @@ def _revision(
     *,
     cancelled: Callable[[], bool] | None = None,
     location: Provider | None = None,
-    source_binding: SQLiteSourceBinding | None = None,
+    source_binding: SourceInputBinding | None = None,
 ) -> tuple[str, int]:
     """Hash one file; with ``location``, through the boundary that validates the bytes it hashes.
 
@@ -650,7 +646,16 @@ def _archive_members(
     progress: BaselineProgress | None = None,
 ) -> tuple[SourceDecision, ...]:
     members: list[SourceDecision] = []
-    with zipfile.ZipFile(path) as archive:
+    with (
+        TemporaryDirectory(prefix="polylogue-zip-baseline-") as scratch,
+        bind_source_input(path) as captured,
+        open_bound_container(
+            BlobStore(Path(scratch)),
+            captured,
+            heartbeat=lambda: _check_observation_cancelled(cancelled),
+        ) as physical,
+        zipfile.ZipFile(physical) as archive,
+    ):
         central_directory = archive.infolist()
         ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
@@ -668,7 +673,6 @@ def _archive_members(
         entries = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path).filter_entries(
             central_directory,
             allowed_path=admission.allowed_path,
-            on_rejected=fault,
             on_unselected=excluded,
         )
         for info in entries:
@@ -685,9 +689,11 @@ def _archive_members(
                     path,
                     info,
                     None,
-                    admission.entry_provider_hint(info.filename),
+                    admission.entry_provider_hint(archive, info),
                     None,  # type: ignore[arg-type]
                     bound_provider=location_binding,
+                    captured_input_identity=captured.captured_identity,
+                    entry_ordinal=ordinals[id(info)],
                 )
                 for unit in replay_zip_entry_acquisition_revisions(
                     archive, context, checkpoint=lambda: _check_observation_cancelled(cancelled)
@@ -720,7 +726,7 @@ def _archive_members(
                 members.extend(member_decisions)
                 fault(info, f"content_identity_refused:{exc}")
                 continue
-            except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
+            except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")
                 continue
@@ -818,7 +824,7 @@ def capture_production_source_baseline(
             source_binding = None
             try:
                 if is_sqlite_path(path) and not path.is_symlink():
-                    source_binding = stack.enter_context(bind_sqlite_source(path))
+                    source_binding = stack.enter_context(bind_source_input(path))
             except OSError as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))

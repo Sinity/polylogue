@@ -84,6 +84,7 @@ from typing import Any, Literal, TypeAlias
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
@@ -683,3 +684,10 @@ __all__ = [
     "parse_verification_evidence_db",
     "parse_verification_evidence_db_payload",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep the marker and declaration used by the verification detector."""
+    return DetectorProjection(
+        fields={"polylogue_artifact": DetectorProjection(), "verification_db_path": DetectorProjection()}
+    )

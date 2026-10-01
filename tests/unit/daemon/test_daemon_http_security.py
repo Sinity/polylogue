@@ -562,14 +562,15 @@ class TestIngestEndpointStagingBoundary:
 
         monkeypatch.setattr(DaemonAPIHandler, "_execute_daemon_operation", accepted)
 
-    def test_accepts_absolute_reference_only_by_matching_staged_entry(
+    def test_accepts_exact_staged_slot_with_authenticated_original_label(
         self,
         workspace_env: dict[str, Path],
+        tmp_path: Path,
     ) -> None:
-        staging = import_staging_root(workspace_env["archive_root"])
-        staging.mkdir(parents=True)
-        staged = staging / "session.json"
-        staged.write_text(
+        from polylogue.sources.source_staging import stage_source_input
+
+        original = tmp_path / "session.json"
+        original.write_text(
             json.dumps(
                 {
                     "mapping": {
@@ -586,12 +587,12 @@ class TestIngestEndpointStagingBoundary:
             )
         )
 
-        body = json.dumps(
-            {
-                "path": "/outside/tree/session.json",
-                "source_path": "/original/provider/export/session.json",
-            }
-        ).encode("utf-8")
+        staged = stage_source_input(
+            original, import_staging_root(workspace_env["archive_root"]), check_stop=lambda: None
+        )
+        body = json.dumps({"path": str(staged), "source_path": str(original), "source_name": original.name}).encode(
+            "utf-8"
+        )
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
 
@@ -608,11 +609,42 @@ class TestIngestEndpointStagingBoundary:
         assert payload["path"] == str(staged.resolve())
         assert payload["preflight"]["status"] == "supported"
         assert payload["preflight"]["providers"] == ["chatgpt"]
-        assert payload["request"]["source_path"] == "/original/provider/export/session.json"
+        assert payload["request"]["source_path"] == str(original)
+        assert payload["request"]["source_name"] == original.name
         assert payload["request"]["staged_path"] == str(staged.resolve())
         emit_event.assert_not_called()
         assert payload["accepted_reference"]["request_id"] == payload["request_id"]
         assert payload["accepted_reference"]["artifact_kind"] == "source-generation"
+
+    @pytest.mark.parametrize("field", ["source_path", "source_name"])
+    def test_rejects_an_http_label_that_differs_from_the_staging_receipt(
+        self,
+        workspace_env: dict[str, Path],
+        tmp_path: Path,
+        field: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.http import DaemonAPIHandler
+        from polylogue.sources.source_staging import stage_source_input
+
+        original = tmp_path / "session.jsonl"
+        original.write_text(json.dumps({"type": "user", "sessionId": "accepted-profile"}) + "\n")
+        staged = stage_source_input(
+            original, import_staging_root(workspace_env["archive_root"]), check_stop=lambda: None
+        )
+        requests: list[DaemonOperationRequest] = []
+        monkeypatch.setattr(
+            DaemonAPIHandler,
+            "_execute_daemon_operation",
+            lambda _handler, request: requests.append(request),
+        )
+        body = json.dumps({"path": str(staged), field: "/unrelated/label"}).encode()
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = capture_responses(handler)
+        handler.do_POST()
+        assert send_error.call_args.args[:2] == (HTTPStatus.BAD_REQUEST, "invalid_source_declaration")
+        send_json.assert_not_called()
+        assert requests == []
 
     def test_rejects_staged_unsupported_import_shape(
         self,
@@ -767,6 +799,9 @@ class TestIngestEndpointStagingBoundary:
     ) -> None:
         outside = tmp_path / "session.jsonl"
         outside.write_text('{"type":"session"}\n')
+        staging = import_staging_root(workspace_env["archive_root"])
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / outside.name).write_text(json.dumps({"mapping": {}}))
 
         body = json.dumps({"path": str(outside)}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
@@ -802,13 +837,9 @@ class TestIngestEndpointStagingBoundary:
     ) -> None:
         """Path traversal attempts via ``..`` or embedded ``/`` cannot escape staging.
 
-        ``resolve_staged_import`` uses ``PurePath(raw).name`` which strips all
-        directory components before matching against staged entries. The
-        resolved candidate is then re-checked with ``relative_to`` the staging
-        root to catch symlink escapes. A file with the extracted basename that
-        lives outside the staging root must produce ``path_not_found``; one that
-        happens to match a staged entry may only be returned if the resolved
-        path is inside the staging root.
+        The exact normalized request must remain inside staging, and its
+        resolved target must remain there too. An outside file cannot select
+        a different staged entry merely because their basenames match.
         """
         staging = import_staging_root(workspace_env["archive_root"])
         staging.mkdir(parents=True, exist_ok=True)
@@ -837,20 +868,20 @@ class TestIngestEndpointStagingBoundary:
         send_json.assert_not_called()
         emit_event.assert_not_called()
 
-    def test_traversal_basename_matches_staged_entry_is_accepted(
+    @pytest.mark.parametrize("nested,absolute", [(False, False), (True, False), (True, True)])
+    def test_normalized_coordinate_inside_staging_is_accepted(
         self,
         workspace_env: dict[str, Path],
+        nested: bool,
+        absolute: bool,
     ) -> None:
-        """When the basename extracted from a traversal path matches a real staged
-        entry inside the staging root, the daemon schedules it normally.
-
-        This confirms the name-extraction is sanitizing the input, not just
-        blocking it — clients can refer to staged files via absolute or relative
-        paths as long as the file is actually staged.
-        """
+        """A relative coordinate normalizing inside staging selects that input."""
         staging = import_staging_root(workspace_env["archive_root"])
         staging.mkdir(parents=True, exist_ok=True)
-        staged = staging / "session.jsonl"
+        payload_root = staging / "slot" / "input" if nested else staging
+        payload_root.mkdir(parents=True, exist_ok=True)
+        basename = "x" * 249 + ".jsonl" if nested else "session.jsonl"
+        staged = payload_root / basename
         staged.write_text(
             json.dumps(
                 {
@@ -869,8 +900,10 @@ class TestIngestEndpointStagingBoundary:
             + "\n"
         )
 
-        # Client sends a dotdot path whose basename is "session.jsonl"
-        body = json.dumps({"path": "../import-staging/session.jsonl"}).encode("utf-8")
+        requested = str(staged) if absolute else str(staged.relative_to(staging))
+        if not nested:
+            requested = "../import-staging/session.jsonl"
+        body = json.dumps({"path": requested}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
 
@@ -880,7 +913,7 @@ class TestIngestEndpointStagingBoundary:
         ):
             handler.do_POST()
 
-        # Name was sanitized → matched the real staged entry → accepted
+        # The normalized coordinate names the actual staged entry.
         send_error.assert_not_called()
         assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
         payload = send_json.call_args.args[1]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.operations.ingest_inputs import discover_ingest_input_spool, retain_input_page
+from polylogue.sources.source_staging import stage_source_input
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
 
@@ -30,21 +31,26 @@ def test_staged_directory_members_are_keyed_under_the_callers_path(tmp_path: Pat
     raises; key members on the staged physical path and the logical paths
     name ``import-staging`` instead of ``/exports/account``.
     """
-    staged = tmp_path / "import-staging" / "account"
-    (staged / "nested").mkdir(parents=True)
-    (staged / "conversations.json").write_text("[]")
-    (staged / "nested" / "chat.jsonl").write_text("{}\n")
+    original = tmp_path / "exports" / "account"
+    (original / "nested").mkdir(parents=True)
+    (original / "conversations.json").write_text("[]")
+    (original / "nested" / "chat.jsonl").write_text("{}\n")
+    staged = stage_source_input(original, tmp_path / "import-staging", check_stop=lambda: None)
 
-    assert _retain(staged, "/exports/account", tmp_path) == {
-        ("conversations.json", "/exports/account/conversations.json"),
-        ("nested/chat.jsonl", "/exports/account/nested/chat.jsonl"),
+    assert _retain(staged, str(original), tmp_path) == {
+        ("conversations.json", str(original / "conversations.json")),
+        ("nested/chat.jsonl", str(original / "nested" / "chat.jsonl")),
     }
 
 
-def test_a_file_input_is_keyed_on_its_source_path_or_its_physical_path(tmp_path: Path) -> None:
-    staged = tmp_path / "import-staging" / "session.jsonl"
-    staged.parent.mkdir(parents=True)
-    staged.write_text("{}\n")
+def test_file_intake_requires_the_captured_original_declaration(tmp_path: Path) -> None:
+    import pytest
 
-    assert _retain(staged, "/exports/session.jsonl", tmp_path) == {("input:0", "/exports/session.jsonl")}
-    assert _retain(staged, None, tmp_path) == {("input:0", str(staged))}
+    original = tmp_path / "exports" / "session.jsonl"
+    original.parent.mkdir()
+    original.write_text("{}\n")
+    staged = stage_source_input(original, tmp_path / "import-staging", check_stop=lambda: None)
+    assert _retain(staged, str(original), tmp_path) == {("input:0", str(original))}
+    with pytest.raises(ValueError):
+        _retain(staged, "/unproved/session.jsonl", tmp_path)
+    assert _retain(original, None, tmp_path) == {("input:0", str(original))}

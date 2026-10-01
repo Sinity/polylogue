@@ -35,8 +35,9 @@ from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
+from .source_staging import SourceInputBinding, bind_source_input
 from .source_walk import _setup_source_walk
-from .sqlite_snapshot import SQLiteSourceBinding, bind_sqlite_source, is_sqlite_path, snapshot_sqlite_to_blob
+from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 
 logger = get_logger(__name__)
 _cursor.logger = logger
@@ -306,7 +307,7 @@ def parse_one_source_path(
     blob_store: BlobStore | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     if is_sqlite_path(Path(path_str)):
-        with bind_sqlite_source(Path(path_str)) as binding:
+        with bind_source_input(Path(path_str)) as binding:
             yield from _parse_one_source_path_bound(
                 path_str,
                 source_binding=binding,
@@ -335,7 +336,7 @@ def parse_one_source_path(
 def _parse_one_source_path_bound(
     path_str: str,
     *,
-    source_binding: SQLiteSourceBinding | None,
+    source_binding: SourceInputBinding | None,
     file_mtime: str | None,
     source_name: str,
     sidecar_data: SidecarData,
@@ -621,74 +622,81 @@ def iter_source_sessions_with_raw(
     if walk is None:
         return
 
-    failed_count = 0
-    for path, file_mtime in walk.paths_to_process:
-        if (
-            Provider.from_string(source.name) is Provider.ANTIGRAVITY
-            and path.suffix.lower() == ".pb"
-            and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
-        ):
-            # Only the language-server prepass owns ``.pb`` conversations.
-            # ``classify_source_path`` gives a schema-verified trajectory
-            # ``.db`` the same compatibility role name, and skipping it here
-            # produced no raw record and no session on the configured-source
-            # route at all.
-            continue
-        try:
-            yield from parse_one_source_path(
-                str(path),
-                file_mtime=file_mtime,
-                source_name=source.name,
-                sidecar_data=walk.sidecar_data,
-                capture_raw=capture_raw,
-                cursor_state=cursor_state,
-                blob_root=blob_root,
-                blob_store=blob_store,
-            )
-        except ContentExcisedError as exc:
-            # Deliberately forgotten content: a typed permanent outcome, not a
-            # parse failure to retry.
-            emit(
-                "sources.parse.content_excised",
-                outcome="skipped",
-                reason="content_excised",
-                path=str(path),
-                blob_hash=exc.blob_hash.hex(),
-            )
-        except FileNotFoundError as exc:
-            failed_count += 1
-            logger.warning("File disappeared during processing (TOCTOU race): %s", path)
-            _record_cursor_failure(
-                cursor_state,
-                str(path),
-                f"File not found (may have been deleted): {exc}",
-            )
-        except ForeignOriginContentError as exc:
-            failed_count += 1
-            emit(
-                "sources.acquisition.foreign_origin_refused",
-                level=WARNING,
-                outcome="refused",
-                source_path=str(path),
-                reason=f"{exc.code}: {exc}",
-            )
-            _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
-        except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
-            failed_count += 1
-            logger.warning("Failed to parse %s: %s", path, exc)
-            _record_cursor_failure(cursor_state, str(path), str(exc))
-        except Exception as exc:
-            failed_count += 1
-            logger.error("Unexpected error processing %s: %s", path, exc)
-            _record_cursor_failure(cursor_state, str(path), str(exc))
+    from polylogue.sources.assembly import close_sidecar_data
 
-    _log_source_iteration_summary(
-        source_name=source.name,
-        total_paths=len(walk.paths),
-        skipped_mtime=walk.skipped_mtime,
-        failed_count=failed_count,
-        failure_kind="parse/read",
-    )
+    try:
+        failed_count = 0
+        for path, file_mtime in walk.paths_to_process:
+            if (
+                Provider.from_string(source.name) is Provider.ANTIGRAVITY
+                and path.suffix.lower() == ".pb"
+                and antigravity.classify_source_path(path).role
+                is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+            ):
+                # Only the language-server prepass owns ``.pb`` conversations.
+                # ``classify_source_path`` gives a schema-verified trajectory
+                # ``.db`` the same compatibility role name, and skipping it here
+                # produced no raw record and no session on the configured-source
+                # route at all.
+                continue
+            try:
+                yield from parse_one_source_path(
+                    str(path),
+                    file_mtime=file_mtime,
+                    source_name=source.name,
+                    sidecar_data=walk.sidecar_data,
+                    capture_raw=capture_raw,
+                    cursor_state=cursor_state,
+                    blob_root=blob_root,
+                    blob_store=blob_store,
+                )
+            except ContentExcisedError as exc:
+                # Deliberately forgotten content: a typed permanent outcome, not a
+                # parse failure to retry.
+                emit(
+                    "sources.parse.content_excised",
+                    outcome="skipped",
+                    reason="content_excised",
+                    path=str(path),
+                    blob_hash=exc.blob_hash.hex(),
+                )
+            except FileNotFoundError as exc:
+                failed_count += 1
+                logger.warning("File disappeared during processing (TOCTOU race): %s", path)
+                _record_cursor_failure(
+                    cursor_state,
+                    str(path),
+                    f"File not found (may have been deleted): {exc}",
+                )
+            except ForeignOriginContentError as exc:
+                failed_count += 1
+                emit(
+                    "sources.acquisition.foreign_origin_refused",
+                    level=WARNING,
+                    outcome="refused",
+                    source_path=str(path),
+                    reason=f"{exc.code}: {exc}",
+                )
+                _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
+            except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+                failed_count += 1
+                logger.warning("Failed to parse %s: %s", path, exc)
+                _record_cursor_failure(cursor_state, str(path), str(exc))
+            except Exception as exc:
+                failed_count += 1
+                logger.error("Unexpected error processing %s: %s", path, exc)
+                _record_cursor_failure(cursor_state, str(path), str(exc))
+
+        _log_source_iteration_summary(
+            source_name=source.name,
+            total_paths=len(walk.paths),
+            skipped_mtime=walk.skipped_mtime,
+            failed_count=failed_count,
+            failure_kind="parse/read",
+        )
+
+    finally:
+        close_sidecar_data(walk.sidecar_data)
 
 
 __all__ = [

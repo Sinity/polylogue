@@ -29,7 +29,7 @@ Initially absent sidecars bind only when their opened descriptor matches the
 current anchored name. Unknown or unlinked regular descriptors are refused;
 no database guard descriptor is opened and closed in the caller's process.
 
-`sqlite_snapshot.py` owns a source binding that keeps staged provenance,
+`source_staging.py` owns `SourceInputBinding`, which keeps staged provenance,
 declaration, logical-table scope and routing with the accepted main identity.
 A narrow fresh-process operation reads provenance before opening SQLite;
 the parent never reads an ordinary metadata descriptor that could have been
@@ -39,6 +39,17 @@ the ordinary source route. The actual reader proves the same main descriptor
 before SQL and checks the bound metadata before the operation and at its end.
 Acquisition results carry the accepted source coordinate through attribution
 and profile identity; retained exports use that durable coordinate directly.
+
+The physical canonical coordinate identifies the accepted open input. The
+semantic coordinate keeps its captured declared parent and basename, so an
+alias named `state.db` retains its declaration even when its target has a
+different name. Hermes acquisition separately captures the resolved declared
+profile namespace and its shared qualifier before retention. New raw identities
+use the captured namespace/member under the v3 domain; retained replay reads
+`raw_profile_identity_receipts` and never resolves a current filesystem alias.
+An older raw without a receipt reports `terminal_missing_profile_identity`,
+distinct from missing physical byte coordinates. Captured source-manifest
+members retain physical, semantic and profile evidence together.
 
 Staging publishes provenance and database through separate replacements.
 The provenance includes the backup owner's actual destination identity, so

@@ -20,7 +20,12 @@ from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
+from polylogue.core.raw_coordinates import (
+    MemberAddressingMode,
+    captured_zip_member_raw_id,
+    zip_member_raw_id,
+    zip_member_source_index,
+)
 from polylogue.logging import WARNING, emit
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign
 from polylogue.sources.decoder_zip import ZipEntryValidator
@@ -36,6 +41,7 @@ from polylogue.sources.source_acquisition_components import (
     zip_member_admission,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +64,7 @@ def iter_retained_source_records(
     blob_size: int,
     blob_store: BlobStore,
     source_name: str | None = None,
+    captured_identity: CapturedSourceInputIdentity | None = None,
     on_member_disposition: Callable[[int, str, str, str], None] | None = None,
 ) -> Iterator[RetainedRawRecord]:
     """Use canonical bounded decoders over the exact retained physical blob.
@@ -87,6 +94,7 @@ def iter_retained_source_records(
                 provider_hint=provider,
                 blob_store=blob_store,
                 retained_blob=ArtifactIdentity(blob_hash, blob_size),
+                captured_input_identity=captured_identity,
             )
         )
         # A plain source has no central directory. Its source-43 record is
@@ -127,7 +135,6 @@ def iter_retained_source_records(
         for entry in validator.filter_entries(
             entries,
             allowed_path=admission.allowed_path,
-            on_rejected=record_rejected,
             on_unselected=record_unselected,
         ):
             ordinal = ordinals[id(entry)]
@@ -139,15 +146,21 @@ def iter_retained_source_records(
                 logical_path,
                 entry,
                 None,
-                admission.entry_provider_hint(entry.filename),
+                admission.entry_provider_hint(archive, entry),
                 blob_store,
                 bound_provider=location_binding,
+                captured_input_identity=captured_identity,
+                entry_ordinal=ordinal,
             )
             try:
                 # A member's splits leave only once the whole member validated;
                 # a foreign member raises before any is yielded.
                 for data in iter_zip_entry_raw_data(archive, context):
-                    split = data.source_index or 0
+                    split = (
+                        data.captured_zip_coordinate.split_index
+                        if data.captured_zip_coordinate is not None
+                        else data.source_index or 0
+                    )
                     mode = data.addressing_mode
                     if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
                         raise ValueError("retained ZIP record has no exact addressing mode")
@@ -158,11 +171,15 @@ def iter_retained_source_records(
                         data.model_copy(
                             update={"source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)}
                         ),
-                        zip_member_raw_id(
-                            source_path=data.source_path,
-                            entry_ordinal=ordinal,
-                            split_index=split,
-                            blob_hash=data.blob_hash,
+                        (
+                            captured_zip_member_raw_id(data.captured_zip_coordinate, data.blob_hash)
+                            if data.captured_zip_coordinate is not None
+                            else zip_member_raw_id(
+                                source_path=data.source_path,
+                                entry_ordinal=ordinal,
+                                split_index=split,
+                                blob_hash=data.blob_hash,
+                            )
                         ),
                         ordinal,
                         split,

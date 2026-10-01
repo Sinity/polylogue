@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import json
@@ -669,6 +670,37 @@ _ISOLATED_RUNTIME_PROBE_CACHE_LOCK = Lock()
 def _runtime_consumer_results(
     train: DurableChangeTrain,
     archive_root: Path,
+    *,
+    candidate: sqlite3.Connection,
+) -> tuple[DurableRuntimeConsumerResult, ...]:
+    """Bind isolated probes to the already authenticated post-apply candidate."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        RuntimeTierProbeAuthority,
+        runtime_tier_probe_authority,
+    )
+
+    replay = train.schema_replay_proof
+    if replay is None:
+        raise DurableChangeTrainError("runtime consumer probes require the numbered schema replay authority")
+    validate_durable_migration_replay_proof(replay, recompute_installed_bindings=True)
+    step = _migration_runner._durable_migration_replay_step(replay, train.target_version)
+    inventory = capture_durable_schema_inventory(candidate)
+    version = int(candidate.execute("PRAGMA user_version").fetchone()[0])
+    if version != train.target_version or inventory.sha256 != step.after_schema_inventory_sha256:
+        raise DurableChangeTrainError("runtime consumer candidate differs from its post-apply schema/version authority")
+    with runtime_tier_probe_authority(RuntimeTierProbeAuthority(train.tier, version, inventory.sha256)):
+        results = _invoke_runtime_consumers(train, archive_root)
+    if (
+        int(candidate.execute("PRAGMA user_version").fetchone()[0]) != version
+        or capture_durable_schema_inventory(candidate).sha256 != inventory.sha256
+    ):
+        raise DurableChangeTrainError("runtime consumer candidate changed during its isolated probes")
+    return results
+
+
+def _invoke_runtime_consumers(
+    train: DurableChangeTrain,
+    archive_root: Path,
 ) -> tuple[DurableRuntimeConsumerResult, ...]:
     """Invoke each declared production probe before recording behavior proof."""
     results: list[DurableRuntimeConsumerResult] = []
@@ -711,6 +743,16 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_source_hook_event_writer(cast(Callable[..., object], value))
+                elif reference.endswith(":record_raw_profile_identity") or reference.endswith(
+                    ":read_raw_profile_identity"
+                ):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_source_profile_identity(
+                        cast(Callable[..., object], value), writer=reference.endswith(":record_raw_profile_identity")
+                    )
                 elif reference.endswith(":read_raw_failure_lifecycle"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -778,7 +820,17 @@ def _runtime_consumer_results(
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_source_generation_publish(cast(Callable[..., object], value))
+                    detail = (
+                        _probe_captured_source_input(cast(Callable[..., object], value), writer=True)
+                        if consumer.consumer_id == "captured-input-publication"
+                        else _probe_source_generation_publish(cast(Callable[..., object], value))
+                    )
+                elif reference.endswith(":page_retained_source_inputs"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_captured_source_input(cast(Callable[..., object], value), writer=False)
                 elif reference.endswith(":read_excision_policy_projection"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -1066,6 +1118,90 @@ def _runtime_probe_source_connection() -> sqlite3.Connection:
         connection.close()
         raise
     return connection
+
+
+def _probe_source_profile_identity(operation: Callable[..., object], *, writer: bool) -> str:
+    """Exercise immutable receipt write/read and the historical evidence gap."""
+    from polylogue.core.enums import Origin
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        read_raw_profile_identity,
+        record_raw_profile_identity,
+        write_source_raw_session_blob_ref,
+    )
+
+    write = operation if writer else record_raw_profile_identity
+    read = read_raw_profile_identity if writer else operation
+    key = "0123456789ab"
+    with closing(_runtime_probe_source_connection()) as probe:
+        for raw_id in ("captured-profile", "historical-profile-gap"):
+            write_source_raw_session_blob_ref(
+                probe,
+                origin=Origin.UNKNOWN_EXPORT,
+                source_path=f"/durable-change-train/{raw_id}.json",
+                source_index=0,
+                blob_hash=hashlib.sha256(raw_id.encode()).digest(),
+                blob_size=len(raw_id),
+                acquired_at_ms=1,
+                raw_id=raw_id,
+            )
+        if read(probe, "captured-profile") is not None:
+            raise DurableChangeTrainError("profile receipt probe fabricated an absent qualifier")
+        write(probe, raw_id="captured-profile", profile_key=key, allow_new_receipt=True)
+        write(probe, raw_id="captured-profile", profile_key=key)
+        if read(probe, "captured-profile") != key:
+            raise DurableChangeTrainError("profile receipt reader changed the accepted qualifier")
+        for raw_id, incoming in (("captured-profile", "abcdef012345"), ("historical-profile-gap", key)):
+            try:
+                write(probe, raw_id=raw_id, profile_key=incoming)
+            except ValueError:
+                pass
+            else:
+                raise DurableChangeTrainError("profile receipt writer relabeled retained acquisition evidence")
+        if read(probe, "historical-profile-gap") is not None or read(probe, "captured-profile") != key:
+            raise DurableChangeTrainError("profile receipt refusal changed durable evidence")
+    return "profile receipt round-trips immutably; absent historical evidence remains absent"
+
+
+def _probe_captured_source_input(operation: Callable[..., object], *, writer: bool) -> str:
+    """Invoke both production sides of the installed captured-input columns."""
+    from polylogue.core.provider_identity import captured_hermes_profile_key
+    from polylogue.storage.sqlite.archive_tiers.source_items import (
+        CapturedSourceInputIdentity,
+        page_retained_source_inputs,
+        publish_source_generation,
+    )
+
+    publish = operation if writer else publish_source_generation
+    page = page_retained_source_inputs if writer else operation
+    root = Path("/durable-change-train/profile")
+    identity = CapturedSourceInputIdentity(
+        canonical_source_path="/durable-change-train/physical/input.jsonl",
+        semantic_source_path=str(root / "sessions/input.jsonl"),
+        profile_root=str(root),
+        profile_key=captured_hermes_profile_key(root),
+        profile_source_path=str(root / "sessions/input.jsonl"),
+    )
+    generation = "durable-change-train-captured-input"
+    with closing(_runtime_probe_source_connection()) as probe:
+        publish(
+            probe,
+            source_generation_id=generation,
+            manifest_digest="1" * 64,
+            addressing_mode="physical-file-v1",
+            coordinates=("sessions/input.jsonl",),
+            observed_at_ms=1,
+            source_paths={"sessions/input.jsonl": identity.semantic_source_path},
+            input_blob_hashes={"sessions/input.jsonl": bytes.fromhex("2" * 64)},
+            enumeration_fingerprint="3" * 64,
+            captured_input_identities={"sessions/input.jsonl": identity},
+            policy_snapshot=_probe_excision_policy_snapshot(generation),
+        )
+        rows = page(probe, generation, limit=1)
+        if not isinstance(rows, tuple) or len(rows) != 1 or rows[0][0].captured_identity != identity:
+            raise DurableChangeTrainError("captured input lost its accepted semantic/physical/profile receipt")
+        if page(probe, generation, after=("sessions/input.jsonl", rows[0][0].source_item_id), limit=1):
+            raise DurableChangeTrainError("captured input reader repeated its page cursor")
+    return "published and paged the exact captured physical, semantic and profile identity"
 
 
 def _probe_excision_policy_snapshot(source_generation_id: str) -> ExcisionPolicySnapshot:
@@ -2188,7 +2324,7 @@ def _prove_and_release_persisted_train(
             runtime_results = (
                 tuple(runtime_consumer_results)
                 if runtime_consumer_results is not None
-                else _runtime_consumer_results(train, archive_root)
+                else _runtime_consumer_results(train, archive_root, candidate=live)
             )
             restart = _migration_runner.capture_durable_restart_convergence(
                 live,

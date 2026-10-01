@@ -999,8 +999,31 @@ def _enrichment_evidence_digest(value: object) -> str:
             digest.update(data)
             return len(data)
 
+    from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
+
+    if isinstance(value, dict) and isinstance(value.get("chatgpt_asset_index"), ChatGPTAssetIndex):
+        from polylogue.sources.parsers.chatgpt_sidecars import _AssetBlobs
+
+        index = value["chatgpt_asset_index"]
+        value = {**value, "chatgpt_asset_index": index.evidence_digest()}
+        assets = value.get("chatgpt_asset_blobs")
+        if isinstance(assets, _AssetBlobs):
+            # A retained supplement can own the missing acquired-member map
+            # while an acquisition-carried naming index remains authoritative.
+            # Bind each actual artifact without serializing SQL handles.
+            value["chatgpt_asset_blobs"] = assets.index.evidence_digest()
     pickle.dump(value, DigestWriter(), protocol=pickle.HIGHEST_PROTOCOL)
     return digest.hexdigest()
+
+
+def _owned_enrichment_evidence_digest(value: SidecarData) -> str:
+    """Digest operation-owned sidecars and settle their artifact lifetime."""
+    from polylogue.sources.assembly import close_sidecar_data
+
+    try:
+        return _enrichment_evidence_digest(value)
+    finally:
+        close_sidecar_data(value)
 
 
 def _retained_parser_sidecar_digest(source_conn: sqlite3.Connection, *, provider: Provider, source_path: str) -> str:
@@ -1065,7 +1088,7 @@ def enrichment_dependency_digest(
     # seals do: gating this on an assembly spec made the writer's value for a
     # provider without one differ from the sealed value, so every prepared
     # artifact of that provider read as stale and never published.
-    assembly_digest = _enrichment_evidence_digest(
+    assembly_digest = _owned_enrichment_evidence_digest(
         _retained_enrichment_sidecar_data(
             provider=provider,
             sessions=(),
@@ -1266,6 +1289,7 @@ def prepare_retained_jsonl_artifact(
         with (
             read_frame(source_db_path, tier=ArchiveTier.SOURCE, timeout_class="background-read") as source_frame,
             read_frame(index_db_path, tier=ArchiveTier.INDEX, timeout_class="background-read") as index_frame,
+            ExitStack() as sidecar_lifetimes,
         ):
             source_conn = source_frame.connection
             index_conn = index_frame.connection
@@ -1289,6 +1313,9 @@ def prepare_retained_jsonl_artifact(
                 evidence_digest = _enrichment_evidence_digest(value)
 
             sidecar_data_cache: SidecarData = {}
+            from polylogue.sources.assembly import close_sidecar_data
+
+            sidecar_lifetimes.callback(close_sidecar_data, sidecar_data_cache)
             sidecar_data_loaded = False
             from polylogue.sources.assembly import get_assembly_spec
 
@@ -1449,7 +1476,7 @@ def prepare_retained_jsonl_artifact(
                     _retained_dependency_digest(
                         evidence_digest
                         if evidence_digest is not None
-                        else _enrichment_evidence_digest(
+                        else _owned_enrichment_evidence_digest(
                             _retained_enrichment_sidecar_data(
                                 provider=provider,
                                 sessions=(),
@@ -1532,7 +1559,7 @@ def prepare_retained_non_json_artifact(
             source_path=source_path,
         )
         dependency = _retained_dependency_digest(
-            _enrichment_evidence_digest(evidence),
+            _owned_enrichment_evidence_digest(evidence),
             _retained_parser_sidecar_digest(
                 archive._ensure_source_conn(), provider=resolved_provider, source_path=source_path
             ),
@@ -1560,6 +1587,7 @@ def prepare_retained_non_json_artifact(
             enrichment_digest=dependency,
             enrichment_index_path=str(Path(index_db_path).resolve()),
             resolved_provider=resolved_provider,
+            captured_profile_key=archive.raw_profile_identity(raw_id),
         )
         sealed = True
         return artifact
@@ -1636,7 +1664,11 @@ def _prepared_retained_outcome(
         return retained_parse_exception(prepared.parser_error, prepared.parser_decode_failure)
     if prepared.prepared_artifact is not None:
         artifact = prepared.prepared_artifact
-        if artifact.blob_hash != blob_hash or artifact.error is not None:
+        if (
+            artifact.blob_hash != blob_hash
+            or artifact.error is not None
+            or artifact.captured_profile_key != prepared.captured_profile_key
+        ):
             raise RetainedPreparationRetryableError(f"prepared retained artifact changed for raw {raw_id}")
         if artifact.enrichment_index_path != str(archive.index_db_path.resolve()):
             raise RetainedPreparationRetryableError(f"prepared retained index dependency changed for raw {raw_id}")
@@ -5165,6 +5197,13 @@ class RetainedSessionEnricher:
             )
         return stamp_enrichment_evidence(self._provider, self._cached, spec.enrich_session(session, self._cached))
 
+    def close(self) -> None:
+        from polylogue.sources.assembly import close_sidecar_data
+
+        if self._cached is not None:
+            close_sidecar_data(self._cached)
+            self._cached = None
+
     def enrich_all(self, sessions: Sequence[ParsedSession]) -> list[ParsedSession]:
         return [self(session) for session in sessions]
 
@@ -5253,17 +5292,21 @@ def open_retained_session_enricher(
     parsed-content fallbacks, exactly as retained replay does without it.
     """
     frames = _RebindingEvidenceFrames(source_db_path=source_db_path, index_db_path=index_db_path)
+    enricher = RetainedSessionEnricher(
+        provider,
+        source_path=source_path,
+        index_conn=None,
+        source_conn=None,
+        blob_root=Path(blob_root),
+        frames=frames,
+    )
     try:
-        yield RetainedSessionEnricher(
-            provider,
-            source_path=source_path,
-            index_conn=None,
-            source_conn=None,
-            blob_root=Path(blob_root),
-            frames=frames,
-        )
+        yield enricher
     finally:
-        frames.close()
+        try:
+            enricher.close()
+        finally:
+            frames.close()
 
 
 def enrich_sessions_from_archive(
@@ -5276,13 +5319,18 @@ def enrich_sessions_from_archive(
     """
     if provider is Provider.UNKNOWN and sessions:
         provider = sessions[0].source_name
-    return RetainedSessionEnricher(
+    enricher = RetainedSessionEnricher(
         provider,
         source_path=source_path,
         index_conn=archive.index_connection,
         source_conn=archive.source_connection,
         blob_root=Path(archive.archive_root) / "blob",
-    ).enrich_all(sessions)
+    )
+
+    try:
+        return enricher.enrich_all(sessions)
+    finally:
+        enricher.close()
 
 
 def _replay_safe_enrich_sessions(
@@ -5326,10 +5374,16 @@ def _replay_safe_enrich_sessions(
     )
     if evidence_observer is not None:
         evidence_observer(sidecar_data)
-    return [
-        stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
-        for session in sessions
-    ]
+    from polylogue.sources.assembly import close_sidecar_data
+
+    try:
+        return [
+            stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
+            for session in sessions
+        ]
+
+    finally:
+        close_sidecar_data(sidecar_data)
 
 
 def _retained_enrichment_sidecar_data(

@@ -8,7 +8,8 @@ from pathlib import Path
 from typing_extensions import TypedDict
 
 from polylogue.core.enums import Provider
-from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.core.provider_identity import canonical_acquisition_provider, captured_hermes_profile_key
+from polylogue.core.raw_coordinates import captured_zip_member_raw_id
 from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
@@ -99,9 +100,26 @@ def make_raw_record(
     capture_mode = source_capture_mode
     if capture_mode is Provider.UNKNOWN:
         capture_mode = Provider.from_string(source_name)
-    if source_name == "hermes":
-        if raw_data.captured_profile_source_path is None or raw_data.captured_profile_key is None:
-            raise MissingProfileIdentityError("Hermes acquisition is missing its captured profile identity")
+    if (
+        source_name == "hermes"
+        and raw_data.captured_zip_coordinate is None
+        and (raw_data.captured_profile_source_path is None or raw_data.captured_profile_key is None)
+    ):
+        raise MissingProfileIdentityError("Hermes acquisition is missing its captured profile identity")
+    if raw_data.captured_zip_coordinate is not None:
+        if source_name == "hermes":
+            namespace = raw_data.captured_zip_coordinate.profile_namespace
+            if namespace is None:
+                if raw_data.captured_profile_key is not None or raw_data.captured_profile_source_path is not None:
+                    raise ValueError("ZIP member has profile evidence without an accepted namespace")
+                # Exact member bytes and coordinate remain retained. The
+                # retained parser records the distinct typed profile gap.
+            elif captured_hermes_profile_key(Path(namespace)) != raw_data.captured_profile_key:
+                raise ValueError("Hermes ZIP acquisition has mismatched profile evidence")
+        raw_id = captured_zip_member_raw_id(raw_data.captured_zip_coordinate, blob_hash)
+    elif source_name == "hermes":
+        assert raw_data.captured_profile_source_path is not None
+        assert raw_data.captured_profile_key is not None
         raw_id = hermes_profile_raw_id(
             raw_data.source_path,
             raw_data.source_index or 0,
@@ -129,8 +147,13 @@ def make_raw_record(
         source_path=raw_data.source_path,
         canonical_source_path=raw_data.canonical_source_path,
         captured_profile_key=raw_data.captured_profile_key,
+        captured_zip_coordinate=raw_data.captured_zip_coordinate,
         captured_file_observation=raw_data.captured_file_observation,
-        source_index=raw_data.source_index,
+        source_index=(
+            raw_data.captured_zip_coordinate.source_index
+            if raw_data.captured_zip_coordinate is not None
+            else raw_data.source_index
+        ),
         addressing_mode=raw_data.addressing_mode,
         content_identity=raw_data.content_identity,
         blob_size=blob_size,
@@ -170,6 +193,7 @@ def pending_pre_parse_raw_admission_request(
         source_path=record.source_path,
         canonical_source_path=record.canonical_source_path,
         captured_profile_key=record.captured_profile_key,
+        captured_zip_coordinate=record.captured_zip_coordinate,
         source_index=record.source_index or 0,
         blob_hash=blob_hash,
         blob_size=record.blob_size,
@@ -177,6 +201,7 @@ def pending_pre_parse_raw_admission_request(
         file_mtime_ms=file_mtime_ms,
         raw_id=record.raw_id,
         addressing_mode=record.addressing_mode,
+        content_identity=record.content_identity,
         blob_publication_receipt_id=record.blob_publication_receipt_id,
         policy_snapshot=policy_snapshot,
     )

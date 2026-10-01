@@ -59,6 +59,7 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage, ReadSnapshot
 from polylogue.sources.live.source_selection import deepest_source_for_path
+from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
     sqlite_database_for_sidecar,
@@ -692,6 +693,19 @@ class LiveWatcher:
         rebase_queue: list[CursorObservationRebase] | None = None,
     ) -> bool:
         size = stat.st_size
+        if cursor is not None and (
+            cursor.source_name == Provider.HERMES.value or self._source_name_for(path) == Provider.HERMES.value
+        ):
+            # Equal bytes and inode do not prove an equal declared profile.
+            # Check before every exclusion, deferral, or content-based skip.
+            from polylogue.sources.parsers.hermes_identity import observe_profile_namespace
+
+            try:
+                observed_profile = observe_profile_namespace(path, stat)
+            except OSError:
+                return True
+            if cursor.captured_profile_key is None or cursor.captured_profile_key != observed_profile.key:
+                return True
         if cursor is None:
             if not self._reconcile_archived_cursor(path, stat=stat):
                 return True
@@ -743,9 +757,18 @@ class LiveWatcher:
         if not parser_matches:
             return True
         if self._is_hermes_database(path) or self._is_declared_codex_database(path):
-            if cursor.tail_hash == sqlite_source_revision(path):
-                return False
-            return self._database_content_changed(path, cursor)
+            try:
+                with bind_source_input(path) as binding:
+                    if self._is_hermes_database(path) and (
+                        cursor.captured_profile_key is None
+                        or cursor.captured_profile_key != binding.captured_profile_key
+                    ):
+                        return True
+                    if cursor.tail_hash == sqlite_source_revision(path, source_binding=binding):
+                        return False
+                    return self._database_content_changed(path, cursor, source_binding=binding)
+            except (sqlite3.Error, OSError, UnicodeDecodeError):
+                return True
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
             # Only an exact recorded observation authorizes the hot skip.
             # A bounded tail cannot prove that an earlier same-size prefix was
@@ -1026,7 +1049,9 @@ class LiveWatcher:
         """
         rows = source_conn.execute(
             f"""
-            SELECT raw_id, origin, blob_hash, blob_size, acquired_at_ms
+            SELECT raw_id, origin, blob_hash, blob_size, acquired_at_ms,
+                   (SELECT profile_key FROM raw_profile_identity_receipts AS p
+                    WHERE p.raw_id = raw_sessions.raw_id)
             FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
@@ -1071,7 +1096,8 @@ class LiveWatcher:
             "tuple[object, ...] | None",
             source_conn.execute(
                 f"""
-                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size, r.acquired_at_ms
+                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size, r.acquired_at_ms,
+                       (SELECT profile_key FROM raw_profile_identity_receipts AS p WHERE p.raw_id = r.raw_id)
                 FROM raw_sessions AS r
                 WHERE r.source_path = ?
                   AND COALESCE(r.source_index, 0) >= 0
@@ -1206,7 +1232,19 @@ class LiveWatcher:
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
             return _ArchivedCursorReconciliation.INCOMPATIBLE
-        _raw_id, origin, blob_hash, blob_size, _acquired_at_ms = row
+        _raw_id, origin, blob_hash, blob_size, _acquired_at_ms = row[:5]
+        captured_profile_key = cast("str | None", row[5]) if len(row) > 5 else None
+        if origin is not None and provider_from_origin(Origin.from_string(str(origin))) is Provider.HERMES:
+            from polylogue.sources.parsers.hermes_identity import observe_profile_namespace
+
+            if captured_profile_key is None:
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
+            try:
+                observed_profile = observe_profile_namespace(path, stat)
+            except OSError:
+                return _ArchivedCursorReconciliation.UNAVAILABLE
+            if observed_profile.key != captured_profile_key:
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
         archived_size = int(cast("int | None", blob_size) or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
@@ -1262,6 +1300,7 @@ class LiveWatcher:
         self._cursor.set(
             path,
             archived_size,
+            captured_profile_key=captured_profile_key,
             byte_offset=last_complete_newline,
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
@@ -1364,16 +1403,13 @@ class LiveWatcher:
         return source.accepts(path) if source is not None else False
 
     def _is_hermes_database(self, path: Path) -> bool:
-        resolved = path.resolve()
-        for source in self._sources:
-            if source.name != "hermes":
-                continue
-            try:
-                if resolved.is_relative_to(source.root.resolve()) and source.accepts(path):
-                    return is_sqlite_path(path)
-            except OSError:
-                continue
-        return False
+        source = deepest_source_for_path(path, self._sources)
+        return (
+            source is not None
+            and source.name == Provider.HERMES.value
+            and source.accepts(path)
+            and is_sqlite_path(path)
+        )
 
     def _is_declared_codex_database(self, path: Path) -> bool:
         """Return whether *path* is a Codex database this watcher acquires.
@@ -1395,7 +1431,9 @@ class LiveWatcher:
         member = capability.member(path.name)
         return member is not None and member.disposition != "out-of-scope"
 
-    def _database_content_changed(self, path: Path, cursor: CursorRecord) -> bool:
+    def _database_content_changed(
+        self, path: Path, cursor: CursorRecord, *, source_binding: SourceInputBinding
+    ) -> bool:
         """Return whether a database's logical content moved past the cursor.
 
         A database's page image differs after every commit, checkpoint and
@@ -1415,7 +1453,7 @@ class LiveWatcher:
         if recorded is None:
             return True
         try:
-            return sqlite_member_revision(path) != recorded
+            return sqlite_member_revision(path, source_binding=source_binding) != recorded
         except (sqlite3.Error, OSError, UnicodeDecodeError):
             # Acquisition owns the consistent read and reports its own typed
             # failure; a locked or damaged database is not silently fresh.

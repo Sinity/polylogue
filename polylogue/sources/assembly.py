@@ -6,6 +6,7 @@ can implement for sidecar discovery and post-parse enrichment.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeAlias
@@ -55,11 +56,29 @@ class _ChatGPTSidecarData(TypedDict, total=False):
     # store during sidecar discovery. Attachment resolution joins against this
     # so previously-acquired asset bytes are marked "acquired" without
     # re-hashing (see ``ingest_batch/_core.py``'s ``preacquired_attachment_blobs``).
-    chatgpt_asset_blobs: dict[str, tuple[str, int]]
+    chatgpt_asset_blobs: Mapping[str, tuple[str, int]]
 
 
 class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, total=False):
     pass
+
+
+def close_sidecar_data(data: SidecarData, *, borrowed: SidecarData | None = None) -> None:
+    """Settle operation-owned paged assembly evidence after its last consumer."""
+    from .parsers.chatgpt_sidecars import _AssetBlobs
+
+    def owners(value: SidecarData) -> list[ChatGPTAssetIndex]:
+        index = value.get("chatgpt_asset_index")
+        result = [] if index is None else [index]
+        assets = value.get("chatgpt_asset_blobs")
+        if isinstance(assets, _AssetBlobs) and all(owner is not assets.index for owner in result):
+            result.append(assets.index)
+        return result
+
+    borrowed_owners = [] if borrowed is None else owners(borrowed)
+    for index in owners(data):
+        if all(owner is not index for owner in borrowed_owners):
+            index.close()
 
 
 @dataclass(frozen=True, slots=True)

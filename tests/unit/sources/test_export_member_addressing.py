@@ -19,7 +19,6 @@ from typing import IO
 
 import pytest
 
-from polylogue.archive.zip_admission import MAX_COMPRESSION_RATIO
 from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity, structurally_equal
 from polylogue.core.enums import Provider
@@ -144,7 +143,7 @@ def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: 
         archive.writestr("conversations.json", member_bytes)
     with zipfile.ZipFile(high_ratio_zip) as archive:
         entry = archive.infolist()[0]
-    assert entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO
+    assert entry.file_size / entry.compress_size > 1000
 
     stored_path = f"{stored_zip}:conversations.json"
     unit, error = zip_reacquired_unit(
@@ -157,12 +156,13 @@ def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: 
 
     high_ratio_path = f"{high_ratio_zip}:conversations.json"
     cache: dict[str, tuple[MemberCandidate, ...]] = {}
-    assert zip_reacquired_unit(
+    high_ratio_unit, high_ratio_error = zip_reacquired_unit(
         _row(high_ratio_path, payload=expected, source_index=0),
         source_path=high_ratio_path,
         zip_payload_cache=cache,
-    ) == (None, "container_member_rejected")
-    assert cache == {}
+    )
+    assert high_ratio_error is None
+    assert high_ratio_unit is not None and high_ratio_unit.byte_identity == _sha(expected)
 
 
 def test_reacquisition_accepts_structural_identity_after_reserialization(tmp_path: Path) -> None:
@@ -774,3 +774,18 @@ def test_zip_coordinate_candidates_preserve_every_colon_boundary() -> None:
         (Path("/imports/odd:name.data"), "a:b.json"),
         (Path("/imports/odd:name.data:a"), "b.json"),
     ]
+
+
+def test_zip_member_does_not_lock_provider_after_two_matching_records() -> None:
+    from io import BytesIO
+
+    from polylogue.sources.source_acquisition_components import iter_entry_payloads
+
+    fixtures = Path(__file__).parents[2] / "fixtures" / "origin-capability"
+    chatgpt = json.loads((fixtures / "chatgpt-export.json").read_bytes())
+    claude = json.loads((fixtures / "claude-ai-export.json").read_bytes())
+    chatgpt_record = chatgpt[0] if isinstance(chatgpt, list) else chatgpt
+    claude_record = claude[0] if isinstance(claude, list) else claude
+    source = BytesIO(b"\n".join(dumps_bytes(record) for record in (chatgpt_record, chatgpt_record, claude_record)))
+    observed = list(iter_entry_payloads(source, stream_name="mixed.jsonl", provider_hint=Provider.CHATGPT))
+    assert [item.provider for item in observed] == [Provider.CHATGPT, Provider.CHATGPT, Provider.CLAUDE_AI]

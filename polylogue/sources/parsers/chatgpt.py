@@ -37,6 +37,7 @@ from polylogue.core.enums import (
 )
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import AttachmentDirection
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -3135,3 +3136,49 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
     return session.model_copy(
         update={"messages": messages, "attachments": attachments, "session_events": session_events}
     )
+
+
+def detection_projection(*, whole_document: bool = False) -> DetectorProjection:
+    """Fold every final mapping node using this parser's own shape validators."""
+    scalar = DetectorProjection()
+    author = DetectorProjection(fields={"role": scalar, "name": scalar, "metadata": scalar})
+    content = DetectorProjection(fields=dict.fromkeys(("content_type", "parts", "text", "language"), scalar))
+    message = DetectorProjection(
+        fields={
+            **dict.fromkeys(
+                ("id", "create_time", "update_time", "status", "end_turn", "weight", "metadata", "recipient"), scalar
+            ),
+            "author": author,
+            "content": content,
+        }
+    )
+    node = DetectorProjection(
+        fields={
+            "id": scalar,
+            "message": message,
+            "parent": scalar,
+            "children": DetectorProjection(
+                item=scalar, array_fold="all", array_predicate=lambda value: isinstance(value, str)
+            ),
+        }
+    )
+    validator = _mapping_nodes_are_valid if whole_document else _mapping_node_shape_is_plausible
+    mapping = DetectorProjection(
+        item=node,
+        mapping_predicate=lambda value: validator({"node": value}),
+        mapping_witness={"id": ""} if whole_document else {},
+    )
+    return DetectorProjection(
+        fields={
+            **dict.fromkeys(("current_node", "create_time", "conversation_id", "id", "shared_conversation_id"), scalar),
+            "mapping": mapping,
+            "messages": DetectorProjection(
+                item=DetectorProjection(fields={"node_id": scalar, "role": scalar}),
+                array_fold="first",
+            ),
+        }
+    )
+
+
+def whole_document_detection_projection() -> DetectorProjection:
+    return detection_projection(whole_document=True)

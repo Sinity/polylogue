@@ -303,6 +303,11 @@ def classify_codex_sqlite_path(path: Path, *, immutable: bool = False) -> CodexS
         tables = frozenset(logical_source_shape(path, immutable=immutable))
     except (sqlite3.Error, OSError, LogicalExportError, ValueError):
         return "unknown"
+    return classify_codex_sqlite_tables(tables)
+
+
+def classify_codex_sqlite_tables(tables: frozenset[str]) -> CodexSqliteKind:
+    """Use the same declared table signatures for live and bound acquisition."""
     for kind, required in _KIND_REQUIRED_TABLES:
         if required and set(required).issubset(tables):
             return kind
@@ -589,7 +594,8 @@ def parse_codex_state_db(path: Path, *, immutable: bool = False) -> CodexStateSn
     """Parse ``threads`` and ``thread_spawn_edges`` from a Codex ``state_5.sqlite`` snapshot.
 
     *path* must already be a consistent, non-live snapshot (see
-    ``sources.sqlite_snapshot.snapshot_sqlite_database`` / ``stage_sqlite_snapshot``)
+    ``sources.sqlite_snapshot.snapshot_sqlite_database`` or the captured member
+    from ``sources.source_staging.stage_source_input``)
     -- this function itself only ever opens read-only, but callers acquiring
     from the live file are responsible for snapshotting first (polylogue-0jf4
     acceptance criterion 4).

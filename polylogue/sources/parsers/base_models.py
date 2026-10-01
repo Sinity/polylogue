@@ -35,7 +35,7 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.core.message_owner import MessageOwnerCoordinate
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import AttachmentDirection, AttachmentUploadOrigin
@@ -835,6 +835,7 @@ class RawSessionData(BaseModel):
     captured_profile_key: str | None = None
     captured_profile_source_path: str | None = Field(default=None, exclude=True)
     captured_file_observation: tuple[int, int, int, int, int] | None = Field(default=None, exclude=True)
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = Field(default=None, exclude=True)
     source_index: int | None = None
     # The address kind this payload was acquired under. ``source_index`` is a
     # position inside a container member and cannot express "the member

@@ -59,9 +59,9 @@ from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import (
     MemberAddressingMode,
+    captured_zip_member_raw_id,
     zip_member_container,
     zip_member_identity_coordinate,
-    zip_member_raw_id,
     zip_member_source_index,
 )
 from polylogue.core.raw_failure_evidence import (
@@ -93,11 +93,15 @@ from polylogue.pipeline.ingest_outcomes import (
     transient_error_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
-from polylogue.sources.acquisition_boundary import admit_bound_bytes, capture_bound_path, captured_path_coordinate
+from polylogue.sources.acquisition_boundary import (
+    admit_bound_bytes,
+    capture_bound_path,
+    captured_path_coordinate,
+    open_bound_container,
+)
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_zip import (
-    ZipBombError,
     is_declared_artifact_path,
 )
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
@@ -204,7 +208,7 @@ from polylogue.sources.origin_specs import (
     frontier_kind_for_origin,
     path_declaration_refuses_session,
 )
-from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import (
     PreparedDecodeError,
@@ -226,6 +230,7 @@ from polylogue.sources.source_acquisition_components import (
     stream_preserved_zip_entry_raw_data,
     zip_member_admission,
 )
+from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
@@ -560,15 +565,21 @@ def _record_zip_container_coordinate(
 ) -> None:
     if record.source_index is None:
         return
-    coordinate = zip_member_identity_coordinate(
-        raw_id=source_raw_id,
-        source_path=record.source_path,
-        source_index=record.source_index,
-        blob_hash=blob_hash,
-    )
-    if coordinate is None:
-        return
-    entry_ordinal, split_index = coordinate
+    captured = record.captured_zip_coordinate
+    if captured is not None:
+        if source_raw_id != captured_zip_member_raw_id(captured, blob_hash):
+            raise ValueError("published raw differs from its captured ZIP identity")
+        entry_ordinal, split_index = captured.entry_ordinal, captured.split_index
+    else:
+        coordinate = zip_member_identity_coordinate(
+            raw_id=source_raw_id,
+            source_path=record.source_path,
+            source_index=record.source_index,
+            blob_hash=blob_hash,
+        )
+        if coordinate is None:
+            return
+        entry_ordinal, split_index = coordinate
     archive.record_raw_container_coordinate(
         source_raw_id,
         coordinate_format="zip-v2",
@@ -1787,6 +1798,7 @@ class LiveBatchProcessor:
                                     "source_fingerprint": full_result.raw_source_fingerprints.get(path),
                                     "captured_content_hash": full_result.captured_content_hashes.get(path),
                                     "canonical_source_path": full_result.captured_canonical_source_paths.get(path),
+                                    "captured_profile_key": full_result.captured_profile_keys.get(path),
                                     "captured_file_observation": full_result.captured_file_observations.get(path),
                                     "captured_observed_at_ns": full_result.captured_observation_times_ns.get(path),
                                 },
@@ -2359,6 +2371,7 @@ class LiveBatchProcessor:
         path: Path,
         *,
         canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
         raw_fingerprint: str | None = None,
         raw_byte_size: int | None = None,
         frontier_byte_size: int | None = None,
@@ -2525,6 +2538,7 @@ class LiveBatchProcessor:
             path,
             byte_size,
             canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             byte_offset=last_nl,
             last_complete_newline=last_nl,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -3266,6 +3280,7 @@ class LiveBatchProcessor:
         raw_sqlite_source_paths: dict[Path, Path] = {}
         raw_canonical_source_paths: dict[Path, str] = {}
         raw_profile_keys: dict[Path, str] = {}
+        raw_profile_source_paths: dict[Path, Path] = {}
         raw_source_fingerprints: dict[Path, str] = {}
         captured_content_hashes: dict[Path, str] = {}
         captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = {}
@@ -3801,6 +3816,14 @@ class LiveBatchProcessor:
                     )
                     raw_id, blob_size = capture.blob_hash, capture.blob_size
                     raw_canonical_source_paths[path] = capture.canonical_source_path
+                    captured_file_observations[path] = capture.file_observation
+                    if (
+                        source_name in {Provider.HERMES.value, Provider.UNKNOWN.value}
+                        and capture.captured_profile_key is not None
+                    ):
+                        raw_profile_keys[path] = capture.captured_profile_key
+                        if capture.captured_profile_source_path is not None:
+                            raw_profile_source_paths[path] = Path(capture.captured_profile_source_path)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3841,6 +3864,14 @@ class LiveBatchProcessor:
                     )
                     raw_id, blob_size = capture.blob_hash, capture.blob_size
                     raw_canonical_source_paths[path] = capture.canonical_source_path
+                    captured_file_observations[path] = capture.file_observation
+                    if (
+                        source_name in {Provider.HERMES.value, Provider.UNKNOWN.value}
+                        and capture.captured_profile_key is not None
+                    ):
+                        raw_profile_keys[path] = capture.captured_profile_key
+                        if capture.captured_profile_source_path is not None:
+                            raw_profile_source_paths[path] = Path(capture.captured_profile_source_path)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3889,6 +3920,14 @@ class LiveBatchProcessor:
                     )
                     raw_id, blob_size = capture.blob_hash, capture.blob_size
                     raw_canonical_source_paths[path] = capture.canonical_source_path
+                    captured_file_observations[path] = capture.file_observation
+                    if (
+                        source_name in {Provider.HERMES.value, Provider.UNKNOWN.value}
+                        and capture.captured_profile_key is not None
+                    ):
+                        raw_profile_keys[path] = capture.captured_profile_key
+                        if capture.captured_profile_source_path is not None:
+                            raw_profile_source_paths[path] = Path(capture.captured_profile_source_path)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3908,7 +3947,9 @@ class LiveBatchProcessor:
                     continue
                 source_payload_read_bytes += blob_size
                 if self._parse_stage is not None:
-                    preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
+                    preparation = self._parse_stage.pop_path(
+                        str(path), blob_hash=raw_id, profile_identity=raw_profile_keys.get(path)
+                    )
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
                         for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
@@ -3947,6 +3988,14 @@ class LiveBatchProcessor:
                     )
                     raw_id, blob_size = capture.blob_hash, capture.blob_size
                     raw_canonical_source_paths[path] = capture.canonical_source_path
+                    captured_file_observations[path] = capture.file_observation
+                    if (
+                        source_name in {Provider.HERMES.value, Provider.UNKNOWN.value}
+                        and capture.captured_profile_key is not None
+                    ):
+                        raw_profile_keys[path] = capture.captured_profile_key
+                        if capture.captured_profile_source_path is not None:
+                            raw_profile_source_paths[path] = Path(capture.captured_profile_source_path)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3967,7 +4016,9 @@ class LiveBatchProcessor:
                 source_payload_read_bytes += blob_size
                 preparation = None
                 if json_document and self._parse_stage is not None:
-                    preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
+                    preparation = self._parse_stage.pop_path(
+                        str(path), blob_hash=raw_id, profile_identity=raw_profile_keys.get(path)
+                    )
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
                         for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
@@ -4061,14 +4112,36 @@ class LiveBatchProcessor:
             raw_source_names[path] = source_name
             if not acquired_via_sqlite_snapshot:
                 captured_content_hashes[path] = raw_id
+                if provider is Provider.HERMES:
+                    from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
+
+                    profile_identity = raw_profile_keys.get(path)
+                    profile_source_path = raw_profile_source_paths.get(path)
+                    if profile_identity is None or profile_source_path is None:
+                        raise MissingProfileIdentityError("Hermes capture has no bound profile namespace")
+                    blob_hash = raw_id
+                    raw_id = hermes_profile_raw_id(
+                        str(path),
+                        0,
+                        blob_hash,
+                        identity_path=profile_source_path,
+                        profile_identity=profile_identity,
+                    )
+                    if blob_hash in raw_payloads:
+                        raw_payloads[raw_id] = raw_payloads.pop(blob_hash)
+                    raw_source_revisions[path] = blob_hash
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
-                    blob_hash=(blob_hash if acquired_via_sqlite_snapshot and blob_hash is not None else None),
+                    blob_hash=(
+                        blob_hash
+                        if (acquired_via_sqlite_snapshot or provider is Provider.HERMES) and blob_hash is not None
+                        else None
+                    ),
                     payload_provider=provider,
                     capture_mode=acquisition_capture_mode,
                     source_name=source_name,
-                    source_path=(str(raw_sqlite_source_paths[path]) if path in raw_source_revisions else str(path)),
+                    source_path=(str(raw_sqlite_source_paths[path]) if path in raw_sqlite_source_paths else str(path)),
                     canonical_source_path=raw_canonical_source_paths.get(path),
                     captured_profile_key=raw_profile_keys.get(path),
                     source_index=0,
@@ -4296,6 +4369,11 @@ class LiveBatchProcessor:
             raw_source_fingerprints=raw_source_fingerprints,
             captured_content_hashes=captured_content_hashes,
             captured_canonical_source_paths=raw_canonical_source_paths,
+            captured_profile_keys={
+                path: key
+                for path, key in raw_profile_keys.items()
+                if raw_source_names.get(path) == Provider.HERMES.value
+            },
             captured_file_observations=captured_file_observations,
             captured_observation_times_ns=captured_observation_times_ns,
             summary=summary,
@@ -4577,6 +4655,9 @@ class LiveBatchProcessor:
                                 source_path=record.source_path,
                                 canonical_source_path=record.canonical_source_path,
                                 captured_profile_key=record.captured_profile_key,
+                                captured_zip_coordinate=record.captured_zip_coordinate,
+                                addressing_mode=record.addressing_mode,
+                                content_identity=record.content_identity,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
                                 file_mtime_ms=timestamp_millis(record.file_mtime),
@@ -4625,6 +4706,9 @@ class LiveBatchProcessor:
                             source_path=record.source_path,
                             canonical_source_path=record.canonical_source_path,
                             captured_profile_key=record.captured_profile_key,
+                            captured_zip_coordinate=record.captured_zip_coordinate,
+                            addressing_mode=record.addressing_mode,
+                            content_identity=record.content_identity,
                             source_index=record.source_index or 0,
                             # A populated ``blob_hash`` field means this
                             # record already has a durable blob reference.
@@ -4828,6 +4912,12 @@ class LiveBatchProcessor:
                             cached_sessions = prepared_sessions
                             if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
                                 shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
+                    if provider is Provider.HERMES and record.captured_profile_key is None:
+                        from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
+
+                        raise MissingProfileIdentityError(
+                            "retained Hermes input has no captured profile identity receipt"
+                        )
                     prepared_writes = (
                         {prepared.session_id: prepared for prepared in path_preparation.prepared_writes}
                         if path_preparation is not None
@@ -4847,7 +4937,6 @@ class LiveBatchProcessor:
                         sessions = hermes_state.parse_state_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
-                            profile_root=hermes_identity.profile_root_for_artifact(Path(record.source_path)),
                             profile_identity=record.captured_profile_key,
                             immutable=True,
                         )
@@ -4857,7 +4946,6 @@ class LiveBatchProcessor:
                         sessions = hermes_verification.parse_verification_evidence_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
-                            profile_root=hermes_identity.profile_root_for_artifact(Path(record.source_path)),
                             profile_identity=record.captured_profile_key,
                             immutable=True,
                         )
@@ -4904,6 +4992,7 @@ class LiveBatchProcessor:
                                     ),
                                     fallback_id,
                                     source_path=record.source_path,
+                                    profile_identity=record.captured_profile_key,
                                 )
                         else:
                             sessions = parse_stream_payload(
@@ -4915,6 +5004,7 @@ class LiveBatchProcessor:
                                 ),
                                 fallback_id,
                                 source_path=record.source_path,
+                                profile_identity=record.captured_profile_key,
                             )
                     else:
                         if payload is None and not partial_prefix:
@@ -4939,6 +5029,7 @@ class LiveBatchProcessor:
                             payloads,
                             fallback_id,
                             source_path=record.source_path,
+                            profile_identity=record.captured_profile_key,
                         )
                     # polylogue-9ykn: a session requires positive
                     # conversational evidence -- a parse that produced only
@@ -5801,7 +5892,14 @@ class LiveBatchProcessor:
         records: list[tuple[str, RawSessionRecord]] = []
         total_bytes = 0
         try:
-            with zipfile.ZipFile(path) as zf:
+            with (
+                bind_source_input(path) as captured,
+                open_bound_container(
+                    blob_store,
+                    captured,
+                ) as physical,
+                zipfile.ZipFile(physical) as zf,
+            ):
                 central_directory = zf.infolist()
                 admission = zip_member_admission(zf, path, central_directory, fallback_provider)
                 validator = _ZipEntryValidator(
@@ -5830,7 +5928,7 @@ class LiveBatchProcessor:
                     if info.file_size == 0:
                         continue
                     try:
-                        entry_provider_hint = admission.entry_provider_hint(info.filename)
+                        entry_provider_hint = admission.entry_provider_hint(zf, info)
                         for raw_data in iter_zip_entry_raw_data(
                             zf,
                             ZipEntryReadContext(
@@ -5841,6 +5939,8 @@ class LiveBatchProcessor:
                                 provider_hint=entry_provider_hint,
                                 blob_store=blob_store,
                                 bound_provider=bound_location_provider(fallback_provider),
+                                captured_input_identity=captured.captured_identity,
+                                entry_ordinal=entry_ordinal,
                             ),
                         ):
                             if raw_data.blob_hash is None:
@@ -5852,17 +5952,15 @@ class LiveBatchProcessor:
                             # ``split_index`` 0 is the coordinate slot it
                             # occupies, and the acquired addressing mode --
                             # not the slot -- says which reading applies.
-                            split_index = raw_data.source_index if raw_data.source_index is not None else 0
+                            coordinate = raw_data.captured_zip_coordinate
+                            if coordinate is None:
+                                raise ValueError("accepted ZIP member lost its captured coordinate")
+                            split_index = coordinate.split_index
                             source_index = zip_member_source_index(
                                 entry_ordinal=entry_ordinal,
                                 split_index=split_index,
                             )
-                            member_raw_id = zip_member_raw_id(
-                                source_path=raw_data.source_path,
-                                entry_ordinal=entry_ordinal,
-                                split_index=split_index,
-                                blob_hash=raw_data.blob_hash,
-                            )
+                            member_raw_id = captured_zip_member_raw_id(coordinate, raw_data.blob_hash)
                             records.append(
                                 (
                                     member_raw_id,
@@ -5873,6 +5971,9 @@ class LiveBatchProcessor:
                                         capture_mode=fallback_provider,
                                         source_name=member_provider.value,
                                         source_path=raw_data.source_path,
+                                        canonical_source_path=raw_data.canonical_source_path,
+                                        captured_profile_key=raw_data.captured_profile_key,
+                                        captured_zip_coordinate=coordinate,
                                         source_index=source_index,
                                         addressing_mode=raw_data.addressing_mode,
                                         content_identity=raw_data.content_identity,
@@ -5883,7 +5984,7 @@ class LiveBatchProcessor:
                                     ),
                                 )
                             )
-                    except ZipBombError as exc:
+                    except zipfile.BadZipFile as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
                         # An unreadable member proves nothing about a refusal
                         # it carried; keep that gap until the member is read.
@@ -5944,7 +6045,14 @@ class LiveBatchProcessor:
         total_bytes = 0
         validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
         try:
-            with zipfile.ZipFile(path) as zf:
+            with (
+                bind_source_input(path) as captured,
+                open_bound_container(
+                    blob_store,
+                    captured,
+                ) as physical,
+                zipfile.ZipFile(physical) as zf,
+            ):
                 central_directory = zf.infolist()
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
                 allowed_path = is_declared_artifact_path if fallback_provider is Provider.UNKNOWN else None
@@ -5965,6 +6073,8 @@ class LiveBatchProcessor:
                         provider_hint=fallback_provider,
                         blob_store=blob_store,
                         bound_provider=bound_location_provider(fallback_provider),
+                        captured_input_identity=captured.captured_identity,
+                        entry_ordinal=entry_ordinal,
                     )
                     try:
                         # The member is preserved through the boundary, which
@@ -5975,7 +6085,7 @@ class LiveBatchProcessor:
                             provider_hint=fallback_provider,
                             source_index=source_index,
                         )
-                    except ZipBombError as exc:
+                    except zipfile.BadZipFile as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
                         self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(
                             _zip_member_debt_subject(path, entry_ordinal, info.filename)
@@ -6002,12 +6112,10 @@ class LiveBatchProcessor:
                     if raw_data.blob_hash is None:
                         continue
                     total_bytes += raw_data.blob_size or 0
-                    member_raw_id = zip_member_raw_id(
-                        source_path=raw_data.source_path,
-                        entry_ordinal=entry_ordinal,
-                        split_index=split_index,
-                        blob_hash=raw_data.blob_hash,
-                    )
+                    coordinate = raw_data.captured_zip_coordinate
+                    if coordinate is None:
+                        raise ValueError("accepted ZIP member lost its captured coordinate")
+                    member_raw_id = captured_zip_member_raw_id(coordinate, raw_data.blob_hash)
                     records.append(
                         (
                             member_raw_id,
@@ -6018,6 +6126,9 @@ class LiveBatchProcessor:
                                 capture_mode=fallback_provider,
                                 source_name=fallback_provider.value,
                                 source_path=raw_data.source_path,
+                                canonical_source_path=raw_data.canonical_source_path,
+                                captured_profile_key=raw_data.captured_profile_key,
+                                captured_zip_coordinate=coordinate,
                                 source_index=source_index,
                                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
                                 content_identity=raw_data.content_identity,

@@ -12,6 +12,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.timestamps import format_timestamp
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     is_masked_tool_output,
     join_gemini_tool_output_sidecars,
@@ -1345,3 +1346,14 @@ __all__ = [
     "parse_gemini_cli",
     "parse_hermes",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Project the complete local-agent root signatures, including list types."""
+    fields: dict[str, DetectorProjection | None] = dict.fromkeys(
+        ("startTime", "lastUpdated", "session_start", "last_updated", "platform")
+    )
+    fields.update(
+        {name: DetectorProjection() for name in ("sessionId", "session_id", "messages", "projectHash", "kind")}
+    )
+    return DetectorProjection(fields=fields)

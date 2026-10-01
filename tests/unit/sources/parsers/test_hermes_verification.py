@@ -292,6 +292,33 @@ def test_import_explain_reports_verification_evidence_db_fidelity(tmp_path: Path
     assert entry.fidelity.capabilities["command_evidence"].status == "exact"
 
 
+def test_bound_verification_preview_crosses_both_former_row_caps(tmp_path: Path) -> None:
+    """The actual preview must count the complete ledger without materializing it."""
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM verification_events")
+        conn.execute("DELETE FROM verification_state")
+        conn.executemany(
+            "INSERT INTO verification_events (created_at, session_id, cwd, root, command, canonical_command, "
+            "kind, scope, status, exit_code, output_summary) "
+            "VALUES ('2026-07-14T00:00:00+00:00', 'complete-ledger', '.', ?, 'check', 'check', "
+            "'check', 'targeted', 'passed', 0, 'complete')",
+            ((f"root-{index % 100_001}",) for index in range(500_001)),
+        )
+        conn.executemany(
+            "INSERT INTO verification_state (session_id, root, last_event_id, changed_paths_json) "
+            "VALUES ('complete-ledger', ?, ?, '[]')",
+            ((f"root-{index}", index + 1) for index in range(100_001)),
+        )
+    [entry] = explain_import_path(path, source_name="hermes").entries
+    assert entry.detector == "hermes_verification_evidence_db"
+    assert entry.produced.sessions == 1
+    assert entry.fidelity is not None
+    assert entry.fidelity.capabilities["command_evidence"].observed == 500_001
+    assert entry.fidelity.capabilities["changed_paths"].observed == 100_001
+
+
 def test_parse_is_idempotent_across_repeated_reads(tmp_path: Path) -> None:
     path = tmp_path / "verification_evidence.db"
     _write_verification_evidence_db(path)

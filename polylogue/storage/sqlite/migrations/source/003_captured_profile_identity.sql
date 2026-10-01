@@ -4,6 +4,9 @@ CREATE TABLE raw_profile_identity_receipts (
     profile_key TEXT NOT NULL CHECK(length(profile_key) = 12)
 ) STRICT;
 
+ALTER TABLE prepared_source_manifest_members ADD COLUMN captured_input_identity TEXT;
+ALTER TABLE source_items ADD COLUMN captured_input_identity TEXT;
+
 DROP INDEX idx_raw_artifacts_source_identity;
 CREATE UNIQUE INDEX idx_raw_artifacts_source_identity
 ON raw_artifacts(origin, source_path, source_index)

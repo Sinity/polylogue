@@ -170,6 +170,7 @@ from typing import Literal, TypeAlias
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument, JSONValue, json_document, json_document_list
+from polylogue.sources.detection_projection import DetectorProjection
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -1736,3 +1737,22 @@ __all__ = [
     "parse_atif_stream",
     "parse_atof_stream",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep the ATIF/ATOF signatures without materializing trajectory steps."""
+    return DetectorProjection(
+        fields={
+            name: DetectorProjection()
+            for name in (
+                "schema_version",
+                "session_id",
+                "steps",
+                "atof_version",
+                "kind",
+                "uuid",
+                "timestamp",
+                "name",
+            )
+        }
+    )

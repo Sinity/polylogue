@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
@@ -91,6 +91,7 @@ def _select_paths_for_processing(
     include_file_mtime: bool,
     known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
+    source_name: str | None = None,
 ) -> tuple[list[tuple[Path, str | None]], int]:
     """Filter unchanged files and return `(path, file_mtime)` tuples.
 
@@ -101,6 +102,24 @@ def _select_paths_for_processing(
     selected: list[tuple[Path, str | None]] = []
     skipped_mtime = 0
     for path in paths:
+        cursor_fields = known_cursors.get(str(path)) if known_cursors is not None else None
+        is_hermes = source_name == Provider.HERMES.value or (
+            cursor_fields is not None and cursor_fields.get("origin") == Origin.HERMES_SESSION.value
+        )
+        if is_hermes:
+            # Neither timestamp nor equal byte statistics can prove that a
+            # mutable alias still declares the same Hermes profile.
+            from polylogue.sources.parsers.hermes_identity import observe_profile_namespace
+
+            try:
+                observed = path.stat()
+                profile = observe_profile_namespace(path, observed)
+                profile_matches = cursor_fields is not None and cursor_fields.get("captured_profile_key") == profile.key
+            except OSError:
+                profile_matches = False
+            if not profile_matches:
+                selected.append((path, _get_file_mtime(path) if include_file_mtime else None))
+                continue
         # Slice B: fast-path against known cursor stat fields.
         if known_cursors is not None and not path.name.lower().endswith(".zip"):
             try:
@@ -123,7 +142,7 @@ def _select_paths_for_processing(
             # inconclusive (no cursor data or stat mismatch).
 
         file_mtime = _get_file_mtime(path) if include_file_mtime else None
-        if known_mtimes and file_mtime:
+        if known_mtimes and file_mtime and not is_hermes:
             path_str = str(path)
             # Direct match (non-ZIP files stored by exact path)
             if known_mtimes.get(path_str) == file_mtime:

@@ -18,7 +18,6 @@ from typing import IO, Any, cast, overload
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue.archive import zip_admission
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
@@ -102,29 +101,21 @@ def test_jsonl_complete_prefix_is_lexical_and_newline_bound(
 
 
 def test_jsonl_complete_prefix_validates_only_the_tail_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A restored forward scanner invokes JSON decoding for every record."""
+    """A restored forward scanner validates every record instead of only the tail."""
+    from polylogue.sources.live import batch_support
+
     payload = b'{"record":0}\n' * 10_000 + b'{"partial":'
-    original_loads: Any = json.loads
-    calls = 0
+    original = batch_support._valid_jsonl_tail
+    validated: list[int] = []
 
-    def tail_only_loads(
-        value: str | bytes | bytearray,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        nonlocal calls
-        calls += 1
-        return original_loads(value, *args, **kwargs)
+    def tail_only(handle: Any, start: int, end: int, **kwargs: Any) -> bool:
+        validated.append(end - start)
+        return original(handle, start, end, **kwargs)
 
-    monkeypatch.setattr(json, "loads", tail_only_loads)
-
+    monkeypatch.setattr(batch_support, "_valid_jsonl_tail", tail_only)
     boundary = jsonl_complete_prefix(payload)
-
-    # The unterminated tail is an append in progress, not a malformed record:
-    # ``incomplete_tail`` is what makes it retryable, ``malformed_record`` is
-    # reserved for a newline-terminated line the producer got wrong.
     assert boundary == JsonlBoundary(len(payload) - len(b'{"partial":'), 10_000, True, False)
-    assert calls == 1
+    assert validated == [len(b'{"partial":')]
 
 
 def test_unfinished_jsonl_tail_keeps_its_complete_prefix_retryable() -> None:
@@ -3336,7 +3327,7 @@ def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(
         "projects/project/session.jsonl",
         "projects/project/tool-results/toolu.txt",
     }
-    assert sniffed_paths == ["projects/project/session.jsonl"]
+    assert sniffed_paths == ["projects/project/session.jsonl", "projects/project/oversized.json"]
 
     source_only = processor._extract_source_only_zip_member_records(
         bundle,
@@ -3353,7 +3344,7 @@ def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(
     }
 
 
-def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission(
+def test_unknown_inbox_zip_sniffs_all_selected_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3366,7 +3357,6 @@ def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission
         archive.writestr("projects/project/session.jsonl", session_payload)
         archive.writestr("projects/project/oversized.json", b"x" * 2048)
 
-    monkeypatch.setattr(zip_admission, "MAX_UNCOMPRESSED_SIZE", 512)
     processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
     processor._cursor = CursorStore(tmp_path / "index.db")
     processor._zip_member_refusals_this_pass = {}
@@ -3385,7 +3375,7 @@ def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission
         file_mtime="2026-09-04T00:00:00+00:00",
     )
 
-    assert sniffed_paths == ["projects/project/session.jsonl"]
+    assert sniffed_paths == ["projects/project/session.jsonl", "projects/project/oversized.json"]
 
 
 def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(tmp_path: Path) -> None:
@@ -10154,3 +10144,92 @@ def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.M
     assert frontier.prefix_size == len(record) * 4000
     assert frontier.incomplete_tail and not frontier.malformed_record
     assert read < 4 * 4096
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b"NaN",
+        b"Infinity",
+        b"-Infinity",
+        b"1e9999",
+        b"null",
+        b"true",
+        b"42",
+        b'"scalar"',
+        b'"\\ud800"',
+        b'"\xed\xa0\x80"',
+        b'{"wide":' + b"9" * 5000 + b"}",
+        b'{"text":"' + b"x" * 200000 + b'"}',
+        b'{"unfinished":',
+        b"{} {}",
+        b'"\xff"',
+    ],
+)
+@pytest.mark.parametrize("ending", [b"", b"\n", b"\n \r\n"])
+def test_jsonl_frontier_grammar_is_identical_for_bytes_path_and_handle(
+    tmp_path: Path,
+    tail: bytes,
+    ending: bytes,
+) -> None:
+    from polylogue.sources.live.batch_support import jsonl_frontier_of_handle
+
+    payload = b'{"first":1}\n' + tail + ending
+    path = tmp_path / "grammar.jsonl"
+    path.write_bytes(payload)
+    boundary = jsonl_complete_prefix(payload)
+    expected = (boundary.prefix_size, boundary.incomplete_tail, boundary.malformed_record)
+    frontier = jsonl_complete_prefix_path(path)
+    assert (frontier.prefix_size, frontier.incomplete_tail, frontier.malformed_record) == expected
+    with path.open("rb") as handle:
+        frontier = jsonl_frontier_of_handle(handle, len(payload))
+        assert (frontier.prefix_size, frontier.incomplete_tail, frontier.malformed_record) == expected
+        assert not handle.closed
+
+
+def test_jsonl_prefix_view_restores_position_and_leaves_input_open() -> None:
+    import io
+
+    from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
+
+    prefix = b'{"first":1}\n'
+    handle = io.BytesIO(prefix + b'{"unfinished":')
+    handle.seek(3)
+    with jsonl_parse_input_of_handle(handle) as view:
+        assert view.seek(0) == 0
+        assert view.read() == prefix
+        assert view.seek(100000) == len(prefix)
+        assert view.read(1) == b""
+        assert view.seek(-2, io.SEEK_END) == len(prefix) - 2
+        assert view.read(10) == prefix[-2:]
+        view.close()
+        assert not handle.closed
+    assert handle.tell() == 3
+    assert not handle.closed
+
+
+@pytest.mark.parametrize("failure_type", [ValueError, RuntimeError, KeyboardInterrupt])
+def test_jsonl_prefix_cancellation_restores_input_and_propagates_callback_failure(
+    failure_type: type[BaseException],
+) -> None:
+    import io
+
+    from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
+
+    handle = io.BytesIO(b'{"text":"' + b"x" * 200000 + b'"}')
+    handle.seek(4)
+    failure = failure_type("cancelled frontier")
+    calls = 0
+
+    def check_stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 6:
+            raise failure
+
+    with pytest.raises(failure_type) as caught:
+        with jsonl_parse_input_of_handle(handle, check_stop=check_stop):
+            pytest.fail("cancelled input was exposed")
+    assert caught.value is failure
+    assert handle.tell() == 4
+    assert not handle.closed

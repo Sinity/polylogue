@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, TypeAlias, cast
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, has_chatgpt_native_payload
 from polylogue.core.binary_signatures import detect_binary_signature
@@ -501,6 +501,21 @@ def detect_provider(
 ) -> Provider | None:
     """Infer provider from payload shape, validated against a bound location origin."""
     return detect_provider_evidence(payload, path, expected=expected)[0]
+
+
+def detect_provider_from_stream_evidence(
+    handle: BinaryIO,
+    *,
+    expected: Provider | str | None = None,
+    check_stop: Callable[[], None] | None = None,
+) -> tuple[Provider | None, str]:
+    """Detect from complete acquired input under the declaration-owned registry."""
+    provider, evidence = detector_registry().detect_stream(handle, check_stop=check_stop)
+    evidence = evidence or "no detector matched (complete acquired stream)"
+    bound = bound_location_provider(expected)
+    if bound is not None and provider is not None and not same_origin(provider, bound):
+        raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence)
+    return provider, evidence
 
 
 def detect_provider_from_raw_bytes_evidence(

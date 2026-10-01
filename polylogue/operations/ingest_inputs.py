@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import stat
 import tempfile
 from collections.abc import Callable, Generator, Iterator
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.sources.import_preflight import ImportPreflightResult
 
 from polylogue.pipeline.services.acquisition_records import make_raw_record, pending_pre_parse_raw_admission_request
 from polylogue.sources.retained_acquisition import iter_retained_source_records
+from polylogue.sources.source_staging import (
+    SourceInputBinding,
+    bind_source_input,
+    bind_staged_member,
+    read_staging_receipt,
+    write_bound_input,
+)
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.runtime import RawSessionRecord
@@ -23,6 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     plan_raw_admission,
 )
 from polylogue.storage.sqlite.archive_tiers.source_items import (
+    CapturedSourceInputIdentity,
     FrozenSourceInput,
     RetainedSourceInput,
     source_item_id,
@@ -78,12 +91,36 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
     try:
         with spool_connection(spool) as conn:
             conn.execute(
-                "CREATE TABLE paths(coordinate TEXT PRIMARY KEY, physical TEXT NOT NULL, logical TEXT NOT NULL) "
+                "CREATE TABLE paths(coordinate TEXT PRIMARY KEY, physical TEXT NOT NULL, logical TEXT NOT NULL, "
+                "captured_member TEXT) "
                 "WITHOUT ROWID"
             )
+            conn.execute("CREATE TABLE receipt(body TEXT NOT NULL)")
+
+            def spool_member(member: dict[str, object]) -> None:
+                check_stop()
+                captured = CapturedSourceInputIdentity.from_dict(member["identity"])
+                conn.execute(
+                    "INSERT INTO paths VALUES (?, ?, ?, ?)",
+                    (
+                        member["coordinate"],
+                        str(path / str(member["relative_path"])),
+                        captured.semantic_source_path,
+                        json.dumps(member, ensure_ascii=True),
+                    ),
+                )
+
+            receipt = read_staging_receipt(path, on_member=spool_member, check_stop=check_stop)
+            if receipt is not None:
+                if source_path is not None and source_path != receipt["header"]["source_path"]:
+                    raise ValueError("ingest declaration differs from its captured staging receipt")
+                conn.execute("INSERT INTO receipt VALUES (?)", (json.dumps(receipt, ensure_ascii=True),))
+                return spool
             mode = path.lstat().st_mode
             if stat.S_ISREG(mode):
-                conn.execute("INSERT INTO paths VALUES (?, ?, ?)", ("input:0", str(path), source_path or str(path)))
+                conn.execute(
+                    "INSERT INTO paths VALUES (?, ?, ?, NULL)", ("input:0", str(path), source_path or str(path))
+                )
             elif stat.S_ISDIR(mode):
                 for candidate in path.rglob("*"):
                     check_stop()
@@ -94,7 +131,7 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
                         raise ValueError("ingest inputs must be regular files, not links or special files")
                     relative = candidate.relative_to(path)
                     logical = str(Path(source_path) / relative) if source_path is not None else str(candidate)
-                    conn.execute("INSERT INTO paths VALUES (?, ?, ?)", (str(relative), str(candidate), logical))
+                    conn.execute("INSERT INTO paths VALUES (?, ?, ?, NULL)", (str(relative), str(candidate), logical))
             else:
                 raise ValueError("ingest input must be a regular file or directory")
             if conn.execute("SELECT 1 FROM paths LIMIT 1").fetchone() is None:
@@ -103,6 +140,74 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
     except BaseException:
         spool.unlink(missing_ok=True)
         raise
+
+
+@contextmanager
+def _bind_ingest_input_row(
+    row: tuple[str, str, str, str | None], receipt: dict[str, object] | None
+) -> Iterator[SourceInputBinding]:
+    _coordinate, physical_name, logical_path, captured_member = row
+    physical = Path(physical_name)
+    with ExitStack() as owners:
+        if captured_member is not None:
+            if receipt is None:
+                raise ValueError("staged member lacks its authenticated directory receipt")
+            member = json.loads(captured_member)
+            relative = Path(member["relative_path"])
+            staged_root = physical.parents[len(relative.parts) - 1]
+            binding = owners.enter_context(bind_staged_member(staged_root, member, receipt))
+        else:
+            binding = owners.enter_context(bind_source_input(physical))
+        if logical_path != str(physical) and not binding.staged:
+            raise ValueError("staged input lacks its captured original source identity")
+        yield binding
+
+
+def preflight_ingest_input(
+    path: Path, *, check_stop: Callable[[], None]
+) -> tuple[ImportPreflightResult, dict[str, object] | None]:
+    """Classify the same authenticated, paged denominator retention consumes."""
+    from polylogue.sources.import_preflight import preflight_import_bindings
+
+    spool = discover_ingest_input_spool(path, source_path=None, check_stop=check_stop)
+    try:
+        with spool_connection(spool, read_only=True) as conn:
+            receipt_row = conn.execute("SELECT body FROM receipt").fetchone()
+            receipt = None if receipt_row is None else json.loads(receipt_row[0])
+            first_input = conn.execute("SELECT coordinate, physical FROM paths ORDER BY coordinate LIMIT 1").fetchone()
+        declaration = None if receipt is None else receipt["header"]
+        single_file = (
+            declaration["input_kind"] == "file" if declaration is not None else first_input == ("input:0", str(path))
+        )
+        source_path = str(path) if declaration is None else declaration["source_path"]
+
+        def members() -> Iterator[tuple[SourceInputBinding, str]]:
+            after = ""
+            while True:
+                with spool_connection(spool, read_only=True) as conn:
+                    rows = conn.execute(
+                        "SELECT coordinate, physical, logical, captured_member FROM paths "
+                        "WHERE coordinate > ? ORDER BY coordinate LIMIT 256",
+                        (after,),
+                    ).fetchall()
+                if not rows:
+                    return
+                for row in rows:
+                    check_stop()
+                    with _bind_ingest_input_row(row, receipt) as binding:
+                        yield binding, binding.source_path.name if row[0] == "input:0" else row[0]
+                    after = row[0]
+
+        with closing(members()) as bound_members:
+            result = preflight_import_bindings(
+                bound_members,
+                source_path=source_path,
+                single_file=single_file,
+                check_stop=check_stop,
+            )
+        return result, declaration
+    finally:
+        spool.unlink(missing_ok=True)
 
 
 def retain_input_page(
@@ -115,31 +220,43 @@ def retain_input_page(
     """One compute-phase page; its SQLite connection never crosses threads."""
     with spool_connection(spool, read_only=True) as conn:
         rows = conn.execute(
-            "SELECT coordinate, physical, logical FROM paths WHERE coordinate > ? ORDER BY coordinate LIMIT 256",
+            "SELECT coordinate, physical, logical, captured_member FROM paths WHERE coordinate > ? ORDER BY coordinate LIMIT 256",
             (after_coordinate or "",),
         ).fetchall()
+        receipt_row = conn.execute("SELECT body FROM receipt").fetchone()
+        receipt = None if receipt_row is None else json.loads(receipt_row[0])
     batch: list[FrozenSourceInput] = []
-    for coordinate, physical_name, logical_path in rows:
+    for coordinate, physical_name, logical_path, captured_member in rows:
         check_stop()
         physical = Path(physical_name)
-        before = physical.stat()
-        if is_sqlite_path(physical):
-            blob_hash = snapshot_sqlite_to_blob(physical, publisher).blob_hash
-        else:
-            blob_hash, _ = publisher.write_from_path(physical, heartbeat=check_stop)
-            after = physical.stat()
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            ):
-                raise ValueError("source changed while retaining the accepted input")
+        with _bind_ingest_input_row((coordinate, physical_name, logical_path, captured_member), receipt) as binding:
+            captured_identity = binding.captured_identity
+            if is_sqlite_path(binding.source_path):
+                blob_hash = snapshot_sqlite_to_blob(
+                    physical, publisher, heartbeat=check_stop, source_binding=binding
+                ).blob_hash
+            else:
+                accepted_revision: dict[str, object] = {}
+
+                def retain_bytes(
+                    destination: IO[bytes],
+                    *,
+                    revision: dict[str, object] = accepted_revision,
+                    accepted: SourceInputBinding = binding,
+                ) -> None:
+                    revision.update(write_bound_input(accepted, destination))
+
+                blob_hash, blob_size = publisher.write_from_writer(retain_bytes, heartbeat=check_stop)
+                if (accepted_revision["content_revision"], accepted_revision["size_bytes"]) != (blob_hash, blob_size):
+                    raise ValueError("retained input differs from its proved descriptor bytes")
         publication_id = publisher.receipt_id(blob_hash)
         if publication_id is None:
             raise RuntimeError("retained input has no publication reservation identity")
-        batch.append(FrozenSourceInput(str(coordinate), str(logical_path), blob_hash, publication_id))
+        batch.append(
+            FrozenSourceInput(
+                str(coordinate), captured_identity.semantic_source_path, blob_hash, publication_id, captured_identity
+            )
+        )
     return tuple(batch)
 
 
@@ -166,6 +283,7 @@ def enumerate_ingest_input(
         blob_size=blob_size,
         blob_store=publisher,
         source_name=source_name,
+        captured_identity=item.captured_identity,
         on_member_disposition=lambda *_fields: None,
     ):
         check_stop()

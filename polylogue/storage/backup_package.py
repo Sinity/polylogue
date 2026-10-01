@@ -31,7 +31,6 @@ from pydantic import BaseModel
 from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.errors import SchemaSkew
-from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.core.write_lease import require_write_lease
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
@@ -58,8 +57,10 @@ from polylogue.storage.source_blob_restoration import (
     RetainedBlobSource,
     RetainedBlobSourceKind,
     is_legacy_append_without_window,
-    is_recorded_container_member,
+    read_prior_full_source_receipts,
+    read_raw_source_evidence,
     retained_blob_source_candidates,
+    retained_source_location,
     source_window_holds_blob,
     stage_exact_blob,
 )
@@ -682,50 +683,6 @@ def _blob_reference_evidence(
     }
 
 
-def _relocated(path: Path, root: Path) -> Path:
-    """The same acquisition path under the archive root in force, when it exists there."""
-    parts = path.parts
-    for directory in ("inbox", "browser-capture", "hooks"):
-        if directory in parts:
-            candidate = root.joinpath(*parts[parts.index(directory) :])
-            if candidate.exists():
-                return candidate
-    return path
-
-
-def _live_zip_split(source_path: str, root: Path) -> tuple[str, str] | None:
-    """Split ``<container>:<member>`` at a prefix that is a real ZIP here.
-
-    The container path may itself hold colons (a Windows drive, a legal POSIX
-    filename), so every colon is tried, shortest container first.
-    """
-    start = 0
-    while (separator_at := source_path.find(":", start)) != -1:
-        start = separator_at + 1
-        if separator_at == 0 or separator_at == len(source_path) - 1:
-            continue
-        candidate = _relocated(Path(source_path[:separator_at]), root)
-        if candidate.is_file() and zipfile.is_zipfile(candidate):
-            return source_path[:separator_at], source_path[start:]
-    return None
-
-
-def _resolved_source_path(source_path: str, root: Path, *, container: bool = False) -> str:
-    """Resolve an acquisition path against the archive root in force."""
-    split = (_live_zip_split(source_path, root) or split_zip_member_text(source_path)) if container else None
-    outer, member = split if split is not None else (source_path, None)
-    path = _relocated(Path(outer), root)
-    return f"{path}:{member}" if member is not None else str(path)
-
-
-def _is_recorded_container(row: Mapping[str, object], root: Path) -> bool:
-    """Use stored coordinates, or prove a legacy ZIP path by its live file."""
-    if is_recorded_container_member(row):
-        return True
-    source_path = row.get("source_path")
-    return isinstance(source_path, str) and _live_zip_split(source_path, root) is not None
-
-
 def _source_recoverability_proofs(
     source_db: Path,
     *,
@@ -751,7 +708,7 @@ def _source_recoverability_proofs(
         return []
     zip_payload_cache = zip_payload_cache if zip_payload_cache is not None else {}
     by_hash: dict[str, list[dict[str, object]]] = {}
-    prior_full_sizes: dict[str, list[tuple[int, int]]] = {}
+    prior_full_receipts: dict[str, tuple[tuple[int, int], ...]] = {}
     with closing(
         _open_backup_readonly_connection(
             source_db,
@@ -761,24 +718,14 @@ def _source_recoverability_proofs(
     ) as conn:
         reference_rows = _raw_session_reference_rows(conn)
         for row in reference_rows:
-            if (
-                str(row.get("revision_kind") or "") in {"full", "unknown"}
-                and row.get("source_path")
-                and row.get("source_index") is not None
-            ):
-                try:
-                    if int(row["source_index"]) == 0:
-                        resolved_path = _resolved_source_path(
-                            str(row["source_path"]), root, container=_is_recorded_container(row, root)
-                        )
-                        prior_full_sizes.setdefault(resolved_path, []).append(
-                            (int(row["acquired_at_ms"]), int(row["size_bytes"]))
-                        )
-                except (TypeError, ValueError):
-                    pass
             blob_hash = str(row.get("blob_hash") or "")
             if blob_hash in missing_hashes:
+                if is_legacy_append_without_window(row):
+                    evidence = read_raw_source_evidence(conn, str(row["raw_id"]))
+                    row["receipt_order"] = None if evidence is None else evidence["receipt_order"]
                 by_hash.setdefault(blob_hash, []).append(row)
+                if is_legacy_append_without_window(row):
+                    prior_full_receipts[str(row["raw_id"])] = read_prior_full_source_receipts(conn, row)
     proofs: list[dict[str, str]] = []
     for blob_hash in sorted(missing_hashes):
         rows = by_hash.get(blob_hash, [])
@@ -788,12 +735,11 @@ def _source_recoverability_proofs(
             if not isinstance(source_path, str) or not source_path:
                 errors.append("no_source_path")
                 continue
-            is_container = _is_recorded_container(row, root)
-            resolved = _resolved_source_path(source_path, root, container=is_container)
+            resolved, is_container = retained_source_location(row, root)
             candidates = retained_blob_source_candidates(
                 row,
                 container_member=is_container,
-                prior_full_observations=prior_full_sizes.get(resolved, ()),
+                prior_full_observations=prior_full_receipts.get(str(row["raw_id"]), ()),
             )
             if not candidates:
                 errors.append(

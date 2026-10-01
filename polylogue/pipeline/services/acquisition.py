@@ -102,7 +102,7 @@ class AcquisitionService:
         source: Source,
         *,
         cursor_state: CursorStatePayload | None = None,
-        observations: dict[str, tuple[str, tuple[int, int, int, int, int]]],
+        observations: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]],
     ) -> None:
         """Persist stat cursors only for source paths acquired successfully."""
         if source.path is None:
@@ -140,12 +140,13 @@ class AcquisitionService:
             # to skip.  Do not turn a failed persistence/read pass into a
             # successful stat cursor for every file in the source.
             failed_everything = failed_everything or bool(cursor_state.get("error_count"))
-        for source_path, (canonical_path, observed) in observations.items():
+        for source_path, (canonical_path, observed, profile_key) in observations.items():
             if failed_everything or source_path in failed_paths:
                 continue
             await self.repository.upsert_source_file_cursor(
                 source_path,
                 canonical_source_path=canonical_path,
+                captured_profile_key=profile_key,
                 st_dev=observed[0],
                 st_ino=observed[1],
                 st_size=observed[2],
@@ -190,7 +191,7 @@ class AcquisitionService:
         for source in sources:
             logger.debug("Scanning source", source=source.name)
             cursor_state: CursorStatePayload = {}
-            observations: dict[str, tuple[str, tuple[int, int, int, int, int]]] = {}
+            observations: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]] = {}
             try:
                 async for record in iter_raw_record_stream(
                     source,
@@ -209,6 +210,7 @@ class AcquisitionService:
                         observations[record.source_path] = (
                             record.canonical_source_path,
                             record.captured_file_observation,
+                            record.captured_profile_key,
                         )
                     await _consume(record)
                     if progress_callback:

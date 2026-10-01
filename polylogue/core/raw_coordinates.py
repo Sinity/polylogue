@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import zipfile
 from collections.abc import Iterator
+from dataclasses import dataclass
 from hashlib import sha256
 from math import isqrt
 from pathlib import Path
@@ -26,6 +27,57 @@ class MemberAddressingMode(PolylogueStrEnum):
 
     ELEMENT_OF_CONTAINER = "element_of_container"
     WHOLE_MEMBER = "whole_member"
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedZipMemberCoordinate:
+    """Member evidence carried from the opened container to raw admission."""
+
+    canonical_container: str
+    declared_container: str
+    member_name: str
+    entry_ordinal: int
+    split_index: int
+    addressing_mode: MemberAddressingMode
+    profile_namespace: str | None = None
+
+    def __post_init__(self) -> None:
+        if not Path(self.canonical_container).is_absolute() or not Path(self.declared_container).is_absolute():
+            raise ValueError("captured ZIP containers require absolute physical and declared coordinates")
+        if not self.member_name:
+            raise ValueError("captured ZIP member requires its exact name")
+        zip_member_source_index(entry_ordinal=self.entry_ordinal, split_index=self.split_index)
+        if self.addressing_mode is MemberAddressingMode.WHOLE_MEMBER and self.split_index:
+            raise ValueError("a preserved ZIP member has no element index")
+        if self.profile_namespace is not None and not Path(self.profile_namespace).is_absolute():
+            raise ValueError("captured ZIP profile namespace must be absolute")
+
+    @property
+    def source_index(self) -> int:
+        return zip_member_source_index(entry_ordinal=self.entry_ordinal, split_index=self.split_index)
+
+    @property
+    def canonical_member(self) -> str:
+        return f"{self.canonical_container}:{self.member_name}"
+
+
+def captured_zip_member_raw_id(coordinate: CapturedZipMemberCoordinate, blob_hash: str) -> str:
+    """Identify new ZIP intake from captured physical and semantic evidence."""
+    digest = sha256()
+    digest.update(b"polylogue:zip-member-raw:v3\0")
+    for value in (
+        coordinate.canonical_container,
+        coordinate.declared_container,
+        coordinate.member_name,
+        coordinate.addressing_mode.value,
+        str(coordinate.entry_ordinal),
+        str(coordinate.split_index),
+        coordinate.profile_namespace or "",
+    ):
+        digest.update(value.encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+    digest.update(bytes.fromhex(blob_hash))
+    return digest.hexdigest()
 
 
 def zip_member_source_index(*, entry_ordinal: int, split_index: int) -> int:
@@ -149,6 +201,8 @@ def zip_member_container(source_path: str) -> Path | None:
 
 
 __all__ = [
+    "CapturedZipMemberCoordinate",
+    "captured_zip_member_raw_id",
     "zip_member_container",
     "zip_member_coordinate",
     "zip_member_coordinate_candidates",

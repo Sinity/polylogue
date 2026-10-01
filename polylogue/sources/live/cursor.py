@@ -83,6 +83,7 @@ class CursorRecord:
     record_count: int
     updated_at: str
     canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
     last_record_ts: str | None = None
     parser_fingerprint: str | None = None
     content_fingerprint: str | None = None
@@ -305,6 +306,7 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         excluded=bool(row[16]) if row[16] is not None else False,
         deferred_end_offset=_optional_int(row[17]),
         canonical_source_path=_optional_str(row[18]),
+        captured_profile_key=_optional_str(row[19]),
     )
 
 
@@ -701,6 +703,7 @@ class CursorStore:
             conn,
             source_path=record.source_path,
             canonical_source_path=record.canonical_source_path,
+            captured_profile_key=record.captured_profile_key,
             updated_at_ms=_required_epoch_ms(record.updated_at),
             origin=origin,
             stat_size=record.byte_size,
@@ -1480,7 +1483,7 @@ class CursorStore:
                 updated_at_ms,
                 excluded,
                 deferred_end_offset,
-                canonical_source_path
+                canonical_source_path, captured_profile_key
             FROM ingest_cursor
             WHERE source_path = ?
             """,
@@ -1521,7 +1524,7 @@ class CursorStore:
                         updated_at_ms,
                         excluded,
                         deferred_end_offset,
-                        canonical_source_path
+                        canonical_source_path, captured_profile_key
                     FROM ingest_cursor
                     WHERE source_path IN ({placeholders})
                     """,
@@ -1553,6 +1556,7 @@ class CursorStore:
         next_retry_at: str | None = None,
         excluded: bool | None = None,
         canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
         allow_backward: bool = False,
         deferred_end_offset: int | None = None,
     ) -> bool:
@@ -1573,6 +1577,7 @@ class CursorStore:
             CursorRecord(
                 source_path=str(path),
                 canonical_source_path=canonical_source_path,
+                captured_profile_key=captured_profile_key,
                 byte_size=byte_size,
                 byte_offset=offset,
                 last_complete_newline=newline_offset,
@@ -1966,7 +1971,7 @@ class CursorStore:
                         updated_at_ms,
                     excluded,
                     deferred_end_offset,
-                    canonical_source_path
+                    canonical_source_path, captured_profile_key
                 FROM ingest_cursor
                 WHERE excluded = 0
                   AND (

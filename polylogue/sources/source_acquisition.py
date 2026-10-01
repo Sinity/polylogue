@@ -17,6 +17,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from . import decoders as _decoders
+from .acquisition_boundary import open_bound_container
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
 from .decoders import _ZipEntryValidator
 from .dispatch import ForeignOriginContentError, bound_location_provider
@@ -32,6 +33,7 @@ from .source_acquisition_components import (
     zip_member_admission,
 )
 from .source_root_admission import refuse_non_capture_source_root
+from .source_staging import bind_source_input
 from .source_walk import _setup_source_walk
 
 logger = get_logger(__name__)
@@ -111,7 +113,14 @@ def iter_source_raw_data(
                 continue
 
             if path.suffix.lower() == ".zip":
-                with zipfile.ZipFile(path) as zf:
+                with (
+                    bind_source_input(path) as captured,
+                    open_bound_container(
+                        blob_store,
+                        captured,
+                    ) as physical,
+                    zipfile.ZipFile(physical) as zf,
+                ):
                     central_directory = zf.infolist()
                     admission = zip_member_admission(zf, path, central_directory, provider_hint)
                     validator = _ZipEntryValidator(
@@ -119,6 +128,7 @@ def iter_source_raw_data(
                         cursor_state=cursor_state,
                         zip_path=path,
                     )
+                    ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
                     for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
                         entry_path = f"{path}:{info.filename}"
                         if info.file_size == 0:
@@ -134,11 +144,13 @@ def iter_source_raw_data(
                                     zip_path=path,
                                     entry=info,
                                     file_mtime=file_mtime,
-                                    provider_hint=admission.entry_provider_hint(info.filename),
+                                    provider_hint=admission.entry_provider_hint(zf, info),
                                     blob_store=blob_store,
                                     observation_callback=observation_callback,
                                     status_callback=status_callback,
                                     bound_provider=bound_location_provider(provider_hint),
+                                    captured_input_identity=captured.captured_identity,
+                                    entry_ordinal=ordinals[id(info)],
                                 ),
                             )
                         except ForeignOriginContentError as exc:

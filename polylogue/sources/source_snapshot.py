@@ -32,8 +32,9 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
+from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.sqlite_export import BinaryWriteSink, _logical_export_digest_bound, _write_logical_export_bound
-from polylogue.sources.sqlite_snapshot import bind_sqlite_source, member_export_scope
+from polylogue.sources.sqlite_snapshot import member_export_scope
 
 _FICLONE = 0x40049409
 _MANIFEST_VERSION = 2
@@ -555,7 +556,7 @@ def _observe_sqlite_members(
         # The isolated export owner binds SQLite's actual descriptors to
         # this enumerated identity without closing any guard database fd.
         try:
-            with bind_sqlite_source(
+            with bind_source_input(
                 path, parent_anchor=parent_anchor, semantic_parent=semantic_parent
             ) as source_binding:
                 identity = _logical_export_digest_bound(
@@ -832,7 +833,7 @@ class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
         if root.is_dir():
             raise SourceSnapshotError("mutable-sqlite declarations must name one database")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with bind_sqlite_source(root) as source_binding, destination.open("xb") as raw_handle:
+        with bind_source_input(root) as source_binding, destination.open("xb") as raw_handle:
             handle = _BoundedSnapshotWriter(raw_handle, capacity_bytes=binding.policy.capacity_bytes)
             _write_logical_export_bound(
                 root,
@@ -849,7 +850,7 @@ class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
         digest = _sha256_path(destination)
         if digest != baseline[0].identity:
             raise SourceMutationError(f"SQLite logical export does not match source logical revision: {root}")
-        with bind_sqlite_source(root) as source_binding:
+        with bind_source_input(root) as source_binding:
             if (
                 _logical_export_digest_bound(
                     root,

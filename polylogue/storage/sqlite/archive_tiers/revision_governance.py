@@ -139,6 +139,7 @@ from polylogue.archive.session_revision_membership import MembershipClassificati
 from polylogue.core.codex_append import strip_codex_legacy_append_header
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     MissingProfileIdentityError,
@@ -929,6 +930,9 @@ def write_raw_blob_ref(
     source_path: str,
     canonical_source_path: str | None = None,
     captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -959,6 +963,9 @@ def write_raw_blob_ref(
             source_path=source_path,
             canonical_source_path=canonical_source_path,
             captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             source_index=source_index,
             blob_hash=bytes.fromhex(blob_hash_hex),
             blob_size=blob_size,
@@ -971,6 +978,8 @@ def write_raw_blob_ref(
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse blob admission arm: {admission.arm!r}")
         return admission.raw_id
+    if captured_zip_coordinate is not None:
+        raise ValueError("captured ZIP intake requires ordinary typed admission")
     return write_source_raw_session_blob_ref(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
@@ -1059,6 +1068,9 @@ def admit_raw_artifact_blob_ref(
     source_path: str,
     canonical_source_path: str | None = None,
     captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     classification: ArtifactClassification,
@@ -1077,6 +1089,9 @@ def admit_raw_artifact_blob_ref(
         source_path=source_path,
         canonical_source_path=canonical_source_path,
         captured_profile_key=captured_profile_key,
+        captured_zip_coordinate=captured_zip_coordinate,
+        addressing_mode=addressing_mode,
+        content_identity=content_identity,
         source_index=source_index,
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,

@@ -192,6 +192,7 @@ def test_a_colon_named_failure_does_not_withhold_its_prefix_sibling(tmp_path: Pa
                 str(path): (
                     str(path.resolve()),
                     (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns),
+                    None,
                 )
                 for path in (plain, colon)
                 for st in (path.stat(),)
@@ -230,6 +231,7 @@ def test_a_failure_naming_no_resolved_file_withholds_every_cursor(tmp_path: Path
                 str(staged): (
                     str(staged.resolve()),
                     (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns),
+                    None,
                 )
                 for st in (staged.stat(),)
             },
