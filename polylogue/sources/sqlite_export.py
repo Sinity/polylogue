@@ -767,17 +767,17 @@ def _source_worker_main() -> None:
             _write_frame(sys.stdout.buffer, b"S")
             return
         scope = MemberExportScope(**request["scope"])
-        from polylogue.sources.source_staging import _verify_staging_provenance
+        from polylogue.sources.source_staging import _verify_staging_metadata_name
 
         def progress() -> None:
             if request.get("progress"):
                 _WorkerSink().write(b"")
 
-        _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+        _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
         if request["operation"] == "shape":
             export_shape = _export_shape_at(request["directory"], source.name, accepted[""])
             if export_shape is not None:
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 _write_frame(sys.stdout.buffer, b"R", _control_bytes(export_shape))
                 _write_frame(sys.stdout.buffer, b"S")
                 return
@@ -793,7 +793,7 @@ def _source_worker_main() -> None:
                 classify=request["operation"] == "classify",
             )
             if export_inspection is not None:
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 _write_frame(sys.stdout.buffer, b"R", _control_bytes(export_inspection))
                 _write_frame(sys.stdout.buffer, b"S")
                 return
@@ -827,7 +827,7 @@ def _source_worker_main() -> None:
                 source, immutable=request["immutable"], directory=request["directory"]
             ) as conn:
                 proof.validate()
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 # Sorting a complete source or preview denominator must spill
                 # regardless of the SQLite build's default TEMP policy. Main
                 # descriptor proof precedes SQL; no transaction or TEMP object
@@ -888,7 +888,7 @@ def _source_worker_main() -> None:
                 else:
                     raise OSError(errno.EPROTO, "invalid SQLite source operation")
                 proof.validate()
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 if grouping is not None:
                     grouping.verify()
                 if output_descriptors:

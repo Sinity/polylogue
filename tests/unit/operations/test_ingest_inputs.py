@@ -108,6 +108,65 @@ def test_staged_directory_members_are_keyed_under_the_callers_path(tmp_path: Pat
     }
 
 
+@pytest.mark.parametrize("member_count", [1, 32])
+def test_staged_intake_reads_its_outside_receipt_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member_count: int
+) -> None:
+    """Rehashing the whole directory receipt per member makes metadata work quadratic."""
+    from polylogue.sources import source_staging, sqlite_export
+
+    original = tmp_path / "exports"
+    original.mkdir()
+    for ordinal in range(member_count):
+        (original / f"member-{ordinal:03d}.jsonl").write_bytes(b"{}\n")
+    staged = stage_source_input(original, tmp_path / "staging", check_stop=lambda: None)
+    metadata = source_staging.staging_metadata_path(staged)
+    accounting = tmp_path / "receipt-reads.txt"
+    fixture = Path(__file__).parents[2] / "fixtures/sqlite_source/staging_read_accounting.py"
+    monkeypatch.setenv("POLYLOGUE_TEST_RECEIPT_NAME", metadata.name)
+    monkeypatch.setenv("POLYLOGUE_TEST_RECEIPT_ACCOUNTING", str(accounting))
+    monkeypatch.setattr(
+        sqlite_export, "_WORKER_COMMAND", f"exec(compile(open({str(fixture)!r}).read(), {str(fixture)!r}, 'exec'))"
+    )
+
+    retained = _retain(staged, str(original), tmp_path)
+    assert len(retained) == member_count
+    assert sum(int(line) for line in accounting.read_text().splitlines()) == metadata.stat().st_size
+
+
+@pytest.mark.parametrize("mutation", ["receipt-rewrite", "receipt-replace", "slot-replace", "late-member"])
+def test_captured_staging_receipt_does_not_admit_changed_members_or_custody(tmp_path: Path, mutation: str) -> None:
+    """The fully read receipt stays authority only while its captured custody is current."""
+    from polylogue.sources.source_staging import staging_metadata_path
+
+    original = tmp_path / "exports"
+    original.mkdir()
+    for ordinal in range(3):
+        (original / f"member-{ordinal}.jsonl").write_bytes(b"{}\n")
+    staged = stage_source_input(original, tmp_path / "staging", check_stop=lambda: None)
+    spool = discover_ingest_input_spool(staged, source_path=str(original), check_stop=lambda: None)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    try:
+        metadata = staging_metadata_path(staged)
+        if mutation == "receipt-rewrite":
+            metadata.write_bytes(metadata.read_bytes())
+        elif mutation == "receipt-replace":
+            replacement = tmp_path / "replacement-receipt"
+            replacement.write_bytes(metadata.read_bytes())
+            replacement.replace(metadata)
+        elif mutation == "slot-replace":
+            moved = staged.with_name("moved-slot")
+            staged.rename(moved)
+            staged.symlink_to(moved, target_is_directory=True)
+        else:
+            (staged / "member-2.jsonl").write_bytes(b"[]\n")
+        with pytest.raises(OSError):
+            retain_input_page(spool, after_coordinate=None, publisher=publisher, check_stop=lambda: None)
+    finally:
+        publisher.discard_pending()
+        unlink_spool(spool)
+
+
 def test_file_intake_requires_the_captured_original_declaration(tmp_path: Path) -> None:
     import pytest
 

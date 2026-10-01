@@ -846,12 +846,13 @@ def test_explicit_stable_sqlite_root_alias_uses_the_accepted_actual_root(tmp_pat
 def test_nonregular_staging_metadata_is_unavailable_before_read(tmp_path: Path) -> None:
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    metadata = source_staging.staging_metadata_path(source)
+    staged = source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+    metadata = source_staging.staging_metadata_path(staged)
+    metadata.unlink()
     os.mkfifo(metadata)
     with pytest.raises(OSError) as refused:
-        with source_staging.bind_source_input(source):
-            pytest.fail("nonregular provenance cannot bind a source")
-    assert refused.value.errno == errno.ESTALE
+        source_staging.read_staging_receipt(staged, on_member=lambda _member: None, check_stop=lambda: None)
+    assert refused.value.errno == errno.ELOOP
 
 
 @pytest.mark.parametrize(
@@ -861,23 +862,22 @@ def test_nonregular_staging_metadata_is_unavailable_before_read(tmp_path: Path) 
 def test_present_invalid_staging_provenance_never_falls_back_to_filename(tmp_path: Path, payload: bytes) -> None:
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    source_staging.staging_metadata_path(source).write_bytes(payload)
-    with pytest.raises(OSError) as refused:
-        sqlite_snapshot.snapshot_sqlite_to_blob(source, BlobStore(tmp_path / "blobs"))
-    assert refused.value.errno == errno.ESTALE
+    staged = source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+    source_staging.staging_metadata_path(staged).write_bytes(payload)
+    with pytest.raises(ValueError):
+        source_staging.read_staging_receipt(staged, on_member=lambda _member: None, check_stop=lambda: None)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="requires unprivileged metadata read permissions")
 def test_present_unreadable_provenance_is_unavailable(tmp_path: Path) -> None:
     source = tmp_path / "declared.sqlite"
     _database(source, "declared")
-    metadata = source_staging.staging_metadata_path(source)
-    metadata.write_text("{}")
+    staged = source_staging.stage_source_input(source, tmp_path / "staging", check_stop=lambda: None)
+    metadata = source_staging.staging_metadata_path(staged)
     metadata.chmod(0)
     try:
         with pytest.raises(OSError) as refused:
-            with source_staging.bind_source_input(source):
-                pytest.fail("unreadable provenance cannot become an ordinary source")
+            source_staging.read_staging_receipt(staged, on_member=lambda _member: None, check_stop=lambda: None)
         assert refused.value.errno == errno.EACCES
     finally:
         metadata.chmod(0o600)
