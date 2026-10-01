@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from polylogue.storage.index_generation import IndexGeneration
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
 
 from polylogue.core.compute_cancel import compute_cancel_requested
 from polylogue.core.refs import (
@@ -45,6 +46,7 @@ from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     NativeSQLCustodyOwner,
     _open_readonly_owner,
+    native_sql_parent_for_connection,
     open_readonly_connection,
     open_scratch_connection,
 )
@@ -1280,6 +1282,7 @@ class IndexMutationScope:
     _archive_cleanup_failed: bool = False
     _rollback_required: bool = True
     _user_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
+    _user_admission_custody: ArchiveWriteCustody | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if (self.seal is None) == (self.destination is None):
@@ -1303,10 +1306,25 @@ class IndexMutationScope:
         if not path.is_file():
             raise ReferenceSealError("declared archive is missing its required durable User tier")
         if self._user_owner is None:
+            parent = native_sql_parent_for_connection(self.conn)
+            custody = current_sql_custody()
+            if parent is not None:
+                from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+                if not isinstance(parent, ArchiveStore) or parent._owned_index_connection is not self.conn:
+                    raise ReferenceSealError("suppression reader requires its exact Index Store owner")
+                if custody is not None:
+                    # Preserve the original grant once on the Store. Its
+                    # terminal census owns both Index and User, including
+                    # failures before this reader's initializer returns.
+                    parent._retain_sql_custody(custody)
+            self._user_admission_custody = custody
             # The same scope owns one reader, with actual creator custody and
             # scope lifetime retained before factory setup SQL can fail.
             try:
-                self._user_owner = _open_readonly_owner(path, validate_schema=False, lifetime_dependencies=(self,))
+                self._user_owner = _open_readonly_owner(
+                    path, validate_schema=False, lifetime_dependencies=(self,), terminal_parent=parent
+                )
             except NativeConnectionSettlementError as failure:
                 # Construction already attempted close. Retain its exact owner
                 # for explicit retry, without re-closing it during unwinding.
@@ -1322,7 +1340,7 @@ class IndexMutationScope:
                 raise
         owner = self._user_owner
         custody = current_sql_custody()
-        if custody is not owner.custody:
+        if custody is not self._user_admission_custody:
             raise ReferenceSealError("suppression reader belongs to another admitted writer")
         if custody is not None:
             custody.assert_namespace()
@@ -1332,7 +1350,10 @@ class IndexMutationScope:
         owner = self._user_owner
         if owner is not None:
             owner.close()
+            if owner._terminal_parent is not None:
+                owner.retire_terminal_parent(owner._terminal_parent)
             self._user_owner = None
+            self._user_admission_custody = None
 
     def note_session_namespace_change(self) -> None:
         self.require_connection(self.conn)

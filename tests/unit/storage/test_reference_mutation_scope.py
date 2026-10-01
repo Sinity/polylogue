@@ -12,7 +12,7 @@ from polylogue.core.enums import AssertionKind, Provider
 from polylogue.core.refs import EvidenceRef
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, open_connection
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -368,7 +368,9 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
         generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="scope-retirement")
         control_archive_connections(monkeypatch, generation.index_path)
         monkeypatch.setattr(reference_seal, "_open_readonly_owner", reader)
-        archive = generation.open_writer()
+        archive = ArchiveStore.open_owned_inactive_generation(
+            Path(generation.index_path).parent, generation_id=generation.generation_id, owner_id=generation.owner_id
+        )
         connection = archive._conn
         failure = OSError("synthetic actual writer rollback failure")
         try:
@@ -520,7 +522,12 @@ def test_active_seal_attempts_each_native_child_once_and_keeps_typed_failures(
             assert storage_fault_kind(caught.value) is StorageFaultKind.IO
             cleanup = caught.value.exceptions[1]
             failures = cleanup.exceptions if isinstance(cleanup, BaseExceptionGroup) else (cleanup,)
-            assert tuple(failure.failure for failure in failures) == tuple(faults)
+            assert len(failures) == len(faults)
+            for failure, fault in zip(failures, faults, strict=True):
+                assert isinstance(failure, NativeConnectionSettlementError)
+                assert failure.owner._terminal_parent is seal
+                assert isinstance(failure.failure, BaseExceptionGroup)
+                assert failure.failure.exceptions == (fault,)
             assert [cursor.close_attempts for cursor in cursors] == [1] * len(targets)
             assert not seal._closed
             with pytest.raises(ReferenceSealError):
@@ -657,7 +664,11 @@ def test_seal_construction_failure_retains_primary_and_unsettled_native_child(
             with pytest.raises(BaseExceptionGroup) as caught:
                 PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
             assert caught.value.exceptions[0] is primary
-            assert caught.value.exceptions[1].failure is fault
+            cleanup = caught.value.exceptions[1]
+            assert isinstance(cleanup, NativeConnectionSettlementError)
+            assert cleanup.owner._terminal_parent is seals[0]
+            assert isinstance(cleanup.failure, BaseExceptionGroup)
+            assert cleanup.failure.exceptions == (fault,)
             assert storage_fault_kind(caught.value) is StorageFaultKind.IO
             assert cursors[0].close_attempts == 1 and not seals[0]._closed
         finally:
@@ -665,3 +676,202 @@ def test_seal_construction_failure_retains_primary_and_unsettled_native_child(
                 cursor.allow_cleanup.set()
             for seal in seals:
                 seal.close()
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_inactive_scope_reader_settles_once_through_its_actual_store_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persistent: bool
+) -> None:
+    from typing import Any
+
+    from polylogue.core.sql_settlement import retained_native_sql_owners
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite import reference_seal
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_children
+    from polylogue.storage.sqlite.write_lease import current_sql_custody
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    class ReaderCursor(ControlledCursor):
+        def close(self) -> None:
+            try:
+                super().close()
+            finally:
+                if not persistent:
+                    self.allow_cleanup.set()
+
+    original = reference_seal._open_readonly_owner
+    cursors: list[ReaderCursor] = []
+
+    def reader(path: str | Path, **kwargs: Any) -> NativeSQLCustodyOwner:
+        owner = original(path, **kwargs)
+        cursor = owner.require_connection().cursor(factory=ReaderCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        next(cursor)
+        cursor.allow_cleanup.clear()
+        cursors.append(cursor)
+        return owner
+
+    with write_lease("test.scope-reader-census", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="reader-census")
+        archive = ArchiveStore.open_owned_inactive_generation(
+            Path(generation.index_path).parent, generation_id=generation.generation_id, owner_id=generation.owner_id
+        )
+        monkeypatch.setattr(reference_seal, "_open_readonly_owner", reader)
+        try:
+            with pytest.raises(BaseExceptionGroup):
+                with archive.index_mutation_scope() as scope:
+                    scope.suppression_reader()
+                    owner = scope._user_owner
+                    assert owner is not None and owner._terminal_parent is archive
+                    assert owner.custody is None
+                    assert archive._sql_custody is current_sql_custody()
+                    raise ValueError("synthetic failure after acquiring actual User reader")
+            assert cursors[0].close_attempts == 1
+            captured = retained_native_sql_owners()
+            assert captured == (archive,)
+            if persistent:
+                with pytest.raises(ArchiveStoreSettlementError):
+                    captured[0].close()
+                assert cursors[0].close_attempts == 2
+                assert archive._pending_index_mutation_scope is scope
+                assert retained_native_sql_owners() == (archive,)
+                cursors[0].allow_cleanup.set()
+            captured[0].close()
+            assert cursors[0].close_attempts == (3 if persistent else 2)
+            assert scope._user_owner is None
+            assert not native_sql_children(archive)
+            assert retained_native_sql_owners() == ()
+        finally:
+            for cursor in cursors:
+                cursor.allow_cleanup.set()
+            archive.close()
+
+
+def test_healthy_inactive_scope_reader_retires_parent_and_lifetime_after_commit(tmp_path: Path) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.connection_profile import native_sql_children, retained_native_sql_owners_for_lifetime
+
+    with write_lease("test.scope-reader-retirement", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="reader-retirement")
+        archive = ArchiveStore.open_owned_inactive_generation(
+            Path(generation.index_path).parent, generation_id=generation.generation_id, owner_id=generation.owner_id
+        )
+        try:
+            with archive.index_mutation_scope() as scope:
+                connection = scope.suppression_reader()
+                assert connection is not None
+                assert connection.execute("SELECT 1").fetchone()[0] == 1
+                owner = scope._user_owner
+                assert owner is not None and owner._terminal_parent is archive
+                assert owner in native_sql_children(archive)
+            assert owner._settled and owner._terminal_parent is None
+            assert scope._user_owner is None and scope._user_admission_custody is None
+            assert retained_native_sql_owners_for_lifetime(scope) == ()
+            assert owner not in native_sql_children(archive)
+        finally:
+            archive.close()
+
+
+def test_inactive_reader_initializer_failure_retains_original_store_before_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import Any
+
+    from polylogue.core.sql_settlement import retained_native_sql_owners
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite import connection_profile
+    from polylogue.storage.sqlite.write_lease import current_sql_custody
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, ControlledCursor
+
+    primary = ValueError("synthetic reader initializer failure")
+    cursors: list[ControlledCursor] = []
+    original = connection_profile.connect_measured
+
+    class InitializerConnection(ControlledConnection):
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            assert archive._sql_custody is current_sql_custody()
+            assert retained_native_sql_owners() == (archive,)
+            cursor = self.cursor(factory=ControlledCursor)
+            cursor.execute("SELECT 1 UNION ALL SELECT 2")
+            next(cursor)
+            cursor.allow_cleanup.clear()
+            cursors.append(cursor)
+            raise primary
+
+    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if str(database).endswith("/user.db?mode=ro"):
+            return sqlite3.connect(database, *args, factory=InitializerConnection, **kwargs)
+        return original(database, *args, **kwargs)
+
+    with write_lease("test.scope-reader-initializer", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="reader-initializer")
+        archive = ArchiveStore.open_owned_inactive_generation(
+            Path(generation.index_path).parent, generation_id=generation.generation_id, owner_id=generation.owner_id
+        )
+        monkeypatch.setattr(connection_profile, "connect_measured", connect)
+        try:
+            with pytest.raises(NativeConnectionSettlementError) as caught:
+                with archive.index_mutation_scope() as scope:
+                    scope.suppression_reader()
+            assert caught.value.__cause__ is primary
+            assert caught.value.owner is scope._user_owner
+            assert caught.value.owner._terminal_parent is archive
+            assert archive._pending_index_mutation_scope is scope
+            assert cursors[0].close_attempts == 1
+            captured = retained_native_sql_owners()
+            assert captured == (archive,)
+            cursors[0].allow_cleanup.set()
+            captured[0].close()
+            assert cursors[0].close_attempts == 2
+            assert scope._user_owner is None and retained_native_sql_owners() == ()
+        finally:
+            for cursor in cursors:
+                cursor.allow_cleanup.set()
+            archive.close()
+
+
+def test_store_terminal_parent_request_refuses_work_before_first_native_close(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.connection_profile import native_sql_children, request_native_sql_parent_cleanup
+
+    with write_lease("test.store-terminal-admission", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        archive = ArchiveStore.open_existing(tmp_path, read_only=False)
+        try:
+            children = native_sql_children(archive)
+            assert children and not any(child.close_required for child in children)
+            request_native_sql_parent_cleanup(archive)
+            with pytest.raises(ArchiveStoreSettlementError):
+                archive.commit()
+            with pytest.raises(ArchiveStoreSettlementError):
+                archive.write_raw_payload(
+                    provider=Provider.CODEX, source_path="refused-terminal-parent", acquired_at_ms=0, payload=b"new"
+                )
+            assert not any(child.close_required for child in children)
+            archive.close()
+            assert not native_sql_children(archive)
+        finally:
+            archive.close()
+
+
+def test_owned_inactive_scope_without_store_parent_preserves_reader_custody(tmp_path: Path) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+    from polylogue.storage.sqlite.write_lease import current_sql_custody
+
+    with write_lease("test.scope-reader-no-store-parent", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="reader-no-parent")
+        destination = IndexMutationDestination.owned_inactive(generation)
+        with closing(open_connection(generation.index_path)) as connection:
+            with destination.mutation_scope(connection) as scope:
+                reader = scope.suppression_reader()
+                assert reader is not None and reader.execute("SELECT 1").fetchone()[0] == 1
+                owner = scope._user_owner
+                assert owner is not None and owner._terminal_parent is None
+                assert owner.custody is current_sql_custody()
+            assert owner._settled and owner.custody is None and scope._user_owner is None

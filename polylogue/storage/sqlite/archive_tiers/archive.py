@@ -1280,7 +1280,10 @@ class ArchiveStore:
                 )
             from polylogue.storage.sqlite.connection_profile import native_sql_children
 
-            if any(owner.close_required and not owner._settled for owner in native_sql_children(self)):
+            if any(
+                (owner.close_required or owner._parent_cleanup_requested) and not owner._settled
+                for owner in native_sql_children(self)
+            ):
                 raise ArchiveStoreSettlementError(self, RuntimeError("archive SQL close remains unsettled"))
 
     def _require_writable(self, operation: str, *, cleanup: bool = False) -> None:
@@ -2078,6 +2081,8 @@ class ArchiveStore:
         # close must not strand a later SQL connection or let another writer
         # enter while its transaction is still live.
         pending_scope = self._pending_index_mutation_scope
+        if pending_scope is not None and pending_scope._user_owner is not None:
+            attempted_connections.add(pending_scope._user_owner._connection_identity)
         scope_settled = pending_scope is None or settle(pending_scope.close)
         if scope_settled:
             self._pending_index_mutation_scope = None
