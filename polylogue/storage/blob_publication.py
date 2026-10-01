@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import sqlite3
 import stat
@@ -10,7 +11,7 @@ import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import IO, Any, BinaryIO
 from uuid import uuid4
@@ -57,6 +58,36 @@ def _prepared_publication_claim(
     object.__setattr__(claim, "prepared_path", Path(os.path.abspath(prepared_path)))
     object.__setattr__(claim, "publisher", publisher)
     return claim
+
+
+def _prepared_claim_record(claim: PreparedBlobPublicationClaim) -> str:
+    """Persist an owning publisher's claim inside a sealed preparation row."""
+    return json.dumps(
+        {
+            "receipt": asdict(claim.receipt),
+            "seal": asdict(claim.seal),
+            "prepared_path": str(claim.prepared_path),
+        },
+        sort_keys=True,
+    )
+
+
+def _prepared_claim_from_record(encoded: str, publisher: ArchiveBlobPublisher) -> PreparedBlobPublicationClaim:
+    """Restore a claim from its verified carrier, retaining the same publisher."""
+    record = json.loads(encoded)
+    receipt = BlobPublicationReceipt(**record["receipt"])
+    seal = PreparedFileSeal(**record["seal"])
+    if receipt.publisher_id != publisher.publisher_id:
+        raise ValueError("sealed publication belongs to another publisher")
+    if receipt.blob_hash != seal.sha256 or receipt.size_bytes != seal.size:
+        raise ValueError("sealed publication claim disagrees with its file proof")
+    path = Path(record["prepared_path"])
+    if path != Path(os.path.abspath(path)):
+        raise ValueError("sealed publication path is not its captured absolute path")
+    # Restoring after publication need not reopen a private file already moved
+    # into the blob namespace. Queue admission validates the actual path/file.
+    path.relative_to(Path(os.path.abspath(publisher.root / ".staging")))
+    return _prepared_publication_claim(publisher, receipt, seal, path)
 
 
 @dataclass(frozen=True, slots=True)

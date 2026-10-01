@@ -11,7 +11,14 @@ import pytest
 
 from polylogue.core.storage_faults import ArchiveStorageFaultError
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, BlobPublicationReceipt
-from polylogue.storage.materials import PreparedMaterial, admit_material, prepare_material, publish_prepared_materials
+from polylogue.storage.materials import (
+    PreparedMaterial,
+    _prepared_material_from_record,
+    _prepared_material_record,
+    admit_material,
+    prepare_material,
+    publish_prepared_materials,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, record_excised_blob_hash
 from polylogue.storage.sqlite.write_lease import current_write_lease, write_lease
@@ -131,3 +138,40 @@ def test_excision_between_publish_and_apply_is_typed_and_does_not_admit(
         with pytest.raises(ContentExcisedError):
             admit_material(conn, prepared=prepared, observed_at_ms=2)
     assert conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0] == 0
+
+
+def test_sealed_claim_roundtrip_publishes_and_consumes_the_original_receipt(
+    material_archive: tuple[sqlite3.Connection, ArchiveBlobPublisher],
+) -> None:
+    conn, publisher = material_archive
+    original = prepare_material(
+        blob_store=publisher, source_uri="https://example.test/item", referrer_ref="message:item", payload=b"captured"
+    )
+    restored = _prepared_material_from_record(_prepared_material_record(original), publisher)
+    assert restored.publication_claim is not None
+    assert original.publication_claim is not None
+    assert restored.publication_claim.receipt == original.publication_claim.receipt
+    with write_lease("synthetic-material-publication", archive_root=publisher.source_db_path.parent):
+        publish_prepared_materials((restored,))
+        assert conn.execute("SELECT publication_id FROM blob_publication_reservations").fetchone()[0] == (
+            original.publication_claim.receipt.publication_id
+        )
+        # The same sealed row remains consumable after its private file moved.
+        restored_after_publication = _prepared_material_from_record(_prepared_material_record(original), publisher)
+        admit_material(conn, prepared=restored_after_publication, observed_at_ms=1)
+    assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+
+
+def test_sealed_claim_cannot_be_restored_under_a_fresh_publisher(
+    material_archive: tuple[sqlite3.Connection, ArchiveBlobPublisher],
+) -> None:
+    _conn, publisher = material_archive
+    prepared = prepare_material(
+        blob_store=publisher, source_uri="https://example.test/item", referrer_ref="message:item", payload=b"captured"
+    )
+    fresh = ArchiveBlobPublisher(publisher.source_db_path, publisher.root)
+    try:
+        with pytest.raises(ValueError):
+            _prepared_material_from_record(_prepared_material_record(prepared), fresh)
+    finally:
+        prepared.discard()

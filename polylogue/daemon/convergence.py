@@ -99,7 +99,7 @@ if TYPE_CHECKING:
 
 
 class _DerivationAdmission:
-    """Bridge one short publish from a compute worker to the daemon writer."""
+    """Admit publication on the preparation's existing compute worker."""
 
     def __init__(self, bridge: DaemonWriteThreadBridge, *, loop_thread_id: int) -> None:
         self._bridge = bridge
@@ -108,9 +108,19 @@ class _DerivationAdmission:
     def __call__(self, domain: str, publish: Callable[[], bool]) -> bool:
         if threading.get_ident() == self._loop_thread_id:
             raise RuntimeError("derivation publish was invoked on the daemon event loop thread")
-        # The bridge owns the coordinator until the transaction really returns;
-        # a caller-side timeout must not admit a second archive writer.
-        return self._bridge.run_sync_with_timeout(f"derivation.{domain}", None, publish)
+        from polylogue.core.compute import capture_compute_bridge
+        from polylogue.core.write_lease import adopt_write_lease
+
+        # Preparation observers remain on their creator. The joined cleanup
+        # boundary preserves those entry handles and settles publication's new
+        # native owners before the delegated writer gate can be released.
+        settle_publication = capture_compute_bridge()
+        with (
+            self._bridge.hold(f"derivation.{domain}") as delegation,
+            adopt_write_lease(delegation),
+            settle_publication(),
+        ):
+            return publish()
 
 
 class DerivationConvergenceOwner:
@@ -220,8 +230,8 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
 
     Composition supplies the already-constructed converger and its one
     session-profile adapter.  This owner deliberately does not construct a
-    pool or a writer: it borrows the process adapter and bridges only each
-    short publication back to the daemon's coordinator.
+    pool or a writer: it borrows the process adapter and adopts coordinator
+    admission for each publication on the preparation's creator worker.
     """
 
     async def converge_selected(
@@ -672,7 +682,7 @@ def _converge_selected_session_parts_sync(
                 continue
             # Do not admit the bridge after a stop request. A stop received
             # while the bridge is running is settled below before this worker
-            # returns, because ``run_sync_with_timeout`` is synchronous here.
+            # returns, because publication and its cleanup remain on this worker.
             if stop_requested() is not None:
                 return tuple(outcomes)
             if not _selected_recipe_is_current(adapter, frame, expected_recipe):

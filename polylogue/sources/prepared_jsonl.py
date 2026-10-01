@@ -1065,7 +1065,14 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
             index += self._count
         if index < 0 or index >= self._count:
             raise IndexError(index)
-        return next(islice(self.artifact.iter_sessions(), index, index + 1))
+        if self.artifact.sessions_path is None:
+            raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            row = connection.execute("SELECT session_id FROM prepared_session WHERE ordinal = ?", (index,)).fetchone()
+        if row is None:
+            raise ValueError("JSONL preparation ordinal disappeared")
+        return self.by_session_id(str(row[0]))
 
 
 def _write_artifact(

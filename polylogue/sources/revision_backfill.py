@@ -965,7 +965,7 @@ def _prepared_retained_outcome(
     prepared_inputs: Mapping[str, PreparedRetainedInput],
     *,
     stop: Callable[[], bool] | None = None,
-) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+) -> tuple[Sequence[ParsedSession], int, RawRevisionKind] | Exception:
     prepared = prepared_inputs.get(raw_id)
     if prepared is None:
         raise RetainedPreparationRetryableError(f"prepared retained input is missing for raw {raw_id}")
@@ -1016,7 +1016,7 @@ def _prepared_retained_outcome(
         if artifact.enrichment_index_path != str(archive.index_db_path.resolve()):
             raise RetainedPreparationRetryableError(f"prepared retained index dependency changed for raw {raw_id}")
         try:
-            sessions = list(artifact.iter_sessions())
+            sessions = artifact.session_sequence()
         except DaemonOperationCancelled:
             raise
         except Exception as exc:
@@ -1183,7 +1183,7 @@ def _census_historical_revision_evidence(
     def apply_outcome(
         raw_id: str,
         source_index: int,
-        outcomes: Mapping[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
+        outcomes: Mapping[str, tuple[Sequence[ParsedSession], int, RawRevisionKind] | Exception],
     ) -> None:
         state.scanned += 1
         state.censused.add(raw_id)
@@ -2235,7 +2235,7 @@ def _validated_prepared_aggregate(
     if artifact.shard_path is None:
         raise RetainedPreparationRetryableError(f"prepared aggregate shard is absent for {logical_key}")
     try:
-        sessions = list(artifact.iter_sessions())
+        sessions = artifact.session_sequence()
     except DaemonOperationCancelled:
         raise
     except Exception as exc:
@@ -3316,7 +3316,7 @@ class _PreparedReplayInputs:
     def __init__(self, prepared_inputs: Mapping[str, PreparedRetainedInput]) -> None:
         self._prepared_inputs = prepared_inputs
 
-    def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+    def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[Sequence[ParsedSession], int]:
         outcome = _prepared_retained_outcome(archive, raw_id, self._prepared_inputs)
         if isinstance(outcome, Exception):
             raise RetainedPreparationRetryableError(f"parser-refused raw {raw_id} reached replay") from outcome

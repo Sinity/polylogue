@@ -12,6 +12,7 @@ import http.client
 import ipaddress
 import json
 import mimetypes
+import os
 import socket
 import sqlite3
 import stat
@@ -31,9 +32,9 @@ from polylogue.core.prepared_file import PreparedFileSeal
 from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFaultKind
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
-    BlobPublicationReceipt,
     PreparedBlobPublicationClaim,
-    _prepared_publication_claim,
+    _prepared_claim_from_record,
+    _prepared_claim_record,
     consume_blob_publication_receipt,
 )
 from polylogue.storage.blob_store import BlobStore, PreparedBlob, blob_store_for_connection
@@ -440,8 +441,8 @@ def _prepared_material_record(prepared: PreparedMaterial) -> str:
         else None
     )
     record["seal"] = asdict(prepared.seal) if prepared.seal is not None else None
-    record["publication_receipt"] = (
-        asdict(prepared.publication_claim.receipt) if prepared.publication_claim is not None else None
+    record["publication_claim"] = (
+        _prepared_claim_record(prepared.publication_claim) if prepared.publication_claim is not None else None
     )
     return json.dumps(record, sort_keys=True)
 
@@ -457,14 +458,16 @@ def _prepared_material_from_record(encoded: str, publisher: ArchiveBlobPublisher
         record["blob"] = PreparedBlob(**record["blob"])
     if record["seal"] is not None:
         record["seal"] = PreparedFileSeal(**record["seal"])
-    receipt = record.pop("publication_receipt")
-    if receipt is not None:
-        receipt = BlobPublicationReceipt(**receipt)
-        if receipt.publisher_id != publisher.publisher_id or record["seal"] is None:
-            raise ValueError("sealed material claim belongs to another publisher")
-        claim = _prepared_publication_claim(publisher, receipt, record["seal"], record["blob"].temporary_path)
-    else:
-        claim = None
+    encoded_claim = record.pop("publication_claim")
+    claim = _prepared_claim_from_record(encoded_claim, publisher) if encoded_claim is not None else None
+    if claim is not None and (
+        record["blob"] is None
+        or record["seal"] != claim.seal
+        or record["blob"].hash_hex != claim.receipt.blob_hash
+        or record["blob"].size_bytes != claim.receipt.size_bytes
+        or Path(os.path.abspath(record["blob"].temporary_path)) != claim.prepared_path
+    ):
+        raise ValueError("sealed material disagrees with its captured publication claim")
     return _material_preparation(**record, publisher=publisher, publication_claim=claim)
 
 
