@@ -349,6 +349,41 @@ def test_membership_that_becomes_eligible_after_preparation_defers_publication(t
         assert publish_ingest_cohort(archive, fresh).published
 
 
+@pytest.mark.parametrize("retired", [False, True])
+def test_only_explicit_census_retirement_selects_an_unaccepted_sibling(tmp_path: Path, retired: bool) -> None:
+    """Default raw quarantine is not request authority; actual retirement is."""
+    bootstrap_archive_root(tmp_path)
+    key = "codex-session:prepared-membership"
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        accepted, sibling = _write_raws(archive, 2)
+        parse = _parse_from({accepted: _session("one"), sibling: _session("other")})
+        _publish_census(archive, accepted, parse, at_ms=1)
+        _publish_census(archive, sibling, parse, at_ms=2)
+        source = archive._ensure_source_conn()
+        assert source.execute(
+            "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?", (sibling,)
+        ).fetchone() == ("quarantined",)
+        if retired:
+            # This is the typed producer's durable retirement result: the
+            # complete census keeps the parsed identity after byte governance
+            # relinquishes its raw logical-source key.
+            source.execute(
+                "UPDATE raw_membership_census SET revision_authority = 'quarantined' WHERE raw_id = ?", (sibling,)
+            )
+            source.execute("UPDATE raw_sessions SET logical_source_key = NULL WHERE raw_id = ?", (sibling,))
+            source.commit()
+        prepared = prepare_ingest_cohort(
+            archive,
+            logical_source_key=key,
+            accepted_raw_ids=(accepted,),
+            parser_fingerprint="prepared-test-parser",
+            parse_retained_raw=parse,
+            acquired_at_ms=3,
+        )
+        assert accepted in prepared.selector_raw_ids
+        assert (sibling in prepared.selector_raw_ids) is retired
+
+
 def test_generation_owned_cohort_spans_input_pages(tmp_path: Path) -> None:
     """The generation selector includes members from distant input pages.
 

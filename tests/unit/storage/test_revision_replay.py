@@ -2298,15 +2298,16 @@ def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: P
             acquired_at_ms=2,
             kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
         )
-        archive.apply_raw_membership_classification(
-            "codex-session:session",
-            MembershipClassification((raw_id,), (), ()),
-            {raw_id: session},
-            {raw_id: session_revision_projection(session)},
-            acquired_at_ms=3,
-            manage_transaction=False,
-        )
-        archive.commit()
+        with archive.index_mutation_scope():
+            archive.apply_raw_membership_classification(
+                "codex-session:session",
+                MembershipClassification((raw_id,), (), ()),
+                {raw_id: session},
+                {raw_id: session_revision_projection(session)},
+                acquired_at_ms=3,
+                manage_transaction=False,
+            )
+            archive.commit()
 
         artifact = (
             archive._ensure_source_conn()
@@ -3253,32 +3254,33 @@ def test_incomplete_cohort_correction_does_not_commit_batched_source_authority(t
         undecided = _membership_authority(source_conn)
         assert all(decision is None for _raw, decision, _authority in undecided)
 
-        archive.apply_raw_membership_classification(
-            "codex-session:session",
-            classification,
-            session_by_raw,
-            {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
-            acquired_at_ms=1,
-            manage_transaction=False,
-        )
+        with archive.index_mutation_scope():
+            archive.apply_raw_membership_classification(
+                "codex-session:session",
+                classification,
+                session_by_raw,
+                {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
+                acquired_at_ms=1,
+                manage_transaction=False,
+            )
 
-        # The batch is still open: nothing on this path committed it.
-        assert source_conn.in_transaction
-        assert _membership_authority(source_conn) == [
-            ("branch-a", "ambiguous", "quarantined"),
-            ("branch-a-dup", "ambiguous", "quarantined"),
-            ("branch-b", "ambiguous", "quarantined"),
-        ]
-        # The correction itself is visible inside the same transaction.
-        assert source_conn.execute(
-            "SELECT count(*) FROM raw_sessions"
-            " WHERE parsed_at_ms IS NOT NULL"
-            " AND raw_id IN ('branch-a', 'branch-a-dup', 'branch-b')"
-        ).fetchone() == (0,)
+            # The batch is still open: nothing on this path committed it.
+            assert source_conn.in_transaction
+            assert _membership_authority(source_conn) == [
+                ("branch-a", "ambiguous", "quarantined"),
+                ("branch-a-dup", "ambiguous", "quarantined"),
+                ("branch-b", "ambiguous", "quarantined"),
+            ]
+            # The correction itself is visible inside the same transaction.
+            assert source_conn.execute(
+                "SELECT count(*) FROM raw_sessions"
+                " WHERE parsed_at_ms IS NOT NULL"
+                " AND raw_id IN ('branch-a', 'branch-a-dup', 'branch-b')"
+            ).fetchone() == (0,)
 
-        # Aborting the batch must take the durable authority with it.
-        source_conn.rollback()
-        assert _membership_authority(source_conn) == undecided
+            # Aborting the batch must take the durable authority with it.
+            archive.rollback()
+            assert _membership_authority(source_conn) == undecided
 
 
 def test_incomplete_cohort_correction_failure_keeps_the_batch_open(tmp_path: Path) -> None:
@@ -3322,35 +3324,36 @@ def test_incomplete_cohort_correction_failure_keeps_the_batch_open(tmp_path: Pat
             )
         )
 
-        with pytest.raises(sqlite3.IntegrityError, match="correction refused"):
-            archive.apply_raw_membership_classification(
-                "codex-session:session",
-                classification,
-                session_by_raw,
-                {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
-                acquired_at_ms=1,
-                manage_transaction=False,
-            )
+        with archive.index_mutation_scope():
+            with pytest.raises(sqlite3.IntegrityError, match="correction refused"):
+                archive.apply_raw_membership_classification(
+                    "codex-session:session",
+                    classification,
+                    session_by_raw,
+                    {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
+                    acquired_at_ms=1,
+                    manage_transaction=False,
+                )
 
-        source_conn.set_trace_callback(None)
-        # Released on the way out: the failed correction left no savepoint
-        # frame behind for a later RELEASE/ROLLBACK TO to land on by accident.
-        assert savepoints, "the batched correction must open a savepoint"
-        with pytest.raises(sqlite3.OperationalError, match="no such savepoint"):
-            source_conn.execute(f"RELEASE SAVEPOINT {savepoints[-1]}")
+            source_conn.set_trace_callback(None)
+            # Released on the way out: the failed correction left no savepoint
+            # frame behind for a later RELEASE/ROLLBACK TO to land on by accident.
+            assert savepoints, "the batched correction must open a savepoint"
+            with pytest.raises(sqlite3.OperationalError, match="no such savepoint"):
+                source_conn.execute(f"RELEASE SAVEPOINT {savepoints[-1]}")
 
-        # The caller's transaction survived the failed correction, and the
-        # savepoint stack unwound: a plain rollback still discards everything.
-        assert source_conn.in_transaction
-        assert _membership_authority(source_conn) == [
-            ("branch-a", "ambiguous", "quarantined"),
-            ("branch-a-dup", "ambiguous", "quarantined"),
-            ("branch-b", "ambiguous", "quarantined"),
-        ]
-        source_conn.rollback()
-        assert not source_conn.in_transaction
-        assert _membership_authority(source_conn) == undecided
-        source_conn.execute("DROP TRIGGER temp.reject_incomplete_cohort_correction")
+            # The caller's transaction survived the failed correction, and the
+            # savepoint stack unwound: a plain rollback still discards everything.
+            assert source_conn.in_transaction
+            assert _membership_authority(source_conn) == [
+                ("branch-a", "ambiguous", "quarantined"),
+                ("branch-a-dup", "ambiguous", "quarantined"),
+                ("branch-b", "ambiguous", "quarantined"),
+            ]
+            archive.rollback()
+            assert not source_conn.in_transaction
+            assert _membership_authority(source_conn) == undecided
+            source_conn.execute("DROP TRIGGER temp.reject_incomplete_cohort_correction")
 
 
 def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path) -> None:

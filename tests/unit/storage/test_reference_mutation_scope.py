@@ -1,6 +1,7 @@
 """Publication preserves the original lookup, not only its former row."""
 
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
@@ -263,3 +264,145 @@ def test_missing_canonical_user_cannot_disable_suppression(tmp_path: Path) -> No
             with pytest.raises(ReferenceSealError):
                 with destination.mutation_scope(connection):
                     session_write_is_suppressed(connection, "codex-session:missing-user")
+
+
+@pytest.mark.parametrize("user_failure", [False, True])
+@pytest.mark.parametrize("terminal", ["rollback", "close", "body-failure"])
+def test_scope_rollback_fault_still_attempts_user_cleanup_once_and_retains_exact_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_failure: bool, terminal: str
+) -> None:
+    from builtins import BaseExceptionGroup
+
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite import reference_seal
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeSQLCustodyOwner,
+        retained_native_sql_owners_for_lifetime,
+    )
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, ControlledCursor
+
+    cursors: list[ControlledCursor] = []
+    original = reference_seal._open_readonly_owner
+
+    def open_reader(path: Path, **kwargs: object) -> NativeSQLCustodyOwner:
+        owner = original(path, **kwargs)  # type: ignore[arg-type]
+        cursor = owner.require_connection().cursor(factory=ControlledCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        next(cursor)
+        if user_failure:
+            cursor.allow_cleanup.clear()
+        cursors.append(cursor)
+        return owner
+
+    with write_lease("test.scope-rollback-fault", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="rollback-fault")
+        destination = reference_seal.IndexMutationDestination.owned_inactive(generation)
+        with closing(sqlite3.connect(generation.index_path, factory=ControlledConnection)) as connection:
+            primary = ValueError("synthetic mutation failure")
+            rollback = OSError("synthetic actual writer rollback failure")
+            monkeypatch.setattr(reference_seal, "_open_readonly_owner", open_reader)
+            try:
+                with pytest.raises((OSError, BaseExceptionGroup)) as caught:
+                    with destination.mutation_scope(connection) as scope:
+                        scope.suppression_reader()
+                        connection.execute("CREATE TABLE uncommitted(value INTEGER)")
+                        connection.rollback_failure = rollback
+                        if terminal == "body-failure":
+                            raise primary
+                        getattr(scope, terminal)()
+                assert not scope._active and connection.in_transaction
+                assert connection.rollback_attempts == 1 and cursors[0].close_attempts == 1
+
+                def contains(error: BaseException, target: BaseException) -> bool:
+                    return error is target or (
+                        isinstance(error, BaseExceptionGroup)
+                        and any(contains(child, target) for child in error.exceptions)
+                    )
+
+                assert contains(caught.value, rollback)
+                if terminal == "body-failure":
+                    assert contains(caught.value, primary)
+                assert bool(retained_native_sql_owners_for_lifetime(scope)) is user_failure
+                connection.rollback_failure = None
+                cursors[0].allow_cleanup.set()
+                scope.close()
+                assert not connection.in_transaction and connection.rollback_attempts == 2
+                assert cursors[0].close_attempts == (2 if user_failure else 1)
+                assert retained_native_sql_owners_for_lifetime(scope) == ()
+            finally:
+                connection.rollback_failure = None
+                for cursor in cursors:
+                    cursor.allow_cleanup.set()
+                scope.close()
+
+
+@pytest.mark.parametrize("terminal", ["rollback", "close"])
+@pytest.mark.parametrize("user_failure", [False, True])
+def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owner_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str, user_failure: bool
+) -> None:
+    from typing import Any
+
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite import connection_profile, reference_seal
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, ControlledCursor
+
+    original_connect = connection_profile.connect_measured
+    original_reader = reference_seal._open_readonly_owner
+    cursors: list[ControlledCursor] = []
+
+    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if str(database) == str(generation.index_path):
+            return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+        return original_connect(database, *args, **kwargs)
+
+    def reader(path: Path, **kwargs: Any) -> NativeSQLCustodyOwner:
+        owner = original_reader(path, **kwargs)
+        cursor = owner.require_connection().cursor(factory=ControlledCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        next(cursor)
+        if user_failure:
+            cursor.allow_cleanup.clear()
+        cursors.append(cursor)
+        return owner
+
+    with write_lease("test.archive-scope-retirement", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="scope-retirement")
+        monkeypatch.setattr(connection_profile, "connect_measured", connect)
+        monkeypatch.setattr(reference_seal, "_open_readonly_owner", reader)
+        archive = generation.open_writer()
+        connection = archive._conn
+        assert isinstance(connection, ControlledConnection)
+        failure = OSError("synthetic actual writer rollback failure")
+        try:
+            with pytest.raises(BaseExceptionGroup):
+                with archive.index_mutation_scope() as scope:
+                    scope.suppression_reader()
+                    connection.execute("CREATE TABLE uncommitted(value INTEGER)")
+                    connection.rollback_failure = failure
+                    raise ValueError("synthetic mutation failure")
+            assert archive._pending_index_mutation_scope is scope
+            assert archive._has_pending_write_sql()
+            assert connection.rollback_attempts == 1
+            assert cursors[0].close_attempts == 1
+            with pytest.raises((OSError, BaseExceptionGroup, ArchiveStoreSettlementError)):
+                getattr(archive, terminal)()
+            assert connection.rollback_attempts == 2
+            assert cursors[0].close_attempts == (2 if user_failure else 1)
+            assert archive._pending_index_mutation_scope is scope
+            assert archive._owned_index_connection is connection
+            connection.rollback_failure = None
+            cursors[0].allow_cleanup.set()
+            getattr(archive, terminal)()
+            assert archive._pending_index_mutation_scope is None
+            assert connection.rollback_attempts == 3
+            assert cursors[0].close_attempts == (3 if user_failure else 1)
+        finally:
+            connection.rollback_failure = None
+            for cursor in cursors:
+                cursor.allow_cleanup.set()
+            archive.close()

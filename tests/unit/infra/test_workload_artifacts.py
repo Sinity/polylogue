@@ -26,6 +26,7 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ReadOnlyArchiveError
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
 from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
     ArtifactGcReport,
@@ -3015,7 +3016,9 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
     released = root / ".maintenance-state/durable-change-trains/source-002.json"
     assert provenance.read_bytes() != released.read_bytes()
     assert {item["path"] for item in manifest_files} == {
-        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file() and path.name != "manifest.json"
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file() and path.name not in {"manifest.json", ARCHIVE_WRITE_CUSTODY_LOCK_NAME}
     }
     if artifact_kind == "seeded":
         assert artifact is not None
