@@ -649,9 +649,8 @@ async def test_faulted_or_unchanged_audit_retains_owed_domains_and_serves_siblin
             now=lambda: 0.0,
         )
         await composed.converge_backlog(600.0)
-        if failure != "pending":
-            assert visited == [SESSION_SUMMARY_DOMAIN]
-            await composed.converge_backlog(600.0)
+        assert visited == [SESSION_SUMMARY_DOMAIN]
+        await composed.converge_backlog(600.0)
         assert visited == [
             SESSION_SUMMARY_DOMAIN,
             SESSION_USAGE_ROLLUP_DOMAIN,
@@ -709,3 +708,92 @@ async def test_backlog_cursor_progress_is_bound_to_the_generation_it_walked() ->
     profiles = ComposedSessionProfiles(demand, promoted, cast(Any, None), audit_pass=audit)
     await profiles.converge_backlog(600.0)
     assert consumed == ["index-generation:old", "index-generation:new", "drained"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["fault", "pending"])
+async def test_rotating_unsettled_sweeps_reach_every_domain_tail_and_retry_the_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """The real kernel keeps all four advancing cursors across bounded rotations."""
+    from tests.infra.audit_derivation import install_audit_derivations
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    adapters = install_audit_derivations(monkeypatch, failure)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        reports: list[DerivationReport] = []
+        real_pass = composed.audit_pass
+        assert real_pass is not None
+
+        async def observe(deadline: float) -> DerivationReport | None:
+            report = await real_pass(deadline)
+            if report is not None:
+                reports.append(report)
+            return report
+
+        composed = replace(composed, audit_pass=observe)
+        # Each faulted prefix rotates once; each pending sweep yields at its
+        # terminal tail. Eight scheduled ticks cover four prefixes and tails.
+        for _ in range(8):
+            await composed.converge_backlog(600.0)
+        assert all(adapter.keys[-1] in adapter.inspected for adapter in adapters)
+        assert composed.audit_pending(), "a healthy tail must not certify its unsettled prefix"
+        assert any(report.failed if failure == "fault" else report.pending for report in reports)
+        before = [adapter.pages for adapter in adapters]
+        for adapter in adapters:
+            adapter.failure = None
+        await composed.converge_backlog(600.0)
+        assert not composed.audit_pending()
+        assert all(adapter.pages > previous for adapter, previous in zip(adapters, before, strict=True))
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_new_generation_resets_unsettled_sweep_facts_and_restarts_the_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old partial fault cannot keep a new generation owed or skip its prefix."""
+    from polylogue.daemon import session_profile_composition as composition
+    from tests.infra.audit_derivation import install_audit_derivations
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    adapters = install_audit_derivations(monkeypatch, "fault")
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        report = await composed.converge_backlog(600.0)
+        assert report.failed == 1
+        assert not report.cursor.position(SESSION_SUMMARY_DOMAIN).swept
+        first = adapters[0].prefix_inspections
+        for adapter in adapters:
+            adapter.failure = None
+        real_frame = composition.make_session_profile_frame
+
+        def new_frame(*args: Any, **kwargs: Any) -> DerivationFrame:
+            frame = real_frame(*args, **kwargs)
+            return replace(frame, source_revision=frame.source_revision + ":new-generation")
+
+        monkeypatch.setattr(composition, "make_session_profile_frame", new_frame)
+        await composed.converge_backlog(600.0)
+        assert not composed.audit_pending()
+        assert adapters[0].prefix_inspections > first
+        assert all(adapter.keys[-1] in adapter.inspected for adapter in adapters)
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

@@ -322,11 +322,11 @@ class SessionTranscriptPage:
     offset: int
 
 
+from polylogue.core.errors import SessionNotFoundError as SessionNotFoundError  # noqa: E402
 from polylogue.operations.archive_mutation import MutationBlockedError as MutationBlockedError  # noqa: E402
 from polylogue.operations.archive_mutation import (  # noqa: E402
     MutationTargetVanishedError as MutationTargetVanishedError,
 )
-from polylogue.operations.archive_mutation import SessionNotFoundError as SessionNotFoundError  # noqa: E402
 
 
 def _read_session_transcript_page(

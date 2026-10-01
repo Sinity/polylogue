@@ -14,7 +14,6 @@ vectors after the read, rather than asserting the absence of a call.
 from __future__ import annotations
 
 import sqlite3
-import struct
 from pathlib import Path
 from typing import Protocol
 
@@ -29,8 +28,6 @@ class EmbeddingFetcher(Protocol):
 
 
 from polylogue.storage.search_providers.sqlite_vec_runtime import drop_vec0_for_dimension_change
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 _STORED_DIMENSION = 1024
@@ -39,21 +36,15 @@ _HASH = "a" * 64
 
 
 def _embeddings_db_with_one_vector(tmp_path: Path) -> Path:
-    db_path = tmp_path / "embeddings.db"
-    initialize_archive_database(db_path, ArchiveTier.EMBEDDINGS)
-    conn = sqlite3.connect(db_path)
-    try:
-        loaded, error = try_load_sqlite_vec(conn)
-        if not loaded:
-            pytest.skip(f"sqlite-vec unavailable: {error}")
-        conn.execute(
-            "INSERT INTO message_embeddings (vector_derivation_hash, embedding, model) VALUES (?, ?, ?)",
-            (_HASH, struct.pack(f"<{_STORED_DIMENSION}f", *([0.01] * _STORED_DIMENSION)), "voyage-4"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return db_path
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(
+        tmp_path,
+        [
+            ("dimension", "m1", "Synthetic retained prose for dimension refusal tests.", [0.01] * _STORED_DIMENSION),
+        ],
+    )
+    return tmp_path / "embeddings.db"
 
 
 def _stored_vector_count(db_path: Path) -> int:
@@ -72,7 +63,9 @@ class _MutableSqliteVecProvider(SqliteVecProvider):
 
 
 def _provider(db_path: Path, dimension: int) -> _MutableSqliteVecProvider:
-    provider = _MutableSqliteVecProvider(voyage_key="test-voyage-key", db_path=db_path, model="voyage-4")
+    provider = _MutableSqliteVecProvider(
+        voyage_key="test-voyage-key", db_path=db_path, model="voyage-4", archive_root=db_path.parent
+    )
     provider.dimension = dimension
     provider._get_embeddings = lambda texts, input_type="document": [[0.01] * dimension for _ in texts]
     return provider
@@ -120,7 +113,7 @@ def test_matching_dimension_still_serves_the_read(tmp_path: Path) -> None:
     db_path = _embeddings_db_with_one_vector(tmp_path)
     provider = _provider(db_path, _STORED_DIMENSION)
 
-    assert provider.query("any semantic text") == []
+    assert [message_id for message_id, _ in provider.query("any semantic text")] == ["codex-session:dimension:n:m1"]
     assert _stored_vector_count(db_path) == 1
 
 

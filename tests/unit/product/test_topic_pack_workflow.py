@@ -229,7 +229,7 @@ def test_topic_pack_to_dict_is_json_serializable_for_model_timestamps() -> None:
 @pytest.mark.asyncio
 async def test_topic_pack_reports_a_session_deleted_before_its_window_as_a_gap() -> None:
     """Anti-vacuity: an unhandled SessionNotFoundError from the window fails the whole topic pack."""
-    from polylogue.operations.archive_mutation import SessionNotFoundError
+    from polylogue.core.errors import SessionNotFoundError
 
     class DeletedStore(FakeStore):
         async def read_transcript_window(self, session_id: str, **_kwargs: Any) -> Any:

@@ -12,7 +12,7 @@ from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
-from polylogue.daemon.derivation import Budget, DerivationReport, DomainCursor, Outcome, WorkCounters
+from polylogue.daemon.derivation import Budget, DerivationReport, DomainCursor, Outcome, PassCursor, WorkCounters
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance, make_session_insight_maintenance
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
@@ -40,6 +40,8 @@ class ComposedSessionProfiles:
     #: instant, or ``None`` when the audit has nothing left to sweep or the
     #: instant passed while it waited for the owner.
     audit_pass: Callable[[float], Awaitable[DerivationReport | None]] | None = None
+    #: A completed unsettled sweep yields scheduling without clearing its debt.
+    audit_can_continue: Callable[[], bool] = field(default=lambda: True)
 
     async def __call__(self, scope: Sequence[str] | None) -> DerivationReport:
         return await self.callback(scope)
@@ -70,7 +72,7 @@ class ComposedSessionProfiles:
             report = passed
             # A failed acquisition cannot improve by immediately acquiring the
             # same relation again. The audit keeps it owed for a later tick.
-            if passed.failed:
+            if passed.failed or not self.audit_can_continue():
                 break
             binding = (passed.frame.archive_root, passed.frame.source_revision, dict(passed.frame.recipe_versions))
             if binding != frame_binding:
@@ -148,6 +150,11 @@ def compose_session_profile_callback(
     # new output and are owed again.
     owed_domains = set(audit_domains)
     retried_domains: set[str] = set()
+    # True means the current sweep encountered unsettled work; False keeps
+    # the obligation while its next, wrapped sweep checks the whole domain.
+    unsettled_sweeps: dict[str, bool] = {}
+    audit_binding: tuple[str, str, dict[str, str]] | None = None
+    audit_continue = True
     audit_budget = Budget(discovery=128, inspection=128, compute=64, publication=64, retained_outcomes=64)
     audit_lock = asyncio.Lock()
     audit_index = 0
@@ -155,9 +162,18 @@ def compose_session_profile_callback(
     demand_reset = False
 
     async def audit_tick(deadline_at: float | None = None) -> DerivationReport:
-        nonlocal audit_index, audit_reset, demand_reset
+        nonlocal audit_index, audit_reset, demand_reset, audit_binding, audit_continue
         domain = audit_domains[audit_index]
         frame = make_session_profile_frame(index_path, archive_root=archive_root, scope=None, profile_full_scan=True)
+        binding = (frame.archive_root, frame.source_revision, dict(frame.recipe_versions))
+        if audit_binding is not None and binding != audit_binding:
+            owed_domains.update(audit_domains)
+            retried_domains.clear()
+            unsettled_sweeps.clear()
+            audit_index = 0
+            domain = audit_domains[0]
+            audit_reset = True
+        audit_binding = binding
         report = await owner.converge(
             frame,
             budget=audit_budget if deadline_at is None else replace(audit_budget, deadline_at=deadline_at),
@@ -165,11 +181,15 @@ def compose_session_profile_callback(
             resume=not audit_reset,
         )
         audit_reset = False
+        audit_continue = True
+        if report.failed or report.pending:
+            unsettled_sweeps[domain] = True
         if report.cursor.position(domain).swept or report.failed:
-            if report.pending or report.failed:
+            if report.pending or report.failed or unsettled_sweeps.get(domain, False):
                 retried_domains.add(domain)
             else:
                 owed_domains.discard(domain)
+                unsettled_sweeps.pop(domain, None)
                 if domain in retried_domains:
                     retried_domains.discard(domain)
                     owed_domains.update(audit_domains[audit_index + 1 :])
@@ -179,11 +199,17 @@ def compose_session_profile_callback(
                     for step in range(1, len(audit_domains) + 1)
                     if audit_domains[index := (audit_index + step) % len(audit_domains)] in owed_domains
                 )
-                audit_reset = True
             else:
                 audit_index = len(audit_domains)
                 demand_reset = True
-        return report
+        # A clean tail does not certify an unsettled prefix. Keep the domain
+        # owed until a whole wrapped sweep is clean.
+        if report.cursor.position(domain).swept and domain in unsettled_sweeps:
+            unsettled_sweeps[domain] = False
+            audit_continue = False
+        # The converger retains every domain's cursor. This pass reports only
+        # the domain it ran, so old sibling cursors cannot imply new progress.
+        return replace(report, cursor=PassCursor({domain: report.cursor.position(domain)}))
 
     async def converge(scope: Sequence[str] | None) -> DerivationReport:
         """Converge demanded session work; never the archive-wide audit.
@@ -219,11 +245,13 @@ def compose_session_profile_callback(
             return await audit_tick(deadline_at)
 
     async def converge_promoted() -> DerivationReport:
-        nonlocal audit_index, audit_reset, demand_reset
+        nonlocal audit_index, audit_reset, demand_reset, audit_binding
         async with audit_lock:
             owed_domains.clear()
             owed_domains.update(audit_domains)
             retried_domains.clear()
+            unsettled_sweeps.clear()
+            audit_binding = None
             audit_index = 0
             audit_reset = True
             demand_reset = False
@@ -242,6 +270,7 @@ def compose_session_profile_callback(
         make_session_insight_maintenance(owner, index_db_path=index_path, archive_root=archive_root),
         audit_pending=lambda: audit_index < len(audit_domains),
         audit_pass=audit_pass,
+        audit_can_continue=lambda: audit_continue,
     )
 
 

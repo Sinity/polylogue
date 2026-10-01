@@ -243,13 +243,13 @@ async def test_near_id_seed_without_embeddings_fails_typed(
 
 
 async def test_near_id_without_vector_backend_fails_typed(
-    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]],
+    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive_root, config, mapping = seeded_archive
     seed_id = mapping["seed"][0]
 
-    # No vector provider on the plan and no Voyage key in config -> no backend can
-    # be constructed. This must fail typed rather than broaden to a full listing.
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda *args, **kwargs: None)
+    # An unavailable vector runtime must fail typed rather than broaden the listing.
     plan = SessionQueryPlan(similar_session_id=seed_id)
     with pytest.raises(ExpressionCompileError) as excinfo:
         await list_summaries_archive(plan, archive_root=archive_root, config=config)
@@ -273,10 +273,11 @@ async def test_search_hits_for_plan_resolves_session_seed(
 
 
 async def test_search_hits_for_plan_session_seed_no_backend_fails_typed(
-    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]],
+    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _archive_root, config, mapping = seeded_archive
     seed_id = mapping["seed"][0]
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda *args, **kwargs: None)
 
     plan = SessionQueryPlan(similar_session_id=seed_id)
     with pytest.raises(EmbeddingRetrievalNotReadyError):
@@ -359,3 +360,20 @@ async def test_sorted_semantic_pages_concatenate_the_sorted_candidate_relation(
 
     # The relation is the top 3 x limit ranked candidates, newest first.
     assert served == list(reversed(ranked_sessions[:3]))
+
+
+async def test_near_id_resolves_retained_provider_without_acquisition_key(
+    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring credentials at either seed resolver breaks both read projections."""
+    archive_root, config, mapping = seeded_archive
+    config.embedding_model = "voyage-4"
+    from polylogue.config import PolylogueConfig
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: PolylogueConfig())
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    plan = SessionQueryPlan(similar_session_id=mapping["seed"][0], limit=10)
+    summaries = await list_summaries_archive(plan, archive_root=archive_root, config=config)
+    hits = await search_hits_for_plan(plan, config=config)
+    assert mapping["near"][0] in [str(summary.id) for summary in summaries]
+    assert mapping["near"][0] in [hit.session_id for hit in hits]

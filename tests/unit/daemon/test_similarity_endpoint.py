@@ -47,6 +47,8 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import CheckpointEscalation
+from tests.infra.vector_archive import record_owned_vector_closes, record_similarity_read_closes
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -221,27 +223,6 @@ def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
     return "codex-session:seed", embeddings_db, session_by_message_id
 
 
-def _init_archive() -> None:
-    """Create an empty index.db with the ``sessions`` table only.
-
-    Used by the missing-session cases so the reader routes to the
-    archive path and returns ``None`` (404) for an unknown id.
-    """
-    archive_db = _index_db()
-    archive_db.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(archive_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
-                title TEXT,
-                origin TEXT NOT NULL
-            );
-            """
-        )
-        conn.commit()
-
-
 def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``load_polylogue_config`` to return an embeddings-off config."""
 
@@ -249,6 +230,8 @@ def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Cfg:
         embedding_enabled = False
+        embedding_model = "voyage-4-lite"
+        embedding_dimension = EMBEDDING_DIMENSION
         voyage_api_key: str | None = None
 
     monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
@@ -261,6 +244,8 @@ def _enable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Cfg:
         embedding_enabled = True
+        embedding_model = "voyage-4-lite"
+        embedding_dimension = EMBEDDING_DIMENSION
         voyage_api_key = "test-key"
 
     monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
@@ -280,12 +265,9 @@ def test_confidence_bands_partition_score_space() -> None:
     assert _confidence_for_score(0.0) == "q-heuristic"
 
 
-def test_disabled_reason_distinguishes_failure_modes() -> None:
-    assert _disabled_reason(embedding_enabled=False, voyage_api_key=None) == "embeddings_not_enabled"
-    assert _disabled_reason(embedding_enabled=False, voyage_api_key="k") == "embeddings_not_enabled"
-    assert _disabled_reason(embedding_enabled=True, voyage_api_key=None) == "no_voyage_api_key"
-    assert _disabled_reason(embedding_enabled=True, voyage_api_key="") == "no_voyage_api_key"
-    assert _disabled_reason(embedding_enabled=True, voyage_api_key="key") is None
+def test_disabled_reason_depends_only_on_embedding_policy() -> None:
+    assert _disabled_reason(embedding_enabled=False) == "embeddings_not_enabled"
+    assert _disabled_reason(embedding_enabled=True) is None
 
 
 def test_clamp_limit_bounds_and_defaults() -> None:
@@ -309,7 +291,7 @@ class TestSimilarPayloadStates:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_embeddings(monkeypatch)
-        _init_archive()
+        _seed_ready_similarity_archive()
         assert build_similar_payload("ghost") is None
 
     def test_disabled_envelope_when_embeddings_off(
@@ -324,21 +306,23 @@ class TestSimilarPayloadStates:
         assert result["results"] == []
         assert result["session_id"] == session_id
 
-    def test_disabled_envelope_distinguishes_missing_api_key(
+    def test_missing_api_key_does_not_disable_vector_reads(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import polylogue.daemon.similarity as similarity_mod
 
         class _Cfg:
             embedding_enabled = True
+            embedding_model = "voyage-4-lite"
+            embedding_dimension = EMBEDDING_DIMENSION
             voyage_api_key: str | None = None
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
         session_id = _seed_archive_session("c1")
         result = build_similar_payload(session_id)
         assert result is not None
-        assert result["status"] == "disabled"
-        assert result["reason"] == "no_voyage_api_key"
+        assert result["status"] == "not_embedded"
+        assert result["reason"] is None
 
     def test_not_embedded_envelope_when_session_has_no_vectors(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
@@ -378,6 +362,8 @@ class TestSimilarPayloadStates:
 
         class _Cfg:
             embedding_enabled = True
+            embedding_model = "voyage-4-lite"
+            embedding_dimension = EMBEDDING_DIMENSION
             voyage_api_key = "test-key"
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
@@ -402,7 +388,7 @@ class TestSimilarEndpoint:
 
     def test_missing_session_returns_404(self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         _enable_embeddings(monkeypatch)
-        _init_archive()
+        _seed_ready_similarity_archive()
         handler = _make_handler("GET", "/api/sessions/ghost/similar")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
@@ -493,22 +479,11 @@ class TestSimilarEndpoint:
         _enable_embeddings(monkeypatch)
         seed_session_id, _embeddings_db, _mapping = _seed_ready_similarity_archive()
 
-        # This assertion covers the pre-split compatibility projection: unlike the
-        # managed active-index projection, it can retain a stale reference after
-        # the corresponding index row is deleted.
-        from polylogue.storage import search_providers
-
-        legacy_provider = SqliteVecProvider(
-            voyage_key="test-key",
-            db_path=_embeddings_db,
-            model="voyage-4-lite",
+        # Inject a broken ranking join at the provider seam. Production projection
+        # filters stale vectors; a malformed provider result must still stay typed.
+        monkeypatch.setattr(
+            SqliteVecProvider, "query_by_session", lambda self, session_id, **kwargs: [("orphan-message", 0.1)]
         )
-        monkeypatch.setattr(search_providers, "create_vector_provider", lambda *args, **kwargs: legacy_provider)
-
-        # Break the join the way a reindex would: keep the vectors, drop the rows
-        # they point at.
-        with sqlite3.connect(archive_root() / "index.db") as conn:
-            conn.execute("DELETE FROM messages WHERE session_id != ?", (seed_session_id,))
 
         handler = _make_handler("GET", f"/api/sessions/{seed_session_id}/similar?limit=3")
         _, send_json = _capture_responses(handler)
@@ -552,3 +527,243 @@ class TestSimilarEndpoint:
         assert payload["status"] == "ready"
         actual_session_order = [row["session_id"] for row in payload["results"]]
         assert actual_session_order == expected_session_order
+
+
+@pytest.mark.contract
+def test_retained_vectors_are_queryable_without_acquisition_credentials(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring either credential gate breaks the ordinary HTTP read."""
+    import polylogue.daemon.similarity as similarity_mod
+    from polylogue.config import PolylogueConfig
+
+    config = PolylogueConfig(_data={"embedding_enabled": True})
+    monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: config)
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: config)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    session_id, _, _ = _seed_ready_similarity_archive()
+    preflight_closed = record_similarity_read_closes(monkeypatch)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=3")
+    send_error, send_json = _capture_responses(handler)
+
+    handler.do_GET()
+
+    send_error.assert_not_called()
+    _, payload = send_json.call_args.args
+    assert payload["status"] == "ready"
+    assert payload["source_embedded_messages"] == 1
+    assert [hit["session_id"] for hit in payload["results"]] == ["codex-session:near", "codex-session:far"]
+    assert payload["results"][0]["score"] > 0.98
+    provider_call.assert_not_called()
+    assert preflight_closed == [True]
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize("first_promotion", [False, True])
+def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_generation(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, first_promotion: bool
+) -> None:
+    """Reopening the active index between count and ranking changes this result."""
+    import polylogue.storage.index_generation as generation_module
+    from polylogue.config import PolylogueConfig
+    from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection as original_checkpoint
+
+    config = PolylogueConfig(_data={"embedding_enabled": True})
+    monkeypatch.setattr("polylogue.daemon.similarity.load_polylogue_config", lambda: config)
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: config)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    session_id, _, _ = _seed_ready_similarity_archive()
+    root = archive_root()
+    store = IndexGenerationStore.for_archive_root(root)
+    first = store.create(owner_id="similarity-first", source_snapshot="synthetic-first")
+    with sqlite3.connect(root / "index.db") as source, sqlite3.connect(first.index_path) as target:
+        source.backup(target)
+    if not first_promotion:
+        store.promote(first)
+    second = store.create(owner_id="similarity-second", source_snapshot="synthetic-second")
+    with sqlite3.connect(first.index_path) as source, sqlite3.connect(second.index_path) as target:
+        source.backup(target)
+        target.execute("UPDATE sessions SET title = 'New generation'")
+        target.execute("UPDATE blocks SET text = 'Changed prose without a matching retained vector'")
+    original_count = SqliteVecProvider.count_session_embeddings
+    published: list[Path] = []
+    busy_checkpoints: list[tuple[int, int, int]] = []
+    blocked: list[BaseException] = []
+
+    def checkpoint(
+        connection: sqlite3.Connection, mode: str, *, boundary: CheckpointEscalation
+    ) -> tuple[int, int, int]:
+        result = original_checkpoint(connection, mode, boundary=boundary)
+        if result[0]:
+            busy_checkpoints.append(result)
+        return result
+
+    monkeypatch.setattr(generation_module, "checkpoint_connection", checkpoint)
+    closed = record_owned_vector_closes(monkeypatch)
+
+    def count_and_publish(provider: SqliteVecProvider, seed: str) -> int:
+        count = original_count(provider, seed)
+        try:
+            store.promote(second)
+        except (sqlite3.Error, RuntimeError) as exc:
+            if not (is_transient_sqlite_lock(exc) or busy_checkpoints):
+                raise
+            blocked.append(exc)
+        else:
+            published.append(resolve_active_index_path(root).resolve(strict=True))
+        return count
+
+    monkeypatch.setattr(SqliteVecProvider, "count_session_embeddings", count_and_publish)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=3")
+    send_error, send_json = _capture_responses(handler)
+
+    handler.do_GET()
+
+    send_error.assert_not_called()
+    _, payload = send_json.call_args.args
+    assert len(published) + len(blocked) == 1, payload
+    assert payload["status"] == "ready"
+    assert payload["source_embedded_messages"] == 1
+    assert [(hit["session_id"], hit["title"]) for hit in payload["results"]] == [
+        ("codex-session:near", "Near"),
+        ("codex-session:far", "Far"),
+    ]
+    assert closed == [True]
+    if blocked:
+        store.promote(second)
+        published.append(resolve_active_index_path(root).resolve(strict=True))
+    assert published == [Path(second.index_path)]
+    provider_call.assert_not_called()
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize("failure", ["corrupt", "missing", "projection", "contention", "stale", "runtime"])
+def test_unreadable_retained_vectors_never_certify_absence(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Replacing unavailable failures with not_embedded turns this red."""
+    _enable_embeddings(monkeypatch)
+    session_id, embeddings_db, _ = _seed_ready_similarity_archive()
+    closed = record_owned_vector_closes(monkeypatch)
+    preflight_closed = record_similarity_read_closes(monkeypatch)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    if failure == "runtime":
+        monkeypatch.setattr("polylogue.storage.search_providers._sqlite_vec_available", lambda: False)
+    elif failure == "corrupt":
+        embeddings_db.write_bytes(b"synthetic unreadable database")
+    elif failure == "missing":
+        embeddings_db.unlink()
+    elif failure == "stale":
+        with sqlite3.connect(_index_db()) as conn:
+            conn.execute(
+                "UPDATE blocks SET text = ? WHERE session_id = ?",
+                ("Changed current prose with no retained vector for this recipe.", session_id),
+            )
+    elif failure == "projection":
+        with sqlite3.connect(_index_db()) as conn:
+            conn.execute("DROP TABLE blocks")
+    else:
+        from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
+
+        def unavailable(self: SqliteVecProvider, session_id: str) -> int:
+            raise SqliteVecError("stored vectors could not be read") from sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(SqliteVecProvider, "count_session_embeddings", unavailable)
+    handler = _make_handler("GET", f"/api/sessions/{session_id}/similar")
+    send_error, send_json = _capture_responses(handler)
+
+    handler.do_GET()
+
+    send_error.assert_not_called()
+    _, payload = send_json.call_args.args
+    assert payload["status"] == "unavailable"
+    assert (
+        payload["reason"]
+        == {
+            "corrupt": "embeddings_db_unreadable",
+            "missing": "vec0_table_missing",
+            "projection": "embedding_read_failed",
+            "stale": "embedding_read_failed",
+            "contention": "sqlite_contention",
+            "runtime": "sqlite_vec_not_loaded",
+        }[failure]
+    )
+    assert payload["results"] == []
+    assert closed == ([True] if failure in {"contention", "stale"} else [])
+    provider_call.assert_not_called()
+    assert preflight_closed == ([] if failure in {"missing", "corrupt"} else [True])
+
+
+@pytest.mark.contract
+def test_http_daemon_binds_vector_snapshot_without_acquisition_credentials(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring the HTTP server's key gate removes the machine read binding."""
+    from polylogue.config import PolylogueConfig
+    from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+
+    config = PolylogueConfig(_data={"embedding_enabled": True, "archive_root": str(archive_root())})
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: config)
+    with DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=archive_root()) as server:
+        factory = server.operation_runtime._read_dependencies_factory
+        assert factory is not None
+        binding = factory().vector_binding
+        assert binding is not None
+        assert binding.voyage_key is None
+
+
+@pytest.mark.contract
+def test_similarity_first_publication_checks_seed_on_query_snapshot(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checking existence before opening the vector snapshot gives false not_embedded."""
+    from polylogue import Polylogue
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    _enable_embeddings(monkeypatch)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    session_id, _, _ = _seed_ready_similarity_archive()
+    root = archive_root()
+    store = IndexGenerationStore.for_archive_root(root)
+    successor = store.create(owner_id="similarity-absence", source_snapshot="synthetic-absence")
+    with sqlite3.connect(root / "index.db") as source, sqlite3.connect(successor.index_path) as target:
+        source.backup(target)
+        target.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
+        target.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        target.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+    with sqlite3.connect(root / "embeddings.db") as vectors:
+        assert (
+            vectors.execute(
+                "SELECT COUNT(*) FROM message_embedding_refs WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            == 1
+        )
+    original_query = Polylogue.search_similar_sessions
+    published: list[Path] = []
+
+    async def publish_before_query(archive: Polylogue, seed: str, *, limit: int = 10) -> dict[str, object]:
+        store.promote(successor)
+        published.append(resolve_active_index_path(root).resolve(strict=True))
+        return await original_query(archive, seed, limit=limit)
+
+    monkeypatch.setattr(Polylogue, "search_similar_sessions", publish_before_query)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    closed = record_owned_vector_closes(monkeypatch)
+    handler = _make_handler("GET", f"/api/sessions/{session_id}/similar")
+    send_error, send_json = _capture_responses(handler)
+
+    handler.do_GET()
+
+    assert published == [Path(successor.index_path)]
+    send_error.assert_called_once_with(HTTPStatus.NOT_FOUND, "not_found")
+    send_json.assert_not_called()
+    assert closed == [True]
+    provider_call.assert_not_called()

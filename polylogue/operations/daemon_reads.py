@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 class VectorReadBinding:
     """Pinned configuration needed to bind one supplied vector snapshot."""
 
-    voyage_key: str
+    voyage_key: str | None
     model: str
     dimension: int
 
@@ -79,8 +79,6 @@ def vector_binding_from_config(config: Config) -> VectorReadBinding | None:
 
     index_config = config.index_config
     voyage_key = index_config.voyage_api_key if index_config is not None else None
-    if not voyage_key:
-        return None
     return VectorReadBinding(
         voyage_key=voyage_key,
         model=config.embedding_model,
@@ -362,7 +360,7 @@ def read_is_archive_scan(name: str, payload: Mapping[str, object]) -> bool:
         return False
 
 
-def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
+def requires_vector_snapshot(name: str, payload: Mapping[str, object], *, acquisition_enabled: bool = True) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
     if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
@@ -375,7 +373,9 @@ def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
         # Like ``read_is_archive_scan``: an invalid request is refused by
         # execution with its typed error, never by this pre-dispatch check.
         return False
-    return bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid")
+    return bool(
+        spec.similar_session_id or (acquisition_enabled and (spec.similar_text or spec.retrieval_lane == "hybrid"))
+    )
 
 
 def _params(payload: Mapping[str, object]) -> dict[str, object]:
