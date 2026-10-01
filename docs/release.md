@@ -5,11 +5,13 @@ Polylogue releases are driven by [release-please]
 single open "release PR" that bumps `pyproject.toml`, rolls the `Unreleased`
 heading in `CHANGELOG.md` to `[X.Y.Z] — YYYY-MM-DD`, and updates
 `.release-please-manifest.json`. Merging that PR pushes a signed `vX.Y.Z` tag,
-which triggers [`release.yml`](../.github/workflows/release.yml) to build and
+then explicitly dispatches [`release.yml`](../.github/workflows/release.yml) to build and
 publish the Python distributions to PyPI (Trusted Publishing / OIDC). The same
-tag also triggers [`container.yml`](../.github/workflows/container.yml), which
+release action dispatches [`container.yml`](../.github/workflows/container.yml), which
 builds and publishes the slim and distroless OCI images to
 `ghcr.io/sinity/polylogue`.
+
+Release Please forwards its `tag_name` output as `release_tag` to the Python, container, extension, and Homebrew workflows. It uses the existing `GITHUB_TOKEN` with `actions: write`; no separate release credential is required. GitHub permits this explicit `workflow_dispatch` event even though tag pushes made with that token do not start workflows ([GitHub trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). Each consumer verifies and builds the released tag.
 
 This file is the operator-facing cut-time checklist. The manual procedure
 (see "Manual Fallback" below) is retained only for cases where release-please
@@ -75,7 +77,7 @@ copied profiles, authenticated provider pages, or production archive timings.
 1. Merge the open release PR titled `chore(release): X.Y.Z`. The squash-merge
    commit lands on `master`.
 2. release-please pushes a signed `vX.Y.Z` annotated tag at that commit.
-3. The tag push triggers [`release.yml`](../.github/workflows/release.yml),
+3. Release Please dispatches [`release.yml`](../.github/workflows/release.yml) with that exact tag,
    which runs, in order:
    - `build-and-smoke` — builds wheel + sdist, runs
      `devtools gate distribution`, and verifies PyPI long-description
@@ -100,13 +102,13 @@ copied profiles, authenticated provider pages, or production archive timings.
      as the `signing-artifacts-publish-pypi` workflow artifact.
    - `publish-pypi-mcp` / `publish-pypi-hooks` — sign and publish the wrapper
      distributions for the MCP console script and Claude Code hook sidecar after
-     their installed-smoke jobs pass.
-   - [`container.yml`](../.github/workflows/container.yml) — runs on the same
+     their installed-smoke jobs pass. MCP publication also waits for successful main-package publication because its dependency pins that exact version. The hooks sidecar has no runtime dependencies and publishes independently.
+   - [`container.yml`](../.github/workflows/container.yml) — is dispatched with the same
      tag, builds the runtime and distroless images, emits push-path provenance
      and SBOM attestations through Docker Buildx, and pushes the `:X.Y.Z`,
      `:X.Y`, and `:latest` tag family to `ghcr.io/sinity/polylogue`.
-   - [`homebrew-bump.yml`](../.github/workflows/homebrew-bump.yml) — runs in
-     parallel on the same tag, polls PyPI for the freshly published sdist,
+   - [`homebrew-bump.yml`](../.github/workflows/homebrew-bump.yml) — is dispatched in
+     parallel with the same tag, polls PyPI for the freshly published sdist,
      rewrites `url` / `sha256` / `version` in the formula at
      [`nix/homebrew-tap-template/Formula/polylogue.rb`](../nix/homebrew-tap-template/Formula/polylogue.rb),
      regenerates resource blocks via `brew update-python-resources`, runs

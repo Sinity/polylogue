@@ -1,6 +1,7 @@
 name: Release
 
-# Triggered by pushing an annotated tag matching `vX.Y.Z`. Builds the
+# Dispatched by Release Please with its released tag, or triggered by an
+# independently pushed annotated tag matching `vX.Y.Z`. Builds the
 # wheel + sdist, smokes them through gate distribution on the
 # build host, runs an installed-wheel smoke matrix across supported
 # Python versions on Linux + macOS, signs the artifacts with Sigstore
@@ -450,7 +451,7 @@ jobs:
     # publisher with owner=Sinity, repo=polylogue, workflow=release.yml,
     # environment=pypi-mcp before the first tagged release reaches this job.
     name: publish-pypi-mcp
-    needs: [build, installed-smoke-mcp, sbom]
+    needs: [build, installed-smoke-mcp, sbom, publish-pypi]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest

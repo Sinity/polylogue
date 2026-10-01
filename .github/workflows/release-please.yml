@@ -3,7 +3,8 @@ name: Release Please
 # Watches conventional-commit subjects on `master` and maintains a single
 # open release PR that bumps `pyproject.toml`, updates `CHANGELOG.md`, and
 # tags `vX.Y.Z` on merge. The downstream `release.yml` workflow handles
-# the actual PyPI + GHCR publish on the resulting tag push.
+# the actual PyPI publish. Explicit dispatches below start the tag consumers
+# because GITHUB_TOKEN-created tag pushes do not trigger workflow runs.
 #
 # See docs/release.md for the operator-facing flow.
 
@@ -16,6 +17,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,7 +30,22 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: googleapis/release-please-action@v5
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Dispatch released tag consumers
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        # workflow_dispatch is an explicit GITHUB_TOKEN event exception.
+        # Each consumer checks out and verifies this immutable release tag.
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --ref master -f "release_tag=${RELEASE_TAG}" -f publish=true
+          gh workflow run container.yml --ref master -f "release_tag=${RELEASE_TAG}" -f push=true
+          gh workflow run extension-release.yml --ref master -f "release_tag=${RELEASE_TAG}"
+          gh workflow run homebrew-bump.yml --ref master -f "release_tag=${RELEASE_TAG}"
