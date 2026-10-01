@@ -750,7 +750,7 @@ def test_similarity_first_publication_checks_seed_on_query_snapshot(
 
     async def publish_before_query(archive: Polylogue, seed: str, *, limit: int = 10) -> dict[str, object]:
         store.promote(successor)
-        published.append(resolve_active_index_path(root))
+        published.append(resolve_active_index_path(root).resolve(strict=True))
         return await original_query(archive, seed, limit=limit)
 
     monkeypatch.setattr(Polylogue, "search_similar_sessions", publish_before_query)
