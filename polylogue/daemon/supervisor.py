@@ -254,6 +254,13 @@ class DaemonSupervisor:
             )
 
         task = asyncio.create_task(self._run(spec, factory), name=f"{TASK_NAME_PREFIX}{name}")
+
+        def settle_cancelled(done: asyncio.Task[None]) -> None:
+            # A task cancelled before its first step never enters _run.
+            if done.cancelled():
+                self._settle(spec, ServiceState.STOPPED, reason="cancelled")
+
+        task.add_done_callback(settle_cancelled)
         self._tasks[name] = task
         self._resolve(spec, ServiceState.RUNNING)
 
