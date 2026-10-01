@@ -145,7 +145,7 @@ def read_staging_receipt(
             metadata_identity = _named_identity(directory, name)
         except FileNotFoundError:
             return None
-        root = _named_identity(directory, staged.name)
+        root = _identity(os.stat(staged.name, dir_fd=directory, follow_symlinks=False))
         if root[2] != stat.S_IFDIR:
             raise ValueError("staged receipt requires its private directory slot")
 
