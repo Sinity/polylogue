@@ -83,7 +83,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
             reason="readiness_unreadable",
             path=db_file,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         return _defaults(
             enabled=enabled,

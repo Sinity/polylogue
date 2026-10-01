@@ -203,7 +203,7 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
             reason="archive_readiness_unreadable",
             path=index_db,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         # The readiness query failed: nothing here was measured.  Every
         # sibling key already reports the not-ready value (polylogue-bu47u:
@@ -298,7 +298,7 @@ def _collect_fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, 
             reason="readiness_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         unreadable_reason = f"{type(exc).__name__}: {exc}"
     # The handler records why the read failed; the payload is named once and

@@ -194,7 +194,7 @@ def _read_live_cursor_rows(dbf: Path) -> list[sqlite3.Row | tuple[object, ...]] 
             reason="summary_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         raise _CursorLedgerReadError(f"cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     try:
@@ -219,7 +219,7 @@ def _read_live_cursor_rows(dbf: Path) -> list[sqlite3.Row | tuple[object, ...]] 
             reason="summary_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         raise _CursorLedgerReadError(f"cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     finally:
@@ -238,7 +238,7 @@ def _read_ingest_cursor_rows(ops_db: Path) -> list[sqlite3.Row | tuple[object, .
             reason="ops_archive_unreadable",
             path=ops_db,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         raise _CursorLedgerReadError(f"ops cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     try:
@@ -270,7 +270,7 @@ def _read_ingest_cursor_rows(ops_db: Path) -> list[sqlite3.Row | tuple[object, .
             reason="ops_archive_unreadable",
             path=ops_db,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         raise _CursorLedgerReadError(f"ops cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     finally:
@@ -355,7 +355,7 @@ def _decorate_with_baselines(
             outcome="degraded",
             reason="baseline_decoration_failed",
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         return summary
 

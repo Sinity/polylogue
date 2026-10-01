@@ -290,12 +290,31 @@ def test_returned_fts_failure_stays_unavailable_and_private_on_minimal_status(
         raise sqlite3.OperationalError(diagnostic)
 
     monkeypatch.setattr(fts_status, "open_readonly_connection", fail)
+    # This test examines the returned failed-acquisition payload, after the
+    # real collector has finished; deadline behavior has its own contract tests.
+    import threading
+
+    from polylogue.operations import status_protocol
+
+    registry = fts_status._fts_readiness_registry(index)
+    target_spec = registry.specs[0]
+    completed = threading.Event()
+    run_collector = status_protocol._run_collector
+
+    def observe_completion(spec: object, attempt: object) -> None:
+        run_collector(spec, attempt)  # type: ignore[arg-type]
+        if spec is target_spec:
+            completed.set()
+
+    monkeypatch.setattr(status_protocol, "_run_collector", observe_completion)
+    registry.request_refresh("fts_readiness")
+    completed.wait()
     direct = fts_status.fts_readiness_info(index)
     with patch.object(status_snapshot, "resolve_active_index_path", lambda *_a, **_k: index):
         published = status_snapshot._minimal_status_payload()["fts_readiness"]
     assert isinstance(published, dict)
     for payload in (direct, published):
-        assert payload["inspection_state"] == "unavailable"
+        assert payload["inspection_state"] == "unavailable", payload
         assert payload["messages_ready"] is False
         assert payload["coverage_pct"] is None
         error = str(payload["unavailable_reason"])

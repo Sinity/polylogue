@@ -617,7 +617,7 @@ def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[Catch
             reason="live_stage_events_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         return []
     return [_catchup_stage_event_from_row(row) for row in rows]
@@ -653,7 +653,7 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
             reason="archive_stage_events_unreadable",
             path=ops_db,
             error_type=type(exc).__name__,
-            error_detail=redact_status_error(str(exc)),
+            error_detail=str(exc),
         )
         return []
     return [_archive_catchup_stage_event_from_row(row) for row in rows]
