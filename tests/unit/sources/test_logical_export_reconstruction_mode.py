@@ -1,6 +1,6 @@
 """A logical-export reconstruction is never readable outside the owner.
 
-``open_logical_source`` rebuilds a retained logical export into a temporary
+``logical_source_context`` rebuilds a retained logical export into a temporary
 SQLite file before reading it.  That reconstruction carries every row of the
 export -- for a Hermes ``state.db`` member, the operator's whole conversation
 state -- and it lives under the shared system temporary directory for the
@@ -9,7 +9,7 @@ process umask decides the mode: 0644 under the ordinary 0022, world-readable
 in a shared ``/tmp``.
 
 Anti-vacuity: restore the ``reconstruction.unlink()`` that used to run before
-``materialize_export`` in ``open_logical_source`` -- so SQLite recreates the
+``materialize_export`` in ``logical_source_context`` -- so SQLite recreates the
 pathname instead of reusing the ``mkstemp`` inode -- and the observed mode
 becomes 0o644 and this test fails.
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.sources.sqlite_export as sqlite_export
-from polylogue.sources.sqlite_export import logical_export_bytes, open_logical_source
+from polylogue.sources.sqlite_export import logical_export_bytes, logical_source_context
 
 
 def _source_database(path: Path) -> None:
@@ -54,13 +54,10 @@ def test_reconstructed_export_is_owner_only_while_it_is_materialized(
 
     previous_umask = os.umask(0o022)
     try:
-        conn = open_logical_source(export)
+        with logical_source_context(export) as conn:
+            assert conn.execute("SELECT body FROM secrets").fetchone()[0] == "operator transcript"
     finally:
         os.umask(previous_umask)
-    try:
-        assert conn.execute("SELECT body FROM secrets").fetchone()[0] == "operator transcript"
-    finally:
-        conn.close()
 
     assert observed, "materialize_export was never reached; the reconstruction route did not run"
     mode = observed[0]

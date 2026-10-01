@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from collections import Counter, OrderedDict, defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
@@ -149,6 +149,7 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     NativeSQLCustodyOwner,
+    _close_failed_native_construction,
     open_scratch_connection,
     retained_native_sql_owners_for_lifetime,
 )
@@ -1921,125 +1922,152 @@ def prepare_session_write(
         source_conn=source_conn,
         child_source_path=raw_source_path(source_conn, raw_id),
     )
-    position_offset = _next_message_position(conn, session_id) if merge_append else 0
-    content_occurrence_offsets = _stored_content_occurrences(conn, session_id) if merge_append else {}
-    if (
-        prepared_rows is not None
-        and not merge_append
-        and context.content_identities is None
-        and len(context.messages) == len(normalized.messages)
-        and prepared_rows.session_id == session_id
-        and prepared_rows.session_content_hash == _prepared_session_content_hash(normalized)
-    ):
-        _validated_prepared_content_identities(prepared_rows, context.messages)
-        rows = prepared_rows
-    elif isinstance(context.messages, SqliteMessageSink) or (
-        isinstance(context.messages, _MessageTail) and isinstance(context.messages.messages, SqliteMessageSink)
-    ):
-        source_path = cast(Path, context.messages.path)
-        scratch = tempfile.TemporaryDirectory(prefix="polylogue-prepared-write-", dir=source_path.parent)
-        with ExitStack() as preparation_stack:
-            preparation_stack.enter_context(retain_native_sql_lifetimes(scratch))
-            for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
-                if isinstance(duplicates, _DiskDuplicateNativeIds):
-                    preparation_stack.enter_context(duplicates.reader())
-            builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
+    scratch: tempfile.TemporaryDirectory[str] | None = None
+    prepared_union: _PreparedCrossAcquisitionUnion | None = None
+    try:
+        position_offset = _next_message_position(conn, session_id) if merge_append else 0
+        content_occurrence_offsets = _stored_content_occurrences(conn, session_id) if merge_append else {}
+        if (
+            prepared_rows is not None
+            and not merge_append
+            and context.content_identities is None
+            and len(context.messages) == len(normalized.messages)
+            and prepared_rows.session_id == session_id
+            and prepared_rows.session_content_hash == _prepared_session_content_hash(normalized)
+        ):
+            _validated_prepared_content_identities(prepared_rows, context.messages)
+            rows = prepared_rows
+        elif isinstance(context.messages, SqliteMessageSink) or (
+            isinstance(context.messages, _MessageTail) and isinstance(context.messages.messages, SqliteMessageSink)
+        ):
+            source_path = cast(Path, context.messages.path)
+            scratch = tempfile.TemporaryDirectory(prefix="polylogue-prepared-write-", dir=source_path.parent)
+            with ExitStack() as preparation_stack:
+                preparation_stack.enter_context(retain_native_sql_lifetimes(scratch))
+                for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
+                    if isinstance(duplicates, _DiskDuplicateNativeIds):
+                        preparation_stack.enter_context(duplicates.reader())
+                builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
+                try:
+                    with (
+                        nullcontext(context.content_identities)
+                        if context.content_identities is not None
+                        else disk_message_content_identities(
+                            context.messages, occurrence_offsets=content_occurrence_offsets
+                        )
+                    ) as identities:
+                        builder.add_streamed(
+                            session_id=session_id,
+                            session_content_hash=_prepared_session_content_hash(normalized),
+                            message_rows=_iter_message_rows(
+                                session_id,
+                                context.messages,
+                                position_offset=position_offset,
+                                duplicate_native_ids=context.duplicate_native_ids,
+                                content_identities=identities,
+                            ),
+                            block_rows=_iter_block_rows(
+                                session_id,
+                                context.messages,
+                                position_offset=position_offset,
+                                duplicate_native_ids=context.duplicate_native_ids,
+                                content_identities=identities,
+                            ),
+                        )
+                    shard = open_session_shard(builder.seal().path)
+                except BaseException as primary:
+                    try:
+                        builder.abandon()
+                    except BaseException as cleanup:
+                        raise cleanup from primary
+                    raise
+            entry = shard.sessions[0]
+            rows = PreparedSessionRows(
+                session_id=session_id,
+                session_content_hash=entry.session_content_hash,
+                message_rows=_ShardRowSequence(
+                    shard.path, "messages", entry.message_lo, entry.message_hi, lifetime=scratch
+                ),
+                block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
+                content_identities=entry.content_identities,
+                position_offset=position_offset,
+                content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
+                scratch=scratch,
+            )
+        else:
+            content_identities = (
+                context.content_identities
+                if context.content_identities is not None
+                else message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
+            )
+            rows = PreparedSessionRows(
+                session_id=session_id,
+                session_content_hash=_prepared_session_content_hash(normalized),
+                message_rows=tuple(
+                    _build_message_rows(
+                        session_id,
+                        context.messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=context.duplicate_native_ids,
+                        content_identities=content_identities,
+                    )
+                ),
+                block_rows=tuple(
+                    _build_block_rows(
+                        session_id,
+                        context.messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=context.duplicate_native_ids,
+                        content_identities=content_identities,
+                    )
+                ),
+                content_identities=tuple(content_identities),
+                position_offset=position_offset,
+                content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
+            )
+        prepared_union = None
+        if raw_id is not None and not merge_append and not force_replace:
+            union_source_path = getattr(context.messages, "path", None)
+            directory = union_source_path.parent if isinstance(union_source_path, Path) else Path(tempfile.gettempdir())
+            prepared_union = _prepare_cross_acquisition_union(
+                conn,
+                session_id,
+                rows,
+                raw_id=raw_id,
+                directory=directory,
+            )
+        return PreparedSessionWrite(
+            session_id=session_id,
+            input_content_hash=rows.session_content_hash,
+            merge_append=merge_append,
+            context=context,
+            rows=rows,
+            cross_acquisition_union=prepared_union,
+        )
+    except BaseException as primary:
+        failures: list[BaseException] = []
+        if prepared_union is not None and prepared_union.carry_forward.scratch is not None:
             try:
-                with (
-                    nullcontext(context.content_identities)
-                    if context.content_identities is not None
-                    else disk_message_content_identities(
-                        context.messages, occurrence_offsets=content_occurrence_offsets
-                    )
-                ) as identities:
-                    builder.add_streamed(
-                        session_id=session_id,
-                        session_content_hash=_prepared_session_content_hash(normalized),
-                        message_rows=_iter_message_rows(
-                            session_id,
-                            context.messages,
-                            position_offset=position_offset,
-                            duplicate_native_ids=context.duplicate_native_ids,
-                            content_identities=identities,
-                        ),
-                        block_rows=_iter_block_rows(
-                            session_id,
-                            context.messages,
-                            position_offset=position_offset,
-                            duplicate_native_ids=context.duplicate_native_ids,
-                            content_identities=identities,
-                        ),
-                    )
-                shard = open_session_shard(builder.seal().path)
-            except BaseException:
-                builder.abandon()
+                prepared_union.carry_forward.scratch.close()
+            except BaseException as failure:
+                failures.append(failure)
+        if scratch is not None:
+            try:
                 pending = retained_native_sql_owners_for_lifetime(scratch)
-                if not pending:
-                    scratch.cleanup()
-                raise
-        entry = shard.sessions[0]
-        rows = PreparedSessionRows(
-            session_id=session_id,
-            session_content_hash=entry.session_content_hash,
-            message_rows=_ShardRowSequence(
-                shard.path, "messages", entry.message_lo, entry.message_hi, lifetime=scratch
-            ),
-            block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
-            content_identities=entry.content_identities,
-            position_offset=position_offset,
-            content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
-            scratch=scratch,
-        )
-    else:
-        content_identities = (
-            context.content_identities
-            if context.content_identities is not None
-            else message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
-        )
-        rows = PreparedSessionRows(
-            session_id=session_id,
-            session_content_hash=_prepared_session_content_hash(normalized),
-            message_rows=tuple(
-                _build_message_rows(
-                    session_id,
-                    context.messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=context.duplicate_native_ids,
-                    content_identities=content_identities,
-                )
-            ),
-            block_rows=tuple(
-                _build_block_rows(
-                    session_id,
-                    context.messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=context.duplicate_native_ids,
-                    content_identities=content_identities,
-                )
-            ),
-            content_identities=tuple(content_identities),
-            position_offset=position_offset,
-            content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
-        )
-    prepared_union = None
-    if raw_id is not None and not merge_append and not force_replace:
-        union_source_path = getattr(context.messages, "path", None)
-        directory = union_source_path.parent if isinstance(union_source_path, Path) else Path(tempfile.gettempdir())
-        prepared_union = _prepare_cross_acquisition_union(
-            conn,
-            session_id,
-            rows,
-            raw_id=raw_id,
-            directory=directory,
-        )
-    return PreparedSessionWrite(
-        session_id=session_id,
-        input_content_hash=rows.session_content_hash,
-        merge_append=merge_append,
-        context=context,
-        rows=rows,
-        cross_acquisition_union=prepared_union,
-    )
+                if pending:
+                    raise NativeConnectionSettlementError(
+                        pending[0], RuntimeError("prepared row construction remains owned")
+                    )
+                scratch.cleanup()
+            except BaseException as failure:
+                failures.append(failure)
+        try:
+            context.close()
+        except BaseException as failure:
+            failures.append(failure)
+        if failures:
+            raise PreparedSessionSettlementError(failures) from primary
+        raise
 
 
 def prepared_session_rows_from_shard(shard_path: Path, session_id: str) -> PreparedSessionRows:
@@ -2141,10 +2169,13 @@ def prepare_session_shard(directory: Path, sessions: Sequence[ParsedSession]) ->
     try:
         for session in sessions:
             append_session_to_shard(builder, session)
-    except BaseException:
-        builder.abandon()
+        return open_session_shard(builder.seal().path)
+    except BaseException as primary:
+        try:
+            builder.abandon()
+        except BaseException as cleanup:
+            raise cleanup from primary
         raise
-    return open_session_shard(builder.seal().path)
 
 
 def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession) -> None:
@@ -4802,54 +4833,70 @@ def _iter_file_edit_rows(
     content_identities: Sequence[MessageContentIdentity],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-) -> Iterator[tuple[object, ...]]:
+) -> Generator[tuple[object, ...], None, None]:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
-    disk_index = _DiskMessageEventIndex(source.path.parent) if isinstance(source, SqliteMessageSink) else None
-    tool_use_block_id_by_tool_id: dict[str, str] | _DiskMessageEventIndex = disk_index if disk_index is not None else {}
-    for fallback_position, message in enumerate(messages):
-        message_id = _message_id(
-            session_id,
-            message,
-            fallback_position,
-            content_identities=content_identities,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for position, block in enumerate(_message_blocks(message)):
-            if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
-                tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
-
-    for fallback_position, message in enumerate(messages):
-        message_id = _message_id(
-            session_id,
-            message,
-            fallback_position,
-            content_identities=content_identities,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for block in _message_blocks(message):
-            file_edit = getattr(block, "file_edit", None)
-            if file_edit is None or not block.tool_id:
-                continue
-            tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
-            if tool_use_block_id is None:
-                continue
-            yield (
-                tool_use_block_id,
+    disk_index = _DiskSourceMessageIds(source.path.parent) if isinstance(source, SqliteMessageSink) else None
+    tool_use_block_id_by_tool_id: dict[str, str] | _DiskSourceMessageIds = disk_index if disk_index is not None else {}
+    try:
+        for fallback_position, message in enumerate(messages):
+            message_id = _message_id(
                 session_id,
-                message_id,
-                _sqlite_text(file_edit.file_path),
-                _json_dumps(file_edit.structured_patch) if file_edit.structured_patch is not None else None,
-                _sqlite_text(file_edit.original_file),
-                _sqlite_text(file_edit.old_string),
-                _sqlite_text(file_edit.new_string),
-                _sqlite_bool(file_edit.replace_all),
-                _sqlite_bool(file_edit.user_modified),
-                message.occurred_at_ms
-                if message.occurred_at_ms is not None
-                else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
+                message,
+                fallback_position,
+                content_identities=content_identities,
+                duplicate_native_ids=duplicate_native_ids,
             )
-    if disk_index is not None:
-        disk_index.close()
+            for position, block in enumerate(_message_blocks(message)):
+                if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
+                    tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
+        if disk_index is not None:
+            disk_index.finish()
+
+        def pending_edits() -> Iterator[tuple[str, ParsedMessage, ParsedContentBlock]]:
+            for fallback_position, message in enumerate(messages):
+                message_id = _message_id(
+                    session_id,
+                    message,
+                    fallback_position,
+                    content_identities=content_identities,
+                    duplicate_native_ids=duplicate_native_ids,
+                )
+                for block in _message_blocks(message):
+                    if block.file_edit is not None and block.tool_id:
+                        yield message_id, message, block
+
+        pending = pending_edits()
+        while batch := list(islice(pending, 512)):
+            rows: list[tuple[object, ...]] = []
+            with disk_index.reader() if disk_index is not None else nullcontext():
+                for message_id, message, block in batch:
+                    file_edit = block.file_edit
+                    assert file_edit is not None and block.tool_id is not None
+                    tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
+                    if tool_use_block_id is None:
+                        continue
+                    rows.append(
+                        (
+                            tool_use_block_id,
+                            session_id,
+                            message_id,
+                            _sqlite_text(file_edit.file_path),
+                            _json_dumps(file_edit.structured_patch) if file_edit.structured_patch is not None else None,
+                            _sqlite_text(file_edit.original_file),
+                            _sqlite_text(file_edit.old_string),
+                            _sqlite_text(file_edit.new_string),
+                            _sqlite_bool(file_edit.replace_all),
+                            _sqlite_bool(file_edit.user_modified),
+                            message.occurred_at_ms
+                            if message.occurred_at_ms is not None
+                            else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
+                        )
+                    )
+            # No generator-owned SQLite handle remains live at this boundary.
+            yield from rows
+    finally:
+        if disk_index is not None:
+            disk_index.close()
 
 
 def _write_file_edits(
@@ -4868,16 +4915,19 @@ def _write_file_edits(
         duplicate_native_ids=duplicate_native_ids,
         content_identities=content_identities,
     )
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO file_edits (
-            tool_use_block_id, session_id, message_id, file_path,
-            structured_patch_json, original_file, old_string, new_string,
-            replace_all, user_modified, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
+    try:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO file_edits (
+                tool_use_block_id, session_id, message_id, file_path,
+                structured_patch_json, original_file, old_string, new_string,
+                replace_all, user_modified, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    finally:
+        rows.close()
 
 
 def _write_session_refs(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
@@ -5221,41 +5271,51 @@ class _UnionScratch:
         self._reader_owner: NativeSQLCustodyOwner | None = None
         self._owner: NativeSQLCustodyOwner | None = None
         self._conn: sqlite3.Connection | None = None
-        self._owner = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        try:
+            self._owner = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
         assert self._owner.connection is not None
         self._conn = self._owner.connection
-        for name in ("old_message", "new_message", "old_block", "new_block", "merged_message", "merged_block"):
+        try:
+            for name in ("old_message", "new_message", "old_block", "new_block", "merged_message", "merged_block"):
+                self.conn.execute(
+                    f"CREATE TABLE {name} (ordinal INTEGER PRIMARY KEY, key TEXT, owner TEXT, position INTEGER, row_blob BLOB NOT NULL)"
+                )
+                self.conn.execute(f"CREATE INDEX {name}_key ON {name}(key)")
+                self.conn.execute(f"CREATE INDEX {name}_owner ON {name}(owner, position)")
+            self.conn.execute("CREATE TABLE live_message (message_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute("CREATE TABLE block_remap (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) WITHOUT ROWID")
+            self.conn.execute("CREATE TABLE message_remap (old_id TEXT PRIMARY KEY, new_id TEXT) WITHOUT ROWID")
             self.conn.execute(
-                f"CREATE TABLE {name} (ordinal INTEGER PRIMARY KEY, key TEXT, owner TEXT, position INTEGER, row_blob BLOB NOT NULL)"
+                "CREATE TABLE native_message (native_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
             )
-            self.conn.execute(f"CREATE INDEX {name}_key ON {name}(key)")
-            self.conn.execute(f"CREATE INDEX {name}_owner ON {name}(owner, position)")
-        self.conn.execute("CREATE TABLE live_message (message_id TEXT PRIMARY KEY) WITHOUT ROWID")
-        self.conn.execute("CREATE TABLE block_remap (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) WITHOUT ROWID")
-        self.conn.execute("CREATE TABLE message_remap (old_id TEXT PRIMARY KEY, new_id TEXT) WITHOUT ROWID")
-        self.conn.execute(
-            "CREATE TABLE native_message (native_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
-        )
-        self.conn.execute(
-            "CREATE TABLE old_only (anchor TEXT, old_ordinal INTEGER, native_id TEXT PRIMARY KEY) WITHOUT ROWID"
-        )
-        self.conn.execute("CREATE INDEX old_only_anchor ON old_only(anchor, old_ordinal)")
-        for name in (
-            "attachment_refs",
-            "attachment_native_ids",
-            "paste_spans",
-            "file_edits",
-            "web_content_constructs",
-            "provider_usage_events",
-        ):
-            self.conn.execute(f"CREATE TABLE captured_{name} (ordinal INTEGER PRIMARY KEY, row_blob BLOB NOT NULL)")
-        self.conn.execute("CREATE TABLE restored_attachment_ref (ref_id TEXT PRIMARY KEY) WITHOUT ROWID")
-        self.conn.execute(
-            "CREATE TABLE captured_attachment_owner (attachment_id TEXT NOT NULL, message_id TEXT NOT NULL)"
-        )
-        self.conn.execute("CREATE INDEX captured_attachment_owner_id ON captured_attachment_owner(attachment_id)")
-        self.conn.execute("CREATE TABLE refresh_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
-        self.conn.execute("CREATE TABLE carried_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute(
+                "CREATE TABLE old_only (anchor TEXT, old_ordinal INTEGER, native_id TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            self.conn.execute("CREATE INDEX old_only_anchor ON old_only(anchor, old_ordinal)")
+            for name in (
+                "attachment_refs",
+                "attachment_native_ids",
+                "paste_spans",
+                "file_edits",
+                "web_content_constructs",
+                "provider_usage_events",
+            ):
+                self.conn.execute(f"CREATE TABLE captured_{name} (ordinal INTEGER PRIMARY KEY, row_blob BLOB NOT NULL)")
+            self.conn.execute("CREATE TABLE restored_attachment_ref (ref_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute(
+                "CREATE TABLE captured_attachment_owner (attachment_id TEXT NOT NULL, message_id TEXT NOT NULL)"
+            )
+            self.conn.execute("CREATE INDEX captured_attachment_owner_id ON captured_attachment_owner(attachment_id)")
+            self.conn.execute("CREATE TABLE refresh_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            self.conn.execute("CREATE TABLE carried_attachment (attachment_id TEXT PRIMARY KEY) WITHOUT ROWID")
+        except BaseException as primary:
+            self._owner.scratch_directory = self._scratch
+            _close_failed_native_construction(self._owner, primary)
+            self.close()
+            raise
 
     def put(
         self,
@@ -6610,8 +6670,11 @@ def _prepare_cross_acquisition_union(
             )
             with retain_native_sql_lifetimes(scratch):
                 shard = open_session_shard(builder.seal().path)
-        except BaseException:
-            builder.abandon()
+        except BaseException as primary:
+            try:
+                builder.abandon()
+            except BaseException as cleanup:
+                raise cleanup from primary
             raise
         entry = shard.sessions[0]
         rows = PreparedSessionRows(
@@ -6623,8 +6686,11 @@ def _prepare_cross_acquisition_union(
         )
         scratch.finish()
         return _PreparedCrossAcquisitionUnion(predecessor, parent_guard, rows, carry)
-    except BaseException:
-        scratch.close()
+    except BaseException as primary:
+        try:
+            scratch.close()
+        except BaseException as cleanup:
+            raise cleanup from primary
         raise
 
 
@@ -9480,166 +9546,170 @@ def _write_session_events(
 ) -> SessionEventWriteResult:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     disk_index = _DiskMessageEventIndex(source.path.parent) if isinstance(source, SqliteMessageSink) else None
-    by_native_id: dict[str, str] | _DiskMessageEventIndex = disk_index if disk_index is not None else {}
-    for fallback_position, message in enumerate(messages):
-        message_id = _message_id(
-            session_id,
-            message,
-            fallback_position,
-            content_identities=content_identities,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        if disk_index is not None:
-            effective_position = message.position if message.position is not None else fallback_position
-            disk_index.add_boundary(effective_position, message_id)
-        if (
-            message.provider_message_id
-            and _normalized_message_native_id(message) not in duplicate_native_ids
-            and _normalized_message_native_id(message) not in ambiguous_source_provider_ids
-        ):
-            by_native_id[message.provider_message_id] = message_id
-    wrote_provider_usage_events = False
-    position = event_position_offset
-    session_event_rows: list[tuple[object, ...]] = []
-    agent_policy_rows: list[tuple[object, ...]] = []
-    # polylogue-cuxz.11: the Codex wire restates the whole policy on every
-    # turn_context, so a row per observation made this table a change-log of
-    # non-changes -- 402,869 rows carrying 3,053 distinct facts across 3,031
-    # sessions, 99.3% of which never changed policy at all. Only a genuine
-    # value change is retained; `position` still marks where the retained
-    # value took effect, so a row is the START of an interval that runs until
-    # the next row.
-    last_agent_policy = _last_agent_policy_values(conn, session_id)
-    provider_usage_rows: list[tuple[object, ...]] = []
+    try:
+        by_native_id: dict[str, str] | _DiskMessageEventIndex = disk_index if disk_index is not None else {}
+        for fallback_position, message in enumerate(messages):
+            message_id = _message_id(
+                session_id,
+                message,
+                fallback_position,
+                content_identities=content_identities,
+                duplicate_native_ids=duplicate_native_ids,
+            )
+            if disk_index is not None:
+                effective_position = message.position if message.position is not None else fallback_position
+                disk_index.add_boundary(effective_position, message_id)
+            if (
+                message.provider_message_id
+                and _normalized_message_native_id(message) not in duplicate_native_ids
+                and _normalized_message_native_id(message) not in ambiguous_source_provider_ids
+            ):
+                by_native_id[message.provider_message_id] = message_id
+        wrote_provider_usage_events = False
+        position = event_position_offset
+        session_event_rows: list[tuple[object, ...]] = []
+        agent_policy_rows: list[tuple[object, ...]] = []
+        # polylogue-cuxz.11: the Codex wire restates the whole policy on every
+        # turn_context, so a row per observation made this table a change-log of
+        # non-changes -- 402,869 rows carrying 3,053 distinct facts across 3,031
+        # sessions, 99.3% of which never changed policy at all. Only a genuine
+        # value change is retained; `position` still marks where the retained
+        # value took effect, so a row is the START of an interval that runs until
+        # the next row.
+        last_agent_policy = _last_agent_policy_values(conn, session_id)
+        provider_usage_rows: list[tuple[object, ...]] = []
 
-    def _flush_rows() -> None:
-        if session_event_rows:
-            conn.executemany(
-                "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
-                "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
-                "boundary_start_position, boundary_end_position, boundary_message_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                session_event_rows,
-            )
-            session_event_rows.clear()
-        if agent_policy_rows:
-            conn.executemany(
-                "INSERT OR REPLACE INTO session_agent_policies (session_id, source_message_id, "
-                "position, approval_policy, sandbox_policy, network_policy, observed_at_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                agent_policy_rows,
-            )
-            agent_policy_rows.clear()
-        if provider_usage_rows:
-            conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
-            provider_usage_rows.clear()
+        def _flush_rows() -> None:
+            if session_event_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
+                    "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
+                    "boundary_start_position, boundary_end_position, boundary_message_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    session_event_rows,
+                )
+                session_event_rows.clear()
+            if agent_policy_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO session_agent_policies (session_id, source_message_id, "
+                    "position, approval_policy, sandbox_policy, network_policy, observed_at_ms) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    agent_policy_rows,
+                )
+                agent_policy_rows.clear()
+            if provider_usage_rows:
+                conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
+                provider_usage_rows.clear()
 
-    for event in events:
-        source_message_provider_id = event.source_message_provider_id
-        if (
-            inherited_source_message_ids is not None
-            and source_message_provider_id is not None
-            and source_message_provider_id in inherited_source_message_ids
-        ):
-            continue
-        source_message_id = by_native_id.get(source_message_provider_id or "")
-        if source_message_id is None and inherited_source_message_ids is not None:
-            source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
-        if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
-            boundary_message_id = None
-            if event.boundary_message_position is not None:
-                if disk_index is not None:
-                    boundary_message_id = disk_index.boundary_message_id(event.boundary_message_position)
-                else:
-                    for fallback_position, message in enumerate(messages):
-                        # Parsers may leave ``position`` unset; the ordinal is then
-                        # the message's position, exactly as ``_message_id`` derives it.
-                        effective_position = message.position if message.position is not None else fallback_position
-                        if effective_position == event.boundary_message_position:
-                            boundary_message_id = _message_id(
-                                session_id,
-                                message,
-                                fallback_position,
-                                content_identities=content_identities,
-                                duplicate_native_ids=duplicate_native_ids,
-                            )
-                            break
-            session_event_rows.append(
-                (
-                    session_id,
-                    source_message_id,
-                    _sqlite_text(source_message_provider_id),
-                    position,
-                    _sqlite_text(event.event_type),
-                    _json_dumps(_stored_event_payload(event, sidecar_blob_locators)),
-                    to_epoch_ms(event.timestamp, numeric_unit="seconds"),
-                    event.boundary_start_position + position_offset
-                    if event.boundary_start_position is not None
-                    else None,
-                    event.boundary_end_position + position_offset if event.boundary_end_position is not None else None,
-                    boundary_message_id,
-                ),
-            )
-        if event.event_type == "agent_policy":
-            # Every field keeps its named producer: approval/sandbox/network
-            # all come from this payload, and ``source_message_id`` is the
-            # resolved message the observation was attached to (its partial
-            # index and prefix-delete clear path live in
-            # ``clear_session_agent_policies_source_message_sql``). Nothing is
-            # dropped for having been constant in one census; what is dropped
-            # is the restatement of an unchanged value.
-            policy_values = (
-                _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
-                _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
-                _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
-            )
-            if policy_values != last_agent_policy:
-                last_agent_policy = policy_values
-                agent_policy_rows.append(
+        for event in events:
+            source_message_provider_id = event.source_message_provider_id
+            if (
+                inherited_source_message_ids is not None
+                and source_message_provider_id is not None
+                and source_message_provider_id in inherited_source_message_ids
+            ):
+                continue
+            source_message_id = by_native_id.get(source_message_provider_id or "")
+            if source_message_id is None and inherited_source_message_ids is not None:
+                source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
+            if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
+                boundary_message_id = None
+                if event.boundary_message_position is not None:
+                    if disk_index is not None:
+                        boundary_message_id = disk_index.boundary_message_id(event.boundary_message_position)
+                    else:
+                        for fallback_position, message in enumerate(messages):
+                            # Parsers may leave ``position`` unset; the ordinal is then
+                            # the message's position, exactly as ``_message_id`` derives it.
+                            effective_position = message.position if message.position is not None else fallback_position
+                            if effective_position == event.boundary_message_position:
+                                boundary_message_id = _message_id(
+                                    session_id,
+                                    message,
+                                    fallback_position,
+                                    content_identities=content_identities,
+                                    duplicate_native_ids=duplicate_native_ids,
+                                )
+                                break
+                session_event_rows.append(
                     (
                         session_id,
                         source_message_id,
+                        _sqlite_text(source_message_provider_id),
                         position,
-                        *policy_values,
+                        _sqlite_text(event.event_type),
+                        _json_dumps(_stored_event_payload(event, sidecar_blob_locators)),
                         to_epoch_ms(event.timestamp, numeric_unit="seconds"),
+                        event.boundary_start_position + position_offset
+                        if event.boundary_start_position is not None
+                        else None,
+                        event.boundary_end_position + position_offset
+                        if event.boundary_end_position is not None
+                        else None,
+                        boundary_message_id,
                     ),
                 )
-        elif event.event_type in {"token_count", "message_usage"}:
-            # polylogue-1pzmq: an event whose declared provider message id
-            # resolves to no row here used to be dropped outright. The
-            # commonest cause is not a malformed export but a deliberate
-            # writer decision: a provider id duplicated within the session is
-            # excluded from ``by_native_id`` because those messages get
-            # content-derived ids, so every usage event attached to them
-            # vanished. The usage is still real evidence about this session;
-            # record it with its declared provider id and a typed statement of
-            # what the attribution actually is.
-            declared_provider_id = _sqlite_text(event.source_message_provider_id)
-            declared_provider_id = declared_provider_id.strip() if declared_provider_id else None
-            resolution = _provider_usage_source_resolution(
-                declared_provider_id,
-                source_message_id=source_message_id,
-                ambiguous_source_provider_ids=ambiguous_source_provider_ids,
-                duplicate_native_ids=duplicate_native_ids,
-            )
-            row = _provider_usage_event_row(
-                session_id,
-                source_message_id,
-                position,
-                event,
-                source_message_provider_id=declared_provider_id,
-                source_message_resolution=resolution,
-            )
-            if _provider_usage_event_has_evidence(event, row):
-                provider_usage_rows.append(row)
-                wrote_provider_usage_events = True
-        position += 1
-        if max(len(session_event_rows), len(agent_policy_rows), len(provider_usage_rows)) >= 128:
-            _flush_rows()
-    _flush_rows()
-    if disk_index is not None:
-        disk_index.close()
-    return SessionEventWriteResult(wrote_provider_usage_events=wrote_provider_usage_events)
+            if event.event_type == "agent_policy":
+                # Every field keeps its named producer: approval/sandbox/network
+                # all come from this payload, and ``source_message_id`` is the
+                # resolved message the observation was attached to (its partial
+                # index and prefix-delete clear path live in
+                # ``clear_session_agent_policies_source_message_sql``). Nothing is
+                # dropped for having been constant in one census; what is dropped
+                # is the restatement of an unchanged value.
+                policy_values = (
+                    _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
+                    _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
+                    _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
+                )
+                if policy_values != last_agent_policy:
+                    last_agent_policy = policy_values
+                    agent_policy_rows.append(
+                        (
+                            session_id,
+                            source_message_id,
+                            position,
+                            *policy_values,
+                            to_epoch_ms(event.timestamp, numeric_unit="seconds"),
+                        ),
+                    )
+            elif event.event_type in {"token_count", "message_usage"}:
+                # polylogue-1pzmq: an event whose declared provider message id
+                # resolves to no row here used to be dropped outright. The
+                # commonest cause is not a malformed export but a deliberate
+                # writer decision: a provider id duplicated within the session is
+                # excluded from ``by_native_id`` because those messages get
+                # content-derived ids, so every usage event attached to them
+                # vanished. The usage is still real evidence about this session;
+                # record it with its declared provider id and a typed statement of
+                # what the attribution actually is.
+                declared_provider_id = _sqlite_text(event.source_message_provider_id)
+                declared_provider_id = declared_provider_id.strip() if declared_provider_id else None
+                resolution = _provider_usage_source_resolution(
+                    declared_provider_id,
+                    source_message_id=source_message_id,
+                    ambiguous_source_provider_ids=ambiguous_source_provider_ids,
+                    duplicate_native_ids=duplicate_native_ids,
+                )
+                row = _provider_usage_event_row(
+                    session_id,
+                    source_message_id,
+                    position,
+                    event,
+                    source_message_provider_id=declared_provider_id,
+                    source_message_resolution=resolution,
+                )
+                if _provider_usage_event_has_evidence(event, row):
+                    provider_usage_rows.append(row)
+                    wrote_provider_usage_events = True
+            position += 1
+            if max(len(session_event_rows), len(agent_policy_rows), len(provider_usage_rows)) >= 128:
+                _flush_rows()
+        _flush_rows()
+        return SessionEventWriteResult(wrote_provider_usage_events=wrote_provider_usage_events)
+    finally:
+        if disk_index is not None:
+            disk_index.close()
 
 
 class _DiskMessageEventIndex(Mapping[str, str]):
@@ -9653,8 +9723,15 @@ class _DiskMessageEventIndex(Mapping[str, str]):
             Path(self._scratch.name) / "owners.db", scratch_directory=self._scratch, lifetime_dependencies=(self,)
         )
         assert self._sql_owner.connection is not None
-        self._conn.execute("CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID")
-        self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
+        try:
+            self._conn.execute(
+                "CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
+            )
+            self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
+        except BaseException as primary:
+            _close_failed_native_construction(self._sql_owner, primary)
+            self.close()
+            raise
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -10964,52 +11041,10 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
 # inherited only inside the matching leading run, so a genuinely-new block that
 # happens to equal a parent block is never dropped.
 
-_SIG_FIELD_SEP = "\x1f"
-_SIG_BLOCK_SEP = "\x1e"
-
-
-def _canonical_json(value: object) -> str:
-    """Stable JSON for signature comparison; accepts a value or a JSON string."""
-    if value is None:
-        return "null"
-    parsed: object = value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError):
-            return value
-    try:
-        return json.dumps(parsed, sort_keys=True, separators=(",", ":"), default=str)
-    except (TypeError, ValueError):
-        return str(parsed)
-
-
-def _message_signature_from_blocks(role: str, block_fields: list[tuple[str, str, str, str]]) -> str:
-    parts = [role]
-    for block_type, text, tool_name, tool_input in block_fields:
-        parts.append(_SIG_FIELD_SEP.join((block_type, text, tool_name, tool_input)))
-    return hashlib.sha256(_SIG_BLOCK_SEP.join(parts).encode("utf-8", "surrogatepass")).hexdigest()
-
 
 def _parsed_message_signature(message: ParsedMessage) -> str:
-    role = _enum_value(message.role) or ""
-    fields: list[tuple[str, str, str, str]] = []
-    for block in _message_blocks(message):
-        # Serialize tool_input through the same `_json_dumps` the writer uses to
-        # store it, then canonicalize — so the parsed-side signature matches the
-        # DB-side signature (which canonicalizes the stored JSON string). Calling
-        # `_canonical_json` on the raw value would mis-handle scalar strings, which
-        # it treats as JSON to re-parse (#2467 audit M6).
-        tool_input = _canonical_json(_json_dumps(block.tool_input)) if block.tool_input is not None else "null"
-        fields.append(
-            (
-                _block_type(block).value,
-                block.text or "",
-                block.tool_name or "",
-                tool_input,
-            )
-        )
-    return _message_signature_from_blocks(role, fields)
+    """Align prefixes with the same complete witness that authorizes inheritance."""
+    return _message_content_address(message).hex()
 
 
 def _is_acompact_native_id(native_id: str) -> bool:
@@ -11118,47 +11153,14 @@ def _db_claude_acompact_branch_type(conn: sqlite3.Connection, session_id: str) -
 
 
 def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[str, str]]:
-    """Return ``[(message_id, signature), ...]`` for ``session_id``'s OWN stored
-    message rows (no inherited prefix). This is the expensive SQL+SHA-256 leg of
-    composition; it depends only on the session's own rows, so it can be memoized
-    per ingest batch and invalidated whenever those rows change."""
-    own_rows = conn.execute(
-        """
-        SELECT m.message_id, m.position, m.variant_index, m.role,
-               b.block_type, b.text, b.tool_name, b.tool_input
-        FROM messages m
-        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
-        WHERE m.session_id = ?
-        ORDER BY m.position, m.variant_index, b.position
-        """,
-        (session_id,),
-    ).fetchall()
-    own: list[tuple[str, str]] = []
-    cur_id: str | None = None
-    cur_role = ""
-    cur_blocks: list[tuple[str, str, str, str]] = []
-
-    def flush() -> None:
-        if cur_id is not None:
-            own.append((cur_id, _message_signature_from_blocks(cur_role, cur_blocks)))
-
-    for message_id, _position, _variant_index, role, block_type, text, tool_name, tool_input in own_rows:
-        if message_id != cur_id:
-            flush()
-            cur_id = message_id
-            cur_role = role or ""
-            cur_blocks = []
-        if block_type is not None:
-            cur_blocks.append(
-                (
-                    block_type,
-                    text or "",
-                    tool_name or "",
-                    _canonical_json(tool_input) if tool_input is not None else "null",
-                )
-            )
-    flush()
-    return own
+    """Return complete semantic witnesses for this session's own stored rows."""
+    return [
+        (str(message_id), bytes(address).hex())
+        for message_id, address in conn.execute(
+            "SELECT message_id, content_address FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+            (session_id,),
+        )
+    ]
 
 
 def _iter_own_db_signatures(
@@ -11167,12 +11169,10 @@ def _iter_own_db_signatures(
 ) -> Iterator[tuple[str, str]]:
     cursor = conn.execute(
         """
-        SELECT m.message_id, m.role, b.block_type, b.text, b.tool_name, b.tool_input
-        FROM messages AS m
-        LEFT JOIN blocks AS b ON b.session_id = m.session_id AND b.message_id = m.message_id
-        WHERE m.session_id = ?
-          AND (? IS NULL OR m.position < ? OR (m.position = ? AND m.variant_index <= ?))
-        ORDER BY m.position, m.variant_index, b.position
+        SELECT message_id, content_address FROM messages
+        WHERE session_id = ?
+          AND (? IS NULL OR position < ? OR (position = ? AND variant_index <= ?))
+        ORDER BY position, variant_index
         """,
         (
             segment.session_id,
@@ -11182,27 +11182,8 @@ def _iter_own_db_signatures(
             segment.upto_variant_index,
         ),
     )
-    current_id: str | None = None
-    current_role = ""
-    blocks: list[tuple[str, str, str, str]] = []
-    for message_id, role, block_type, body, tool_name, tool_input in cursor:
-        if message_id != current_id:
-            if current_id is not None:
-                yield current_id, _message_signature_from_blocks(current_role, blocks)
-            current_id = str(message_id)
-            current_role = role or ""
-            blocks = []
-        if block_type is not None:
-            blocks.append(
-                (
-                    str(block_type),
-                    body or "",
-                    tool_name or "",
-                    _canonical_json(tool_input) if tool_input is not None else "null",
-                )
-            )
-    if current_id is not None:
-        yield current_id, _message_signature_from_blocks(current_role, blocks)
+    for message_id, address in cursor:
+        yield str(message_id), bytes(address).hex()
 
 
 class _DiskSignatureSequence(Sequence[tuple[str, str]]):
@@ -11213,13 +11194,23 @@ class _DiskSignatureSequence(Sequence[tuple[str, str]]):
         self._path = Path(self._scratch.name) / "signatures.db"
         self._reader_owner: NativeSQLCustodyOwner | None = None
         self._writer: NativeSQLCustodyOwner | None = None
-        self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        try:
+            self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
         assert self._writer.connection is not None
         self._conn: sqlite3.Connection | None = self._writer.connection
-        self._connection().execute(
-            "CREATE TABLE signature (ordinal INTEGER PRIMARY KEY, message_id TEXT NOT NULL, digest TEXT NOT NULL)"
-        )
-        self._count = 0
+        try:
+            self._connection().execute(
+                "CREATE TABLE signature (ordinal INTEGER PRIMARY KEY, message_id TEXT NOT NULL, digest TEXT NOT NULL)"
+            )
+            self._count = 0
+        except BaseException as primary:
+            self._writer.scratch_directory = self._scratch
+            _close_failed_native_construction(self._writer, primary)
+            self.close()
+            raise
 
     def append(self, message_id: str, digest: str) -> None:
         self._connection().execute("INSERT INTO signature VALUES (?, ?, ?)", (self._count, message_id, digest))
@@ -11366,12 +11357,20 @@ def _disk_composed_db_signatures(
     opened_snapshot = not conn.in_transaction
     if opened_snapshot:
         conn.execute("BEGIN DEFERRED")
+    result: _DiskSignatureSequence | None = None
     try:
         result = _DiskSignatureSequence(directory)
         for message_id, digest, _owner in _iter_composed_rows(conn, session_id):
             result.append(message_id, digest)
         result.finish()
         return result
+    except BaseException as primary:
+        if result is not None:
+            try:
+                result.close()
+            except BaseException as cleanup:
+                raise cleanup from primary
+        raise
     finally:
         if opened_snapshot:
             conn.execute("ROLLBACK")
@@ -13581,23 +13580,35 @@ def _extract_prefix_tail(
     inherited_refs: dict[str, str] | _DiskSourceMessageIds = (
         _DiskSourceMessageIds(source.path.parent) if isinstance(source, SqliteMessageSink) else {}
     )
-    with ExitStack() as prefix_stack:
+    try:
+        with ExitStack() as prefix_stack:
+            if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
+                prefix_stack.enter_context(duplicate_native_ids.reader())
+            if isinstance(parent_composed, _DiskSignatureSequence):
+                prefix_stack.enter_context(parent_composed.reader())
+            for index, (message, (parent_message_id, _signature)) in enumerate(
+                zip(messages, parent_composed, strict=False)
+            ):
+                if index >= k:
+                    break
+                provider_id = message.provider_message_id
+                if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
+                    inherited_refs[provider_id] = parent_message_id
+        if isinstance(inherited_refs, _DiskSourceMessageIds):
+            inherited_refs.finish()
         if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
-            prefix_stack.enter_context(duplicate_native_ids.reader())
-        if isinstance(parent_composed, _DiskSignatureSequence):
-            prefix_stack.enter_context(parent_composed.reader())
-        for index, (message, (parent_message_id, _signature)) in enumerate(
-            zip(messages, parent_composed, strict=False)
-        ):
-            if index >= k:
-                break
-            provider_id = message.provider_message_id
-            if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
-                inherited_refs[provider_id] = parent_message_id
-    if isinstance(inherited_refs, _DiskSourceMessageIds):
-        inherited_refs.finish()
-    if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
-        duplicate_native_ids.close()
+            duplicate_native_ids.close()
+    except BaseException as primary:
+        failures: list[BaseException] = []
+        for artifact in (inherited_refs, duplicate_native_ids):
+            if isinstance(artifact, (_DiskSourceMessageIds, _DiskDuplicateNativeIds)):
+                try:
+                    artifact.close()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+        if failures:
+            raise PreparedSessionSettlementError(failures) from primary
+        raise
     return (
         branch_point_message_id,
         "prefix-sharing",
@@ -13618,12 +13629,22 @@ class _DiskSourceMessageIds(Mapping[str, str]):
         self._path = Path(self._scratch.name) / "refs.db"
         self._reader_owner: NativeSQLCustodyOwner | None = None
         self._writer: NativeSQLCustodyOwner | None = None
-        self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        try:
+            self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
         assert self._writer.connection is not None
         self._conn: sqlite3.Connection | None = self._writer.connection
-        self._connection().execute(
-            "CREATE TABLE refs (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
-        )
+        try:
+            self._connection().execute(
+                "CREATE TABLE refs (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
+            )
+        except BaseException as primary:
+            self._writer.scratch_directory = self._scratch
+            _close_failed_native_construction(self._writer, primary)
+            self.close()
+            raise
 
     def __setitem__(self, key: str, value: str) -> None:
         self._connection().execute("INSERT OR REPLACE INTO refs VALUES (?, ?)", (key, value))
@@ -14544,7 +14565,11 @@ class _DiskDuplicateNativeIds(frozenset[str]):
         self._writer: NativeSQLCustodyOwner | None = None
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-duplicate-ids-", dir=directory)
         self._path = Path(self._scratch.name) / "native-ids.db"
-        self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        try:
+            self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            raise
         assert self._writer.connection is not None
         try:
             conn = self._writer.connection
@@ -14558,10 +14583,9 @@ class _DiskDuplicateNativeIds(frozenset[str]):
                     )
             conn.commit()
         except BaseException as primary:
-            try:
-                self.close()
-            except BaseException as cleanup:
-                primary.add_note(f"duplicate-id construction cleanup also failed: {cleanup}")
+            self._writer.scratch_directory = self._scratch
+            _close_failed_native_construction(self._writer, primary)
+            self.close()
             raise
         self._writer.close()
         self._writer = None

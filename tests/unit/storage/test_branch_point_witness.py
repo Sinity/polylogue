@@ -269,3 +269,31 @@ class TestBranchPointWitness:
             assert _composed(conn, child_id) == (["m0", "m1", "x"], True, None)
         finally:
             conn.close()
+
+
+def test_initial_child_semantic_difference_is_never_discarded_as_a_parent_prefix(tmp_path: Path) -> None:
+    """A complete witness must authorize alignment before any child row is dropped."""
+    from polylogue.pipeline.ids import message_semantic_content_address
+
+    for kind in ("metadata", "file_edit", "web_constructs"):
+        root = tmp_path / kind
+        root.mkdir()
+        connection = _connect(root / "index.db")
+        try:
+            parent = _witness_session("parent", extra_kind=kind, extra_value="parent")
+            child = _witness_session("child", extra_kind=kind, extra_value="child", parent="parent")
+            write_fixture_index_session(connection, parent)
+            child_id = write_fixture_index_session(connection, child)
+            connection.commit()
+            edge = connection.execute(
+                "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?", (child_id,)
+            ).fetchone()
+            assert edge[0] == "codex-session:parent:n:m0"
+            row = connection.execute(
+                "SELECT content_address FROM messages WHERE session_id = ? AND native_id = 'm1'", (child_id,)
+            ).fetchone()
+            assert bytes(row[0]) == message_semantic_content_address(child.messages[1])
+            assert bytes(row[0]) != message_semantic_content_address(parent.messages[1])
+            assert _composed(connection, child_id) == (["m0", "m1", "x"], True, None)
+        finally:
+            connection.close()

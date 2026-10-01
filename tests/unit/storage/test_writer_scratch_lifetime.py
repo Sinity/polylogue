@@ -202,3 +202,204 @@ def test_settled_failed_writer_can_release_its_artifact_on_the_consumer(
         consumer.submit(artifact.close).result()
     assert not directory.exists()
     assert retained_native_sql_owners_for_lifetime(artifact) == ()
+
+
+@pytest.mark.parametrize(
+    "kind", ["prefix", "signatures", "union", "event", "duplicates", "projection", "prepared", "shard"]
+)
+@pytest.mark.parametrize("failed_close", [False, True])
+def test_artifact_constructor_ddl_failure_settles_or_exposes_its_actual_owner(
+    kind: str, failed_close: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+    from polylogue.pipeline.ids import _DiskRevisionStore
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+    from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShardBuilder
+
+    class DDLHandle(SettlementHandle):
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            if sql.lstrip().startswith("CREATE"):
+                raise LookupError("synthetic artifact DDL refusal")
+            return self.connection.execute(sql, *args, **kwargs)
+
+    actual_connect = sqlite3.connect
+    handles: list[DDLHandle] = []
+
+    def constructor_connection(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        handle = DDLHandle(actual_connect(*args, **kwargs))
+        if not failed_close:
+            handle.allow_cleanup.set()
+        handles.append(handle)
+        return cast(sqlite3.Connection, handle)
+
+    monkeypatch.setattr(sqlite3, "connect", constructor_connection)
+    scratch = tempfile.TemporaryDirectory(dir=tmp_path)
+    directory = Path(scratch.name)
+    constructors = {
+        "prefix": lambda: write._DiskSourceMessageIds(directory),
+        "signatures": lambda: write._DiskSignatureSequence(directory),
+        "union": lambda: write._UnionScratch(directory),
+        "event": lambda: write._DiskMessageEventIndex(directory),
+        "duplicates": lambda: write._DiskDuplicateNativeIds((), directory),
+        "projection": lambda: _DiskRevisionStore(directory),
+        "prepared": lambda: SqliteMessageStore(directory / "prepared.db"),
+        "shard": lambda: SessionShardBuilder(directory / "shard.db"),
+    }
+    with retain_native_sql_lifetimes(scratch):
+        if failed_close:
+            with pytest.raises(NativeConnectionSettlementError) as failure:
+                constructors[kind]()
+            owner = failure.value.owner
+            assert isinstance(failure.value.__cause__, LookupError)
+            assert retained_native_sql_owners_for_lifetime(scratch) == (owner,)
+            assert directory.is_dir()
+            handles[0].allow_cleanup.set()
+            if owner._terminal_parent is not None:
+                owner._terminal_parent.close()
+            else:
+                owner.close()
+        else:
+            with pytest.raises(LookupError):
+                constructors[kind]()
+    assert len(handles) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        handles[0].connection.execute("SELECT 1")
+    assert retained_native_sql_owners_for_lifetime(scratch) == ()
+    scratch.cleanup()
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("kind", ["duplicates", "shard_population", "shard_seal"])
+@pytest.mark.parametrize("failed_close", [False, True])
+def test_population_and_sealing_failure_settles_or_exposes_the_actual_scratch_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, failed_close: bool
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write_shard import build_session_shard
+
+    class SealHandle(SettlementHandle):
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            if kind == "shard_seal" and sql.startswith("INSERT INTO shard_seal"):
+                raise LookupError("synthetic seal refusal")
+            return self.connection.execute(sql, *args, **kwargs)
+
+    actual_connect = sqlite3.connect
+    handles: list[SealHandle] = []
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        handle = SealHandle(actual_connect(*args, **kwargs))
+        if not failed_close:
+            handle.allow_cleanup.set()
+        handles.append(handle)
+        return cast(sqlite3.Connection, handle)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    def broken_messages():
+        yield ParsedMessage(provider_message_id="one", role=Role.USER, text="neutral")
+        raise LookupError("synthetic population refusal")
+
+    def build() -> None:
+        if kind == "duplicates":
+            write._DiskDuplicateNativeIds(broken_messages(), tmp_path)
+        elif kind == "shard_population":
+            build_session_shard(tmp_path, [object()])
+        else:
+            build_session_shard(tmp_path, [])
+
+    primary = AttributeError if kind == "shard_population" else LookupError
+    if failed_close:
+        with pytest.raises(NativeConnectionSettlementError) as failure:
+            build()
+        owner = failure.value.owner
+        assert isinstance(failure.value.__cause__, primary)
+        assert owner in retained_native_sql_owners_on_current_thread()
+        handles[0].allow_cleanup.set()
+        if owner._terminal_parent is not None:
+            owner._terminal_parent.close()
+        else:
+            owner.close()
+    else:
+        with pytest.raises(primary):
+            build()
+    assert retained_native_sql_owners_on_current_thread() == ()
+    assert list(tmp_path.iterdir()) == []
+    with pytest.raises(sqlite3.ProgrammingError):
+        handles[0].connection.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("failure_kind", ["locator", "flush"])
+def test_session_event_population_failure_closes_the_disk_owner_index(tmp_path: Path, failure_kind: str) -> None:
+    from polylogue.pipeline.ids import message_content_identities
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+
+    store = SqliteMessageStore(tmp_path / "messages.db")
+    sink = store.new_sink()
+    sink.append(ParsedMessage(provider_message_id="one", role=Role.USER, text="neutral"))
+    store.conn.commit()
+    store.close()
+    messages = SqliteMessageSink(store.path, 0, count=1)
+    destination = sqlite3.connect(":memory:")
+    try:
+        destination.execute(
+            "CREATE TABLE session_agent_policies (session_id TEXT, position INTEGER, "
+            "approval_policy TEXT, sandbox_policy TEXT, network_policy TEXT)"
+        )
+        event = ParsedSessionEvent(event_type="claude_tool_result_sidecar", payload={"tool_use_id": "one"})
+        locators = {"one": {"undeclared": "value"}} if failure_kind == "locator" else None
+        expected = ValueError if failure_kind == "locator" else sqlite3.OperationalError
+        with pytest.raises(expected):
+            write._write_session_events(
+                destination,
+                "session",
+                messages,
+                [event],
+                content_identities=message_content_identities(messages),
+                sidecar_blob_locators=locators,
+            )
+        assert retained_native_sql_owners_on_current_thread() == ()
+        assert list(tmp_path.glob("polylogue-event-owners-*")) == []
+    finally:
+        destination.close()
+
+
+def test_file_edit_iteration_transfers_closed_pages_and_settles_abandoned_artifact(tmp_path: Path) -> None:
+    from polylogue.core.enums import BlockType
+    from polylogue.pipeline.ids import message_content_identities
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit
+    from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+
+    store = SqliteMessageStore(tmp_path / "messages.db")
+    sink = store.new_sink()
+    for ordinal in range(700):
+        tool_id = f"edit-{ordinal}"
+        sink.append(
+            ParsedMessage(
+                provider_message_id=f"message-{ordinal}",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(type=BlockType.TOOL_USE, tool_id=tool_id, tool_name="Edit", tool_input={}),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id=tool_id,
+                        file_edit=ParsedFileEdit(file_path="neutral.py", old_string="before", new_string="after"),
+                    ),
+                ],
+            )
+        )
+    store.conn.commit()
+    store.close()
+    messages = SqliteMessageSink(store.path, 0, count=700)
+    identities = message_content_identities(messages)
+    rows = write._iter_file_edit_rows("session", messages, content_identities=identities)
+    assert next(rows)[3] == "neutral.py"
+    assert retained_native_sql_owners_on_current_thread() == ()
+    with ThreadPoolExecutor(max_workers=1) as consumer:
+        assert consumer.submit(lambda: len(list(rows))).result() == 699
+        abandoned = write._iter_file_edit_rows("session", messages, content_identities=identities)
+        assert next(abandoned)[3] == "neutral.py"
+        assert retained_native_sql_owners_on_current_thread() == ()
+        consumer.submit(abandoned.close).result()
+    assert list(tmp_path.glob("polylogue-prefix-refs-*")) == []

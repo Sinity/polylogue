@@ -181,7 +181,12 @@ def _shard_connection(path: Path, *, readonly: bool = True) -> Iterator[sqlite3.
     owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield owner.require_connection()
-    finally:
+    except BaseException as primary:
+        from polylogue.storage.sqlite.connection_profile import _close_failed_native_construction
+
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
         owner.close()
 
 
@@ -201,19 +206,26 @@ class SessionShardBuilder:
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
         NativeSQLCustodyOwner(self._conn, terminal_parent=self, lifetime_dependencies=current_native_sql_lifetimes())
-        # A shard is scratch: it is read once, by one process, and deleted.
-        # Its durability is the source file it was parsed from, so paying for
-        # synchronous writes here would buy nothing the re-parse does not.
-        self._conn.execute("PRAGMA synchronous = OFF")
-        self._conn.execute("PRAGMA journal_mode = DELETE")
-        for table in SHARD_TABLES:
-            self._conn.execute(shard_table_ddl(table))
-        self._conn.execute(_SEAL_DDL)
-        self._conn.execute(_SESSION_DDL)
-        self._conn.execute("CREATE INDEX shard_session_id ON shard_session(session_id)")
-        self._next_rowid = dict.fromkeys(SHARD_TABLES, 1)
-        self._session_count = 0
-        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            # A shard is scratch: it is read once, by one process, and deleted.
+            # Its durability is the source file it was parsed from, so paying for
+            # synchronous writes here would buy nothing the re-parse does not.
+            self._conn.execute("PRAGMA synchronous = OFF")
+            self._conn.execute("PRAGMA journal_mode = DELETE")
+            for table in SHARD_TABLES:
+                self._conn.execute(shard_table_ddl(table))
+            self._conn.execute(_SEAL_DDL)
+            self._conn.execute(_SESSION_DDL)
+            self._conn.execute("CREATE INDEX shard_session_id ON shard_session(session_id)")
+            self._next_rowid = dict.fromkeys(SHARD_TABLES, 1)
+            self._session_count = 0
+            self._conn.execute("BEGIN IMMEDIATE")
+        except BaseException as primary:
+            try:
+                self.abandon()
+            except BaseException as cleanup:
+                raise cleanup from primary
+            raise
 
     def add(self, prepared: object) -> None:
         """Append one session's prepared rows.
@@ -337,10 +349,13 @@ def build_session_shard(directory: Path, prepared_sessions: Sequence[object]) ->
     try:
         for prepared in prepared_sessions:
             builder.add(prepared)
-    except BaseException:
-        builder.abandon()
+        return builder.seal()
+    except BaseException as primary:
+        try:
+            builder.abandon()
+        except BaseException as cleanup:
+            raise cleanup from primary
         raise
-    return builder.seal()
 
 
 #: Identity rows one random-access read fetches. Writers index the sequence

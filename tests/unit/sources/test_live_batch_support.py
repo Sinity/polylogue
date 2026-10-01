@@ -468,7 +468,7 @@ def test_append_capability_receipt_is_keyed_to_live_identity_contract(
         assert payload["reason"] is None
 
 
-from polylogue.sources.sqlite_export import open_logical_source
+from polylogue.sources.sqlite_export import logical_source_context
 from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -1737,7 +1737,7 @@ def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_c
     with sqlite3.connect(tmp_path / "source.db") as conn:
         blob_hash = str(conn.execute("SELECT hex(blob_hash) FROM raw_sessions").fetchone()[0]).lower()
     retained = BlobStore(tmp_path / "blob").blob_path(blob_hash)
-    with closing(open_logical_source(retained)) as export:
+    with logical_source_context(retained) as export:
         assert export.execute(f"SELECT value FROM {declared_table}").fetchall() == [("must survive",)]
 
 

@@ -32,8 +32,8 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.watcher import LiveWatcher
 from polylogue.sources.origin_specs import database_capability_for_provider
 from polylogue.sources.sqlite_export import (
+    logical_source_context,
     looks_like_logical_export_path,
-    open_logical_source,
 )
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
@@ -394,7 +394,7 @@ def test_the_retained_material_is_the_declared_logical_export(tmp_path: Path) ->
         "projects",
         "project_roots",
     }
-    with closing(open_logical_source(blob)) as conn:
+    with logical_source_context(blob) as conn:
         assert list(conn.execute("SELECT id, title FROM threads")) == [("t-1", "Curated")]
         assert list(conn.execute("SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges")) == [
             ("t-1", "t-2", "closed")
@@ -446,7 +446,7 @@ def test_an_export_round_trips_every_storage_class(tmp_path: Path) -> None:
 
     export = tmp_path / "export.jsonl"
     export.write_bytes(sqlite_export.logical_export_bytes(source))
-    with closing(open_logical_source(export)) as conn:
+    with logical_source_context(export) as conn:
         conn.text_factory = bytes
         rebuilt = {
             bytes(row[0]).decode(): (row[1], type(row[1]).__name__) for row in conn.execute("SELECT kind, value FROM v")
@@ -507,7 +507,7 @@ def test_wal_source_with_an_uncommitted_writer_snapshots_committed_state_only(tm
 
     blob = store.blob_path(snapshot.blob_hash)
     assert looks_like_logical_export_path(blob), "the retained material is the export, never a page image"
-    with closing(open_logical_source(blob)) as conn:
+    with logical_source_context(blob) as conn:
         ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
     assert ids == {"session-0", "session-1"}
     assert retained_content_revision(blob, snapshot.blob_hash) == snapshot.source_revision
@@ -545,7 +545,7 @@ def test_a_commit_during_the_export_cannot_enter_it(tmp_path: Path) -> None:
     assert sink.committed, "sanity: the racing commit ran while the export was streaming"
     export = tmp_path / "export.jsonl"
     export.write_bytes(bytes(sink.buffer))
-    with closing(open_logical_source(export)) as conn:
+    with logical_source_context(export) as conn:
         ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
     assert ids == {"session-0", "session-1"}
 
@@ -586,7 +586,7 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
         snapshot = snapshot_sqlite_to_blob(source, store)
 
         assert committed
-        with closing(open_logical_source(store.blob_path(snapshot.blob_hash))) as conn:
+        with logical_source_context(store.blob_path(snapshot.blob_hash)) as conn:
             assert list(conn.execute("SELECT title FROM threads")) == [("old-0",)]
 
         current_stat = source.stat()
@@ -1043,12 +1043,12 @@ def test_a_read_index_hint_is_built_in_the_reconstruction_and_answers_the_scan(t
     export = tmp_path / "export.jsonl"
     export.write_bytes(sqlite_export.logical_export_bytes(source))
 
-    with closing(open_logical_source(export)) as unhinted:
+    with logical_source_context(export) as unhinted:
         unhinted_rows = list(unhinted.execute("SELECT id, session_id, body FROM messages ORDER BY id"))
         unhinted_indexes = _index_definitions(unhinted)
         unhinted_plan = _per_session_plan(unhinted)
 
-    with closing(open_logical_source(export, read_indexes=_MESSAGE_READ_HINT)) as hinted:
+    with logical_source_context(export, read_indexes=_MESSAGE_READ_HINT) as hinted:
         hinted_rows = list(hinted.execute("SELECT id, session_id, body FROM messages ORDER BY id"))
         hinted_indexes = _index_definitions(hinted)
         hinted_plan = _per_session_plan(hinted)
@@ -1069,7 +1069,7 @@ def test_a_read_index_hint_never_touches_a_live_database(tmp_path: Path) -> None
     """A hint is honoured only for the private reconstruction.
 
     Anti-vacuity: move the ``read_indexes`` handling out of the export branch
-    of ``open_logical_source`` into a statement executed on every connection
+    of ``logical_source_context`` into a statement executed on every connection
     and the operator's own file grows an index -- a write against a source the
     archive only ever reads.
     """
@@ -1079,7 +1079,7 @@ def test_a_read_index_hint_never_touches_a_live_database(tmp_path: Path) -> None
     with closing(sqlite3.connect(source)) as observer:
         before_master = observer.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
 
-    with closing(open_logical_source(source, read_indexes=_MESSAGE_READ_HINT)) as conn:
+    with logical_source_context(source, read_indexes=_MESSAGE_READ_HINT) as conn:
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 12
         assert _index_definitions(conn) == {}
 
@@ -1095,7 +1095,7 @@ def test_a_read_index_hint_naming_an_absent_table_or_column_is_ignored(tmp_path:
     Reporting an unsupported shape stays the parser's job, so a hint that
     does not apply must not turn the open into a failure. Anti-vacuity: drop
     the membership test in ``materialize_export`` and each of these hints
-    raises ``sqlite3.OperationalError`` out of ``open_logical_source``.
+    raises ``sqlite3.OperationalError`` out of ``logical_source_context``.
     """
     source = tmp_path / "state.db"
     _write_message_source(source)
@@ -1108,7 +1108,7 @@ def test_a_read_index_hint_naming_an_absent_table_or_column_is_ignored(tmp_path:
         ("messages", ("session_id", "thread_id")),
         ("messages", ()),
     )
-    with closing(open_logical_source(export, read_indexes=hints)) as conn:
+    with logical_source_context(export, read_indexes=hints) as conn:
         assert _index_definitions(conn) == {}
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 12
 
@@ -1138,7 +1138,7 @@ def test_the_reconstruction_does_not_reproduce_source_collation(tmp_path: Path) 
 
     export = tmp_path / "export.jsonl"
     export.write_bytes(sqlite_export.logical_export_bytes(source))
-    with closing(open_logical_source(export)) as rebuilt:
+    with logical_source_context(export) as rebuilt:
         rebuilt_matches = [str(row[0]) for row in rebuilt.execute("SELECT note FROM people WHERE name = 'ABC'")]
         stated = [
             str(row[0])

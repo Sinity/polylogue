@@ -1348,7 +1348,12 @@ def _prepared_reader(path: Path) -> Iterator[sqlite3.Connection]:
     owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield owner.require_connection()
-    finally:
+    except BaseException as primary:
+        from polylogue.storage.sqlite.connection_profile import _close_failed_native_construction
+
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
         owner.close()
 
 
@@ -1381,26 +1386,32 @@ class SqliteMessageStore:
         self._sql_owner = NativeSQLCustodyOwner(
             self.conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self)
         )
-        self.conn.execute("PRAGMA journal_mode = DELETE")
-        # The schema is created inside the store's one transaction: as separate
-        # autocommit statements each CREATE paid its own journal and fsync, per
-        # prepared artifact, before any row was spooled.
-        self.conn.execute("BEGIN IMMEDIATE")
-        self.conn.execute(
-            "CREATE TABLE prepared_message (session_ordinal INTEGER NOT NULL, message_ordinal INTEGER NOT NULL, message_json TEXT NOT NULL, provider_id TEXT, parent_id TEXT, active_leaf INTEGER NOT NULL, PRIMARY KEY (session_ordinal, message_ordinal)) WITHOUT ROWID"
-        )
-        self.conn.execute(
-            "CREATE INDEX prepared_message_provider ON prepared_message(session_ordinal, provider_id, message_ordinal)"
-        )
-        self.conn.execute(
-            "CREATE TABLE prepared_event (session_ordinal INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL, sort_tier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_ordinal, event_ordinal)) WITHOUT ROWID"
-        )
-        self.conn.execute(
-            "CREATE TABLE prepared_attachment (session_ordinal INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_json TEXT NOT NULL, PRIMARY KEY (session_ordinal, attachment_ordinal)) WITHOUT ROWID"
-        )
-        self._next_session_ordinal = 0
-        self._next_event_ordinal = 0
-        self._next_attachment_ordinal = 0
+        try:
+            self.conn.execute("PRAGMA journal_mode = DELETE")
+            # The schema is created inside the store's one transaction: as separate
+            # autocommit statements each CREATE paid its own journal and fsync, per
+            # prepared artifact, before any row was spooled.
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute(
+                "CREATE TABLE prepared_message (session_ordinal INTEGER NOT NULL, message_ordinal INTEGER NOT NULL, message_json TEXT NOT NULL, provider_id TEXT, parent_id TEXT, active_leaf INTEGER NOT NULL, PRIMARY KEY (session_ordinal, message_ordinal)) WITHOUT ROWID"
+            )
+            self.conn.execute(
+                "CREATE INDEX prepared_message_provider ON prepared_message(session_ordinal, provider_id, message_ordinal)"
+            )
+            self.conn.execute(
+                "CREATE TABLE prepared_event (session_ordinal INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL, sort_tier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_ordinal, event_ordinal)) WITHOUT ROWID"
+            )
+            self.conn.execute(
+                "CREATE TABLE prepared_attachment (session_ordinal INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_json TEXT NOT NULL, PRIMARY KEY (session_ordinal, attachment_ordinal)) WITHOUT ROWID"
+            )
+            self._next_session_ordinal = 0
+            self._next_event_ordinal = 0
+            self._next_attachment_ordinal = 0
+        except BaseException as primary:
+            from polylogue.storage.sqlite.connection_profile import _close_failed_native_construction
+
+            _close_failed_native_construction(self._sql_owner, primary)
+            raise
 
     def new_sink(self) -> SqliteMessageSink:
         sink = SqliteMessageSink(self.path, self._next_session_ordinal, writer=self.conn)

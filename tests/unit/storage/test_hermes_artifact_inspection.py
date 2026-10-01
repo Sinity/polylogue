@@ -284,7 +284,7 @@ def test_environmental_failure_is_recorded_not_reported_as_unsupported(
     def _explode(*_args: object, **_kwargs: object) -> object:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr("polylogue.storage.artifacts.inspection.open_logical_source", _explode)
+    monkeypatch.setattr("polylogue.storage.artifacts.inspection.logical_source_context", _explode)
 
     observation = inspect_raw_artifact(
         _record(

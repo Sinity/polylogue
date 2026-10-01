@@ -534,13 +534,6 @@ class PreparedIndexMutation:
             raise ReferenceSealError("reference proof has no live scratch connection")
         return connection
 
-    @_scratch.setter
-    def _scratch(self, connection: sqlite3.Connection) -> None:
-        self._owned_scratch_connection = connection
-        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
-
-        NativeSQLCustodyOwner(connection, terminal_parent=self)
-
     def _open_observer(self, name: str, path: Path) -> sqlite3.Connection:
         leaf = VerifiedAuditLeaf(path.parent, filename=path.name, identity_access="lock-preserving")
         leaf.__enter__()

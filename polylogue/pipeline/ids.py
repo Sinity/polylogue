@@ -432,6 +432,8 @@ class _DiskRevisionStore:
     """Disposable owner for one prepared revision's projected evidence."""
 
     def __init__(self, parent: Path | None) -> None:
+        from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+
         self._closed = False
         self._lifetime_lock = threading.RLock()
         self._native_owner: NativeSQLCustodyOwner | None = None
@@ -439,25 +441,40 @@ class _DiskRevisionStore:
         self.conn = sqlite3.connect(Path(self._scratch.name) / "projection.db")
         try:
             self._native_owner = _retain_projection_sql_connection(self.conn, lifetime=self)
+        except NativeConnectionSettlementError as failure:
+            failure.owner.scratch_directory = self._scratch
+            del self.conn
+            raise
         except BaseException:
+            self._scratch.cleanup()
             # Construction custody owns either the closed or retained handle.
             # Never transport a second raw cleanup handle in this artifact.
             del self.conn
             raise
-        self.conn.execute("CREATE TABLE message_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
-        self.conn.execute("CREATE TABLE event_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
-        self.conn.execute(
-            "CREATE TABLE message_content (identity BLOB NOT NULL, content BLOB NOT NULL, "
-            "multiplicity INTEGER NOT NULL, PRIMARY KEY(identity, content)) WITHOUT ROWID"
-        )
-        for table in ("mutable_message", "attachment_identity"):
-            self.conn.execute(f"CREATE TABLE {table} (identity BLOB PRIMARY KEY) WITHOUT ROWID")
-        for table in ("attachment_content", "event_content", "anchor_free_event"):
-            second = "anchor_free" if table == "anchor_free_event" else "content"
+        try:
+            self.conn.execute("CREATE TABLE message_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
+            self.conn.execute("CREATE TABLE event_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
             self.conn.execute(
-                f"CREATE TABLE {table} (identity BLOB NOT NULL, {second} BLOB NOT NULL, "
-                f"PRIMARY KEY(identity, {second})) WITHOUT ROWID"
+                "CREATE TABLE message_content (identity BLOB NOT NULL, content BLOB NOT NULL, "
+                "multiplicity INTEGER NOT NULL, PRIMARY KEY(identity, content)) WITHOUT ROWID"
             )
+            for table in ("mutable_message", "attachment_identity"):
+                self.conn.execute(f"CREATE TABLE {table} (identity BLOB PRIMARY KEY) WITHOUT ROWID")
+            for table in ("attachment_content", "event_content", "anchor_free_event"):
+                second = "anchor_free" if table == "anchor_free_event" else "content"
+                self.conn.execute(
+                    f"CREATE TABLE {table} (identity BLOB NOT NULL, {second} BLOB NOT NULL, "
+                    f"PRIMARY KEY(identity, {second})) WITHOUT ROWID"
+                )
+        except BaseException as primary:
+            from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner as NativeOwner
+            from polylogue.storage.sqlite.connection_profile import _close_failed_native_construction
+
+            assert self._native_owner is not None
+            cast(NativeOwner, self._native_owner).scratch_directory = self._scratch
+            _close_failed_native_construction(self._native_owner, primary)
+            self.close()
+            raise
 
     def finish(self) -> None:
         """Publish only immutable files; no SQLite handle crosses threads."""
@@ -481,20 +498,17 @@ class _DiskRevisionStore:
             conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
             owner = _retain_projection_sql_connection(conn, lifetime=self)
             try:
-                yield conn
+                from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner as NativeOwner
+
+                yield cast(NativeOwner, owner).require_connection()
             except BaseException as primary:
                 try:
                     owner.close()
-                except BaseException as close_error:
-                    owner.retain_lifetime(self)
-                    primary.add_note(f"revision projection reader cleanup also failed: {close_error}")
+                except BaseException as cleanup:
+                    raise cleanup from primary
                 raise
             else:
-                try:
-                    owner.close()
-                except BaseException:
-                    owner.retain_lifetime(self)
-                    raise
+                owner.close()
 
     def close(self) -> None:
         with self._lifetime_lock:
@@ -2349,8 +2363,8 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
     except BaseException as primary:
         try:
             store.close()
-        except BaseException as close_error:
-            primary.add_note(f"revision projection cleanup also failed: {close_error}")
+        except BaseException as cleanup:
+            raise cleanup from primary
         raise
 
 
