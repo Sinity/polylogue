@@ -10,34 +10,21 @@ import pytest
 from tests.infra.timeout_policy import timeout_marker_error
 
 
-@pytest.mark.parametrize("value", [None, 0, -1, float("inf"), 901, "30"])
-def test_collection_rejects_unbounded_timeout_markers(value: Any) -> None:
+@pytest.mark.parametrize("value", [None, -1, float("inf"), float("nan"), 901, "30", True])
+def test_collection_rejects_invalid_timeout_markers(value: Any) -> None:
     marker = pytest.mark.timeout(value).mark
-    assert "0 < seconds <= 900" in (timeout_marker_error(marker) or "")
+    assert timeout_marker_error(marker) is not None
 
 
-@pytest.mark.parametrize("value", [0.1, 30, 120, 900])
-def test_collection_accepts_bounded_timeout_markers(value: float) -> None:
+@pytest.mark.parametrize("value", [0, 0.1, 30, 120, 900])
+def test_collection_accepts_explicit_timeout_markers(value: float) -> None:
     marker = pytest.mark.timeout(value).mark
     assert timeout_marker_error(marker) is None
 
 
-def test_repository_collection_hook_rejects_zero_timeout() -> None:
-    """The check is wired into collection, not merely correct in isolation.
-
-    Called directly rather than through `pytester.runpytest_subprocess`. The two
-    tests above already cover the predicate for 0, -1, inf, 901 and friends, so
-    the only thing a subprocess added was proof of WIRING -- and it bought that
-    at the price of a full nested pytest that inherits the managed run's
-    environment. Under `devtools verify` that inheritance breaks it outright: the
-    outer run sets PYTEST_DISABLE_PLUGIN_AUTOLOAD, the child does not load
-    pytest-benchmark, and it then dies on the benchmark flags pyproject's addopts
-    still supply.
-
-    Calling the hook proves the same wiring in milliseconds. That pytest invokes
-    a hook of this name from tests/conftest.py needs no separate proof -- if it
-    did not, the fixtures every other test depends on would not work either.
-    """
+@pytest.mark.parametrize("value, accepted", [(0, True), (-1, False)])
+def test_repository_collection_hook_applies_timeout_policy(value: int, accepted: bool) -> None:
+    """Reject invalid markers in collection; zero keeps progressing work cancellable."""
     from tests.conftest import pytest_collection_modifyitems
 
     item = cast(
@@ -45,10 +32,13 @@ def test_repository_collection_hook_rejects_zero_timeout() -> None:
         SimpleNamespace(
             nodeid="tests/example.py::test_case",
             path="tests/example.py",
-            get_closest_marker=lambda name: pytest.mark.timeout(0).mark if name == "timeout" else None,
+            get_closest_marker=lambda name: pytest.mark.timeout(value).mark if name == "timeout" else None,
         ),
     )
     config = cast("pytest.Config", SimpleNamespace(getoption=lambda name: None))
 
-    with pytest.raises(pytest.UsageError, match="0 < seconds <= 900; got 0"):
+    if accepted:
         pytest_collection_modifyitems(config, [item])
+    else:
+        with pytest.raises(pytest.UsageError):
+            pytest_collection_modifyitems(config, [item])

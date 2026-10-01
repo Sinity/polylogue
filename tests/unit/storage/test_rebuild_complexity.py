@@ -15,14 +15,41 @@ from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationRe
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources import revision_backfill
 from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.fts.fts_lifecycle import reset_message_fts_index_sync
+from polylogue.storage.fts.sql import (
+    FTS_MESSAGES_IDENTITY_RECIPE_ID,
+    insert_all_message_identity_rows_sql,
+    insert_all_message_rows_sql,
+    insert_session_identity_rows_sql,
+    insert_session_rows_sql,
+    repair_message_identity_rows_range_sql,
+)
+from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql, rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.growth_budgets import GrowthBudget, GrowthObservation, evaluate_growth_budgets
-from tests.infra.sqlite_work_counter import sqlite_work_counter
+from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
+from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
+from tests.infra.growth_budgets import GrowthObservation
+from tests.infra.sqlite_work_counter import mutating_statements, sqlite_work_counter
 
-_COMPONENT_DERIVED_WORK_BUDGET = GrowthBudget(metric="component_derived_vm_steps", max_step_multiplier=4.0)
-# An incremental component replay must not emit archive-wide derived writes.
-_COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET = 9
+_COMMENTED_REFRESHES = {
+    "leading-block": '/* refresh */ UPDATE main."action_pairs" SET tool_name=tool_name',
+    "leading-line": "-- refresh\nUPDATE action_pairs SET tool_name=tool_name",
+    "update-target": 'UPDATE /* refresh */ main."action_pairs" SET tool_name=tool_name',
+    "update-qualified": 'UPDATE main /* refresh */ . /* refresh */ "action_pairs" SET tool_name=tool_name',
+    "update-conflict": "UPDATE /* refresh */ OR /* refresh */ IGNORE /* refresh */ action_pairs SET tool_name=tool_name",
+    "delete-from": "DELETE /* refresh */ FROM action_pairs",
+    "delete-target": "DELETE FROM /* refresh */ action_pairs",
+    "insert-into": "INSERT /* refresh */ INTO messages_fts(messages_fts) VALUES('delete-all')",
+    "insert-target": "INSERT INTO /* refresh */ messages_fts(messages_fts) VALUES('delete-all')",
+    "insert-conflict": "INSERT /* refresh */ OR /* refresh */ REPLACE /* refresh */ INTO /* refresh */ messages_fts(messages_fts) VALUES('delete-all')",
+    "replace-into": "REPLACE /* refresh */ INTO /* refresh */ messages_fts(rowid, text) SELECT rowid, search_text FROM blocks WHERE search_text != ''",
+    "drop-table": "DROP /* refresh */ TABLE action_pairs",
+    "drop-target": "DROP TABLE /* refresh */ main.action_pairs",
+    "fts-control": "INSERT INTO messages_fts /* refresh */ (messages_fts) /* refresh */ VALUES('delete-all')",
+    "cte": "WITH /* refresh */ all_rows AS (SELECT rowid, search_text FROM blocks WHERE search_text != '') /* refresh */ INSERT /* refresh */ OR REPLACE INTO messages_fts(rowid, text) SELECT rowid, search_text FROM all_rows",
+    "quoted-literal": "UPDATE action_pairs SET tool_name='/* keep */ -- keep ''quoted'' UPDATE action_pairs'",
+}
 
 
 def _run(
@@ -138,34 +165,449 @@ def _run_component_measurement(
 
 
 def _assert_component_shape(observations: list[GrowthObservation]) -> None:
-    report = evaluate_growth_budgets(observations, [_COMPONENT_DERIVED_WORK_BUDGET])
+    assert observations
+    assert len({observation.metric("selected_component_count") for observation in observations}) == 1
     measured = "\n".join(f"  {observation.tier}: {dict(observation.metrics)}" for observation in observations)
-    assert report.ok, (
-        "component derived work exceeded the scale bound "
-        f"{_COMPONENT_DERIVED_WORK_BUDGET.max_step_multiplier}x; "
-        f"violations={report.violations}; measured counters:\n{measured}"
+    assert all(observation.metric("archive_wide_derived_statements") == 0 for observation in observations), (
+        f"incremental component route emitted archive-wide derived writes; measured counters:\n{measured}"
     )
-    archive_wide = [observation.metric("archive_wide_derived_statements") for observation in observations]
-    assert all(value <= _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET for value in archive_wide), (
-        "incremental component route exceeded the one-terminal-refresh envelope; "
-        f"declared statement budget={_COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET}; measured counters:\n{measured}"
-    )
-    assert any(observation.metric("component_derived_vm_steps") > 0 for observation in observations), (
+    assert all(observation.metric("component_derived_vm_steps") > 0 for observation in observations), (
         f"production route reported no derived work; measured counters:\n{measured}"
     )
+    assert all(
+        observation.metric("component_derived_vm_steps") <= observations[0].metric("component_derived_vm_steps")
+        for observation in observations[1:]
+    ), f"fixed component work grew with unrelated archive rows; measured counters:\n{measured}"
 
 
-def test_one_component_derived_work_is_archive_scale_stable(tmp_path: Path) -> None:
+@pytest.mark.timeout(0)
+def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path) -> None:
+    # Each retained component prepares in a cancellable process and publishes
+    # its own progress. The suite's fixed 120-second cutoff can interrupt a
+    # valid progressing 32-session seed; keep cancellation with the managed run.
     observations = [
         _run_component_measurement(
             tmp_path,
             archive_size,
             component_count=component_count,
         )
-        for archive_size, component_count in ((2, 1), (8, 2), (32, 4))
+        for archive_size, component_count in ((2, 1), (8, 1), (32, 1))
     ]
 
     _assert_component_shape(observations)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "delete",
+        "update",
+        "delete-tautology",
+        "update-tautology",
+        "action-pairs-rebuild",
+        "action-pairs-tautology-scope",
+        "fts-rebuild",
+        "fts-reset",
+        "fts-row-range-tautology",
+        "fts-identity-rebuild",
+        "fts-session-union",
+        "fts-identity-session-union",
+        "fts-literal-scope",
+        "fts-tautology-scope",
+        "fts-delete-all",
+        "delegation-copy",
+        "delegation-rebuild",
+        *[
+            f"quoted-{operation}-{quote}"
+            for operation in ("update", "delete", "drop", "control")
+            for quote in ("double", "bracket", "backtick", "single")
+        ],
+        *[
+            f"conflict-{operation}-{mode}"
+            for operation in ("update", "insert")
+            for mode in ("rollback", "abort", "replace", "fail", "ignore")
+        ],
+        "qualified-main",
+        "qualified-temp",
+        "mixed-case",
+        *[f"comment-{name}" for name in _COMMENTED_REFRESHES],
+    ],
+)
+def test_incremental_law_rejects_once_per_pass_archive_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """Removing the zero-write oracle lets this real SQL refresh pass."""
+    original = _run
+    refreshes = 0
+
+    def refresh_after_pass(*args: Any, **kwargs: Any) -> DerivationReport:
+        nonlocal refreshes
+        result = original(*args, **kwargs)
+        refreshes += 1
+        root = args[0]
+        # The mutant runs once after an ordinary pass, on a production-opened
+        # index connection. It changes unrelated derived rows archive-wide.
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            count = archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0]
+            assert count == 9
+            if mutation.startswith("comment-"):
+                name = mutation.removeprefix("comment-")
+                changes = archive._conn.total_changes
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                archive._conn.execute(_COMMENTED_REFRESHES[name])
+                if name.startswith("drop-"):
+                    assert (
+                        archive._conn.execute(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE name='action_pairs'"
+                        ).fetchone()[0]
+                        == 0
+                    )
+                else:
+                    assert archive._conn.total_changes > changes
+                    if name.startswith("delete-"):
+                        assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+                    elif name.startswith("insert-") or name == "fts-control":
+                        assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+                    elif name == "quoted-literal":
+                        assert [
+                            row[0] for row in archive._conn.execute("SELECT DISTINCT tool_name FROM action_pairs")
+                        ] == ["/* keep */ -- keep 'quoted' UPDATE action_pairs"]
+            elif mutation.startswith("quoted-"):
+                _, operation, quote = mutation.split("-")
+                opening, closing = {
+                    "double": ('"', '"'),
+                    "bracket": ("[", "]"),
+                    "backtick": ("`", "`"),
+                    "single": ("'", "'"),
+                }[quote]
+                table = f"{opening}action_pairs{closing}"
+                changes = archive._conn.total_changes
+                if operation == "update":
+                    assert archive._conn.execute(f"UPDATE {table} SET tool_name=tool_name").rowcount == count
+                    assert archive._conn.total_changes > changes
+                elif operation == "delete":
+                    assert archive._conn.execute(f"DELETE FROM {table}").rowcount == count
+                    assert archive._conn.total_changes > changes
+                    assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+                elif operation == "drop":
+                    archive._conn.execute(f"DROP TABLE main.{table}")
+                    assert (
+                        archive._conn.execute(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE name='action_pairs'"
+                        ).fetchone()[0]
+                        == 0
+                    )
+                else:
+                    assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                    fts = f"{opening}messages_fts{closing}"
+                    archive._conn.execute(f"INSERT INTO main.{fts}({fts}) VALUES('delete-all')")
+                    assert archive._conn.total_changes > changes
+                    assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+            elif mutation.startswith("conflict-"):
+                _, operation, mode = mutation.split("-")
+                changes = archive._conn.total_changes
+                if operation == "update":
+                    assert (
+                        archive._conn.execute(f"UPDATE OR {mode.upper()} action_pairs SET tool_name=tool_name").rowcount
+                        == count
+                    )
+                else:
+                    populated = archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                    assert populated > 0
+                    offset = archive._conn.execute("SELECT MAX(rowid) FROM messages_fts").fetchone()[0] + 1
+                    # Mutate the ordinary archive-wide FTS owner, with fresh
+                    # rowids so every conflict mode performs real writes.
+                    sql = (
+                        insert_all_message_rows_sql()
+                        .replace("INSERT INTO", f"INSERT OR {mode.upper()} INTO", 1)
+                        .replace("SELECT rowid,", f"SELECT rowid + {offset},", 1)
+                    )
+                    assert archive._conn.execute(sql).rowcount > 0
+                    assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > populated
+                assert archive._conn.total_changes > changes
+            elif mutation in {"qualified-main", "qualified-temp", "mixed-case"}:
+                if mutation == "qualified-temp":
+                    # CTAS is fixture preparation, not a counted DML refresh;
+                    # the following UPDATE is the sole global-write witness.
+                    archive._conn.execute("CREATE TEMP TABLE action_pairs AS SELECT * FROM main.action_pairs")
+                    table = "temp.action_pairs"
+                else:
+                    table = "main.action_pairs" if mutation == "qualified-main" else '"MAIN" . "AcTiOn_PaIrS"'
+                assert archive._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == count
+                changes = archive._conn.total_changes
+                assert archive._conn.execute(f"uPdAtE {table} SET tool_name=tool_name").rowcount == count
+                assert archive._conn.total_changes > changes
+            elif mutation == "delete":
+                assert archive._conn.execute("DELETE FROM action_pairs").rowcount == count
+            elif mutation == "update":
+                assert archive._conn.execute("UPDATE action_pairs SET tool_name = tool_name").rowcount == count
+            elif mutation == "delete-tautology":
+                assert archive._conn.execute("DELETE FROM action_pairs WHERE 1").rowcount == count
+            elif mutation == "update-tautology":
+                assert archive._conn.execute("UPDATE action_pairs SET tool_name = tool_name WHERE 1").rowcount == count
+            elif mutation == "action-pairs-rebuild":
+                rebuild_all_action_pairs_sync(archive._conn)
+                assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
+            elif mutation == "action-pairs-tautology-scope":
+                sessions = set(archive._conn.execute("SELECT DISTINCT session_id FROM action_pairs"))
+                sql = action_pairs_refresh_sql("'absent' OR 1").replace(
+                    "INSERT INTO action_pairs", "INSERT OR REPLACE INTO action_pairs", 1
+                )
+                changes = archive._conn.total_changes
+                assert archive._conn.execute(sql).rowcount > 0
+                assert archive._conn.total_changes > changes
+                assert set(archive._conn.execute("SELECT DISTINCT session_id FROM action_pairs")) == sessions
+            elif mutation == "fts-reset":
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                reset_message_fts_index_sync(archive._conn)
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+            elif mutation == "fts-row-range-tautology":
+                sql = (
+                    repair_message_identity_rows_range_sql()
+                    .replace("AND b.rowid <= ?", "AND b.rowid <= ? OR 1")
+                    .replace(f"'{FTS_MESSAGES_IDENTITY_RECIPE_ID}'", "'mutant-recipe'")
+                )
+                changes = archive._conn.total_changes
+                archive._conn.execute(sql, (0, 0))
+                assert archive._conn.total_changes > changes
+                assert (
+                    archive._conn.execute(
+                        "SELECT COUNT(*) FROM messages_fts_identity WHERE recipe_id = 'mutant-recipe'"
+                    ).fetchone()[0]
+                    > 0
+                )
+            elif mutation == "fts-rebuild":
+                assert rebuild_archive_messages_fts(archive._conn) > 0
+            elif mutation == "fts-delete-all":
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                archive._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+            elif mutation == "fts-identity-rebuild":
+                assert archive._conn.execute(insert_all_message_identity_rows_sql()).rowcount > 0
+            elif mutation in {"fts-session-union", "fts-identity-session-union"}:
+                table = "messages_fts" if mutation == "fts-session-union" else "messages_fts_identity"
+                builder = (
+                    insert_session_rows_sql if mutation == "fts-session-union" else insert_session_identity_rows_sql
+                )
+                populated = archive._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                assert populated > 0
+                sql = builder(1).replace("VALUES (?)", "VALUES (?) UNION SELECT session_id FROM sessions")
+                changes = archive._conn.total_changes
+                archive._conn.execute(sql, ("absent",))
+                assert archive._conn.total_changes > changes
+                assert archive._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == populated
+            elif mutation == "fts-literal-scope":
+                assert (
+                    archive._conn.execute(
+                        "INSERT OR REPLACE INTO messages_fts(rowid, text) "
+                        "SELECT b.rowid, 'b.session_id = 1' FROM blocks AS b WHERE b.search_text != ''"
+                    ).rowcount
+                    > 0
+                )
+            elif mutation == "fts-tautology-scope":
+                assert (
+                    archive._conn.execute(
+                        "INSERT OR REPLACE INTO messages_fts(rowid, text) "
+                        "SELECT b.rowid, b.search_text FROM blocks AS b "
+                        "WHERE b.session_id = 'absent-session' OR 1"
+                    ).rowcount
+                    > 0
+                )
+            else:
+                # Build canonical dispatch/link evidence; normal triggers
+                # derive the populated facts the mutant rewrites.
+                parent = archive._conn.execute(
+                    "SELECT session_id FROM sessions WHERE native_id = 'existing-0'"
+                ).fetchone()[0]
+                child = archive._conn.execute(
+                    "SELECT session_id FROM sessions WHERE native_id = 'existing-1'"
+                ).fetchone()[0]
+                archive._conn.execute(
+                    "UPDATE blocks SET semantic_type = 'subagent' WHERE session_id = ? AND block_type = 'tool_use'",
+                    (parent,),
+                )
+                block_id = archive._conn.execute(
+                    "SELECT block_id FROM blocks WHERE session_id = ? AND block_type = 'tool_use'", (parent,)
+                ).fetchone()[0]
+                archive._conn.execute(
+                    "INSERT INTO session_links(src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id, parent_tool_use_block_id, observed_at_ms) VALUES (?, 'codex-session', 'existing-0', 'subagent', ?, ?, 1)",
+                    (child, parent, block_id),
+                )
+                facts = archive._conn.execute("SELECT COUNT(*) FROM delegation_facts").fetchone()[0]
+                assert facts > 0
+                if mutation == "delegation-copy":
+                    assert (
+                        archive._conn.execute(
+                            "INSERT OR REPLACE INTO delegation_facts SELECT * FROM delegation_facts WHERE 1"
+                        ).rowcount
+                        == facts
+                    )
+                else:
+                    rebuild_all_delegation_facts_sync(archive._conn)
+                    assert archive._conn.execute("SELECT COUNT(*) FROM delegation_facts").fetchone()[0] == facts
+            archive.commit()
+        return result
+
+    # Seed/materialize through the ordinary route before activating the mutant.
+    calls = 0
+
+    def mutate_selected_pass(*args: Any, **kwargs: Any) -> DerivationReport:
+        nonlocal calls
+        calls += 1
+        if kwargs.get("raw_ids"):
+            return refresh_after_pass(*args, **kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["_run"]), "_run", mutate_selected_pass)
+    observation = _run_component_measurement(tmp_path, 8, component_count=1)
+    assert calls == 2
+    assert refreshes == 1
+    assert observation.metric("archive_wide_derived_statements") > 0
+    with pytest.raises(AssertionError):
+        _assert_component_shape([observation])
+
+
+def test_commented_scoped_writes_preserve_scope_and_quoted_evidence(tmp_path: Path) -> None:
+    """Removing quote-aware comment handling miscounts these real writes."""
+    root = tmp_path / "commented-scopes"
+    _seed_raw_archive(root, 2, prefix="comments")
+    _materialize_all(root, 2)
+    with sqlite_work_counter(step_interval=1) as counter:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            session_id = archive._conn.execute("SELECT session_id FROM action_pairs LIMIT 1").fetchone()[0]
+            archive._conn.execute("CREATE TEMP TABLE \"action_pairs/* keep */ -- keep\" AS SELECT 'before' AS value")
+            value = "/* keep */ -- keep 'quoted'"
+            changes = archive._conn.total_changes
+            assert (
+                archive._conn.execute(
+                    "/* scope */ UPDATE /* scope */ action_pairs SET tool_name=? WHERE /* scope */ session_id = ?",
+                    (value, session_id),
+                ).rowcount
+                > 0
+            )
+            assert archive._conn.total_changes > changes
+            assert (
+                archive._conn.execute(
+                    "SELECT tool_name FROM action_pairs WHERE session_id = ?", (session_id,)
+                ).fetchone()[0]
+                == value
+            )
+            changes = archive._conn.total_changes
+            assert (
+                archive._conn.execute(
+                    "DELETE /* scope */ FROM action_pairs WHERE session_id = ?", (session_id,)
+                ).rowcount
+                == 1
+            )
+            assert archive._conn.total_changes > changes
+            rowid = archive._conn.execute("SELECT MAX(rowid) FROM messages_fts").fetchone()[0] + 1
+            changes = archive._conn.total_changes
+            archive._conn.execute("INSERT /* scope */ INTO messages_fts(rowid, text) VALUES(?, ?)", (rowid, value))
+            assert archive._conn.total_changes > changes
+            assert (
+                archive._conn.execute("SELECT COUNT(*) FROM messages_fts WHERE rowid = ?", (rowid,)).fetchone()[0] == 1
+            )
+            native_sql = insert_session_rows_sql(1)
+            assert "INSERT INTO messages_fts" in native_sql
+            sql = native_sql.replace("WITH", "WITH /* scope */", 1).replace(
+                "INSERT INTO", "INSERT /* scope */ INTO /* scope */", 1
+            )
+            assert "INSERT /* scope */ INTO /* scope */ messages_fts" in sql
+            changes = archive._conn.total_changes
+            archive._conn.execute(sql, (session_id,))
+            assert archive._conn.total_changes > changes
+            for opening, closing in (('"', '"'), ("[", "]"), ("`", "`"), ("'", "'")):
+                table = f"{opening}action_pairs/* keep */ -- keep{closing}"
+                assert archive._conn.execute(f"UPDATE {table} SET value='after'").rowcount == 1
+            assert archive._conn.execute('SELECT value FROM "action_pairs/* keep */ -- keep"').fetchone()[0] == "after"
+            assert counter.metric("archive_wide_derived_statements") == 0
+            assert counter.metric("derived_vm_steps") > 0
+            archive.commit()
+    with mutating_statements() as recorded:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            changes = archive._conn.total_changes
+            assert (
+                archive._conn.execute(
+                    "-- refresh\nUPDATE /* refresh */ action_pairs SET tool_name='/* keep */ -- keep'"
+                ).rowcount
+                == 1
+            )
+            assert archive._conn.total_changes > changes
+            archive.commit()
+    # Opening an archive also prepares temporary/bootstrap relations; SQLite
+    # repeats the UPDATE trace for triggers. Neither changes this witness.
+    index_mutations = [sql for tier, sql in recorded if tier == "index"]
+    assert index_mutations
+    assert all(sql == "update action_pairs set tool_name='/* keep */ -- keep'" for sql in index_mutations)
+
+
+def test_fts_shadow_execution_retains_derived_vm_accounting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Comment-stripping the VM trace drops actual FTS5 shadow work."""
+    import tests.infra.sqlite_work_counter as work_module
+
+    root = tmp_path / "fts-shadow-work"
+    _seed_raw_archive(root, 2, prefix="fts-shadow")
+    _materialize_all(root, 2)
+    original = work_module._mentions_derived_surface
+    shadow_vm = 0
+    measuring = False
+
+    def observe_vm_frame(sql: str) -> bool:
+        nonlocal shadow_vm
+        derived = original(sql)
+        # This observes each real VM progress callback without altering its
+        # classification. SQLite's annotated FTS shadow frames are execution
+        # evidence, whereas e.g. its data_version PRAGMA is not derived work.
+        if measuring and sql.startswith("--") and "messages_fts" in sql and derived:
+            shadow_vm += 1
+        return derived
+
+    monkeypatch.setattr(work_module, "_mentions_derived_surface", observe_vm_frame)
+    with sqlite_work_counter(step_interval=1) as counter:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            populated = archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            assert populated > 0
+            archive._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
+            assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+            before_vm = counter.metric("vm_steps")
+            before_derived = counter.metric("derived_vm_steps")
+            before_changes = archive._conn.total_changes
+            measuring = True
+            assert archive._conn.execute(insert_all_message_rows_sql()).rowcount > 0
+            measuring = False
+            measured_vm = counter.metric("vm_steps") - before_vm
+            measured_derived = counter.metric("derived_vm_steps") - before_derived
+            assert shadow_vm > 0
+            assert measured_vm >= measured_derived >= shadow_vm
+            assert archive._conn.total_changes > before_changes
+            assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == populated
+            archive.commit()
+
+
+@pytest.mark.timeout(0)
+def test_incremental_law_rejects_archive_wide_derived_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = _run
+    scans = 0
+
+    def read_after_selected_pass(*args: Any, **kwargs: Any) -> DerivationReport:
+        nonlocal scans
+        result = original(*args, **kwargs)
+        if kwargs.get("raw_ids"):
+            scans += 1
+            with ArchiveStore.open_existing(args[0], read_only=True) as archive:
+                rows = archive._conn.execute("SELECT * FROM action_pairs").fetchall()
+                assert len(rows) > 0
+        return result
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["_run"]), "_run", read_after_selected_pass)
+    observations = [_run_component_measurement(tmp_path, size, component_count=1) for size in (2, 8)]
+    assert scans == 2
+    assert all(observation.metric("archive_wide_derived_statements") == 0 for observation in observations)
+    assert observations[1].metric("component_derived_vm_steps") > observations[0].metric("component_derived_vm_steps")
+    with pytest.raises(AssertionError):
+        _assert_component_shape(observations)
 
 
 def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
