@@ -1119,6 +1119,14 @@ class _ClassSqlReader:
 def class_sql_reader(conn):
     return _ClassSqlReader.read(conn)
 
+class _StaticForwarder:
+    @staticmethod
+    def send(writer, conn):
+        writer.add(conn)
+
+def static_argument_writer(conn):
+    _StaticForwarder.send(_CollisionWriter(), conn)
+
 def sql_scope_reader(conn):
     sql = "SELECT session_id FROM sessions"
     def unused_writer():
@@ -1149,6 +1157,7 @@ def sql_scope_reader(conn):
         "constructor_collision_writer",
         "sql_scope_writer",
         "inherited_sql_writer",
+        "static_argument_writer",
     }
     assert "read_collision" not in observed
     assert "sql_scope_reader" not in observed

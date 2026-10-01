@@ -1024,7 +1024,11 @@ def _receiver_calls(
                 continue
             positional = (*called.args.posonlyargs, *called.args.args)
             offset = 0
-            if receiver_types is not None and positional:
+            static = any(
+                isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
+                for decorator in called.decorator_list
+            )
+            if receiver_types is not None and positional and not static:
                 supplied.setdefault(positional[0].arg, set()).update(receiver_types)
                 offset = 1
             for argument, value in zip(positional[offset:], node.args, strict=False):
@@ -1033,16 +1037,6 @@ def _receiver_calls(
                 if keyword.arg is not None:
                     supplied.setdefault(keyword.arg, set()).update(value_types(keyword.value, qualified, bindings))
     return calls
-
-
-def _called_function_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    *,
-    qualified: str,
-    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
-    classes: set[str],
-) -> set[str]:
-    return set(_receiver_calls(function, qualified=qualified, functions=functions, classes=classes, incoming={}))
 
 
 def _entrypoint_tiers(
