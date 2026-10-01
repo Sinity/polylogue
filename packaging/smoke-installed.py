@@ -19,8 +19,18 @@ def smoke_installed(*, python: Path, bin_dir: Path, work_dir: Path, suffix: str 
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     work_dir = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     env = os.environ.copy()
-    for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "VIRTUAL_ENV"):
-        env.pop(name, None)
+    for name in tuple(env):
+        if name.startswith("POLYLOGUE_") or name in (
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONUSERBASE",
+            "VIRTUAL_ENV",
+            "HERMES_HOME",
+        ):
+            env.pop(name, None)
+    isolated_home = work_dir / "home"
+    isolated_home.mkdir(mode=0o700)
+    env["HOME"] = str(isolated_home)
     config = work_dir / "polylogue.toml"
     config.touch(mode=0o600)
     for kind in ("config", "data", "cache", "state", "runtime"):
@@ -29,6 +39,7 @@ def smoke_installed(*, python: Path, bin_dir: Path, work_dir: Path, suffix: str 
         env[f"XDG_{kind.upper()}_HOME" if kind != "runtime" else "XDG_RUNTIME_DIR"] = str(directory)
     env.update(
         POLYLOGUE_CONFIG=str(config),
+        POLYLOGUE_SITE_CONFIG=str(config),
         POLYLOGUE_ARCHIVE_ROOT=str(work_dir / "archive"),
         POLYLOGUE_CONFIG_DIR=str(work_dir / "config"),
         POLYLOGUE_FORCE_PLAIN="1",
@@ -39,12 +50,13 @@ def smoke_installed(*, python: Path, bin_dir: Path, work_dir: Path, suffix: str 
             str(python),
             "-I",
             "-c",
-            "import os; from polylogue.daemon.socket_path import daemon_socket_path; print(daemon_socket_path(os.environ['POLYLOGUE_ARCHIVE_ROOT']))",
+            "import os; from polylogue.config import resolve_runtime_config; from polylogue.daemon.socket_path import daemon_socket_path; runtime=resolve_runtime_config(); assert not runtime.sources, 'installed smoke requires zero configured sources'; print(daemon_socket_path(os.environ['POLYLOGUE_ARCHIVE_ROOT']))",
         ],
         cwd=work_dir,
         env=env,
         text=True,
     ).strip()
+    print("installed source isolation: zero configured sources", flush=True)
     with socket.socket() as port_reservation:
         port_reservation.bind(("127.0.0.1", 0))
         api_port = port_reservation.getsockname()[1]
