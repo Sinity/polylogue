@@ -355,7 +355,7 @@ async def message_transcript_window(
             while True:
                 raw, raw_total, completeness = await storage_page(resolved_session_id, page_size, raw_offset)
                 if raw_offset == 0 and raw_total == 0 and await api.repository.resolve_id(session_id) is None:
-                    from polylogue.operations.archive_mutation import SessionNotFoundError
+                    from polylogue.core.errors import SessionNotFoundError
 
                     raise SessionNotFoundError(session_id)
                 for message in stream.project_page(raw) if stream is not None else raw:
@@ -376,7 +376,7 @@ async def message_transcript_window(
             return window, total, completeness
         messages, total, completeness = await storage_page(resolved_session_id, limit, offset)
         if total == 0 and resolved_session_id == session_id and await api.repository.resolve_id(session_id) is None:
-            from polylogue.operations.archive_mutation import SessionNotFoundError
+            from polylogue.core.errors import SessionNotFoundError
 
             raise SessionNotFoundError(session_id)
         return messages, total, completeness

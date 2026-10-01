@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import struct
 
-from polylogue.core.errors import DatabaseError
+from polylogue.core.errors import DatabaseError, VectorRuntimeUnavailableError
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,6 +25,10 @@ class SqliteVecError(DatabaseError):
     """Raised when sqlite-vec operations fail."""
 
 
+class SqliteVecUnavailableError(SqliteVecError, VectorRuntimeUnavailableError):
+    """Local runtime refusal usable through the provider and public error contracts."""
+
+
 def _serialize_f32(vector: list[float]) -> bytes:
     """Serialize float vector to binary format for sqlite-vec."""
     return struct.pack(f"<{len(vector)}f", *vector)
@@ -35,6 +39,7 @@ __all__ = [
     "DEFAULT_DIMENSION",
     "DEFAULT_MODEL",
     "SqliteVecError",
+    "SqliteVecUnavailableError",
     "VOYAGE_API_URL",
     "_serialize_f32",
     "logger",

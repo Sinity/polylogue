@@ -62,6 +62,7 @@ def resolve_vector_provider(
     *,
     archive_root: Path,
     provider: VectorProvider | None = None,
+    require_credentials: bool = True,
 ) -> tuple[VectorProvider | None, LaneFailure | None]:
     """Resolve the vector backend once, retaining construction evidence."""
     if provider is not None:
@@ -76,6 +77,7 @@ def resolve_vector_provider(
                 config,
                 db_path=archive_root / "embeddings.db",
                 archive_root=archive_root,
+                require_credentials=require_credentials,
             )
         )
     except Exception as exc:
@@ -90,7 +92,7 @@ def resolve_vector_provider(
             "vector",
             "unavailable",
             "no configured/constructible vector backend",
-            "vector retrieval is unavailable; configure Voyage/sqlite-vec and retry",
+            "vector retrieval is unavailable; configure the embedding runtime and retry",
         )
     return resolved, None
 

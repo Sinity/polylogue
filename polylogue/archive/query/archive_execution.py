@@ -67,7 +67,9 @@ def _session_seed_scored(
     assert seed is not None
     vector_provider = plan.vector_provider
     if vector_provider is None and config is not None:
-        vector_provider = create_vector_provider(config, db_path=archive_root / "embeddings.db")
+        vector_provider = create_vector_provider(
+            config, db_path=archive_root / "embeddings.db", require_credentials=False
+        )
     if vector_provider is None:
         raise ExpressionCompileError(
             "near:id: session-seeded similarity needs a configured vector backend "
@@ -777,7 +779,7 @@ def archive_search_hits(
                 seed_provider, seed_failure = (
                     (None, vector_failure)
                     if vector_failure is not None
-                    else resolve_vector_provider(config, archive_root=archive_root)
+                    else resolve_vector_provider(config, archive_root=archive_root, require_credentials=False)
                 )
                 if seed_failure is not None:
                     raise EmbeddingRetrievalNotReadyError(
