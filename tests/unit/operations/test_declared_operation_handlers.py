@@ -47,6 +47,7 @@ def test_unresolvable_handler_is_refused() -> None:
         spec.authority,
         spec.fallback,
         capability=spec.capability,
+        deadline_s=spec.deadline_s,
         request_model=spec.request_model,
         result_model=spec.result_model,
         handler="execute_insights_rebuild_operation",
