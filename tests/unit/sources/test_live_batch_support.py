@@ -10127,3 +10127,43 @@ def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.M
     assert frontier.prefix_size == len(record) * 4000
     assert frontier.incomplete_tail and not frontier.malformed_record
     assert read < 4 * 4096
+
+
+@pytest.mark.parametrize("chunk_bytes", [1, 3, 7, 1 << 20])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        b"",
+        b'{"a":1}\n',
+        b'{"a":1}\n{"b":2}\n',
+        b'{"a":1}\n\n   \n{"b":2}\n',
+        b'\n\n{"a":1}\n \t\r\n{"b":2}\n',
+        b'{"long":"' + b"x" * 40 + b'"}\n{"b":2}\n',
+    ],
+)
+def test_the_streamed_prefix_record_count_matches_the_in_memory_count(
+    monkeypatch: pytest.MonkeyPatch, prefix: bytes, chunk_bytes: int
+) -> None:
+    """A partial admission's record count is the complete records of its prefix, blank lines excluded.
+
+    Anti-vacuity: counting newlines counts the blank lines; carrying a line's
+    content across a chunk boundary wrongly counts a record twice or not at all.
+    """
+    import io
+
+    from polylogue.sources.live import batch_support
+
+    monkeypatch.setattr(batch_support, "_JSONL_TAIL_READ_BYTES", chunk_bytes)
+    tail = b'{"cut":'
+    counted = batch_support.jsonl_prefix_record_count(io.BytesIO(prefix + tail), len(prefix))
+    assert counted == batch_support._jsonl_record_count(prefix)
+
+
+def test_partial_prefix_count_observes_owner_cancellation() -> None:
+    import io
+
+    from polylogue.sources.live.batch_support import jsonl_prefix_record_count
+    from polylogue.sources.prepared_jsonl import VerificationCancelledError
+
+    with pytest.raises(VerificationCancelledError):
+        jsonl_prefix_record_count(io.BytesIO(b'{"a":1}\n'), 8, stop=lambda: True)

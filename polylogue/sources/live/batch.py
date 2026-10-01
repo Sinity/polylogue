@@ -66,8 +66,10 @@ from polylogue.core.raw_coordinates import (
     zip_member_source_index,
 )
 from polylogue.core.raw_failure_evidence import (
+    PARTIAL_TRUNCATED_TAIL,
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    PartialAdmission,
     RawFailureEvidenceKind,
 )
 from polylogue.core.sources import origin_from_provider
@@ -157,6 +159,7 @@ from polylogue.sources.live.batch_support import (
     foreign_origin_exclusion,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
+    jsonl_prefix_record_count,
     last_complete_newline_from_tail,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -746,6 +749,10 @@ class _ArchiveFullWriteResult:
     # input -- keyed to the settled exclusion reason. Their paths still
     # advance the cursor as successes; intake reports them excluded.
     settled_exclusions: dict[_FullRecordKey, str] = field(default_factory=dict)
+    # Accepted raws admitted only in part -- a stable capture whose final
+    # record is truncated admits its complete records -- with what was left
+    # out. Intake reports them admitted with the partial, never a plain success.
+    partial_admissions: dict[_FullRecordKey, PartialAdmission] = field(default_factory=dict)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -1320,6 +1327,7 @@ class LiveBatchProcessor:
         excluded_by_path: dict[Path, str] = {}
         detection_fallbacks_by_path: dict[Path, str] = {}
         settled_exclusions: dict[Path, str] = {}
+        partial_admissions: dict[Path, PartialAdmission] = {}
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1802,6 +1810,7 @@ class LiveBatchProcessor:
                 excluded_by_path.update(full_result.excluded)
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
                 settled_exclusions.update(full_result.settled_exclusions)
+                partial_admissions.update(full_result.partial_admissions)
                 emit(
                     "live.ingest.source_group",
                     source_name=source_name,
@@ -1842,6 +1851,18 @@ class LiveBatchProcessor:
             **(summary_stage_payload or {}),
             "excluded_file_count": len(excluded_by_path) + len(settled_exclusions),
         }
+        if partial_admissions:
+            partial_reasons: dict[str, int] = {}
+            for partial in partial_admissions.values():
+                partial_reasons[partial.reason] = partial_reasons.get(partial.reason, 0) + 1
+            summary_stage_payload = {
+                **(summary_stage_payload or {}),
+                "partial_file_count": len(partial_admissions),
+                "partial_reasons": partial_reasons,
+                "partial_left_out_bytes": sum(
+                    partial.source_bytes - partial.complete_prefix_bytes for partial in partial_admissions.values()
+                ),
+            }
         # The ingest-attempt receipt has separate units for parsed raw files
         # and materialized sessions.  Count the actual session identities
         # touched by this batch; using ``succeeded_file_count`` here would
@@ -1919,6 +1940,7 @@ class LiveBatchProcessor:
         ingested_bytes, failed_bytes, refused_bytes_by_reason = split_offered_bytes(
             path_sizes,
             succeeded=admitted_paths,
+            partial_admissions=partial_admissions,
             failed=(Path(path) for path in failed_paths),
             excluded=reported_excluded,
             deferred=deferred_paths,
@@ -1968,6 +1990,9 @@ class LiveBatchProcessor:
             failed_paths=retry_paths,
             succeeded_paths=tuple(sorted(admitted_paths)),
             settled_exclusion_paths={str(path): reason for path, reason in sorted(settled_exclusions.items())},
+            partial_admission_paths={
+                str(path): partial for path, partial in sorted(partial_admissions.items()) if path in admitted_paths
+            },
             new_sessions=tuple(new_session_touches),
             updated_sessions=tuple(updated_session_touches),
             time_budget_exceeded=full_ingest_time_budget_exceeded,
@@ -2036,7 +2061,9 @@ class LiveBatchProcessor:
                     diagnostic=f"{len(settled_exclusions)} source item(s) parsed to no session",
                 )
         elif not retry_paths:
-            final_disposition = success_disposition()
+            final_disposition = success_disposition(
+                evidence_ref="batch:partial_admission" if metrics.partial_admission_paths else None
+            )
         else:
             # Per-record failures (validation/corrupt-input/unsupported-shape)
             # are already classified where they occur -- see
@@ -2076,7 +2103,10 @@ class LiveBatchProcessor:
             "live.ingest.chunk",
             outcome=(
                 "degraded"
-                if metrics.failed_file_count or metrics.excluded_file_count or metrics.deferred_paths
+                if metrics.failed_file_count
+                or metrics.excluded_file_count
+                or metrics.deferred_paths
+                or metrics.partial_admission_paths
                 else "ok"
             ),
             files=metrics.needed_file_count,
@@ -2086,6 +2116,11 @@ class LiveBatchProcessor:
             failed=metrics.failed_file_count,
             refused=metrics.excluded_file_count,
             deferred=len(metrics.deferred_paths),
+            partial_file_count=len(metrics.partial_admission_paths),
+            partial_left_out_bytes=sum(
+                partial.source_bytes - partial.complete_prefix_bytes
+                for partial in metrics.partial_admission_paths.values()
+            ),
             stage_timings_ms=timing_map,
             stage_timings_omitted=max(0, len(timing_items) - len(timing_map)),
         )
@@ -3973,6 +4008,20 @@ class LiveBatchProcessor:
                 )
             if jsonl_boundary is not None:
                 raw_frontier_sizes[path] = jsonl_boundary.prefix_size
+            complete_prefix_record_count: int | None = None
+            if (
+                jsonl_boundary is not None
+                and jsonl_boundary.incomplete_tail
+                and not jsonl_boundary.malformed_record
+                and 0 < jsonl_boundary.prefix_size < blob_size
+            ):
+                if isinstance(jsonl_boundary, JsonlBoundary):
+                    complete_prefix_record_count = jsonl_boundary.record_count
+                else:
+                    with blob_store.open(raw_id) as prefix_handle:
+                        complete_prefix_record_count = jsonl_prefix_record_count(
+                            prefix_handle, jsonl_boundary.prefix_size, stop=self._stop_requested
+                        )
             raw_source_names[path] = source_name
             if not acquired_via_sqlite_snapshot:
                 captured_content_hashes[path] = raw_id
@@ -3998,6 +4047,7 @@ class LiveBatchProcessor:
                         if jsonl_boundary is not None and not jsonl_boundary.malformed_record
                         else None
                     ),
+                    complete_prefix_record_count=complete_prefix_record_count,
                     captured_file_observation=captured_file_observations.get(path),
                 )
             )
@@ -4168,6 +4218,12 @@ class LiveBatchProcessor:
                 settled_exclusions[path] = (
                     REFUSED_CORRUPT_INPUT if REFUSED_CORRUPT_INPUT in reasons else REFUSED_NO_SESSIONS
                 )
+        partial_admissions: dict[Path, PartialAdmission] = {}
+        if archive_write is not None and archive_write.partial_admissions:
+            for key, path in raw_by_record.items():
+                partial = archive_write.partial_admissions.get(key)
+                if partial is not None and path in succeeded_paths and path not in settled_exclusions:
+                    partial_admissions.setdefault(path, partial)
         for path in skipped_paths:
             # The archive-write checkpoint did not reach these records. They
             # have no raw row or cursor and must stay eligible on the next
@@ -4195,6 +4251,7 @@ class LiveBatchProcessor:
                 path: reason for path, reason in detection_fallbacks.items() if path in succeeded_paths
             },
             settled_exclusions=settled_exclusions,
+            partial_admissions=partial_admissions,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_frontier_sizes=raw_frontier_sizes,
@@ -4595,7 +4652,20 @@ class LiveBatchProcessor:
                     )
                     if incomplete_tail and stable_capture:
                         # The full raw is conserved, while the ordinary parser
-                        # below receives only the proven complete prefix.
+                        # below receives only the proven complete prefix. The
+                        # admission is partial and says so: the complete
+                        # records are admitted, the truncated tail is not.
+                        # ``incomplete_tail`` holds only for a recorded prefix.
+                        admitted_prefix = cast(int, record.complete_prefix_size)
+                        complete_records = record.complete_prefix_record_count
+                        if complete_records is None:
+                            raise AssertionError("a stable partial JSONL admission has no off-writer record count")
+                        result.partial_admissions[_full_record_key(record)] = PartialAdmission(
+                            reason=PARTIAL_TRUNCATED_TAIL,
+                            complete_record_count=complete_records,
+                            complete_prefix_bytes=admitted_prefix,
+                            source_bytes=record.blob_size,
+                        )
                         archive.record_raw_failure_evidence(
                             source_raw_id,
                             provider=provider,

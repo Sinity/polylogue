@@ -188,7 +188,20 @@ def classify_decode_failure(error: BaseException) -> DecodeFailure | None:
         return error.kind
     if isinstance(error, JsonlDecodeError):
         return DecodeFailure.JSONL_RECORD
-    if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError, PartialJsonStreamError)):
+    # ``ijson.JSONError`` is the streamed decoders' refusal (a truncated or
+    # malformed document read incrementally); it is the same verdict on the
+    # bytes as ``json.JSONDecodeError``.
+    if isinstance(error, PartialJsonStreamError):
+        # The decoder wraps every mid-stream exception after it has yielded
+        # records, including backend and source I/O failures. The wrapper is
+        # terminal evidence only when its explicit cause says the bytes did
+        # not decode; an OSError or parser assertion must remain retryable.
+        return (
+            DecodeFailure.DOCUMENT
+            if isinstance(error.cause, (json.JSONDecodeError, UnicodeDecodeError, ijson.JSONError))
+            else None
+        )
+    if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError, ijson.JSONError)):
         return DecodeFailure.DOCUMENT
     return None
 
@@ -196,21 +209,22 @@ def classify_decode_failure(error: BaseException) -> DecodeFailure | None:
 def terminal_decode_evidence(error: BaseException, *, provider: Provider) -> RawFailureEvidenceKind | None:
     """The terminal evidence a decode failure of retained bytes earns, if any.
 
-    Any decode failure of an unknown-provider capture is terminal. A complete
-    JSONL record that does not decode is terminal for every provider: the
-    producer finished that record, so no later observation of these bytes
-    can repair it, and a frontier past it without evidence would drop it
-    silently. Live intake and retained replay both decide from this one rule,
-    so a rebuild refuses exactly the bytes live intake refused.
+    Every decode failure is terminal. The evidence is bound to immutable
+    captured bytes, so re-reading them can only fail the same way; a source
+    that later completes or changes is a new observation. An
+    unknown-provider capture is ``terminal_unknown_json_decode``. For a known
+    provider, a complete JSONL record or a JSON document that does not decode
+    is ``terminal_corrupt_input``, which canonical ingest also reports
+    (``classify_decode_exception``). An unterminated JSONL tail never reaches
+    here: it is excluded from the parsed prefix. Live intake and retained
+    replay both decide from this one rule, so a rebuild refuses exactly the
+    bytes live intake refused, and neither re-selects them.
     """
-    failure = classify_decode_failure(error)
-    if failure is None:
+    if classify_decode_failure(error) is None:
         return None
     if provider is Provider.UNKNOWN:
         return RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE
-    if failure is DecodeFailure.JSONL_RECORD:
-        return RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
-    return None
+    return RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
 
 
 def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str:

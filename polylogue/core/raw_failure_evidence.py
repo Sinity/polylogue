@@ -8,6 +8,7 @@ source that may progress from a payload that has reached a terminal refusal.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from enum import StrEnum
 
 from polylogue.core.enums import ArtifactSupportStatus
@@ -51,6 +52,26 @@ class RawFailureEvidenceKind(StrEnum):
         if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
             return "resolution"
         return "deferred" if self.value in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS else "terminal"
+
+
+#: Admitted only in part: a stable JSONL capture whose last record is
+#: truncated, whose raw carries a deferred partial-decode carrier. Its
+#: complete records are admitted; the unterminated tail is not a record yet,
+#: and a later observation of the grown file admits it.
+PARTIAL_TRUNCATED_TAIL = "truncated_tail"
+
+
+@dataclass(frozen=True, slots=True)
+class PartialAdmission:
+    """What an admitted source left out, in typed, countable terms."""
+
+    reason: str
+    #: Records admitted from the complete prefix.
+    complete_record_count: int
+    #: Byte offset where the admitted prefix ends and the left-out tail begins.
+    complete_prefix_bytes: int
+    #: Size of the acquired bytes, tail included.
+    source_bytes: int
 
 
 RAW_FAILURE_TRUSTED_PROVENANCE = "worker-disposition-v1"
@@ -219,6 +240,8 @@ def terminal_carrier_overwrite_predicate() -> str:
 
 
 __all__ = [
+    "PARTIAL_TRUNCATED_TAIL",
+    "PartialAdmission",
     "RAW_FAILURE_DEFERRED_EVIDENCE_KINDS",
     "RAW_FAILURE_DEFERRED_SUPPORT_STATUS",
     "RAW_FAILURE_EVIDENCE_KINDS",

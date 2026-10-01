@@ -29,6 +29,7 @@ from polylogue.archive.raw_payload.decode import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
+from polylogue.core.raw_failure_evidence import PartialAdmission
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
@@ -313,6 +314,9 @@ class _FullIngestResult:
     #: re-parsed, but the intake outcome is an exclusion, never an admission
     #: (xf8qp).
     settled_exclusions: dict[Path, str] = field(default_factory=dict)
+    #: Succeeded paths admitted only in part (a stable capture with a
+    #: truncated final record), with what was left out (xf8qp).
+    partial_admissions: dict[Path, PartialAdmission] = field(default_factory=dict)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
@@ -355,6 +359,7 @@ def _full_ingest_result_from_summary(
     excluded: dict[Path, str] | None = None,
     detection_fallbacks: dict[Path, str] | None = None,
     settled_exclusions: dict[Path, str] | None = None,
+    partial_admissions: dict[Path, PartialAdmission] | None = None,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     raw_frontier_sizes: dict[Path, int] | None = None,
@@ -378,6 +383,7 @@ def _full_ingest_result_from_summary(
         excluded=dict(excluded or {}),
         detection_fallbacks=dict(detection_fallbacks or {}),
         settled_exclusions=dict(settled_exclusions or {}),
+        partial_admissions=dict(partial_admissions or {}),
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         raw_frontier_sizes=raw_frontier_sizes or {},
@@ -525,6 +531,34 @@ class JsonlFrontier:
 #: bytes route would find it blank.
 _JSONL_STRIP_BYTES = b" \t\n\r\x0b\x0c"
 _JSONL_TAIL_READ_BYTES = 1 << 20
+
+
+def jsonl_prefix_record_count(handle: IO[bytes], prefix_size: int, *, stop: Callable[[], bool] | None = None) -> int:
+    """Count the non-blank JSONL records in the first ``prefix_size`` bytes of ``handle``.
+
+    Streams in bounded chunks, so memory does not grow with the prefix. Only
+    a partial admission reads it (the frontier itself is decided from the
+    tail), so ordinary passes never pay for the count.
+    """
+    records = 0
+    remaining = prefix_size
+    line_has_content = False
+    while remaining > 0:
+        if stop is not None and stop():
+            from polylogue.sources.prepared_jsonl import VerificationCancelledError
+
+            raise VerificationCancelledError("partial JSONL prefix record count")
+        chunk = handle.read(min(_JSONL_TAIL_READ_BYTES, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        *complete_lines, open_line = chunk.split(b"\n")
+        for line in complete_lines:
+            if line_has_content or line.strip(_JSONL_STRIP_BYTES):
+                records += 1
+            line_has_content = False
+        line_has_content = line_has_content or bool(open_line.strip(_JSONL_STRIP_BYTES))
+    return records + (1 if line_has_content else 0)
 
 
 def jsonl_complete_prefix_path(path: Path) -> JsonlFrontier:
