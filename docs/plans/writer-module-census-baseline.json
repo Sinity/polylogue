@@ -341,12 +341,6 @@
     ]
   },
   {
-    "file": "polylogue/storage/fts/fts_lifecycle.py",
-    "tiers": [
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/storage/materials.py",
     "tiers": [
       "source"

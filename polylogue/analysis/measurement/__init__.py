@@ -5,7 +5,7 @@ substrate" half of the rigor program (docs/design/analysis-rigor.md):
 
 - :mod:`canon` -- shared content-address canonicalizer (`<kind>:<hash>`).
 - :mod:`metric` -- ``metric:<hash>`` canonical metric definitions (rxdo.9.1).
-- :mod:`registry` -- measure specs and composition.
+- :mod:`registry` -- measure definitions and their registry.
 - :mod:`registered_metrics` / :mod:`registered_measures` -- the process-wide
   default registries, reachable through the MCP ``get`` tool.
 - :mod:`outcome_coverage` -- coverage-gated tool-outcome aggregates; a bare
@@ -34,23 +34,17 @@ from polylogue.analysis.measurement.outcome_coverage import (
     build_tool_outcome_aggregate,
 )
 from polylogue.analysis.measurement.registry import (
-    MeasurePlan,
     MeasureRegistry,
-    MeasureResult,
     MeasureSpec,
     MeasureValidityError,
-    compose_measure,
 )
 
 __all__ = [
     "COVERAGE_BELOW_FLOOR",
     "TOOL_OUTCOME_COVERAGE_FLOOR",
-    "MeasurePlan",
     "MeasureRegistry",
-    "MeasureResult",
     "MeasureSpec",
     "MeasureValidityError",
     "ToolOutcomeAggregate",
     "build_tool_outcome_aggregate",
-    "compose_measure",
 ]

@@ -3,8 +3,7 @@
 polylogue-1fijp (aggz Invariant 2): :func:`admit_raw_observation` is designed
 to become the sole creator of ``raw_sessions`` rows, mirroring
 ``write.py``'s ``write_parsed_session_to_archive`` on the index side. Given
-freshly (and atomically -- see :mod:`polylogue.sources.atomic_read`) read
-bytes, origin evidence, and the prior accepted head for the payload's
+acquired bytes, origin evidence, and the prior accepted head for the payload's
 logical source key, it resolves exactly one of five typed, exhaustive arms
 -- there is no nullable "unknown, figure it out later" limbo:
 

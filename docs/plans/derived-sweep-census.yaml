@@ -492,20 +492,6 @@ sites:
     scope: "state_predicate"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/fts/fts_lifecycle.py"
-    function: "delete_excess_message_rows_batched_sync"
-    subject: "messages_fts"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/fts/fts_lifecycle.py"
-    function: "delete_excess_message_rows_batched_sync"
-    subject: "messages_fts_identity"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/storage/search_providers/sqlite_vec_runtime.py"
     function: "drop_vec0_for_dimension_change"
     subject: "message_embeddings_meta"
