@@ -33,7 +33,6 @@ from polylogue.core.refs import (
     parse_delegation_subtree_object_id,
     parse_public_ref,
 )
-from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.storage.block_anchor import (
     BlockAnchor,
     InvalidBlockAnchorError,
@@ -41,7 +40,7 @@ from polylogue.storage.block_anchor import (
     resolve_block_anchor,
 )
 from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection, open_scratch_connection
 
 _LIVE_SEALS_LOCK = threading.RLock()
 _LIVE_SEALS: dict[int, PreparedIndexMutation] = {}
@@ -493,7 +492,11 @@ class PreparedIndexMutation:
         try:
             self._scratch_directory = tempfile.TemporaryDirectory(prefix="polylogue-reference-seal-")
             _check_reference_cancellation()
-            self._scratch = connect_scratch_database(Path(self._scratch_directory.name) / "refs.db")
+            scratch_owner = open_scratch_connection(
+                Path(self._scratch_directory.name) / "refs.db", terminal_parent=self
+            )
+            assert scratch_owner.connection is not None
+            self._owned_scratch_connection = scratch_owner.connection
             self._scratch.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
             self._scratch.executescript(
                 "CREATE TEMP TABLE resolved_refs ("

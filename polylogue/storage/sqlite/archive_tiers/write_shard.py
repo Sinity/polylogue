@@ -180,7 +180,7 @@ def _shard_connection(path: Path, *, readonly: bool = True) -> Iterator[sqlite3.
     connection = sqlite3.connect(_read_only_uri(path), uri=True) if readonly else sqlite3.connect(path)
     owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
-        yield connection
+        yield owner.require_connection()
     finally:
         owner.close()
 

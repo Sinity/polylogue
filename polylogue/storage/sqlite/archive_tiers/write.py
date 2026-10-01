@@ -20,7 +20,7 @@ import time
 import uuid
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
-from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime
@@ -30,7 +30,7 @@ from enum import Enum
 from itertools import chain, islice, zip_longest
 from pathlib import Path
 from typing import Any, Literal, cast, overload
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import ijson
 
@@ -68,7 +68,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.json_envelope import top_level_envelopes
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.sqlite_scratch import connect_scratch_database
+from polylogue.core.sql_settlement import current_native_sql_lifetimes, retain_native_sql_lifetimes
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
 from polylogue.core.types import AttachmentDirection, LineageInheritance, require_literal
@@ -104,7 +104,7 @@ from polylogue.sources.parsers.claude.orchestration import (
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
-from polylogue.sources.prepared_message_sink import SqliteMessageSink, normalize_active_branch
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, _prepared_reader, normalize_active_branch
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.archive_identity import archive_root_for_index_path
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
@@ -145,6 +145,12 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     build_session_shard,
     copy_shard_session_rows,
     open_session_shard,
+)
+from polylogue.storage.sqlite.connection_profile import (
+    NativeConnectionSettlementError,
+    NativeSQLCustodyOwner,
+    open_scratch_connection,
+    retained_native_sql_owners_for_lifetime,
 )
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_sessions
 from polylogue.storage.sqlite.reference_seal import (
@@ -502,6 +508,17 @@ class PreparedSessionWriteRefusedError(RuntimeError):
     """A pinned prepared write no longer describes the admitted archive state."""
 
 
+class PreparedSessionSettlementError(RuntimeError):
+    """All carrier closes were attempted; their original owners can retry."""
+
+    code = "native_sql_unsettled"
+    retryable = True
+
+    def __init__(self, failures: Sequence[BaseException]) -> None:
+        super().__init__("prepared session artifact cleanup remains unsettled")
+        self.failures = tuple(failures)
+
+
 class LineageSignatureCache:
     """Bounded, batch-local cache for canonical lineage signatures.
 
@@ -752,7 +769,8 @@ class PreparedSessionRows:
 class _ShardRowSequence(Sequence[tuple[object, ...]]):
     """Read one prepared table range without retaining bound row tuples."""
 
-    def __init__(self, path: Path, table: str, lo: int, hi: int) -> None:
+    def __init__(self, path: Path, table: str, lo: int, hi: int, *, lifetime: object | None = None) -> None:
+        self._lifetime = lifetime
         self.path = path
         self.table = table
         self.lo = lo
@@ -773,21 +791,30 @@ class _ShardRowSequence(Sequence[tuple[object, ...]]):
         ordinal = index + len(self) if index < 0 else index
         if ordinal < 0 or ordinal >= len(self):
             raise IndexError(index)
-        uri = f"file:{quote(str(self.path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
+        with (
+            retain_native_sql_lifetimes(*(() if self._lifetime is None else (self._lifetime,))),
+            _prepared_reader(self.path) as conn,
+        ):
             row = conn.execute(f"SELECT * FROM {self.table} WHERE rowid = ?", (self.lo + ordinal,)).fetchone()
         if row is None:
             raise PreparedSessionWriteRefusedError("prepared row disappeared")
         return tuple(row)
 
     def __iter__(self) -> Iterator[tuple[object, ...]]:
-        uri = f"file:{quote(str(self.path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
-            for row in conn.execute(
-                f"SELECT * FROM {self.table} WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
-                (self.lo, self.hi),
+        after = self.lo - 1
+        while after < self.hi:
+            with (
+                retain_native_sql_lifetimes(*(() if self._lifetime is None else (self._lifetime,))),
+                _prepared_reader(self.path) as conn,
             ):
-                yield tuple(row)
+                rows = conn.execute(
+                    f"SELECT rowid, * FROM {self.table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 512",
+                    (after, self.hi),
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            yield from (tuple(row[1:]) for row in rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -968,10 +995,25 @@ class PreparedMessageContext:
     content_identities: tuple[MessageContentIdentity, ...] | None = None
 
     def close(self) -> None:
-        """Release duplicate-id indexes after the prepared write is consumed."""
+        """Attempt every owned carrier's cleanup before reporting unsettled SQL."""
+        artifacts: list[_DiskDuplicateNativeIds | _DiskSourceMessageIds | _DiskSignatureSequence] = []
         for duplicates in (self.event_duplicate_native_ids, self.duplicate_native_ids):
             if isinstance(duplicates, _DiskDuplicateNativeIds):
-                duplicates.close()
+                artifacts.append(duplicates)
+        if isinstance(self.inherited_source_message_ids, _DiskSourceMessageIds):
+            artifacts.append(self.inherited_source_message_ids)
+        if isinstance(self.inherited_prefix_message_ids, _PrefixMessageIds):
+            composed = self.inherited_prefix_message_ids._composed
+            if isinstance(composed, _DiskSignatureSequence):
+                artifacts.append(composed)
+        failures: list[BaseException] = []
+        for artifact in artifacts:
+            try:
+                artifact.close()
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            raise PreparedSessionSettlementError(failures)
 
 
 class _MessageTail(Sequence[ParsedMessage]):
@@ -1514,16 +1556,31 @@ class PreparedSessionWrite:
     cross_acquisition_union: _PreparedCrossAcquisitionUnion | None = None
 
     def close(self) -> None:
-        """Release the private row and reconciliation spools after publication."""
-        try:
-            if self.cross_acquisition_union is not None:
-                scratch = self.cross_acquisition_union.carry_forward.scratch
-                if scratch is not None:
+        """Release artifacts only after all physical native owners settle."""
+        failures: list[BaseException] = []
+        if self.cross_acquisition_union is not None:
+            scratch = self.cross_acquisition_union.carry_forward.scratch
+            if scratch is not None:
+                try:
                     scratch.close()
-            if self.rows.scratch is not None:
+                except BaseException as failure:
+                    failures.append(failure)
+        if self.rows.scratch is not None:
+            try:
+                pending = retained_native_sql_owners_for_lifetime(self.rows.scratch)
+                if pending:
+                    raise NativeConnectionSettlementError(
+                        pending[0], RuntimeError("prepared row artifact remains owned")
+                    )
                 self.rows.scratch.cleanup()
-        finally:
+            except BaseException as failure:
+                failures.append(failure)
+        try:
             self.context.close()
+        except BaseException as failure:
+            failures.append(failure)
+        if failures:
+            raise PreparedSessionSettlementError(failures)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1707,6 +1764,7 @@ def _prepared_message_context(
     # it against whatever the parent holds now, which would move those IDs.
     # Only a full write re-applies it to IDs; an append keeps stored IDs.
     identity_scope = _materialized_identity_scope(conn, session_id)
+    parent_composed: Sequence[tuple[str, str]] | None = None
     if not merge_append:
         lineage_session = session
         if hook_parent_provider_id is not None:
@@ -1715,7 +1773,6 @@ def _prepared_message_context(
         acompact = _is_claude_code_acompact_session(session)
         force_spawned_fresh = False
         if parent_session_id is not None and messages:
-            parent_composed: Sequence[tuple[str, str]] | None = None
             cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=parent_session_id)
             force_spawned_fresh = cycle_walk.outcome != "acyclic"
             if acompact:
@@ -1775,6 +1832,11 @@ def _prepared_message_context(
         remapped_events = scoped_view.remap_events(list(effective_session.session_events))
         if remapped_events is not None:
             effective_session = effective_session.model_copy(update={"session_events": remapped_events})
+    if isinstance(parent_composed, _DiskSignatureSequence) and not (
+        isinstance(inherited_prefix_message_ids, _PrefixMessageIds)
+        and inherited_prefix_message_ids._composed is parent_composed
+    ):
+        parent_composed.close()
     return PreparedMessageContext(
         effective_session=effective_session,
         messages=messages if isinstance(messages, (SqliteMessageSink, _MessageTail)) else tuple(messages),
@@ -1876,42 +1938,53 @@ def prepare_session_write(
     ):
         source_path = cast(Path, context.messages.path)
         scratch = tempfile.TemporaryDirectory(prefix="polylogue-prepared-write-", dir=source_path.parent)
-        builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
-        try:
-            with (
-                nullcontext(context.content_identities)
-                if context.content_identities is not None
-                else disk_message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
-            ) as identities:
-                builder.add_streamed(
-                    session_id=session_id,
-                    session_content_hash=_prepared_session_content_hash(normalized),
-                    message_rows=_iter_message_rows(
-                        session_id,
-                        context.messages,
-                        position_offset=position_offset,
-                        duplicate_native_ids=context.duplicate_native_ids,
-                        content_identities=identities,
-                    ),
-                    block_rows=_iter_block_rows(
-                        session_id,
-                        context.messages,
-                        position_offset=position_offset,
-                        duplicate_native_ids=context.duplicate_native_ids,
-                        content_identities=identities,
-                    ),
-                )
-            shard = open_session_shard(builder.seal().path)
-        except BaseException:
-            builder.abandon()
-            scratch.cleanup()
-            raise
+        with ExitStack() as preparation_stack:
+            preparation_stack.enter_context(retain_native_sql_lifetimes(scratch))
+            for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
+                if isinstance(duplicates, _DiskDuplicateNativeIds):
+                    preparation_stack.enter_context(duplicates.reader())
+            builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
+            try:
+                with (
+                    nullcontext(context.content_identities)
+                    if context.content_identities is not None
+                    else disk_message_content_identities(
+                        context.messages, occurrence_offsets=content_occurrence_offsets
+                    )
+                ) as identities:
+                    builder.add_streamed(
+                        session_id=session_id,
+                        session_content_hash=_prepared_session_content_hash(normalized),
+                        message_rows=_iter_message_rows(
+                            session_id,
+                            context.messages,
+                            position_offset=position_offset,
+                            duplicate_native_ids=context.duplicate_native_ids,
+                            content_identities=identities,
+                        ),
+                        block_rows=_iter_block_rows(
+                            session_id,
+                            context.messages,
+                            position_offset=position_offset,
+                            duplicate_native_ids=context.duplicate_native_ids,
+                            content_identities=identities,
+                        ),
+                    )
+                shard = open_session_shard(builder.seal().path)
+            except BaseException:
+                builder.abandon()
+                pending = retained_native_sql_owners_for_lifetime(scratch)
+                if not pending:
+                    scratch.cleanup()
+                raise
         entry = shard.sessions[0]
         rows = PreparedSessionRows(
             session_id=session_id,
             session_content_hash=entry.session_content_hash,
-            message_rows=_ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi),
-            block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi),
+            message_rows=_ShardRowSequence(
+                shard.path, "messages", entry.message_lo, entry.message_hi, lifetime=scratch
+            ),
+            block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
             content_identities=entry.content_identities,
             position_offset=position_offset,
             content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
@@ -1993,46 +2066,55 @@ def prepare_session_rows(
 ) -> PreparedSessionRows:
     """Build ``PreparedSessionRows`` for ``session``'s full-replace write.
 
-    Pure function: normalizes messages exactly as ``write_parsed_session_to_
-    archive`` does for a non-merge-append, non-lineage-sliced write (see
+    Normalizes messages exactly as ``write_parsed_session_to_archive`` does for a non-merge-append, non-lineage-sliced write (see
     ``normalize_active_branch``), then reuses the same row-tuple builders the
     writer itself calls (``_build_message_rows``/``_build_block_rows``) at
     ``position_offset=0`` -- the offset every full-replace write uses. A
     byte-replay preparation can supply its pinned append offset, so the
     admitted writer need not rebuild per-message/block tuples for a composed
-    tail. No
-    SQLite connection, network call, or filesystem access; safe to call from
-    any thread, including a parse-prefetch worker running well before (and
-    concurrently with) any writer hold.
+    tail. List-backed input stays in memory; sealed message input uses
+    creator-owned indexed scratch during preparation. No native handle is
+    carried into publication.
     """
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
     messages = _derive_tool_outcomes(normalize_active_branch(session.messages), session.session_events, origin=origin)
     duplicate_native_ids = _duplicate_message_native_ids(messages)
-    content_identities = message_content_identities(messages, occurrence_offsets=content_occurrence_offsets)
-    message_rows = _build_message_rows(
-        session_id,
-        messages,
-        position_offset=position_offset,
-        duplicate_native_ids=duplicate_native_ids,
-        content_identities=content_identities,
-    )
-    block_rows = _build_block_rows(
-        session_id,
-        messages,
-        position_offset=position_offset,
-        duplicate_native_ids=duplicate_native_ids,
-        content_identities=content_identities,
-    )
-    return PreparedSessionRows(
-        session_id=session_id,
-        session_content_hash=_prepared_session_content_hash(session),
-        message_rows=tuple(message_rows),
-        block_rows=tuple(block_rows),
-        content_identities=tuple(content_identities),
-        position_offset=position_offset,
-        content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
-    )
+    try:
+        with (
+            duplicate_native_ids.reader()
+            if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds)
+            else nullcontext()
+        ):
+            content_identities = message_content_identities(messages, occurrence_offsets=content_occurrence_offsets)
+            message_rows = _build_message_rows(
+                session_id,
+                messages,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_native_ids,
+                content_identities=content_identities,
+            )
+            block_rows = _build_block_rows(
+                session_id,
+                messages,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_native_ids,
+                content_identities=content_identities,
+            )
+            result = PreparedSessionRows(
+                session_id=session_id,
+                session_content_hash=_prepared_session_content_hash(session),
+                message_rows=tuple(message_rows),
+                block_rows=tuple(block_rows),
+                content_identities=tuple(content_identities),
+                position_offset=position_offset,
+                content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
+            )
+
+    finally:
+        if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
+            duplicate_native_ids.close()
+    return result
 
 
 def _prepared_session_content_hash(session: ParsedSession) -> bytes:
@@ -2534,6 +2616,8 @@ def write_parsed_session_to_archive(
     ):
         if identity_scope is not None:
             identity_scope.__exit__(None, None, None)
+        if prepared_write is None:
+            context.close()
         raise PreparedSessionWriteRefusedError("prepared replay lowering is stale or unavailable")
     add_timing("index.prepare", t0)
     # An owned scope, not ``with conn``, decides the actual outer commit after
@@ -2542,6 +2626,15 @@ def write_parsed_session_to_archive(
     prefix_guard: _InheritedPrefixGuard | None = None
     try:
         with ExitStack() as mutation_stack:
+            for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
+                if isinstance(duplicates, _DiskDuplicateNativeIds):
+                    mutation_stack.enter_context(duplicates.reader())
+            if isinstance(context.inherited_source_message_ids, _DiskSourceMessageIds):
+                mutation_stack.enter_context(context.inherited_source_message_ids.reader())
+            if isinstance(context.inherited_prefix_message_ids, _PrefixMessageIds):
+                composed = context.inherited_prefix_message_ids._composed
+                if isinstance(composed, _DiskSignatureSequence):
+                    mutation_stack.enter_context(composed.reader())
             mutation_stack.enter_context(
                 _index_write_scope(
                     conn,
@@ -2553,6 +2646,8 @@ def write_parsed_session_to_archive(
             if prepared_write is not None:
                 prepared_union = prepared_write.cross_acquisition_union
                 if prepared_union is not None:
+                    if prepared_union.carry_forward.scratch is not None:
+                        mutation_stack.enter_context(prepared_union.carry_forward.scratch.access(write=True))
                     current_predecessor = conn.execute(
                         "SELECT raw_id, content_hash, parser_fingerprint, lowering_fingerprint, "
                         "parent_session_id, active_leaf_message_id FROM sessions WHERE session_id = ?",
@@ -2943,7 +3038,7 @@ def write_parsed_session_to_archive(
             refresh_attachment_ids: Iterable[str] = stale_attachment_ids - carried_forward_attachment_ids
             if projection_carry_forward is not None and projection_carry_forward.scratch is not None:
                 refresh_attachment_ids = _UnionSet(
-                    projection_carry_forward.scratch.conn, "refresh_attachment", "attachment_id"
+                    projection_carry_forward.scratch, "refresh_attachment", "attachment_id"
                 )
             unresolved_attachment_owners = _write_attachments(
                 conn,
@@ -2997,7 +3092,7 @@ def write_parsed_session_to_archive(
                 post_restore_attachment_ids: Iterable[str] = carried_forward_attachment_ids
                 if projection_carry_forward.scratch is not None:
                     post_restore_attachment_ids = _UnionSet(
-                        projection_carry_forward.scratch.conn, "carried_attachment", "attachment_id"
+                        projection_carry_forward.scratch, "carried_attachment", "attachment_id"
                     )
                 refresh_and_sweep_attachment_rows(conn, post_restore_attachment_ids)
                 add_timing("index.restore_projections", t0)
@@ -3136,6 +3231,8 @@ def write_parsed_session_to_archive(
     finally:
         if identity_scope is not None:
             identity_scope.__exit__(None, None, None)
+        if prepared_write is None:
+            context.close()
     # The lineage columns of every child invalidated above are now NULL, so the
     # child reads as a complete root while its recomposed prefix is gone. The
     # loss is named as ordinary retryable convergence debt (ops tier) rather
@@ -5118,11 +5215,15 @@ class _UnionScratch:
 
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-field-union-", dir=directory)
-        # Preparation and publication may run on different threads. The
-        # carrier is handed over only after preparation completes.
-        self.conn = sqlite3.connect(Path(self._scratch.name) / "union.db", check_same_thread=False)
         self._closed = False
-        self.conn.execute("PRAGMA journal_mode = DELETE")
+        self._lock = threading.RLock()
+        self._path = Path(self._scratch.name) / "union.db"
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._owner: NativeSQLCustodyOwner | None = None
+        self._conn: sqlite3.Connection | None = None
+        self._owner = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        assert self._owner.connection is not None
+        self._conn = self._owner.connection
         for name in ("old_message", "new_message", "old_block", "new_block", "merged_message", "merged_block"):
             self.conn.execute(
                 f"CREATE TABLE {name} (ordinal INTEGER PRIMARY KEY, key TEXT, owner TEXT, position INTEGER, row_blob BLOB NOT NULL)"
@@ -5181,27 +5282,74 @@ class _UnionScratch:
         return pickle.loads(result[0]) if result is not None else None
 
     def rows(self, table: str) -> _PickledRowSequence:
-        return _PickledRowSequence(self.conn, table)
+        return _PickledRowSequence(self, table)
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("union SQL requires its creator-owned access scope")
+        owner = self._owner if self._owner is not None else self._reader_owner
+        if owner is None:
+            raise RuntimeError("union access has no native owner")
+        return owner.require_connection()
+
+    def finish(self) -> None:
+        """Close preparation SQL before transporting the artifact."""
+        self.conn.commit()
+        assert self._owner is not None
+        self._owner.close()
+        self._owner = None
+        self._conn = None
+
+    @contextmanager
+    def access(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("union artifact is closed")
+            if self._conn is not None:
+                yield self.conn
+                return
+            uri = self._path.as_uri() + ("?mode=rw" if write else "?mode=ro")
+            conn = sqlite3.connect(uri, uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+                if write:
+                    conn.commit()
+            finally:
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
 
     def close(self) -> None:
-        if not self._closed:
-            self.conn.close()
+        with self._lock:
+            if self._closed:
+                return
+            if self._owner is not None:
+                if self._owner in retained_native_sql_owners_for_lifetime(self):
+                    self._owner.close()
+                self._owner = None
+                self._conn = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("union artifact remains owned"))
             self._scratch.cleanup()
             self._closed = True
 
     def __del__(self) -> None:
-        if not getattr(self, "_closed", True):
-            with suppress(Exception):
-                self.close()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
 class _PickledRowSequence(Sequence[tuple[object, ...]]):
-    def __init__(self, conn: sqlite3.Connection, table: str) -> None:
-        self.conn = conn
-        self.table = table
+    def __init__(self, scratch: _UnionScratch, table: str) -> None:
+        self.scratch, self.table = scratch, table
 
     def __len__(self) -> int:
-        return int(self.conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
+        with self.scratch.access() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
 
     @overload
     def __getitem__(self, index: int) -> tuple[object, ...]: ...
@@ -5213,52 +5361,73 @@ class _PickledRowSequence(Sequence[tuple[object, ...]]):
         if isinstance(index, slice):
             return [self[position] for position in range(*index.indices(len(self)))]
         ordinal = index + len(self) if index < 0 else index
-        row = self.conn.execute(f"SELECT row_blob FROM {self.table} WHERE ordinal = ?", (ordinal,)).fetchone()
+        with self.scratch.access() as conn:
+            row = conn.execute(f"SELECT row_blob FROM {self.table} WHERE ordinal = ?", (ordinal,)).fetchone()
         if row is None:
             raise IndexError(index)
         return cast(tuple[object, ...], pickle.loads(row[0]))
 
     def __iter__(self) -> Iterator[tuple[object, ...]]:
-        for (row_blob,) in self.conn.execute(f"SELECT row_blob FROM {self.table} ORDER BY ordinal"):
-            yield pickle.loads(row_blob)
+        after = -1
+        while True:
+            with self.scratch.access() as conn:
+                rows = conn.execute(
+                    f"SELECT ordinal, row_blob FROM {self.table} WHERE ordinal > ? ORDER BY ordinal LIMIT 512", (after,)
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            yield from (pickle.loads(row[1]) for row in rows)
 
 
 class _UnionMap(Mapping[str, str | None]):
-    def __init__(self, conn: sqlite3.Connection, table: str, key_col: str, value_col: str) -> None:
-        self.conn, self.table, self.key_col, self.value_col = conn, table, key_col, value_col
+    def __init__(self, scratch: _UnionScratch, table: str, key_col: str, value_col: str) -> None:
+        self.scratch, self.table, self.key_col, self.value_col = scratch, table, key_col, value_col
 
     def __getitem__(self, key: str) -> str | None:
-        row = self.conn.execute(
-            f"SELECT {self.value_col} FROM {self.table} WHERE {self.key_col} = ?", (key,)
-        ).fetchone()
+        with self.scratch.access() as conn:
+            row = conn.execute(f"SELECT {self.value_col} FROM {self.table} WHERE {self.key_col} = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
         return str(row[0]) if row[0] is not None else None
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self.conn.execute(f"SELECT {self.key_col} FROM {self.table}"):
-            yield str(key)
+        after = ""
+        first = True
+        while True:
+            with self.scratch.access() as conn:
+                rows = conn.execute(
+                    f"SELECT {self.key_col} FROM {self.table} WHERE ? OR {self.key_col} > ? "
+                    f"ORDER BY {self.key_col} LIMIT 512",
+                    (first, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
-        return int(self.conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
+        with self.scratch.access() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
 
 
 class _UnionSet(Set[str]):
-    def __init__(self, conn: sqlite3.Connection, table: str, column: str) -> None:
-        self.conn, self.table, self.column = conn, table, column
+    def __init__(self, scratch: _UnionScratch, table: str, column: str) -> None:
+        self.scratch, self.table, self.column = scratch, table, column
 
     def __contains__(self, key: object) -> bool:
-        return (
-            isinstance(key, str)
-            and self.conn.execute(f"SELECT 1 FROM {self.table} WHERE {self.column} = ?", (key,)).fetchone() is not None
-        )
+        if not isinstance(key, str):
+            return False
+        with self.scratch.access() as conn:
+            return conn.execute(f"SELECT 1 FROM {self.table} WHERE {self.column} = ?", (key,)).fetchone() is not None
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self.conn.execute(f"SELECT {self.column} FROM {self.table}"):
-            yield str(key)
+        yield from _UnionMap(self.scratch, self.table, self.column, self.column)
 
     def __len__(self) -> int:
-        return int(self.conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
+        with self.scratch.access() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0])
 
 
 def _capture_session_projection_rows(
@@ -6425,12 +6594,13 @@ def _prepare_cross_acquisition_union(
         )
         carry = _ProjectionCarryForward(
             captured,
-            cast(Mapping[str, str], _UnionMap(scratch.conn, "block_remap", "old_id", "new_id")),
-            _UnionSet(scratch.conn, "live_message", "message_id"),
-            _UnionMap(scratch.conn, "message_remap", "old_id", "new_id"),
+            cast(Mapping[str, str], _UnionMap(scratch, "block_remap", "old_id", "new_id")),
+            _UnionSet(scratch, "live_message", "message_id"),
+            _UnionMap(scratch, "message_remap", "old_id", "new_id"),
             scratch,
         )
-        builder = SessionShardBuilder(Path(scratch._scratch.name) / "merged.db")
+        with retain_native_sql_lifetimes(scratch):
+            builder = SessionShardBuilder(Path(scratch._scratch.name) / "merged.db")
         try:
             builder.add_streamed(
                 session_id=session_id,
@@ -6438,7 +6608,8 @@ def _prepare_cross_acquisition_union(
                 message_rows=iter(scratch.rows("merged_message")),
                 block_rows=iter(scratch.rows("merged_block")),
             )
-            shard = open_session_shard(builder.seal().path)
+            with retain_native_sql_lifetimes(scratch):
+                shard = open_session_shard(builder.seal().path)
         except BaseException:
             builder.abandon()
             raise
@@ -6446,10 +6617,11 @@ def _prepare_cross_acquisition_union(
         rows = PreparedSessionRows(
             session_id,
             entry.session_content_hash,
-            _ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi),
-            _ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi),
+            _ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi, lifetime=scratch),
+            _ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
             entry.content_identities,
         )
+        scratch.finish()
         return _PreparedCrossAcquisitionUnion(predecessor, parent_guard, rows, carry)
     except BaseException:
         scratch.close()
@@ -9474,10 +9646,19 @@ class _DiskMessageEventIndex(Mapping[str, str]):
     """Indexed source and boundary lookups for a disk-backed session."""
 
     def __init__(self, directory: Path) -> None:
+        from polylogue.storage.sqlite.connection_profile import open_scratch_connection
+
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-event-owners-", dir=directory)
-        self._conn = connect_scratch_database(Path(self._scratch.name) / "owners.db")
+        self._sql_owner = open_scratch_connection(
+            Path(self._scratch.name) / "owners.db", scratch_directory=self._scratch, lifetime_dependencies=(self,)
+        )
+        assert self._sql_owner.connection is not None
         self._conn.execute("CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID")
         self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        return self._sql_owner.require_connection()
 
     def __setitem__(self, key: str, value: str) -> None:
         self._conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?)", (key, value))
@@ -9499,21 +9680,29 @@ class _DiskMessageEventIndex(Mapping[str, str]):
         return str(row[0])
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self._conn.execute("SELECT provider_id FROM owner"):
-            yield str(key)
+        after = ""
+        first = True
+        while True:
+            rows = self._conn.execute(
+                "SELECT provider_id FROM owner WHERE ? OR provider_id > ? ORDER BY provider_id LIMIT 512",
+                (first, after),
+            ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM owner").fetchone()[0])
 
     def close(self) -> None:
-        self._conn.close()
-        self._scratch.cleanup()
-        del self._conn
+        if self._sql_owner in retained_native_sql_owners_for_lifetime(self):
+            self._sql_owner.close()
 
     def __del__(self) -> None:
-        if getattr(self, "_conn", None) is not None:
-            with suppress(Exception):
-                self.close()
+        if getattr(self, "_sql_owner", None) is not None:
+            self.close()
 
 
 _PROVIDER_USAGE_EVENT_INSERT_SQL = """
@@ -10708,10 +10897,11 @@ def _assert_unique_message_coordinates(
     if isinstance(messages, (SqliteMessageSink, _MessageTail)):
         source = messages.messages if isinstance(messages, _MessageTail) else messages
         if isinstance(source, SqliteMessageSink):
-            with (
-                tempfile.TemporaryDirectory(prefix="polylogue-coordinates-", dir=source.path.parent) as scratch,
-                closing(connect_scratch_database(Path(scratch) / "coordinates.db")) as index,
-            ):
+            from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+            with scratch_connection_context(
+                prefix="polylogue-coordinates-", filename="coordinates.db", directory=source.path.parent
+            ) as index:
                 index.execute(
                     "CREATE TABLE coordinate (position INTEGER NOT NULL, variant_index INTEGER NOT NULL, "
                     "native_id TEXT NOT NULL, PRIMARY KEY(position, variant_index)) WITHOUT ROWID"
@@ -10860,25 +11050,25 @@ def _acompact_content_membership_ratio(
     repeated boilerplate cannot manufacture overlap.
     """
     if isinstance(parent_composed, _DiskSignatureSequence):
-        counts = parent_composed._conn
-        counts.execute(
-            "CREATE TABLE IF NOT EXISTS membership (digest TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID"
-        )
-        counts.execute("DELETE FROM membership")
-        for _message_id, signature in parent_composed:
+        with parent_composed.reader() as counts:
             counts.execute(
-                "INSERT INTO membership VALUES (?, 1) ON CONFLICT(digest) DO UPDATE SET n = n + 1",
-                (signature,),
+                "CREATE TEMP TABLE IF NOT EXISTS membership (digest TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID"
             )
-        matching_count = 0
-        total_count = 0
-        for signature in child_prefix_signatures:
-            total_count += 1
-            row = counts.execute("SELECT n FROM membership WHERE digest = ?", (signature,)).fetchone()
-            if row is not None and int(row[0]) > 0:
-                matching_count += 1
-                counts.execute("UPDATE membership SET n = n - 1 WHERE digest = ?", (signature,))
-        return matching_count / total_count if total_count else None
+            counts.execute("DELETE FROM membership")
+            for _message_id, signature in parent_composed:
+                counts.execute(
+                    "INSERT INTO membership VALUES (?, 1) ON CONFLICT(digest) DO UPDATE SET n = n + 1",
+                    (signature,),
+                )
+            matching_count = 0
+            total_count = 0
+            for signature in child_prefix_signatures:
+                total_count += 1
+                row = counts.execute("SELECT n FROM membership WHERE digest = ?", (signature,)).fetchone()
+                if row is not None and int(row[0]) > 0:
+                    matching_count += 1
+                    counts.execute("UPDATE membership SET n = n - 1 WHERE digest = ?", (signature,))
+            return matching_count / total_count if total_count else None
     prefix = tuple(child_prefix_signatures)
     if not prefix:
         return None
@@ -11018,14 +11208,21 @@ def _iter_own_db_signatures(
 class _DiskSignatureSequence(Sequence[tuple[str, str]]):
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-lineage-signatures-", dir=directory)
-        self._conn = sqlite3.connect(Path(self._scratch.name) / "signatures.db")
-        self._conn.execute(
+        self._lock = threading.RLock()
+        self._closed = False
+        self._path = Path(self._scratch.name) / "signatures.db"
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._writer: NativeSQLCustodyOwner | None = None
+        self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        assert self._writer.connection is not None
+        self._conn: sqlite3.Connection | None = self._writer.connection
+        self._connection().execute(
             "CREATE TABLE signature (ordinal INTEGER PRIMARY KEY, message_id TEXT NOT NULL, digest TEXT NOT NULL)"
         )
         self._count = 0
 
     def append(self, message_id: str, digest: str) -> None:
-        self._conn.execute("INSERT INTO signature VALUES (?, ?, ?)", (self._count, message_id, digest))
+        self._connection().execute("INSERT INTO signature VALUES (?, ?, ?)", (self._count, message_id, digest))
         self._count += 1
 
     def __len__(self) -> int:
@@ -11043,22 +11240,77 @@ class _DiskSignatureSequence(Sequence[tuple[str, str]]):
         ordinal = index + self._count if index < 0 else index
         if ordinal < 0 or ordinal >= self._count:
             raise IndexError(index)
-        row = self._conn.execute("SELECT message_id, digest FROM signature WHERE ordinal = ?", (ordinal,)).fetchone()
+        with self.reader() as conn:
+            row = conn.execute("SELECT message_id, digest FROM signature WHERE ordinal = ?", (ordinal,)).fetchone()
         if row is None:
             raise PreparedSessionWriteRefusedError("lineage signature disappeared")
         return str(row[0]), str(row[1])
 
     def __iter__(self) -> Iterator[tuple[str, str]]:
-        for message_id, digest in self._conn.execute("SELECT message_id, digest FROM signature ORDER BY ordinal"):
-            yield str(message_id), str(digest)
+        after = -1
+        while True:
+            with self.reader() as conn:
+                rows = conn.execute(
+                    "SELECT ordinal, message_id, digest FROM signature WHERE ordinal > ? ORDER BY ordinal LIMIT 512",
+                    (after,),
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            yield from ((str(row[1]), str(row[2])) for row in rows)
+
+    def _connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("signature SQL requires its creator-owned reader")
+        owner = self._writer if self._writer is not None else self._reader_owner
+        if owner is None:
+            raise RuntimeError("artifact reader has no native owner")
+        return owner.require_connection()
+
+    def finish(self) -> None:
+        self._connection().commit()
+        assert self._writer is not None
+        self._writer.close()
+        self._writer = None
+        self._conn = None
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("signature artifact is closed")
+            if self._conn is not None:
+                yield self._connection()
+                return
+            conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+            finally:
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._writer is not None:
+                if self._writer in retained_native_sql_owners_for_lifetime(self):
+                    self._writer.close()
+                self._writer = None
+                self._conn = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("signature artifact remains owned"))
+            self._scratch.cleanup()
+            self._closed = True
 
     def __del__(self) -> None:
-        connection = getattr(self, "_conn", None)
-        if connection is not None:
-            connection.close()
-        scratch = getattr(self, "_scratch", None)
-        if scratch is not None:
-            scratch.cleanup()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
 def _iter_composed_rows(conn: sqlite3.Connection, session_id: str) -> Iterator[tuple[str, str, str]]:
@@ -11118,6 +11370,7 @@ def _disk_composed_db_signatures(
         result = _DiskSignatureSequence(directory)
         for message_id, digest, _owner in _iter_composed_rows(conn, session_id):
             result.append(message_id, digest)
+        result.finish()
         return result
     finally:
         if opened_snapshot:
@@ -13294,6 +13547,7 @@ def _extract_prefix_tail(
     shared prefix also ends before a message carrying one of ``attachments``
     its parent row does not reference (``_attachment_shared_prefix_limit``).
     """
+    owns_parent = parent_composed is None
     if parent_composed is None:
         source = messages.messages if isinstance(messages, _MessageTail) else messages
         parent_composed = (
@@ -13302,6 +13556,8 @@ def _extract_prefix_tail(
             else _composed_db_signatures(conn, parent_session_id, cache=cache)
         )
     if not parent_composed:
+        if owns_parent and isinstance(parent_composed, _DiskSignatureSequence):
+            parent_composed.close()
         return (None, "spawned-fresh", messages, {}, None, ())
     k = 0
     for message, (_, parent_signature) in zip(messages, parent_composed, strict=False):
@@ -13316,6 +13572,8 @@ def _extract_prefix_tail(
         attachments,
     )
     if k == 0:
+        if owns_parent and isinstance(parent_composed, _DiskSignatureSequence):
+            parent_composed.close()
         return (None, "spawned-fresh", messages, {}, None, ())
     branch_point_message_id = parent_composed[k - 1][0]
     duplicate_native_ids = _duplicate_message_native_ids(messages)
@@ -13323,12 +13581,23 @@ def _extract_prefix_tail(
     inherited_refs: dict[str, str] | _DiskSourceMessageIds = (
         _DiskSourceMessageIds(source.path.parent) if isinstance(source, SqliteMessageSink) else {}
     )
-    for index, (message, (parent_message_id, _signature)) in enumerate(zip(messages, parent_composed, strict=False)):
-        if index >= k:
-            break
-        provider_id = message.provider_message_id
-        if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
-            inherited_refs[provider_id] = parent_message_id
+    with ExitStack() as prefix_stack:
+        if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
+            prefix_stack.enter_context(duplicate_native_ids.reader())
+        if isinstance(parent_composed, _DiskSignatureSequence):
+            prefix_stack.enter_context(parent_composed.reader())
+        for index, (message, (parent_message_id, _signature)) in enumerate(
+            zip(messages, parent_composed, strict=False)
+        ):
+            if index >= k:
+                break
+            provider_id = message.provider_message_id
+            if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
+                inherited_refs[provider_id] = parent_message_id
+    if isinstance(inherited_refs, _DiskSourceMessageIds):
+        inherited_refs.finish()
+    if isinstance(duplicate_native_ids, _DiskDuplicateNativeIds):
+        duplicate_native_ids.close()
     return (
         branch_point_message_id,
         "prefix-sharing",
@@ -13344,32 +13613,99 @@ class _DiskSourceMessageIds(Mapping[str, str]):
 
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-prefix-refs-", dir=directory)
-        self._conn = sqlite3.connect(Path(self._scratch.name) / "refs.db")
-        self._conn.execute("CREATE TABLE refs (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID")
+        self._lock = threading.RLock()
+        self._closed = False
+        self._path = Path(self._scratch.name) / "refs.db"
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._writer: NativeSQLCustodyOwner | None = None
+        self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        assert self._writer.connection is not None
+        self._conn: sqlite3.Connection | None = self._writer.connection
+        self._connection().execute(
+            "CREATE TABLE refs (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
+        )
 
     def __setitem__(self, key: str, value: str) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO refs VALUES (?, ?)", (key, value))
+        self._connection().execute("INSERT OR REPLACE INTO refs VALUES (?, ?)", (key, value))
 
     def __getitem__(self, key: str) -> str:
-        row = self._conn.execute("SELECT message_id FROM refs WHERE provider_id = ?", (key,)).fetchone()
+        with self.reader() as conn:
+            row = conn.execute("SELECT message_id FROM refs WHERE provider_id = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
         return str(row[0])
 
     def __iter__(self) -> Iterator[str]:
-        for (key,) in self._conn.execute("SELECT provider_id FROM refs"):
-            yield str(key)
+        after = ""
+        first = True
+        while True:
+            with self.reader() as conn:
+                rows = conn.execute(
+                    "SELECT provider_id FROM refs WHERE ? OR provider_id > ? ORDER BY provider_id LIMIT 512",
+                    (first, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
-        return int(self._conn.execute("SELECT COUNT(*) FROM refs").fetchone()[0])
+        with self.reader() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM refs").fetchone()[0])
+
+    def _connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("prefix SQL requires its creator-owned reader")
+        owner = self._writer if self._writer is not None else self._reader_owner
+        if owner is None:
+            raise RuntimeError("artifact reader has no native owner")
+        return owner.require_connection()
+
+    def finish(self) -> None:
+        self._connection().commit()
+        assert self._writer is not None
+        self._writer.close()
+        self._writer = None
+        self._conn = None
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("prefix artifact is closed")
+            if self._conn is not None:
+                yield self._connection()
+                return
+            conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+            finally:
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._writer is not None:
+                if self._writer in retained_native_sql_owners_for_lifetime(self):
+                    self._writer.close()
+                self._writer = None
+                self._conn = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("prefix artifact remains owned"))
+            self._scratch.cleanup()
+            self._closed = True
 
     def __del__(self) -> None:
-        connection = getattr(self, "_conn", None)
-        if connection is not None:
-            connection.close()
-        scratch = getattr(self, "_scratch", None)
-        if scratch is not None:
-            scratch.cleanup()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
 def _lineage_prefix_digest(signatures: Iterable[tuple[str, str]]) -> bytes:
@@ -14195,67 +14531,108 @@ def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozense
 
 
 class _DiskDuplicateNativeIds(frozenset[str]):
-    """Membership for ambiguous ids across preparation and publication threads."""
+    """Sealed ambiguous-id file; each native access belongs to its creator."""
 
     def __new__(cls, messages: Iterable[ParsedMessage], directory: Path) -> _DiskDuplicateNativeIds:
         return super().__new__(cls)
 
     def __init__(self, messages: Iterable[ParsedMessage], directory: Path) -> None:
         self._lock = threading.RLock()
+        self._closed = False
+        self._conn: sqlite3.Connection | None = None
+        self._reader_owner: NativeSQLCustodyOwner | None = None
+        self._writer: NativeSQLCustodyOwner | None = None
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-duplicate-ids-", dir=directory)
-        # The prepared context moves from the read-only preparation thread to
-        # the writer, then may be released by a third thread. Every access to
-        # this shared handle, including close, is serialized by _lock.
-        self._conn: sqlite3.Connection | None = connect_scratch_database(
-            Path(self._scratch.name) / "native-ids.db", check_same_thread=False
-        )
-        self._conn.execute("CREATE TABLE ids (native_id TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID")
-        for message in messages:
-            native_id = _normalized_message_native_id(message)
-            if native_id is not None:
-                self._conn.execute(
-                    "INSERT INTO ids VALUES (?, 1) ON CONFLICT(native_id) DO UPDATE SET n = n + 1",
-                    (native_id,),
-                )
+        self._path = Path(self._scratch.name) / "native-ids.db"
+        self._writer = open_scratch_connection(self._path, lifetime_dependencies=(self,))
+        assert self._writer.connection is not None
+        try:
+            conn = self._writer.connection
+            conn.execute("CREATE TABLE ids (native_id TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID")
+            for message in messages:
+                native_id = _normalized_message_native_id(message)
+                if native_id is not None:
+                    self._writer.require_connection().execute(
+                        "INSERT INTO ids VALUES (?, 1) ON CONFLICT(native_id) DO UPDATE SET n = n + 1",
+                        (native_id,),
+                    )
+            conn.commit()
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                primary.add_note(f"duplicate-id construction cleanup also failed: {cleanup}")
+            raise
+        self._writer.close()
+        self._writer = None
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        """Reuse one creator-owned reader for a complete publication window."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("duplicate native-id index was closed")
+            if self._conn is not None:
+                if self._reader_owner is None:
+                    raise RuntimeError("duplicate-id reader has no native owner")
+                yield self._reader_owner.require_connection()
+                return
+            conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
+            self._reader_owner = owner
+            self._conn = conn
+            try:
+                yield owner.require_connection()
+            finally:
+                # Clear only the borrowing slot; the strong native census
+                # retains the actual handle and artifact after failed close.
+                self._conn = None
+                self._reader_owner = None
+                owner.close()
 
     def __contains__(self, value: object) -> bool:
         if not isinstance(value, str):
             return False
-        with self._lock:
-            conn = self._connection()
+        with self.reader() as conn:
             row = conn.execute("SELECT n FROM ids WHERE native_id = ?", (value,)).fetchone()
         return row is not None and int(row[0]) > 1
 
     def __iter__(self) -> Iterator[str]:
-        with self._lock:
-            for (value,) in self._connection().execute("SELECT native_id FROM ids WHERE n > 1"):
-                yield str(value)
+        after = ""
+        first = True
+        while True:
+            with self.reader() as conn:
+                rows = conn.execute(
+                    "SELECT native_id FROM ids WHERE n > 1 AND (? OR native_id > ?) ORDER BY native_id LIMIT 512",
+                    (first, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            first = False
+            yield from (str(row[0]) for row in rows)
 
     def __len__(self) -> int:
-        with self._lock:
-            return int(self._connection().execute("SELECT COUNT(*) FROM ids WHERE n > 1").fetchone()[0])
-
-    def _connection(self) -> sqlite3.Connection:
-        if self._conn is None:
-            raise RuntimeError("duplicate native-id index was closed")
-        return self._conn
+        with self.reader() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM ids WHERE n > 1").fetchone()[0])
 
     def close(self) -> None:
-        """Idempotently release the handle and its scratch from any thread."""
         with self._lock:
-            conn = self._conn
-            if conn is None:
+            if self._closed:
                 return
-            self._conn = None
-            try:
-                conn.close()
-            finally:
-                self._scratch.cleanup()
+            if self._writer is not None:
+                if self._writer in retained_native_sql_owners_for_lifetime(self):
+                    self._writer.close()
+                self._writer = None
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(pending[0], RuntimeError("duplicate-id artifact remains owned"))
+            self._scratch.cleanup()
+            self._closed = True
 
     def __del__(self) -> None:
-        if hasattr(self, "_lock") and hasattr(self, "_conn"):
-            with suppress(Exception):
-                self.close()
+        if hasattr(self, "_lock"):
+            self.close()
 
 
 def _normalized_message_native_id(message: ParsedMessage) -> str | None:

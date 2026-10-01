@@ -1347,7 +1347,7 @@ def _prepared_reader(path: Path) -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(_read_uri(path), uri=True)
     owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
-        yield connection
+        yield owner.require_connection()
     finally:
         owner.close()
 

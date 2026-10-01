@@ -226,6 +226,19 @@ class NativeSQLCustodyOwner:
         ):
             raise RuntimeError("native SQLite connection belongs to another task or thread")
 
+    def require_connection(self) -> sqlite3.Connection:
+        """Admit new native work only on the exact current creator task."""
+        self._require_owner()
+        if self.task is not _native_owner_task():
+            raise RuntimeError("native SQLite work belongs to another task")
+        if self.connection is None or self.close_required:
+            raise RuntimeError("native SQLite connection requires terminal cleanup")
+        from polylogue.core.compute_cancel import compute_cancel_requested
+
+        if compute_cancel_requested():
+            raise asyncio.CancelledError("native SQLite work was cancelled")
+        return self.connection
+
     def handoff(self) -> sqlite3.Connection:
         """Retire temporary construction custody without closing the idle handle."""
         self._require_owner()
@@ -2490,6 +2503,31 @@ def read_frame(
     return ReadFrame(path, profile=profile, tier=tier, timeout_class=timeout_class, reason=reason)
 
 
+def open_scratch_connection(
+    path: Path,
+    *,
+    terminal_parent: SQLCustodyOwner | None = None,
+    scratch_directory: tempfile.TemporaryDirectory[str] | None = None,
+    lifetime_dependencies: tuple[object, ...] = (),
+) -> NativeSQLCustodyOwner:
+    """Register disposable SQL before its first pragma or schema statement."""
+    connection = sqlite3.connect(path)
+    owner = NativeSQLCustodyOwner(
+        connection,
+        terminal_parent=terminal_parent,
+        scratch_directory=scratch_directory,
+        lifetime_dependencies=(*current_native_sql_lifetimes(), *lifetime_dependencies),
+    )
+    try:
+        connection = owner.require_connection()
+        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA synchronous = OFF")
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    return owner
+
+
 @contextmanager
 def scratch_connection_context(
     *, prefix: str, filename: str, directory: Path | None = None
@@ -2505,6 +2543,7 @@ def scratch_connection_context(
         connection, scratch_directory=scratch, lifetime_dependencies=current_native_sql_lifetimes()
     )
     try:
+        connection = owner.require_connection()
         connection.execute("PRAGMA journal_mode = MEMORY")
         connection.execute("PRAGMA synchronous = OFF")
         yield connection

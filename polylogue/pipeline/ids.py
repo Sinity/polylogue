@@ -503,15 +503,17 @@ class _DiskRevisionStore:
             owner = getattr(self, "_native_owner", None)
             if owner is not None:
                 try:
-                    owner.close()
+                    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+                    if owner in retained_native_sql_owners_for_lifetime(self):
+                        owner.close()
                 except BaseException:
                     owner.retain_lifetime(self)
                     raise
                 self._native_owner = None
                 del self.conn
             elif hasattr(self, "conn"):
-                self.conn.close()
-                del self.conn
+                raise RuntimeError("revision projection writer has no native owner")
             from polylogue.storage.sqlite.connection_profile import (
                 NativeConnectionSettlementError,
                 retained_native_sql_owners_for_lifetime,

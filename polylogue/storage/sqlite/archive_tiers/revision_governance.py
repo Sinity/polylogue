@@ -98,7 +98,6 @@ import hashlib
 import itertools
 import json
 import sqlite3
-import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future
@@ -143,7 +142,6 @@ from polylogue.core.raw_failure_evidence import (
     raw_failure_classification_reason,
 )
 from polylogue.core.sources import origin_from_provider, provider_from_origin
-from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.core.timestamp_authority import (
     normalize_session_timestamps,
     session_evidence_timestamps,
@@ -2546,69 +2544,65 @@ def _file_backed_parser_census_keys(
     parser_sessions: Sequence[ParsedSession],
 ) -> tuple[bool, bool, int, str]:
     """Compare parser and durable identities without a Python cohort-sized set."""
-    with tempfile.TemporaryDirectory(prefix="polylogue-parser-census-") as directory:
-        scratch = connect_scratch_database(Path(directory) / "identities.sqlite")
-        try:
-            scratch.execute("PRAGMA cache_size = -2048")
-            scratch.execute("PRAGMA temp_store = FILE")
-            scratch.execute(
-                "CREATE TABLE census_identity (kind INTEGER NOT NULL, logical_key TEXT NOT NULL, "
-                "PRIMARY KEY(kind, logical_key)) WITHOUT ROWID"
-            )
-            durable_valid = True
-            for (value,) in conn.execute(
-                "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
-                (raw_id,),
-            ):
-                try:
-                    key = canonical_authority_logical_key(str(value))
-                except ValueError:
-                    durable_valid = False
-                    break
-                scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
-            if (
-                durable_valid
-                and raw_logical_key is not None
-                and str(revision_kind) != RawRevisionKind.UNKNOWN.value
-                and not str(raw_logical_key).startswith("pending-raw:")
-            ):
-                try:
-                    key = canonical_authority_logical_key(str(raw_logical_key))
-                except ValueError:
-                    durable_valid = False
-                else:
-                    scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
-            iter_ids = getattr(parser_sessions, "iter_session_ids", None)
-            if callable(iter_ids):
-                parser_keys: Iterator[str] = iter_ids()
+    with scratch_connection_context(prefix="polylogue-parser-census-", filename="identities.sqlite") as scratch:
+        scratch.execute("PRAGMA cache_size = -2048")
+        scratch.execute("PRAGMA temp_store = FILE")
+        scratch.execute(
+            "CREATE TABLE census_identity (kind INTEGER NOT NULL, logical_key TEXT NOT NULL, "
+            "PRIMARY KEY(kind, logical_key)) WITHOUT ROWID"
+        )
+        durable_valid = True
+        for (value,) in conn.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
+            (raw_id,),
+        ):
+            try:
+                key = canonical_authority_logical_key(str(value))
+            except ValueError:
+                durable_valid = False
+                break
+            scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
+        if (
+            durable_valid
+            and raw_logical_key is not None
+            and str(revision_kind) != RawRevisionKind.UNKNOWN.value
+            and not str(raw_logical_key).startswith("pending-raw:")
+        ):
+            try:
+                key = canonical_authority_logical_key(str(raw_logical_key))
+            except ValueError:
+                durable_valid = False
             else:
-                parser_keys = (
-                    f"{session.source_name.value}:{session.provider_session_id}" for session in parser_sessions
-                )
-            for parser_key in parser_keys:
-                key = canonical_authority_logical_key(parser_key)
-                scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (0, ?)", (key,))
-            scratch.commit()
-            observed_count = int(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind = 0").fetchone()[0])
-            differs = scratch.execute(
-                "SELECT 1 FROM census_identity AS observed "
-                "WHERE observed.kind = 0 AND NOT EXISTS ("
-                "SELECT 1 FROM census_identity AS durable "
-                "WHERE durable.kind = 1 AND durable.logical_key = observed.logical_key) "
-                "UNION ALL "
-                "SELECT 1 FROM census_identity AS durable "
-                "WHERE durable.kind = 1 AND NOT EXISTS ("
-                "SELECT 1 FROM census_identity AS observed "
-                "WHERE observed.kind = 0 AND observed.logical_key = durable.logical_key) LIMIT 1"
-            ).fetchone()
-            logical_keys_json = scratch.execute(
-                "SELECT json_group_array(logical_key) FROM ("
-                "SELECT logical_key FROM census_identity WHERE kind = 0 ORDER BY logical_key)"
-            ).fetchone()[0]
-            return durable_valid, differs is None, observed_count, str(logical_keys_json or "[]")
-        finally:
-            scratch.close()
+                scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
+
+        iter_ids = getattr(parser_sessions, "iter_session_ids", None)
+        if callable(iter_ids):
+            parser_keys: Iterator[str] = iter_ids()
+        else:
+            parser_keys = (f"{session.source_name.value}:{session.provider_session_id}" for session in parser_sessions)
+        for parser_key in parser_keys:
+            key = canonical_authority_logical_key(parser_key)
+            scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (0, ?)", (key,))
+        scratch.commit()
+        observed_count = int(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind = 0").fetchone()[0])
+        differs = scratch.execute(
+            "SELECT 1 FROM census_identity AS observed "
+            "WHERE observed.kind = 0 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS durable "
+            "WHERE durable.kind = 1 AND durable.logical_key = observed.logical_key) "
+            "UNION ALL "
+            "SELECT 1 FROM census_identity AS durable "
+            "WHERE durable.kind = 1 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS observed "
+            "WHERE observed.kind = 0 AND observed.logical_key = durable.logical_key) LIMIT 1"
+        ).fetchone()
+        logical_keys_json = scratch.execute(
+            "SELECT json_group_array(logical_key) FROM ("
+            "SELECT logical_key FROM census_identity WHERE kind = 0 ORDER BY logical_key)"
+        ).fetchone()[0]
+        return durable_valid, differs is None, observed_count, str(logical_keys_json or "[]")
 
 
 def record_current_parser_source_census(
