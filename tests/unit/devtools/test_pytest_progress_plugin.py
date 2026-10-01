@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -27,28 +28,15 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "PYTEST_XDIST_WORKER",
     ):
         monkeypatch.delenv(name, raising=False)
-    selected_count = pytest_progress_plugin._SELECTED_COUNT
-    deselected_count = pytest_progress_plugin._DESELECTED_COUNT
-    deselected_nodeids = list(pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE)
-    slowest_reports = list(pytest_progress_plugin._SLOWEST_REPORTS)
-    collection_started_at = pytest_progress_plugin._COLLECTION_STARTED_AT
-    collection_duration_s = pytest_progress_plugin._COLLECTION_DURATION_S
-    controller_collection_payload = pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD
-    recorded_report_keys = set(pytest_progress_plugin._RECORDED_REPORT_KEYS)
-    session_state_stack = list(pytest_progress_plugin._SESSION_STATE_STACK)
-    pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
-    pytest_progress_plugin._SESSION_STATE_STACK.clear()
+    # Unit hooks use a fresh module; the loaded outer plugin keeps its real
+    # session stack, report keys, and pinned artifact destinations.
+    spec = importlib.util.spec_from_file_location("_isolated_pytest_progress", pytest_progress_plugin.__file__)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(globals(), "pytest_progress_plugin", module)
     yield
-    pytest_progress_plugin._SELECTED_COUNT = selected_count
-    pytest_progress_plugin._DESELECTED_COUNT = deselected_count
-    pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE[:] = deselected_nodeids
-    pytest_progress_plugin._SLOWEST_REPORTS[:] = slowest_reports
-    pytest_progress_plugin._COLLECTION_STARTED_AT = collection_started_at
-    pytest_progress_plugin._COLLECTION_DURATION_S = collection_duration_s
-    pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD = controller_collection_payload
-    pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
-    pytest_progress_plugin._RECORDED_REPORT_KEYS.update(recorded_report_keys)
-    pytest_progress_plugin._SESSION_STATE_STACK[:] = session_state_stack
 
 
 @dataclass(frozen=True)
@@ -506,3 +494,65 @@ def test_progress_plugin_merges_xdist_collection_facts_without_double_counting(
     assert summary["selected_count"] == 1
     assert summary["deselected_count"] == 1
     assert summary["collection_duration_s"] == 2.5
+
+
+def test_loaded_plugin_preserves_outer_receipt_around_real_nested_pytest(tmp_path: Path) -> None:
+    """Dynamic destinations or shared unit-hook state lose the outer call."""
+    outer_events = tmp_path / "outer.jsonl"
+    outer_summary = tmp_path / "summary.json"
+    outer_test = tmp_path / "test_outer.py"
+    selector = (
+        "tests/unit/devtools/test_pytest_progress_plugin.py::test_progress_plugin_records_call_and_setup_failures"
+    )
+    outer_test.write_text(
+        "import pytest\n"
+        "def test_surrounding_run():\n"
+        f"    assert pytest.main({[CLEAR_CONFIGURED_ADDOPTS, '-q', '-p', 'no:cacheprovider', '-p', 'devtools.pytest_progress_plugin', selector]!r}) == 0\n"
+    )
+    env = dict(os.environ)
+    for name in (*pytest_progress_plugin._ARTIFACT_ENV_NAMES, "PYTEST_XDIST_WORKER"):
+        env.pop(name, None)
+    env.update(
+        {
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "POLYLOGUE_PYTEST_EVENTS_PATH": str(outer_events),
+            "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
+            "POLYLOGUE_PYTEST_SUMMARY_PATH": str(outer_summary),
+        }
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            CLEAR_CONFIGURED_ADDOPTS,
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(outer_test),
+        ],
+        cwd=Path(__file__).resolve().parents[3],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    outer = [json.loads(line) for line in outer_events.read_text().splitlines()]
+    reports = [event for event in outer if event["event"] == "test_report"]
+    assert {event["when"] for event in reports} == {"setup", "call", "teardown"}
+    assert all("test_surrounding_run" in event["nodeid"] for event in reports)
+    assert any(event["event"] == "test_finished" and "test_surrounding_run" in event["nodeid"] for event in outer)
+    assert json.loads(outer_summary.read_text())["selected_count"] == 1
+    nested_paths = list(tmp_path.glob("nested-pytest-*/events.jsonl"))
+    assert len(nested_paths) == 1
+    nested = [json.loads(line) for line in nested_paths[0].read_text().splitlines()]
+    assert any(
+        event["event"] == "test_report"
+        and event["when"] == "call"
+        and "test_progress_plugin_records_call_and_setup_failures" in event["nodeid"]
+        for event in nested
+    )
+    assert all("test_surrounding_run" not in event.get("nodeid", "") for event in nested)

@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.corpus_program import (
@@ -16,6 +16,7 @@ from tests.infra.corpus_program import (
     Attach,
     AttachmentArtifact,
     Converge,
+    CorpusAcquisitionRejectedError,
     CorpusProgram,
     CorpusProgramError,
     Crash,
@@ -27,6 +28,8 @@ from tests.infra.corpus_program import (
     RawArtifact,
     Replace,
     Restart,
+    _codex_transcript,
+    _codex_turn,
     corpus_program_schedule_strategy,
     corpus_program_strategy,
 )
@@ -241,6 +244,16 @@ def test_production_route_carries_attachment_identity_metadata_and_bytes(
     with BlobStore(runtime.archive_root / "blob").open(blob_hash.hex()) as retained:
         assert retained.read() == attachment.payload
     assert runtime._raw_ids["session"]
+    # Replacing the capture turns with one synthetic turn must turn this red.
+    with sqlite3.connect(runtime.archive_root / "index.db") as conn:
+        turns = conn.execute(
+            "SELECT m.native_id, m.role, b.text FROM messages m JOIN blocks b ON b.message_id = m.message_id "
+            "WHERE b.block_type = 'text' ORDER BY m.position, b.position"
+        ).fetchall()
+    assert turns == [
+        ("msg-user-1", "user", "What is the capital of France?"),
+        ("msg-asst-1", "assistant", "The capital of France is Paris."),
+    ]
 
 
 def test_production_route_persists_canonical_hook_envelope(workspace_env: dict[str, Path]) -> None:
@@ -281,3 +294,82 @@ def test_emit_hook_refuses_non_object_payload_with_named_reason(tmp_path: Path) 
                 payload=b"[]",
             )
         )
+
+
+@settings(max_examples=4, suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
+@given(corpus_program_strategy(max_operations=5))
+def test_generated_programs_acquire_and_parse_on_production_route(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    program: CorpusProgram,
+) -> None:
+    """Arbitrary binary transcript draws fail at the actual acquisition/parser."""
+    import uuid
+
+    root = workspace_env["archive_root"].parent / f"generated-{uuid.uuid4().hex}"
+    # Start every draw from the same empty fixture, not a previous draw's rows.
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    runtime = ProductionCorpusRuntime(root)
+    run = program.run(runtime)
+    runtime.restart()
+    result = runtime.converge()
+    assert result["parse"].parse_failures == 0
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] > 0
+    assert run.state.applied_operation_ids == program.schedule
+
+
+def test_rejected_acquisition_does_not_advance_reference_state(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Ignoring an empty/error AcquireResult permits the rejected append."""
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    initial = _artifact("session", _codex_transcript("session", "first", "authored"))
+    from tests.infra.corpus_program import CorpusState
+
+    state = Acquire("acquire", initial).apply(CorpusState(), runtime)
+    with pytest.raises(CorpusAcquisitionRejectedError) as refused:
+        Replace("bad-replace", "session", b"\xff\x00").apply(state, runtime)
+    assert refused.value.artifact_id == "session"
+    assert refused.value.result.errors > 0 or not refused.value.result.raw_ids
+    assert state.artifact("session").payload == initial.payload
+    assert state.applied_operation_ids == ("acquire",)
+    assert all(not isinstance(result, dict) or "convergence" not in result for result in runtime.last_results)
+
+
+def test_unchanged_reacquisition_preserves_proven_raw_evidence(workspace_env: dict[str, Path]) -> None:
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    artifact = _artifact("session", _codex_transcript("session", "first", "authored"))
+    first = runtime.acquire(artifact)
+    raw_ids = runtime._raw_ids["session"]
+    repeated = runtime.acquire(artifact)
+    assert first.acquired > 0
+    assert repeated.skipped > 0
+    assert runtime._raw_ids["session"] == raw_ids
+    assert runtime.converge()["parse"].parse_failures == 0
+
+
+def test_generated_transcript_builder_survives_acquire_append_replace(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Binary content at any of the three generator sites makes this fail."""
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    from tests.infra.corpus_program import CorpusState
+
+    state = CorpusState()
+    operations = (
+        Acquire("acquire", _artifact("session", _codex_transcript("session", "first", "initial authored"))),
+        Append("append", "session", _codex_turn("second", "appended authored")),
+        Replace("replace", "session", _codex_transcript("session", "replacement", "replaced authored")),
+    )
+    expected = ("initial authored", "appended authored", "replaced authored")
+    for operation, text in zip(operations, expected, strict=True):
+        state = operation.apply(state, runtime)
+        result = runtime.converge()
+        assert result["parse"].parse_failures == 0
+        with sqlite3.connect(runtime.archive_root / "index.db") as conn:
+            assert conn.execute("SELECT 1 FROM blocks WHERE text = ?", (text,)).fetchone() is not None
+    assert state.applied_operation_ids == ("acquire", "append", "replace")
