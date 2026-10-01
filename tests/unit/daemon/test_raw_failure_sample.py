@@ -1314,3 +1314,70 @@ def test_local_path_tails_do_not_gain_url_or_alternate_quote_exemptions(diagnost
 def test_relative_declarations_require_exact_integer_bounds(spans: object) -> None:
     with pytest.raises(ValidationError):
         RawFailureSample(failure_kind="parse_error", relative_path_spans=cast(Any, spans), redacted_error="src/file.py")
+
+
+@pytest.mark.parametrize("separator", [",", ";", "|", ":", "=", "(", ")", "[", "]", "{", "}", "<", ">", "'", '"', " "])
+@pytest.mark.parametrize("url", ["https://api.example.test/v1/very-long-endpoint", "https://api.example.test"])
+@pytest.mark.parametrize("quoted", [False, True])
+def test_raw_failure_routes_conceal_local_paths_adjacent_to_url_tokens(
+    tmp_path: Path, separator: str, url: str, quoted: bool
+) -> None:
+    """An unrestricted URL match exempts the comma-adjacent filesystem tail."""
+    from polylogue.operations.status_workload import raw_failure_status_from_connection
+
+    diagnostic = f"failed {url}{separator}/opt/private space/例.json"
+    if quoted:
+        delimiter = '"' if separator == "'" else "'"
+        diagnostic = f"failed {delimiter}{url}{separator}/opt/private space/例.json{delimiter}"
+    _seed_archive_raw_session(
+        tmp_path,
+        raw_id="raw-adjacent",
+        origin="codex-session",
+        native_id="native-adjacent",
+        source_path="relative/session.json",
+        parse_error=diagnostic,
+    )
+    direct = raw_failure_info_for_root(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
+        pinned = raw_failure_status_from_connection(connection, schema="main")
+    constructed = RawFailureSample(failure_kind="parse_error", redacted_error=diagnostic)
+    outputs = [
+        constructed.redacted_error,
+        cast(list[RawFailureSample], direct["samples"])[0].redacted_error,
+        cast(list[dict[str, object]], pinned["raw_failure_samples"])[0]["redacted_error"],
+    ]
+    for output in outputs:
+        assert isinstance(output, str)
+        assert url in output
+        assert "[redacted]" in output
+        assert all(fragment not in output for fragment in ("/opt", "private space", "例.json"))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.example.test/a%2C%2Fsegment?q=%2Fvalue",
+        "https://api.example.test/a,b;c?ids=a,b;c",
+        "https://[::1]/v1/data",
+        "https://api.example.test:443/v1/data?q=%2Fvalue",
+    ],
+)
+def test_unambiguous_network_url_punctuation_retains_exact_text(url: str) -> None:
+    sample = RawFailureSample(failure_kind="parse_error", redacted_error=f"failed {url}")
+    assert sample.redacted_error == f"failed {url}"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "C:/Users/synthetic/private.json",
+        r"C:\Users\synthetic\private.json",
+        r"\\server\share\private.json",
+        r"\private.json",
+        "C:private/file",
+    ],
+)
+def test_relative_declarations_refuse_every_platform_anchor(path: str) -> None:
+    with pytest.raises(ValidationError):
+        RawFailureSample(failure_kind="parse_error", relative_path_spans=((0, len(path)),), redacted_error=path)

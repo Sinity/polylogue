@@ -3966,3 +3966,36 @@ def test_insight_freshness_sqlite_failure_remains_unmeasured_and_private(tmp_pat
     assert "[redacted]" in str(result["reason"])
     assert "private space" not in str(result["reason"])
     assert "例.json" not in str(result["reason"])
+
+
+@pytest.mark.parametrize("tail_length", [1_000, 100_000])
+async def test_failed_service_privacy_work_stays_within_existing_display_prefix(
+    monkeypatch: pytest.MonkeyPatch, tail_length: int
+) -> None:
+    from polylogue.core.status_error_privacy import redact_status_error
+    from polylogue.daemon.services import ServiceCapability
+    from polylogue.daemon.supervisor import DaemonSupervisor
+
+    observed_lengths: list[int] = []
+
+    def project(value: str) -> str:
+        observed_lengths.append(len(value))
+        return redact_status_error(value)
+
+    async def fail() -> None:
+        raise OSError("cannot read '/opt/private space/例.json " + "x" * tail_length + "'")
+
+    supervisor = DaemonSupervisor(capabilities={ServiceCapability.DERIVED_WRITES})
+    supervisor.start("secret_scan_sweep", fail)
+    await supervisor.wait()
+    monkeypatch.setattr("polylogue.daemon.cli.active_supervisor", lambda: supervisor)
+    monkeypatch.setattr(status_module, "redact_status_error", project)
+    snapshot = status_module.supervised_service_snapshot()
+    assert snapshot is not None
+    states, failures = snapshot
+    assert states["secret_scan_sweep"] == "failed"
+    assert observed_lengths == [status_module._SERVICE_FAILURE_REASON_MAX_CHARS]
+    reason = str(failures[0]["reason"])
+    assert len(reason) <= status_module._SERVICE_FAILURE_REASON_MAX_CHARS
+    assert "[redacted]" in reason
+    assert all(fragment not in reason for fragment in ("/opt", "private space", "例.json"))

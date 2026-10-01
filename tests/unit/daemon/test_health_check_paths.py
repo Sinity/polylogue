@@ -1191,3 +1191,25 @@ def test_repeated_failure_ratio_preserves_authored_text_and_redacts_only_diagnos
     assert "[redacted]" in alert.message
     assert "private space" not in alert.message
     assert "例.json" not in alert.message
+
+
+@pytest.mark.parametrize("tail_length", [1_000, 100_000])
+def test_repeated_failure_privacy_work_stays_within_existing_hint_prefix(
+    monkeypatch: pytest.MonkeyPatch, tail_length: int
+) -> None:
+    from polylogue.core.status_error_privacy import redact_status_error
+    from polylogue.daemon import health
+
+    observed_lengths: list[int] = []
+
+    def project(value: str) -> str:
+        observed_lengths.append(len(value))
+        return redact_status_error(value)
+
+    monkeypatch.setattr(health, "redact_status_error", project)
+    diagnostic = "cannot read '/opt/private space/例.json " + "x" * tail_length + "'"
+    alert = health._repeated_stage_failure_alert("", 5, 5, ("parse", diagnostic))
+    assert observed_lengths == [80]
+    assert "5/5 recent attempts failed" in alert.message
+    assert "[redacted]" in alert.message
+    assert all(fragment not in alert.message for fragment in ("/opt", "private space", "例.json"))

@@ -3363,7 +3363,9 @@ def supervised_service_snapshot() -> tuple[dict[str, str], list[dict[str, object
             {
                 "service": name,
                 "state": state.value,
-                "reason": redact_status_error(reason)[:_SERVICE_FAILURE_REASON_MAX_CHARS],
+                "reason": redact_status_error(reason[:_SERVICE_FAILURE_REASON_MAX_CHARS])[
+                    :_SERVICE_FAILURE_REASON_MAX_CHARS
+                ],
                 "at": transition.at if transition is not None else None,
             }
         )

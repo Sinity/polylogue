@@ -1215,7 +1215,7 @@ def _repeated_stage_failure_alert(
         if error_row:
             phase = error_row[0] or "unknown"
             error_text = error_row[1] or ""
-            error_hint = f" (phase={phase}: {redact_status_error(str(error_text))[:80]})"
+            error_hint = f" (phase={phase}: {redact_status_error(str(error_text)[:80])[:80]})"
         severity = HealthSeverity.ERROR
         message = f"{failed_recent}/{total_recent} recent attempts failed{error_hint}"
 

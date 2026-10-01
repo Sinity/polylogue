@@ -5,13 +5,16 @@ from __future__ import annotations
 import re
 from bisect import bisect_right
 from collections.abc import Sequence
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import urlsplit
 
 # Match only at the start of a scheme token. Failed searches do not retry at
 # every character of a long token. A local path consumes its tail before URL
 # recognition can inspect a substring of that path.
 _URL = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+# In unstructured prose these separators can introduce a local path as well
+# as belong to a URI. Without producer-owned URL evidence, conceal that suffix.
+_URL_LOCAL_SUFFIX = re.compile(r"[,;|:=()\[\]{}](?=/)")
 _DIAGNOSTIC_START = " \t\"'([{=:;"
 _DIAGNOSTIC_END = " \t\"')]}=:;"
 
@@ -32,7 +35,12 @@ def redact_status_error(value: object, *, relative_path_spans: Sequence[tuple[in
     previous_end = 0
     for start, end in relative_spans:
         path = value[start:end]
-        if not (0 <= start < end <= len(value)) or not path or PurePosixPath(path).is_absolute():
+        if (
+            not (0 <= start < end <= len(value))
+            or not path
+            or PurePosixPath(path).is_absolute()
+            or PureWindowsPath(path).anchor
+        ):
             raise ValueError("relative path declaration must name an exact relative span")
         if start < previous_end:
             raise ValueError("relative diagnostic spans must not overlap")
@@ -64,8 +72,16 @@ def redact_status_error(value: object, *, relative_path_spans: Sequence[tuple[in
             except ValueError:
                 network_url = False
             if network_url:
-                parts.append(match.group())
-                position = match.end()
+                authority_start = position + len(url.scheme) + 3
+                authority_end = authority_start + len(url.netloc)
+                local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_start, match.end())
+                # urlsplit has validated bracketed IP authorities: their closing
+                # bracket before the first URI slash is structural URL syntax.
+                if local_suffix is not None and local_suffix.start() < authority_end and local_suffix.group() == "]":
+                    local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_end, match.end())
+                url_end = local_suffix.start() if local_suffix is not None else match.end()
+                parts.append(value[position:url_end])
+                position = url_end
                 continue
         if character == "/":
             # Unquoted text has no filename terminator. Inside a quoted
