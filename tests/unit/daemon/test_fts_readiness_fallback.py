@@ -13,6 +13,7 @@ from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.fts import completed_fts_readiness
 from tests.infra.index_writer import write_fixture_index_session
 
 
@@ -66,7 +67,7 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
     # use search_text (the FTS predicate), not text.
     assert search_blocks > text_blocks
 
-    fts = fts_readiness_info(db, exact=True)
+    fts = completed_fts_readiness(db, lambda: fts_readiness_info(db, exact=True))
     assert fts["coverage_pct"] == 100.0
     assert fts["messages_ready"] is True
 
@@ -81,7 +82,7 @@ def test_genuinely_empty_archive_reports_coverage_as_unmeasured_not_exact(tmp_pa
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
 
-    fts = fts_readiness_info(db, exact=False)
+    fts = completed_fts_readiness(db, lambda: fts_readiness_info(db, exact=False))
 
     assert fts["message_indexable_count"] == 0
     assert fts["message_indexed_count"] == 0
@@ -93,7 +94,7 @@ def test_genuinely_empty_archive_reports_coverage_as_unmeasured_exact(tmp_path: 
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
 
-    fts = fts_readiness_info(db, exact=True)
+    fts = completed_fts_readiness(db, lambda: fts_readiness_info(db, exact=True))
 
     assert fts["message_indexable_count"] == 0
     assert fts["message_indexed_count"] == 0

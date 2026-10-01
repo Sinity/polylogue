@@ -20,16 +20,11 @@ from polylogue.storage.fts.sql import (
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
     FTS_MESSAGES_TABLE_SQL,
     FTS_REBUILD_SQL,
-    FTS_TRIGGER_DDL,
     IndexedMessage,
-    chunked,
-    excess_message_rows_sql,
     insert_all_message_identity_rows_sql,
     insert_all_message_rows_sql,
     insert_missing_message_rows_range_sql,
-    insert_missing_message_rows_sql,
     message_identity_mismatch_sql,
-    repair_all_message_identity_rows_sql,
     repair_message_identity_rows_range_sql,
 )
 from polylogue.storage.sqlite.connection_profile import (
@@ -37,7 +32,6 @@ from polylogue.storage.sqlite.connection_profile import (
     BOUNDED_REPAIR_MMAP_SIZE_BYTES,
 )
 
-_chunked = chunked
 IndexedMessageLike: TypeAlias = tuple[str, str, str | None] | IndexedMessage
 
 
@@ -86,9 +80,6 @@ FTS_TRIGGER_NAMES = _FTS_TRIGGER_NAMES
 DEFAULT_MISSING_MESSAGE_FTS_BATCH_ROWS = 50_000
 """Rowid window size for archive-wide missing message FTS repair."""
 
-DEFAULT_EXCESS_MESSAGE_FTS_BATCH_ROWS = 5_000
-"""Batch size for archive-wide excess message FTS row deletion."""
-
 
 @dataclass(frozen=True, slots=True)
 class FtsSurfaceInvariant:
@@ -129,7 +120,6 @@ class FtsInvariantSnapshot:
     """Exact freshness status for every active FTS-backed search surface."""
 
     messages: FtsSurfaceInvariant
-    retired_action_surface: FtsSurfaceInvariant
 
     @property
     def ready(self) -> bool:
@@ -137,7 +127,7 @@ class FtsInvariantSnapshot:
 
     @property
     def surfaces(self) -> tuple[FtsSurfaceInvariant, ...]:
-        return (self.messages, self.retired_action_surface)
+        return (self.messages,)
 
 
 def _triggers_present_sync(conn: sqlite3.Connection, names: tuple[str, ...]) -> bool:
@@ -148,13 +138,6 @@ def _triggers_present_sync(conn: sqlite3.Connection, names: tuple[str, ...]) -> 
         names,
     ).fetchone()
     return row is not None and row[0] == len(names)
-
-
-# polylogue-a7xr.5: FTS trigger DDL is now sourced from storage/fts/sql.py as the single
-# source of truth. Aliases below preserve backward compatibility with code that
-# references the private _*_TRIGGER_DDL names.
-_BLOCKS_FTS_TRIGGER_DDL = BLOCKS_FTS_TRIGGER_DDL
-_FTS_TRIGGER_DDL = FTS_TRIGGER_DDL
 
 
 def configure_bounded_fts_repair_connection(conn: sqlite3.Connection) -> None:
@@ -185,7 +168,7 @@ def restore_message_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Restore only block-backed message FTS triggers inside the caller's transaction."""
     if not _table_exists_sync(conn, "blocks") or not _table_exists_sync(conn, "messages_fts"):
         return
-    for ddl in _BLOCKS_FTS_TRIGGER_DDL:
+    for ddl in BLOCKS_FTS_TRIGGER_DDL:
         conn.execute(ddl)
 
 
@@ -264,14 +247,14 @@ async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
 def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
     ddl: list[str] = []
     if _table_exists_sync(conn, "blocks") and _table_exists_sync(conn, "messages_fts"):
-        ddl.extend(_BLOCKS_FTS_TRIGGER_DDL)
+        ddl.extend(BLOCKS_FTS_TRIGGER_DDL)
     return tuple(ddl)
 
 
 async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connection) -> tuple[str, ...]:
     ddl: list[str] = []
     if await _table_exists_async(conn, "blocks") and await _table_exists_async(conn, "messages_fts"):
-        ddl.extend(_BLOCKS_FTS_TRIGGER_DDL)
+        ddl.extend(BLOCKS_FTS_TRIGGER_DDL)
     return tuple(ddl)
 
 
@@ -335,7 +318,7 @@ def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS messages_fts_identity")
     conn.execute(FTS_MESSAGES_IDENTITY_TABLE_SQL)
     if _table_exists_sync(conn, "blocks"):
-        for ddl in _BLOCKS_FTS_TRIGGER_DDL:
+        for ddl in BLOCKS_FTS_TRIGGER_DDL:
             conn.execute(ddl)
         insert_missing_message_rows_batched_sync(conn)
 
@@ -384,58 +367,6 @@ def insert_missing_message_rows_batched_sync(
         return 0
     after = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
     return max(0, after - before)
-
-
-def delete_excess_message_rows_batched_sync(
-    conn: sqlite3.Connection,
-    *,
-    batch_rows: int = DEFAULT_EXCESS_MESSAGE_FTS_BATCH_ROWS,
-    progress_callback: Callable[[int], None] | None = None,
-) -> int:
-    """Delete FTS rows whose canonical ``blocks`` row is no longer indexable."""
-    if batch_rows <= 0:
-        raise ValueError("batch_rows must be positive")
-
-    ensure_fts_index_sync(conn)
-    deleted_total = 0
-    while True:
-        rows = conn.execute(excess_message_rows_sql(batch_rows)).fetchall()
-        rowids = [int(row[0]) for row in rows]
-        if not rowids:
-            break
-        placeholders = ", ".join("?" for _ in rowids)
-        changes_before = conn.total_changes
-        conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", tuple(rowids))
-        conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", tuple(rowids))
-        deleted = max(0, conn.total_changes - changes_before)
-        deleted_total += deleted
-        if deleted:
-            conn.commit()
-        if progress_callback is not None:
-            progress_callback(deleted)
-        if len(rowids) < batch_rows:
-            break
-    return deleted_total
-
-
-def reconcile_message_fts_rows_once_sync(conn: sqlite3.Connection) -> tuple[int, int]:
-    """Reconcile the global message FTS surface with bounded scan count.
-
-    The old numeric-rowid window loop is safe for compact tables, but a live
-    archive can retain a sparse rowid space after many full replacements.
-    Each window then repeats an expensive join against the FTS docsize shadow
-    table.  A global debt repair is already an explicit maintenance action, so
-    use one set-based missing-row pass and one set-based identity pass instead.
-    Existing excess rows are still removed through the contentless-FTS-safe
-    batched delete primitive.
-    """
-    ensure_fts_index_sync(conn)
-    deleted = delete_excess_message_rows_batched_sync(conn)
-    before = conn.total_changes
-    conn.execute(insert_missing_message_rows_sql())
-    inserted = max(0, conn.total_changes - before)
-    conn.execute(repair_all_message_identity_rows_sql())
-    return inserted, deleted
 
 
 async def rebuild_fts_index_async(
@@ -548,7 +479,7 @@ def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
     count = 0
     if exists:
         count = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
-    return {"exists": exists, "count": int(count), "action_exists": False, "action_count": 0}
+    return {"exists": exists, "count": int(count)}
 
 
 async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object]:
@@ -559,23 +490,19 @@ async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object
     if exists:
         count_row = await (await conn.execute(FTS_INDEX_DOC_COUNT_SQL)).fetchone()
         count = count_row[0] if count_row else 0
-    return {"exists": exists, "count": int(count), "action_exists": False, "action_count": 0}
+    return {"exists": exists, "count": int(count)}
 
 
 def message_fts_readiness_sync(
     conn: sqlite3.Connection,
-    *,
-    verify_total_rows: bool = True,
 ) -> dict[str, int | bool]:
     """Inspect the canonical message/FTS relation used by search.
 
-    ``verify_total_rows`` remains call-compatible but cannot select a weaker
-    readiness proxy.  A count-only comparison misses wrong identities and
+    A count-only comparison misses wrong identities and
     orphan residue; a recorded freshness row is merely telemetry.  The domain
     adapter's global inspection is the one authoritative classifier for both
     search admission and daemon convergence.
     """
-    del verify_total_rows
     from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
 
     inspection = FtsDerivationAdapter().inspect_partition(conn, GLOBAL_PARTITION)
@@ -595,11 +522,8 @@ def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int
 
 async def message_fts_readiness_async(
     conn: aiosqlite.Connection,
-    *,
-    verify_total_rows: bool = True,
 ) -> dict[str, int | bool]:
     """Async form of the same authoritative message FTS inspection."""
-    del verify_total_rows
     result = await conn._execute(message_fts_readiness_sync, conn._conn)  # type: ignore[no-untyped-call]
     return cast(dict[str, int | bool], result)
 
@@ -719,21 +643,7 @@ def _fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsh
         )
     else:
         message_surface = _messages_fts_invariant_sync(conn)
-    return FtsInvariantSnapshot(
-        messages=message_surface,
-        retired_action_surface=_absent_optional_surface("retired_action_surface"),
-    )
-
-
-def _absent_optional_surface(name: str) -> FtsSurfaceInvariant:
-    return FtsSurfaceInvariant(
-        name=name,
-        source_exists=False,
-        exists=False,
-        source_rows=0,
-        indexed_rows=0,
-        triggers_present=False,
-    )
+    return FtsInvariantSnapshot(messages=message_surface)
 
 
 def _messages_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvariant:
@@ -766,8 +676,6 @@ __all__ = [
     "FtsInvariantSnapshot",
     "FtsSurfaceInvariant",
     "FTS_TRIGGER_NAMES",
-    "_BLOCKS_FTS_TRIGGER_DDL",
-    "_chunked",
     "check_fts_readiness",
     "configure_bounded_fts_repair_connection",
     "ensure_fts_index_async",
@@ -781,7 +689,6 @@ __all__ = [
     "message_fts_search_readiness_async",
     "message_fts_search_readiness_sync",
     "message_fts_triggers_present_sync",
-    "delete_excess_message_rows_batched_sync",
     "insert_missing_message_rows_batched_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
@@ -790,7 +697,6 @@ __all__ = [
     "repair_fts_index_async",
     "repair_fts_index_sync",
     "repair_message_fts_index_sync",
-    "reconcile_message_fts_rows_once_sync",
     "reset_message_fts_index_sync",
     "replace_fts_rows_for_messages_sync",
     "restore_message_fts_triggers_sync",

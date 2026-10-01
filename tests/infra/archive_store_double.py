@@ -21,8 +21,8 @@ presents is derived from the real :class:`ArchiveStore`:
 * every parameter a double declares explicitly must be accepted by the
   production method of the same name -- a renamed production parameter fails
   the double instead of vanishing into ``**kwargs``;
-* the operation-read and tier-path attributes are read out of the production
-  class body, so a rename there fails at import rather than being patched in.
+* snapshot, cancellation, tier metadata and closure are provided by a real
+  bootstrapped ArchiveStore; only query results are stubbed.
 
 A double still names only the parameters whose values it asserts on; the
 checking is what makes that safe.
@@ -30,11 +30,9 @@ checking is what makes that safe.
 
 from __future__ import annotations
 
-import ast
 import functools
 import inspect
-import sqlite3
-import textwrap
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -42,7 +40,7 @@ from typing import Any
 import pytest
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.query_unit_frame import INDEX_FRAME_RELATIONS
+from tests.infra.archive_templates import bootstrap_archive_root
 
 __all__ = ["ArchiveStoreDouble", "install_archive_store_double"]
 
@@ -56,68 +54,10 @@ _OPERATION_READ_ATTRIBUTES = (
     "operation_schema_versions",
     "operation_degraded_components",
 )
-_ACTIVE_INDEX_ATTRIBUTE = "index_db_path"
 
 #: A window wider than any double's transcript, so the derived summary counts
 #: every message the double is willing to serve.
 _DOUBLE_PAGE_CEILING = 10_000
-
-
-def _production_class_body() -> ast.Module:
-    return ast.parse(textwrap.dedent(inspect.getsource(ArchiveStore)))
-
-
-def _self_assignments(tree: ast.Module) -> set[str]:
-    assigned: set[str] = set()
-    for node in ast.walk(tree):
-        targets = [node.target] if isinstance(node, ast.AnnAssign) else getattr(node, "targets", [])
-        for target in targets:
-            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
-                assigned.add(target.attr)
-    return assigned
-
-
-def _tier_path_filenames(tree: ast.Module) -> dict[str, str]:
-    """Read ``self.<name>_db_path = archive_root / "<file>"`` out of production."""
-
-    filenames: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target, value = node.targets[0], node.value
-        if not (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self"):
-            continue
-        if (
-            isinstance(value, ast.BinOp)
-            and isinstance(value.op, ast.Div)
-            and isinstance(value.left, ast.Name)
-            and value.left.id == "archive_root"
-            and isinstance(value.right, ast.Constant)
-            and isinstance(value.right.value, str)
-        ):
-            filenames[target.attr] = value.right.value
-    return filenames
-
-
-def _resolve_production_surface() -> dict[str, str]:
-    tree = _production_class_body()
-    assigned = _self_assignments(tree)
-    missing = [name for name in (*_OPERATION_READ_ATTRIBUTES, _ACTIVE_INDEX_ATTRIBUTE) if name not in assigned]
-    if missing:
-        raise AttributeError(
-            f"ArchiveStore no longer declares {missing}; the opened-store attribute surface "
-            "moved. Update ArchiveStoreDouble to the current names."
-        )
-    filenames = _tier_path_filenames(tree)
-    if not filenames:
-        raise AttributeError(
-            "ArchiveStore no longer derives any '<tier>_db_path' from its archive root; "
-            "the tier-path surface moved. Update ArchiveStoreDouble to the current shape."
-        )
-    return filenames
-
-
-_TIER_PATH_FILENAMES = _resolve_production_surface()
 
 
 def _production_signature(name: str) -> inspect.Signature:
@@ -178,29 +118,6 @@ def _check_method(owner: str, name: str, func: Callable[..., Any]) -> None:
         )
 
 
-def _query_unit_frame_connection() -> sqlite3.Connection:
-    """A minimal ``_conn`` carrying the query-unit frame epoch surface.
-
-    ``archive_snapshot_epoch`` reads the index tier's per-relation frame rows
-    and the user tier's singleton off the opened store's connection to bind a windowed
-    read's continuation to one snapshot. A double with no connection at all
-    made every ``session.read`` window fail as unframeable, which is a missing
-    double rather than a real refusal -- and the refusal it raises is the one
-    production reserves for derived-tier schema drift.
-    """
-
-    connection = sqlite3.connect(":memory:")
-    connection.execute("ATTACH DATABASE ':memory:' AS user_tier")
-    connection.execute("CREATE TABLE main.query_unit_frame_state (relation TEXT PRIMARY KEY, epoch INTEGER)")
-    connection.executemany(
-        "INSERT INTO main.query_unit_frame_state VALUES (?, 1)",
-        [(relation,) for relation in INDEX_FRAME_RELATIONS],
-    )
-    connection.execute("CREATE TABLE user_tier.query_unit_frame_state (singleton INTEGER PRIMARY KEY, epoch INTEGER)")
-    connection.execute("INSERT INTO user_tier.query_unit_frame_state VALUES (1, 1)")
-    return connection
-
-
 class ArchiveStoreDouble:
     """Base class for the CLI query-execution store doubles.
 
@@ -214,29 +131,35 @@ class ArchiveStoreDouble:
 
     def __init__(self) -> None:
         self.opened_roots: list[Path] = []
-        self._conn = _query_unit_frame_connection()
-        self.operation_identity: Any = None
-        self.operation_vector_connection: Any = None
-        self.operation_schema_versions: Any = None
-        self.operation_degraded_components: tuple[str, ...] = ()
+        self._backend: ArchiveStore | None = None
+        self._temporary = tempfile.TemporaryDirectory(prefix="archive-store-double-")
+        self._backend_root = bootstrap_archive_root(Path(self._temporary.name))
 
-    def bind_archive_root(self, archive_root: Path, index_path: Path | None = None) -> None:
-        """Derive the tier paths production would derive for ``archive_root``.
+    def __getattr__(self, name: str) -> Any:
+        backend = self._backend
+        if backend is None:
+            raise AttributeError(f"ArchiveStoreDouble has no opened backend for {name}")
+        return getattr(backend, name)
 
-        ``index_path`` mirrors production's pinned-index open: when the caller
-        pins an index, that path is the active one; otherwise it is resolved the
-        way ``ArchiveStore`` resolves it.
-        """
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _OPERATION_READ_ATTRIBUTES:
+            backend = self._backend
+            if backend is None:
+                raise RuntimeError("operation metadata requires an opened synthetic backend")
+            setattr(backend, name, value)
+        else:
+            object.__setattr__(self, name, value)
 
-        from polylogue.storage.archive_identity import resolve_active_index_path
-
+    def bind_archive_root(self, archive_root: Path, factory: Callable[..., ArchiveStore]) -> None:
+        """Record requested routing independently of the real synthetic archive."""
+        self.close()
         self.opened_roots.append(archive_root)
-        self.archive_root = archive_root
-        for attribute, filename in _TIER_PATH_FILENAMES.items():
-            setattr(self, attribute, archive_root / filename)
-        active_index = index_path if index_path is not None else resolve_active_index_path(archive_root)
-        setattr(self, _ACTIVE_INDEX_ATTRIBUTE, active_index)
-        self.index_db_path = active_index
+        self._backend = factory(self._backend_root, read_only=True)
+
+    def close(self) -> None:
+        if self._backend is not None:
+            self._backend.close()
+            self._backend = None
 
     def count_sessions(self, **kwargs: object) -> int:
         """Report an empty archive unless the double says otherwise.
@@ -256,9 +179,6 @@ class ArchiveStoreDouble:
         """Report no ranked matches unless the double says otherwise."""
         return 0
 
-    def begin_read_snapshot(self) -> None:
-        return None
-
     def read_summary(self, session_id: str) -> Any:
         """Summarise whatever page this double serves for ``session_id``.
 
@@ -269,7 +189,7 @@ class ArchiveStoreDouble:
         """
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 
-        page = self.read_session_page(session_id, limit=_DOUBLE_PAGE_CEILING, offset=0)  # type: ignore[attr-defined]
+        page = self.read_session_page(session_id, limit=_DOUBLE_PAGE_CEILING, offset=0)
         return ArchiveSessionSummary(
             session_id=session_id,
             native_id=page.native_id,
@@ -286,7 +206,7 @@ class ArchiveStoreDouble:
         return self
 
     def __exit__(self, *args: object) -> None:
-        return None
+        self.close()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -315,15 +235,12 @@ def install_archive_store_double(
 
     if not isinstance(store, ArchiveStoreDouble):
         raise TypeError("install_archive_store_double requires an ArchiveStoreDouble instance")
-    signature = inspect.signature(ArchiveStore.open_existing)
+    original_factory = ArchiveStore.open_existing
+    signature = inspect.signature(original_factory)
 
     def _open_existing(_cls: type[ArchiveStore], /, *args: object, **kwargs: object) -> ArchiveStoreDouble:
         bound = signature.bind(*args, **kwargs)
-        pinned = bound.arguments.get("index_path")
-        store.bind_archive_root(
-            Path(str(bound.arguments["archive_root"])),
-            None if pinned is None else Path(str(pinned)),
-        )
+        store.bind_archive_root(Path(str(bound.arguments["archive_root"])), original_factory)
         return store
 
     monkeypatch.setattr(target, classmethod(_open_existing))
@@ -346,10 +263,11 @@ def install_archive_store_double(
             from polylogue.operations.daemon_reads import execute_read_operation
 
             root = _kwargs.get("archive_root")
-            if root is not None:
-                pinned = getattr(store, "index_db_path", None)
-                store.bind_archive_root(Path(str(root)), Path(str(pinned)) if pinned is not None else None)
+            if root is None:
+                raise ValueError("double daemon reads require an explicit archive root")
+            store.bind_archive_root(Path(str(root)), original_factory)
             with store as archive:
+                archive.pin_operation_snapshot()
                 result = execute_read_operation(
                     operation,
                     payload,

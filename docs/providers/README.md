@@ -49,3 +49,13 @@ ZIP archives are supported (nested ZIPs too, with bomb protection). Encoding fal
 ---
 
 **See also:** [CLI Reference](../cli-reference.md) · [Architecture](../architecture.md) · [Data Model](../data-model.md)
+
+## Grok
+
+The ordinary parser accepts account exports and original app-chat endpoint bundles. Account exports without native IDs retain their declared intrinsic identity. A native bundle contains the original conversation reply, responses reply and optional response-node reply; native `conversationId`, `responseId` and `parentResponseId` remain provider identity. Nested conversation replies and list-shaped responses are accepted alongside the endpoint wrappers.
+
+Native responses remain messages when their prose is empty or absent. Steps become thinking and tool-result blocks; search lists and tool responses retain their structured evidence. Tool outcomes use explicit boolean error or integer exit-code fields. An outcome-free result records `not_reported`. Attachment descriptors retain native file IDs and source locators; the capture owner separately merges acquired bytes using message owner coordinates. Missing response IDs remain absent for the archive's intrinsic identity calculation. Repeated IDs retain separate variant and attachment coordinates.
+
+Parent edges preserve forks. A single leaf establishes its ancestor path; multiple leaves carry no guessed selection. The original response-node reply remains a session event because the retained producer examples do not establish a selected-leaf contract. Conversation revision timestamps and response interruption state survive as session evidence. Raw acquired replies remain the authority for unrecognized fields.
+
+`parse_native_bundle` delegates through `parse_conversation`, the shared ordinary semantic owner. This route materializes Python strings, message lists and blocks. Parser fidelity tests do not establish scalar-independent memory, registered browser backfill transport or live acquisition qualification.
