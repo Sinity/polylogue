@@ -221,7 +221,18 @@ async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
     assert status["retrieval_ready"] is False
     assert status["status"] != "complete"
     assert status["compute_missing_messages"] == 0
+    assert status["next_action"]["code"] == "acquisition_excluded"
+    assert status["next_action"]["command"] is None
     assert (status["acquisition_excluded_messages"] or 0) > 0
+    for policy_config in (embedding_config(embedding_enabled=False), embedding_config(voyage_api_key=None)):
+        monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda config=policy_config, **kwargs: config)
+        policy_status = embedding_status_payload(
+            SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db", archive_root=root)), include_detail=True
+        )
+        assert policy_status is not None
+        assert policy_status["next_action"]["code"] == "acquisition_excluded"
+        assert policy_status["next_action"]["command"] is None
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda **kwargs: cfg)
     with closing(sqlite3.connect(root / "index.db")) as conn:
         conn.execute("ATTACH DATABASE ? AS embeddings", (str(root / "embeddings.db"),))
         assert try_load_sqlite_vec(conn)[0]
@@ -259,7 +270,8 @@ async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
 
         for text, _content_hash, _recipe_hash, _output_hash, _model, address, _retained_content in rows:
             payload = conn.execute(
-                "SELECT embedding FROM embeddings.message_embeddings WHERE vector_derivation_hash = ?", (address,)
+                "SELECT embedding FROM embeddings.message_embeddings WHERE vector_derivation_hash = lower(hex(?))",
+                (address,),
             ).fetchone()[0]
             assert (
                 payload

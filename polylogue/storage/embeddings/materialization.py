@@ -913,7 +913,8 @@ def _archive_message_blocks_available(conn: sqlite3.Connection) -> bool:
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     try:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        with contextlib.closing(conn.execute(f"PRAGMA table_info({table})")) as cursor:
+            rows = cursor.fetchall()
     except sqlite3.Error:
         return set()
     return {str(row[1]) for row in rows}

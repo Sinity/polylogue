@@ -465,40 +465,18 @@ def test_derivation_releases_actual_read_handles_before_provider_and_on_every_ex
 
     root = tmp_path / "archive"
     sid, ids = _session(root)
-    handles: list[sqlite3.Connection] = []
-    cursors: list[sqlite3.Cursor] = []
-    original = derivation.open_readonly_connection
+    from tests.infra.embedding_reader_probe import EmbeddingReadProbe
 
-    def capture(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        conn = original(*args, **kwargs)
-        execute = conn.execute
-
-        def track(*args: Any, **kwargs: Any) -> sqlite3.Cursor:
-            cursor = execute(*args, **kwargs)
-            cursors.append(cursor)
-            return cursor
-
-        monkeypatch.setattr(conn, "execute", track)
-        handles.append(conn)
-        return conn
-
-    def assert_closed() -> None:
-        assert handles
-        for conn in handles:
-            with pytest.raises(sqlite3.ProgrammingError):
-                conn.execute("SELECT 1")
-        for cursor in cursors:
-            with pytest.raises(sqlite3.ProgrammingError):
-                cursor.fetchone()
+    probe = EmbeddingReadProbe(root, monkeypatch)
 
     class Provider(_Documents):
         def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
-            assert_closed()
+            probe.assert_settled()
             if mode == "provider_error":
                 raise RuntimeError("synthetic acquisition failure")
             return super()._get_embeddings(texts, input_type)
 
-    monkeypatch.setattr(derivation, "open_readonly_connection", capture)
+    monkeypatch.setattr("polylogue.storage.embeddings.derivation.open_readonly_connection", probe.open)
     provider = Provider("voyage-4")
     adapter = EmbeddingDerivationAdapter(root / "index.db", provider)
     frame = SimpleNamespace(
@@ -508,13 +486,13 @@ def test_derivation_releases_actual_read_handles_before_provider_and_on_every_ex
     )
     keys = [f"message:{mid}" for mid in ids]
     adapter.required_page(frame, cursor=None, limit=10)
-    assert_closed()
+    probe.assert_settled()
     adapter.excess_page(frame, cursor=None, limit=10)
-    assert_closed()
+    probe.assert_settled()
     adapter.inspect(frame, keys)
-    assert_closed()
+    probe.assert_settled()
     assert adapter.barrier_sessions(frame, keys) == dict.fromkeys(keys, sid)
-    assert_closed()
+    probe.assert_settled()
     current = derivation._current_input(
         root / "index.db",
         ids[0],
@@ -523,13 +501,13 @@ def test_derivation_releases_actual_read_handles_before_provider_and_on_every_ex
         frame.source_revision,
     )
     assert current is not None
-    assert_closed()
+    probe.assert_settled()
     with write_lease("test.physical-reader-reservation", archive_root=root):
         reserved = derivation.reserve_embedding_message(
             root / "index.db", root / "embeddings.db", ids[0], provider_recipe, frame.source_revision
         )
     assert reserved is not None
-    assert_closed()
+    probe.assert_settled()
     if mode == "policy_refusal":
         (root / DEMO_OWNERSHIP_MANIFEST_FILENAME).write_text(
             json.dumps({"demo_only": True, "demo_session_ids": [sid], "demo_raw_ids": [], "demo_assertion_ids": []})
@@ -543,7 +521,7 @@ def test_derivation_releases_actual_read_handles_before_provider_and_on_every_ex
         monkeypatch.setattr(derivation, "_message_input", read_failure)
         with pytest.raises(sqlite3.OperationalError):
             adapter.inspect(frame, keys)
-        assert_closed()
+        probe.assert_settled()
         expected_error = sqlite3.OperationalError
     else:
         expected_error = RuntimeError
@@ -554,5 +532,5 @@ def test_derivation_releases_actual_read_handles_before_provider_and_on_every_ex
         else:
             with pytest.raises(expected_error):
                 adapter.compute(frame, keys[0])
-    assert_closed()
+    probe.assert_settled()
     assert provider.calls == ([(_TEXT,)] if mode == "computed" else [])

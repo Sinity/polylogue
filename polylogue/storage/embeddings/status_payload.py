@@ -717,12 +717,26 @@ def _next_action(
     stale_messages: int,
     failure_count: int,
     blocked_sessions: int,
+    compute_missing_messages: int | None,
+    acquisition_excluded_messages: int | None,
 ) -> EmbeddingNextActionPayload:
     if total_sessions <= 0:
         return {
             "code": "archive_empty",
             "command": None,
             "reason": "Archive contains no sessions to embed.",
+        }
+    if (
+        not retrieval_ready
+        and compute_missing_messages == 0
+        and acquisition_excluded_messages
+        and not failure_count
+        and not blocked_sessions
+    ):
+        return {
+            "code": "acquisition_excluded",
+            "command": None,
+            "reason": "Completed demo ownership excludes acquisition; synthetic vectors do not establish configured retrieval readiness.",
         }
     if has_voyage_api_key is None:
         return {
@@ -938,6 +952,8 @@ def _payload_from_stats(
             stale_messages=stats.stale_messages,
             failure_count=stats.failure_count,
             blocked_sessions=blocked_sessions,
+            compute_missing_messages=stats.compute_missing_messages,
+            acquisition_excluded_messages=stats.acquisition_excluded_messages,
         ),
     }
 
