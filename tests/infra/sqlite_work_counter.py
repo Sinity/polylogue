@@ -20,6 +20,7 @@ _DERIVED_SURFACES = (
     "delegation_refresh_scope",
 )
 _SQL_SPACE = re.compile(r"\s+")
+_WRITE_TARGET = re.compile(r"^(delete from|update|insert(?: or replace)? into|replace into) (\w+)\b")
 
 
 def _database_name(database: object) -> str:
@@ -47,19 +48,26 @@ def _mentions_derived_surface(sql: str) -> bool:
 
 
 def _is_archive_wide_derived_statement(sql: str) -> bool:
-    """Recognize the deleted qsagp shape, without naming a private call site."""
-    if not _mentions_derived_surface(sql):
+    """Recognize global writes to derived content, excluding scoped work."""
+    target = _WRITE_TARGET.match(sql)
+    if target is None or target[2] not in _DERIVED_SURFACES:
         return False
+    operation, table = target.groups()
+    if table == "delegation_refresh_scope":
+        # Clearing the working allow-list does not rewrite archive content.
+        # Populating it with every session does initiate a global refresh.
+        return operation in {"insert into", "insert or replace into"} and "select session_id from sessions" in sql
+    if operation in {"delete from", "update"}:
+        return " where " not in sql
     if " values " in sql:
         return False
-    if sql.startswith("delete from "):
-        return " where " not in sql
-    if sql.startswith("insert into messages_fts"):
-        return "target.session_id = b.session_id" not in sql
-    if sql.startswith("insert into action_pairs"):
-        return "where u.session_id =" not in sql
-    if sql.startswith("insert or replace into delegation_refresh_scope"):
-        return "select session_id from sessions" in sql
+    if table in {"messages_fts", "messages_fts_identity"}:
+        return not any(
+            scope in sql for scope in ("b.session_id =", "target.session_id = b.session_id", "select new.rowid")
+        )
+    if table == "action_pairs":
+        # Both tool-use branches and the result branch must be session-bound.
+        return sql.count("u.session_id =") < 2 or "r.session_id =" not in sql
     return False
 
 

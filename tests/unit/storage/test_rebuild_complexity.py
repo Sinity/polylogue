@@ -15,8 +15,10 @@ from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationRe
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources import revision_backfill
 from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
 from tests.infra.growth_budgets import GrowthObservation
 from tests.infra.sqlite_work_counter import sqlite_work_counter
 
@@ -160,9 +162,11 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
     _assert_component_shape(observations)
 
 
+@pytest.mark.parametrize("mutation", ["delete", "update", "action-pairs-rebuild", "fts-rebuild"])
 def test_incremental_law_rejects_once_per_pass_archive_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
 ) -> None:
     """Removing the zero-write oracle lets this real SQL refresh pass."""
     original = _run
@@ -176,7 +180,17 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
         # The mutant runs once after an ordinary pass, on a production-opened
         # index connection. It changes unrelated derived rows archive-wide.
         with ArchiveStore.open_existing(root, read_only=False) as archive:
-            archive._conn.execute("DELETE FROM action_pairs")
+            count = archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0]
+            assert count == 9
+            if mutation == "delete":
+                assert archive._conn.execute("DELETE FROM action_pairs").rowcount == count
+            elif mutation == "update":
+                assert archive._conn.execute("UPDATE action_pairs SET tool_name = tool_name").rowcount == count
+            elif mutation == "action-pairs-rebuild":
+                rebuild_all_action_pairs_sync(archive._conn)
+                assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
+            else:
+                assert rebuild_archive_messages_fts(archive._conn) > 0
             archive.commit()
         return result
 

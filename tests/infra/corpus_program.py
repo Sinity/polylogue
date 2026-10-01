@@ -1116,6 +1116,7 @@ __all__ = [
     "CorpusProgram",
     "CorpusProgramError",
     "CorpusAcquisitionRejectedError",
+    "CorpusConvergenceResult",
     "CorpusRun",
     "CorpusRuntimeCrashed",
     "CorpusRuntimeCrashedError",

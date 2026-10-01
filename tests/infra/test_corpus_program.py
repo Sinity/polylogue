@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, find, given, settings
 
+from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.corpus_program import (
     Acquire,
@@ -323,20 +326,44 @@ def test_generated_programs_acquire_and_parse_on_production_route(
 
 def test_rejected_acquisition_does_not_advance_reference_state(
     workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Ignoring an empty/error AcquireResult permits the rejected append."""
+    """Ignoring the production error AcquireResult permits the rejected append."""
+    from polylogue.pipeline.services import acquisition
+
     runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
     initial = _artifact("session", _codex_transcript("session", "first", "authored"))
     from tests.infra.corpus_program import CorpusState
 
     state = Acquire("acquire", initial).apply(CorpusState(), runtime)
+    original_stream = acquisition.iter_raw_record_stream
+
+    async def unreadable_stream(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        async for record in original_stream(*args, **kwargs):
+            raise OSError("synthetic source read failure")
+            yield record
+
+    monkeypatch.setattr(acquisition, "iter_raw_record_stream", unreadable_stream)
     with pytest.raises(CorpusAcquisitionRejectedError) as refused:
-        Replace("bad-replace", "session", b"\xff\x00").apply(state, runtime)
+        Replace("bad-replace", "session", _codex_transcript("session", "second", "new authored turn")).apply(
+            state, runtime
+        )
     assert refused.value.artifact_id == "session"
     assert refused.value.result.errors > 0 or not refused.value.result.raw_ids
     assert state.artifact("session").payload == initial.payload
     assert state.applied_operation_ids == ("acquire",)
     assert all(not isinstance(result, dict) or "convergence" not in result for result in runtime.last_results)
+
+
+def test_retained_parser_invalid_input_reports_convergence_failure(workspace_env: dict[str, Path]) -> None:
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    result = runtime.acquire(_artifact("invalid", b"\xff\x00"))
+    assert result.acquired > 0
+    with pytest.raises(CorpusProgramError):
+        runtime.converge()
+    parsed = runtime.last_results[-1]
+    assert isinstance(parsed, ParseResult)
+    assert parsed.parse_failures > 0
 
 
 def test_unchanged_reacquisition_preserves_proven_raw_evidence(workspace_env: dict[str, Path]) -> None:

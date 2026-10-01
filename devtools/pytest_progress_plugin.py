@@ -116,7 +116,7 @@ def _reset_session_state() -> None:
     _CONTROLLER_COLLECTION_PAYLOAD = None
 
 
-def _isolate_nested_session_environment_values() -> None:
+def _isolate_nested_artifact_destinations() -> None:
     """Give an in-process nested pytest invocation its own durable evidence."""
     raw_candidates = [os.environ.get(name) for name in _ARTIFACT_ENV_NAMES]
     base = next((Path(value).parent for value in raw_candidates if value), None)
@@ -293,7 +293,7 @@ def pytest_sessionstart(session: Any) -> None:
     _SESSION_STATE_STACK.append(_capture_session_state())
     _reset_session_state()
     if len(_SESSION_STATE_STACK) > 1:
-        _isolate_nested_session_environment_values()
+        _isolate_nested_artifact_destinations()
     _ACTIVE_SESSION_ENVIRONMENT = {name: os.environ.get(name) for name in _SESSION_ENV_NAMES}
     # Emit the worker identity from inside pytest so each event is attributable
     # even when xdist forwards the report to the controller.
