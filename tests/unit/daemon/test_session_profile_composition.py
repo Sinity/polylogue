@@ -625,6 +625,9 @@ async def test_faulted_or_unchanged_audit_retains_owed_domains_and_serves_siblin
     blocked = True
 
     async def converge(self: object, frame: DerivationFrame, **kwargs: object) -> DerivationReport:
+        if frame.profile_demand_only:
+            assert "domains" not in kwargs
+            return DerivationReport(frame)
         (domain,) = cast(tuple[str, ...], kwargs["domains"])
         visited.append(domain)
         # This refuses an immediate repeat, so the old loop fails without a

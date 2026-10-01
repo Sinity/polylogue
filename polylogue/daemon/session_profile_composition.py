@@ -77,7 +77,14 @@ class ComposedSessionProfiles:
                 positions.clear()
                 frame_binding = binding
             advanced = any(positions.get(domain) != cursor for domain, cursor in passed.cursor.positions.items())
-            positions.update(passed.cursor.positions)
+            for domain, cursor in passed.cursor.positions.items():
+                if cursor.swept and not passed.pending:
+                    # This obligation was discharged. A predecessor completing
+                    # later can owe the domain again at the same terminal
+                    # cursor; that is new work, not an unchanged pending retry.
+                    positions.pop(domain, None)
+                else:
+                    positions[domain] = cursor
             if not advanced:
                 # Counts can change while the same pending cursor is retried.
                 # Only walking a new part of the declared domains keeps this
