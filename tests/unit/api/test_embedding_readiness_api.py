@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,3 +71,39 @@ async def test_search_similar_sessions_fails_closed_without_vector_provider(tmp_
             await archive.search_similar_sessions("missing-session")
     finally:
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_retained_similarity_uses_explicit_archive_recipe_without_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replacing the explicit Config with ambient settings loses these retained hits."""
+    from polylogue.config import Config, PolylogueConfig
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from tests.infra.vector_archive import seed_vector_archive
+
+    root = tmp_path / "explicit-archive"
+    seed_vector_archive(
+        root,
+        [
+            ("seed", "m1", "Synthetic seed prose for an explicitly configured recipe.", [1.0] + [0.0] * 1023),
+            (
+                "near",
+                "m1",
+                "Synthetic neighbor prose for an explicitly configured recipe.",
+                [0.99, 0.141] + [0.0] * 1022,
+            ),
+        ],
+        model="voyage-4",
+    )
+    config = Config(archive_root=root, render_root=root / "render", sources=[], embedding_model="voyage-4")
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: PolylogueConfig())
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    async with Polylogue(config=config) as archive:
+        result = await archive.search_similar_sessions("codex-session:seed")
+    assert result["source_embedded_messages"] == 1
+    hits = cast(list[dict[str, object]], result["results"])
+    assert [hit["session_id"] for hit in hits] == ["codex-session:near"]
+    provider_call.assert_not_called()

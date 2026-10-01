@@ -52,7 +52,7 @@ class PolylogueEmbeddingsMixin:
                 session_id,
                 limit=limit,
                 vector_provider=vector_provider,
-                provider_db_path=self.config.archive_root / "embeddings.db",
+                provider_config=self.config,
             ),
         )
 

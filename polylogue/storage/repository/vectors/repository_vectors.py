@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from polylogue.archive.session.domain_models import Session
     from polylogue.archive.stats import ArchiveStats
+    from polylogue.config import Config
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -98,7 +99,7 @@ class RepositoryVectorMixin:
         session_id: str,
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
-        provider_db_path: Path | None = None,
+        provider_config: Config | None = None,
     ) -> dict[str, object]:
         """Rank sessions from ``query_by_session`` message hits.
 
@@ -110,8 +111,7 @@ class RepositoryVectorMixin:
             from polylogue.storage.search_providers import create_vector_provider
 
             vector_provider = create_vector_provider(
-                db_path=provider_db_path,
-                archive_root=provider_db_path.parent if provider_db_path is not None else None,
+                provider_config,
                 require_credentials=False,
             )
         if vector_provider is None:
@@ -166,13 +166,15 @@ class RepositoryVectorMixin:
             aggregates[candidate_id] = (min(best_distance, distance), matched_messages)
 
         ranked = sorted(aggregates.items(), key=lambda item: (item[1][0], item[0]))[:limit]
-        sessions_by_id = {}
-        for candidate_id, _ in ranked:
-            row = connection.execute(
-                "SELECT session_id, title, origin FROM archive_index.sessions WHERE session_id = ?", (candidate_id,)
-            ).fetchone()
-            if row is not None:
-                sessions_by_id[candidate_id] = row
+        ranked_ids = [candidate_id for candidate_id, _ in ranked]
+        sessions_by_id: dict[str, sqlite3.Row] = {}
+        if ranked_ids:
+            placeholders = ",".join("?" * len(ranked_ids))
+            rows = connection.execute(
+                f"SELECT session_id, title, origin FROM archive_index.sessions WHERE session_id IN ({placeholders})",
+                ranked_ids,
+            ).fetchall()
+            sessions_by_id = {str(row["session_id"]): row for row in rows}
 
         hits: list[dict[str, object]] = []
         for candidate_id, (distance, matched_messages) in ranked:

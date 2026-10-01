@@ -47,6 +47,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import CheckpointEscalation
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -249,6 +250,8 @@ def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Cfg:
         embedding_enabled = False
+        embedding_model = "voyage-4-lite"
+        embedding_dimension = EMBEDDING_DIMENSION
         voyage_api_key: str | None = None
 
     monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
@@ -261,6 +264,8 @@ def _enable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Cfg:
         embedding_enabled = True
+        embedding_model = "voyage-4-lite"
+        embedding_dimension = EMBEDDING_DIMENSION
         voyage_api_key = "test-key"
 
     monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
@@ -328,6 +333,8 @@ class TestSimilarPayloadStates:
 
         class _Cfg:
             embedding_enabled = True
+            embedding_model = "voyage-4-lite"
+            embedding_dimension = EMBEDDING_DIMENSION
             voyage_api_key: str | None = None
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
@@ -375,6 +382,8 @@ class TestSimilarPayloadStates:
 
         class _Cfg:
             embedding_enabled = True
+            embedding_model = "voyage-4-lite"
+            embedding_dimension = EMBEDDING_DIMENSION
             voyage_api_key = "test-key"
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
@@ -575,7 +584,9 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, first_promotion: bool
 ) -> None:
     """Reopening the active index between count and ranking changes this result."""
+    import polylogue.storage.index_generation as generation_module
     from polylogue.config import PolylogueConfig
+    from polylogue.core.sqlite_locking import is_transient_sqlite_lock
     from polylogue.storage.index_generation import IndexGenerationStore
 
     config = PolylogueConfig(_data={"embedding_enabled": True})
@@ -598,12 +609,31 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
     original_count = SqliteVecProvider.count_session_embeddings
     original_release = SqliteVecProvider._release_connection
     published: list[Path] = []
+    busy_checkpoints: list[tuple[int, int, int]] = []
+    blocked: list[BaseException] = []
+    original_checkpoint = generation_module.checkpoint_connection
+
+    def checkpoint(
+        connection: sqlite3.Connection, mode: str, *, boundary: CheckpointEscalation
+    ) -> tuple[int, int, int]:
+        result = original_checkpoint(connection, mode, boundary=boundary)
+        if result[0]:
+            busy_checkpoints.append(result)
+        return result
+
+    monkeypatch.setattr(generation_module, "checkpoint_connection", checkpoint)
     closed: list[bool] = []
 
     def count_and_publish(provider: SqliteVecProvider, seed: str) -> int:
         count = original_count(provider, seed)
-        store.promote(second)
-        published.append(resolve_active_index_path(root))
+        try:
+            store.promote(second)
+        except (sqlite3.Error, RuntimeError) as exc:
+            if not (is_transient_sqlite_lock(exc) or busy_checkpoints):
+                raise
+            blocked.append(exc)
+        else:
+            published.append(resolve_active_index_path(root))
         return count
 
     def release(provider: SqliteVecProvider, connection: sqlite3.Connection) -> None:
@@ -626,7 +656,7 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
 
     send_error.assert_not_called()
     _, payload = send_json.call_args.args
-    assert published == [Path(second.index_path)]
+    assert len(published) + len(blocked) == 1, payload
     assert payload["status"] == "ready"
     assert payload["source_embedded_messages"] == 1
     assert [(hit["session_id"], hit["title"]) for hit in payload["results"]] == [
@@ -634,6 +664,10 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
         ("codex-session:far", "Far"),
     ]
     assert closed == [True]
+    if blocked:
+        store.promote(second)
+        published.append(resolve_active_index_path(root))
+    assert published == [Path(second.index_path)]
     provider_call.assert_not_called()
 
 

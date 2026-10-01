@@ -44,7 +44,7 @@ import sqlite3
 from pathlib import Path
 from typing import Final, cast
 
-from polylogue.config import load_polylogue_config
+from polylogue.config import Config, load_polylogue_config
 from polylogue.core.errors import VectorReadUnavailableError
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.daemon.status import open_readonly_connection
@@ -115,6 +115,8 @@ def _build_archive_similar_payload(
     bounded_limit: int,
     disabled_reason: str | None,
     archive_root_path: Path,
+    embedding_model: str,
+    embedding_dimension: int,
 ) -> dict[str, object] | None:
     index_conn = open_readonly_connection(index_db, timeout_class="interactive-read")
     try:
@@ -140,7 +142,15 @@ def _build_archive_similar_payload(
             from polylogue.api.sync.bridge import run_coroutine_sync
 
             async def query() -> dict[str, object]:
-                async with Polylogue(archive_root=archive_root_path, db_path=Path(index_db)) as polylogue:
+                config = Config(
+                    archive_root=archive_root_path,
+                    render_root=archive_root_path / "render",
+                    sources=[],
+                    db_path=Path(index_db),
+                    embedding_model=embedding_model,
+                    embedding_dimension=embedding_dimension,
+                )
+                async with Polylogue(config=config) as polylogue:
                     return await polylogue.search_similar_sessions(
                         session_id,
                         limit=bounded_limit,
@@ -261,6 +271,8 @@ def build_similar_payload(
         bounded_limit=bounded_limit,
         disabled_reason=disabled_reason,
         archive_root_path=archive_root_path,
+        embedding_model=cfg.embedding_model,
+        embedding_dimension=cfg.embedding_dimension,
     )
 
 

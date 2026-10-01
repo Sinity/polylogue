@@ -73,14 +73,14 @@ class SqliteVecProvider(
         """
         with self._lifecycle_admission():
             connection = self._get_read_connection(index_path=index_path)
-            reader = (
-                self
-                if connection is self._snapshot_connection
-                else self.from_vector_read_snapshot(
-                    voyage_key=self.voyage_key, connection=connection, model=self.model, dimension=self.dimension
-                )
-            )
             try:
+                reader = (
+                    self
+                    if connection is self._snapshot_connection
+                    else self.from_vector_read_snapshot(
+                        voyage_key=self.voyage_key, connection=connection, model=self.model, dimension=self.dimension
+                    )
+                )
                 count = reader.count_session_embeddings(session_id)
                 hits = reader.query_by_session(session_id, limit=limit) if count else []
                 return project(connection, count, hits)
