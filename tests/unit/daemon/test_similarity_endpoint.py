@@ -734,6 +734,13 @@ def test_similarity_first_publication_checks_seed_on_query_snapshot(
         target.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
         target.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         target.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+    with sqlite3.connect(root / "embeddings.db") as vectors:
+        assert (
+            vectors.execute(
+                "SELECT COUNT(*) FROM message_embedding_refs WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            == 1
+        )
     original_query = Polylogue.search_similar_sessions
     published: list[Path] = []
 

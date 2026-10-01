@@ -301,10 +301,11 @@ async def test_supplied_snapshot_refuses_index_identity_replaced_before_api_read
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("retained_missing_seed", [False, True])
 async def test_retained_similarity_distinguishes_missing_seed_from_present_unembedded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retained_missing_seed: bool
 ) -> None:
-    """Returning an empty result for an absent source turns this red."""
+    """Returning empty results or unavailable for an absent source turns this red."""
     from polylogue.config import Config
     from polylogue.core.errors import SessionNotFoundError
     from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
@@ -318,6 +319,17 @@ async def test_retained_similarity_distinguishes_missing_seed_from_present_unemb
             "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
             ("unembedded", "codex-session", "Unembedded", b"u" * 32),
         )
+        if retained_missing_seed:
+            index.execute("DELETE FROM blocks WHERE session_id = ?", ("codex-session:seed",))
+            index.execute("DELETE FROM messages WHERE session_id = ?", ("codex-session:seed",))
+            index.execute("DELETE FROM sessions WHERE session_id = ?", ("codex-session:seed",))
+    with sqlite3.connect(tmp_path / "embeddings.db") as vectors:
+        assert (
+            vectors.execute(
+                "SELECT COUNT(*) FROM message_embedding_refs WHERE session_id = ?", ("codex-session:seed",)
+            ).fetchone()[0]
+            == 1
+        )
     config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], embedding_model="voyage-4")
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
@@ -325,7 +337,9 @@ async def test_retained_similarity_distinguishes_missing_seed_from_present_unemb
     closed = record_owned_vector_closes(monkeypatch)
     async with Polylogue(config=config) as archive:
         with pytest.raises(SessionNotFoundError):
-            await archive.search_similar_sessions("codex-session:missing")
+            await archive.search_similar_sessions(
+                "codex-session:seed" if retained_missing_seed else "codex-session:missing"
+            )
         result = await archive.search_similar_sessions("codex-session:unembedded")
     assert result == {"source_embedded_messages": 0, "results": [], "unresolved_message_hits": 0}
     assert closed == [True, True]

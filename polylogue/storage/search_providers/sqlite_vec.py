@@ -11,7 +11,11 @@ from pathlib import Path
 from polylogue.paths import embeddings_db_path
 from polylogue.storage.search_providers.sqlite_vec_embeddings import SqliteVecEmbeddingMixin
 from polylogue.storage.search_providers.sqlite_vec_queries import SqliteVecQueryMixin
-from polylogue.storage.search_providers.sqlite_vec_runtime import SqliteVecRuntimeMixin, _vector_snapshot_binding
+from polylogue.storage.search_providers.sqlite_vec_runtime import (
+    SqliteVecRuntimeMixin,
+    _vector_snapshot_binding,
+    require_vector_seed_session,
+)
 from polylogue.storage.search_providers.sqlite_vec_support import (
     BATCH_SIZE,
     DEFAULT_DIMENSION,
@@ -103,6 +107,7 @@ class SqliteVecProvider(
                         voyage_key=self.voyage_key, connection=connection, model=self.model, dimension=self.dimension
                     )
                 )
+                require_vector_seed_session(connection, session_id)
                 count = reader.count_session_embeddings(session_id)
                 hits = reader.query_by_session(session_id, limit=limit) if count else []
                 return project(connection, count, hits)

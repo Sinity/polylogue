@@ -7,11 +7,11 @@ import os
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.core.errors import SchemaSkewError
+from polylogue.core.errors import SchemaSkewError, SessionNotFoundError
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.identity import (
     VECTOR_DERIVATION_HASH_SQL_FUNCTION,
@@ -101,6 +101,16 @@ def _configure_current_embedding_messages(
         """,
         (recipe.recipe_hash,),
     )
+
+
+def require_vector_seed_session(connection: sqlite3.Connection, session_id: str) -> None:
+    """Require the seed on the same selected index handle used for vector reads."""
+    with closing(connection.cursor()) as cursor:
+        if (
+            cursor.execute("SELECT 1 FROM archive_index.sessions WHERE session_id = ?", (session_id,)).fetchone()
+            is None
+        ):
+            raise SessionNotFoundError(session_id)
 
 
 def _vector_snapshot_binding(connection: sqlite3.Connection) -> tuple[Path, GenerationToken, int]:
