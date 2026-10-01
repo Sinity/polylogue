@@ -24,10 +24,10 @@ from concurrent.futures import Future
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from types import TracebackType
-from typing import IO, TYPE_CHECKING, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, Concatenate, Literal, NoReturn, ParamSpec, TypedDict, TypeVar, cast
 
 if TYPE_CHECKING:
     from polylogue.storage.index_generation import ActiveWriterLease
@@ -788,11 +788,17 @@ def resolve_session_id_in_index(conn: sqlite3.Connection, token: str) -> str:
     return str(rows[0]["session_id"])
 
 
-def _archive_mutator(method: Callable[..., Any]) -> Callable[..., Any]:
+_MutationArgs = ParamSpec("_MutationArgs")
+_MutationResult = TypeVar("_MutationResult")
+
+
+def _archive_mutator(
+    method: Callable[Concatenate[ArchiveStore, _MutationArgs], _MutationResult],
+) -> Callable[Concatenate[ArchiveStore, _MutationArgs], _MutationResult]:
     """Acquire physical archive custody before an ArchiveStore write route."""
 
     @wraps(method)
-    def wrapped(self: ArchiveStore, *args: object, **kwargs: object) -> Any:
+    def wrapped(self: ArchiveStore, /, *args: _MutationArgs.args, **kwargs: _MutationArgs.kwargs) -> _MutationResult:
         self._require_writable(method.__name__)
         self._enter_mutation_lease(settlement=method.__name__ in {"commit", "rollback"})
         try:
@@ -1056,14 +1062,7 @@ class ArchiveStore:
             if (
                 not read_only
                 and not self._has_pending_write_sql()
-                and (
-                    construction_complete
-                    or (
-                        self._owned_index_connection is None
-                        and self._source_conn is None
-                        and self.operation_vector_connection is None
-                    )
-                )
+                and (construction_complete or (self._all_sql_handles_closed()))
             ):
                 self._release_mutation_lease(None)
 
@@ -1476,7 +1475,16 @@ class ArchiveStore:
             or self._user_write_connections
         )
 
-    def _release_mutation_lease(self, exc_info: tuple[object, object, object] | None) -> None:
+    def _all_sql_handles_closed(self) -> bool:
+        return (
+            self._owned_index_connection is None
+            and self._source_conn is None
+            and self.operation_vector_connection is None
+        )
+
+    def _release_mutation_lease(
+        self, exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | None
+    ) -> None:
         context, self._pending_archive_mutation_lease_context = self._pending_archive_mutation_lease_context, None
         first_error: BaseException | None = None
         if context is not None:
@@ -1859,8 +1867,8 @@ class ArchiveStore:
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
-        if getattr(self, "operation_vector_connection", None) is not None:
-            connection = self.operation_vector_connection
+        connection = self.operation_vector_connection
+        if connection is not None:
             try:
                 connection.set_progress_handler(None, 0)
                 if connection.in_transaction:
@@ -1892,7 +1900,7 @@ class ArchiveStore:
         is explicitly cross-thread callable).
         """
         self._conn.interrupt()
-        if getattr(self, "_source_conn", None) is not None:
+        if self._source_conn is not None:
             self._source_conn.interrupt()
         if self.operation_vector_connection is not None:
             self.operation_vector_connection.interrupt()
@@ -2052,6 +2060,14 @@ class ArchiveStore:
         scope = current_index_mutation_scope()
         if scope is not None:
             scope.require_connection(self._conn)
+        for connection in (
+            self._owned_index_connection,
+            self._source_conn,
+            self.operation_vector_connection,
+            *self._user_write_connections,
+        ):
+            if connection is not None:
+                settle(partial(connection.set_progress_handler, None, 0))
         for connection in tuple(self._user_write_connections):
             settle(connection.rollback)
         if self._source_tier_acquisition:

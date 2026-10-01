@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.core.sql_settlement import SQLCustodyOwner
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 
 __all__ = [
     "UnleasedWriteError",
@@ -690,9 +690,9 @@ class WriteLease:
             grants = tuple(self.thread_grants)
             delegations = tuple(self.delegations)
         failure: BaseException | None = None
-        for owner in (*grants, *delegations):
+        for revoke in (*tuple(grant.revoke for grant in grants), *tuple(item.revoke for item in delegations)):
             try:
-                owner.revoke()
+                revoke()
             except BaseException as error:
                 failure = failure or error
         if failure is not None:
@@ -819,6 +819,18 @@ def arm_write_lease_enforcement(*, armed: bool = True, process_wide: bool = Fals
 def current_write_lease() -> WriteLease | None:
     """Return the lease held by this context, if any."""
     return _ACTIVE.get()
+
+
+def coordinator_write_lease_active() -> bool:
+    """Require actual task/thread and archive custody, not inherited context."""
+    lease = current_write_lease()
+    if lease is None or lease.coordinator is None:
+        return False
+    try:
+        require_write_lease("coordinator lease observation", archive_root=lease.archive_root)
+    except UnleasedWriteError:
+        return False
+    return True
 
 
 def require_write_lease(purpose: str, *, archive_root: str | Path | None = None) -> WriteLease | None:
@@ -1206,7 +1218,7 @@ def write_lease(
                 raise UnleasedWriteError("synchronous write_lease cannot block an event loop; use async_write_lease")
             custody = _acquire_archive_write_custody(archive_root)
             custody.bind_owner_context()
-    if custody is not None and archive_root is not None and Path(archive_root).resolve() != custody.archive_root:
+    if Path(archive_root).resolve() != custody.archive_root:
         if owns_custody:
             custody.close_owner()
         raise UnleasedWriteError("archive write custody does not match the requested archive root")
@@ -1214,7 +1226,7 @@ def write_lease(
         actor=actor,
         acquired_at=time.perf_counter(),
         max_hold_seconds=max_hold_seconds,
-        archive_root=Path(archive_root).resolve() if archive_root is not None else None,
+        archive_root=Path(archive_root).resolve(),
         custody=custody,
         owns_custody=owns_custody,
         owns_custody_ref=owns_custody_ref,
@@ -1229,8 +1241,9 @@ def write_lease(
     except BaseException:
         # Elapsed hold telemetry cannot change the operation's own outcome.
         if lease.over_budget:
-            logger.warning(
-                "write_lease_observed_hold_exceeded",
+            emit(
+                "storage.write_lease.hold_exceeded",
+                level=WARNING,
                 actor=actor,
                 held_seconds=lease.held_seconds,
                 declared_hold_seconds=lease.max_hold_seconds,
@@ -1250,8 +1263,9 @@ def write_lease(
         _restore_active_lease(token, lease)
         lease.retire()
         if lease.over_budget:
-            logger.warning(
-                "write_lease_observed_hold_exceeded",
+            emit(
+                "storage.write_lease.hold_exceeded",
+                level=WARNING,
                 actor=actor,
                 held_seconds=lease.held_seconds,
                 declared_hold_seconds=lease.max_hold_seconds,

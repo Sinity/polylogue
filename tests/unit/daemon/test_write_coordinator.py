@@ -14,11 +14,14 @@ import sys
 import textwrap
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue import logging as plog
+from polylogue.archive.write_gateway import ArchiveWriteGateway
 from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
 from polylogue.daemon import write_coordinator as write_coordinator_module
 from polylogue.daemon.write_coordinator import (
@@ -1802,10 +1805,10 @@ async def test_terminal_worker_retains_failed_temporary_user_writer(
     coordinator = DaemonWriteCoordinator(archive_root=root)
     handles: list[SettlementHandle] = []
     stores: list[archive_module.ArchiveStore] = []
-    real_open = archive_module.open_connection
+    real_open = cast(Callable[..., sqlite3.Connection], vars(archive_module)["open_connection"])
 
     def controlled_open(path: Path, *args: object, **kwargs: object) -> sqlite3.Connection:
-        connection = real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+        connection = real_open(path, *args, **kwargs)
         if path.name == "user.db":
             handle = SettlementHandle(connection)
             handles.append(handle)
@@ -1817,7 +1820,7 @@ async def test_terminal_worker_retains_failed_temporary_user_writer(
 
     monkeypatch.setattr(archive_module, "open_connection", controlled_open)
     if commit_failed:
-        monkeypatch.setattr(archive_module.ArchiveWriteGateway, "commit_write_sync", failed_commit)
+        monkeypatch.setattr(ArchiveWriteGateway, "commit_write_sync", failed_commit)
 
     def leave_unsettled() -> None:
         store = archive_module.ArchiveStore(root, initialize=False)
@@ -1831,7 +1834,7 @@ async def test_terminal_worker_retains_failed_temporary_user_writer(
         with pytest.raises(DaemonWriterSettlementError):
             await coordinator.run_sync("test.user_cleanup", leave_unsettled)
         assert handles[0].in_transaction is commit_failed
-        assert stores[0]._user_write_connections == handles
+        assert [id(conn) for conn in stores[0]._user_write_connections] == [id(handle) for handle in handles]
         assert not archive_custody_available(root)
         with pytest.raises(DaemonWriterSettlementError):
             await coordinator.run_sync("test.user_cleanup_retry", lambda: None)
@@ -2192,7 +2195,7 @@ async def test_native_factory_failure_keeps_actual_connection_until_terminal_cle
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
     handles: list[SettlementHandle] = []
-    real_sqlite_connect = sqlite3.connect
+    real_sqlite_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
 
     class FailedConfigurationHandle(SettlementHandle):
         def execute(self, *args: object, **kwargs: object) -> object:
@@ -2210,7 +2213,7 @@ async def test_native_factory_failure_keeps_actual_connection_until_terminal_cle
         return handle  # type: ignore[return-value]
 
     if factory_name == "initialize_archive_database":
-        monkeypatch.setattr(bootstrap.sqlite3, "connect", controlled_connect)
+        monkeypatch.setattr(sqlite3, "connect", controlled_connect)
     else:
         monkeypatch.setattr(connection_profile, "connect_measured", controlled_connect)
 
@@ -2264,7 +2267,7 @@ async def test_cached_connection_settles_after_context_and_retains_failed_close(
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
     handles: list[SettlementHandle] = []
-    real_connect = cached.connect_measured
+    real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = SettlementHandle(real_connect(*args, **kwargs))
@@ -2330,7 +2333,7 @@ async def test_verified_leaf_is_retained_with_failed_native_close(
     coordinator = DaemonWriteCoordinator(archive_root=root)
     handles: list[SettlementHandle] = []
     leaves: list[audit_leaf.VerifiedAuditLeaf] = []
-    real_connect = sqlite3.connect
+    real_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
     real_enter = audit_leaf.VerifiedAuditLeaf.__enter__
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
@@ -2343,7 +2346,7 @@ async def test_verified_leaf_is_retained_with_failed_native_close(
         leaves.append(result)
         return result
 
-    monkeypatch.setattr(audit_leaf.sqlite3, "connect", controlled_connect)
+    monkeypatch.setattr(sqlite3, "connect", controlled_connect)
     monkeypatch.setattr(audit_leaf.VerifiedAuditLeaf, "__enter__", remember_leaf)
 
     def leave_unsettled() -> None:
@@ -2390,7 +2393,7 @@ async def test_cached_cleanup_attempts_later_handle_after_first_close_failure(
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
     handles: list[SettlementHandle] = []
-    real_connect = cached.connect_measured
+    real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         handle = SettlementHandle(real_connect(*args, **kwargs))

@@ -46,6 +46,66 @@ def test_disk_projection_transfers_files_and_closes_handles_before_iterator_yiel
     assert isinstance(abandoned, Generator)
     abandoned.close()
     assert len(projection.message_contents) == 700
+    projection.close()
+    projection.close()
+    with pytest.raises(RuntimeError):
+        next(iter(projection.message_hashes))
+
+
+@pytest.mark.uses_real_clock("A failed page close retains its actual creator thread and artifact.")
+def test_projection_close_preserves_artifact_until_failed_reader_close_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+    from typing import Any
+
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, NativeSQLCustodyOwner
+
+    prepared = SqliteMessageStore(tmp_path / "prepared.db")
+    sink = prepared.new_sink()
+    sink.append(ParsedMessage(provider_message_id="retained", role=Role.USER, text="retained row"))
+    prepared.conn.commit()
+    prepared.close()
+    projection = ids.session_revision_projection(_session([], [], []).model_copy(update={"messages": sink}))
+    actual_connect = sqlite3.connect
+    opened: list[FailingReader] = []
+
+    class FailingReader(sqlite3.Connection):
+        fail_close = True
+
+        def close(self) -> None:
+            if self.fail_close:
+                raise OSError("synthetic projection page close failure")
+            super().close()
+
+    def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if isinstance(database, str) and "projection.db?mode=ro" in database:
+            kwargs["factory"] = FailingReader
+            connection = actual_connect(database, *args, **kwargs)
+            assert isinstance(connection, FailingReader)
+            opened.append(connection)
+            return connection
+        return actual_connect(database, *args, **kwargs)
+
+    def failed_page() -> NativeSQLCustodyOwner:
+        with pytest.raises(NativeConnectionSettlementError) as refused:
+            next(iter(projection.message_hashes))
+        return refused.value.owner
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with ThreadPoolExecutor(max_workers=1) as reader:
+        owner = reader.submit(failed_page).result()
+        assert len(opened) == 1
+        with pytest.raises(NativeConnectionSettlementError) as refused:
+            projection.close()
+        assert refused.value.owner is owner
+        artifact = projection._artifact_owner
+        assert artifact is not None
+        assert (Path(artifact._scratch.name) / "projection.db").is_file()
+        opened[0].fail_close = False
+        reader.submit(owner.close).result()
+    projection.close()
+    assert not Path(artifact._scratch.name).exists()
 
 
 def _session(
@@ -263,6 +323,8 @@ def test_disk_revision_projection_matches_every_canonical_axis(tmp_path: Path, m
         ):
             assert frozenset(getattr(actual, field)) == getattr(expected, field)
         assert _relation(expected, actual) == "equal"
+        actual.close()
+        expected.close()
     finally:
         store.close()
 

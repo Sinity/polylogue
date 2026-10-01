@@ -17,6 +17,7 @@ materializing on every relocation cannot pass.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -186,12 +187,17 @@ class TestBranchPointWitness:
                 composed = read_archive_session_envelope(conn, child_id)
                 branch_message = composed.messages[1]
                 block = branch_message.blocks[0]
+                row = conn.execute(
+                    "SELECT semantic_extra_json FROM blocks WHERE block_id = ?", (block.block_id,)
+                ).fetchone()
+                assert row is not None and row[0] is not None
+                extras = json.loads(row[0])
                 if extra_kind == "metadata":
-                    assert block.metadata == {"revision": "before"}
+                    assert extras["metadata"] == {"revision": "before"}
                 elif extra_kind == "file_edit":
-                    assert block.file_edit is not None and block.file_edit.old_string == "before"
+                    assert extras["file_edit"]["old_string"] == "before"
                 else:
-                    assert block.web_constructs[0].url == "before"
+                    assert extras["web_constructs"][0]["url"] == "before"
             finally:
                 conn.close()
 

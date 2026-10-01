@@ -19,8 +19,10 @@ import os
 import select
 import sqlite3
 import threading
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -283,7 +285,7 @@ def test_cold_generation_open_binds_to_the_declared_archive_root(
 
 def test_writable_archive_store_releases_open_custody_and_gates_each_mutation(tmp_path: Path) -> None:
     """A persistent SQLite handle does not hold physical custody between writes."""
-    from polylogue.core.sources import Provider
+    from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = tmp_path / "archive"
@@ -401,7 +403,7 @@ def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled
 
     assert failure.value.store is archive
     assert proxy.in_transaction
-    assert archive._conn is proxy
+    assert cast(object, archive._conn) is proxy
     assert current_write_lease() is not None
     acquired = threading.Event()
     finished = threading.Event()
@@ -523,7 +525,7 @@ def test_async_writer_grant_is_retained_until_worker_connection_closes(
 
     from polylogue.storage.sqlite import async_sqlite
 
-    backend = object()
+    backend = cast(async_sqlite.SQLiteBackend, object())
     raw = RawConnection()
 
     def connect() -> RawConnection:
@@ -546,13 +548,13 @@ def test_async_writer_grant_is_retained_until_worker_connection_closes(
                 grant,  # type: ignore[arg-type]
             ),
         )
-        await connection
+        _ = await connection
         try:
             with pytest.raises(OSError, match="synthetic worker close failure"):
                 await async_sqlite._close_backend_connection(connection, rollback=True)
             assert id(connection) in async_sqlite._BACKEND_CONNECTIONS
             assert not grant.completed
-            assert connection._connection is raw
+            assert cast(object, connection._connection) is raw
             assert connection._running
             assert connection._thread.is_alive()
             raw.fail_close = False
@@ -1389,7 +1391,7 @@ def test_bound_thread_grant_keeps_an_already_open_writer_valid_until_settled(tmp
     assert not thread.is_alive()
     assert observed.get("error") is None
     assert observed["lease"] is lease
-    assert not lease.custody.held
+    assert lease.custody is not None and not lease.custody.held
 
 
 def test_unused_thread_grant_cannot_bind_after_owner_release(tmp_path: Path) -> None:
@@ -1595,7 +1597,7 @@ def test_a_nested_lease_in_an_inheriting_thread_is_refused(tmp_path: Path) -> No
 
 def test_persistent_store_refuses_replaced_archive_directory_before_sql(tmp_path: Path) -> None:
     """A new directory's custody cannot authorize old SQLite handles."""
-    from polylogue.core.sources import Provider
+    from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = tmp_path / "archive"
@@ -1629,14 +1631,14 @@ def test_direct_blackboard_writer_acquires_custody_and_retires_temporary_user_ha
 
     initialize_active_archive_root(tmp_path)
     store = archive_module.ArchiveStore(tmp_path, initialize=False)
-    real_open = archive_module.open_connection
+    real_open = cast(Callable[..., sqlite3.Connection], archive_module.open_connection)
     admissions: list[bool] = []
 
     def observe_open(path: Path, *args: object, **kwargs: object) -> sqlite3.Connection:
         if path.name == "user.db":
             lease = current_write_lease()
             admissions.append(lease is not None and lease.custody is not None and lease.custody.held)
-        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+        return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr(archive_module, "open_connection", observe_open)
     try:
@@ -1917,7 +1919,7 @@ def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
             with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
                 bootstrap.open_initialized_tier_connection(tmp_path / "ops.db", ArchiveTier.OPS, archive_root=tmp_path)
             owner = refused.value.owner
-            assert owner.connection is handles[0]
+            assert cast(object, owner.connection) is handles[0]
             assert handles[0].connection.in_transaction
         assert not archive_custody_available(tmp_path)
         handles[0].allow_cleanup.set()

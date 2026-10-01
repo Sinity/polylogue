@@ -19,6 +19,7 @@ from time import monotonic, time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
+from polylogue.core.durable_fs import sync_directory
 from polylogue.daemon.execution import (
     BoundedComputeAdapter,
     CancellationHandle,
@@ -615,6 +616,7 @@ class DaemonOperationRuntime:
                 json.dump(packet, stream, sort_keys=True, separators=(",", ":"))
                 stream.flush()
             os.replace(temporary, path)
+            sync_directory(path.parent)
         finally:
             Path(temporary).unlink(missing_ok=True)
 
@@ -1092,9 +1094,7 @@ class DaemonOperationRuntime:
                         audit = AuditRepository.for_archive_root(self.archive_root)
                         try:
                             with audit.settled_machine_read():
-                                record = (
-                                    audit.machine_request(exchange.binding) if exchange.binding is not None else None
-                                )
+                                record = audit.machine_request(exchange.binding)
                                 if record is None and envelope.get("outcome") == "indeterminate":
                                     # The actual worker settled and continuity
                                     # proves there is no accepted domain work.

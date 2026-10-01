@@ -136,6 +136,18 @@ def retained_native_settlement_owners_on_current_thread(
     return tuple(result.values())
 
 
+def retained_native_sql_owners_for_lifetime(dependency: object) -> tuple[NativeSQLCustodyOwner, ...]:
+    """Protect artifact cleanup while any actual native owner retains it."""
+    with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+        return tuple(
+            owner
+            for owner in _LIVE_NATIVE_SQL_OWNERS.values()
+            if owner.pid == os.getpid()
+            and not owner._settled
+            and any(item is dependency for item in owner._lifetime_dependencies)
+        )
+
+
 def native_sql_children(parent: SQLCustodyOwner) -> tuple[NativeSQLCustodyOwner, ...]:
     return tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner._terminal_parent is parent)
 
@@ -264,7 +276,8 @@ class NativeSQLCustodyOwner:
         self._require_owner()
         if self._settled:
             raise RuntimeError("a settled native owner cannot retain an artifact")
-        self._lifetime_dependencies.append(dependency)
+        with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+            self._lifetime_dependencies.append(dependency)
 
     def retire_terminal_parent(self, parent: SQLCustodyOwner) -> None:
         """Retire only after the actual handle and its parent's obligations settle."""
@@ -337,7 +350,7 @@ class NativeSQLCustodyOwner:
                 failure = failure or error
             else:
                 self.scratch_directory = None
-        resources_settled = not self.anchored_descriptors and self.leaf is None and self.scratch_directory is None
+        resources_settled = self.leaf is None and self.scratch_directory is None
         if resources_settled and self.custody is not None:
             try:
                 self.custody.release_sql_owner(self)

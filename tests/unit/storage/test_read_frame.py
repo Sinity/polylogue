@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -554,11 +555,11 @@ def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
                 with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
                     frame.close()
                 assert set(attempts) == {"failed", "successful"}
-                assert frame._cursors == {failed}
+                assert {id(cursor) for cursor in frame._cursors} == {id(failed)}
                 failed.fails = False
         owner = refused.value.owner
         assert owner.frame is not None
-        assert owner.connection is handles[-1]
+        assert cast(object, owner.connection) is handles[-1]
         assert not archive_custody_available(index_db.parent)
         handles[-1].allow_cleanup.set()
         owner.close()
@@ -606,7 +607,7 @@ def test_independent_frame_census_retains_discarded_failed_cleanup(
             _ = retained.connection
         with pytest.raises(profiles.NativeConnectionSettlementError):
             retained.revalidate()
-        assert retained._sql_owner.connection is handles[0]
+        assert cast(object, retained._sql_owner.connection) is handles[0]
         handles[0].allow_cleanup.set()
         retained.close()
         assert all(id(frame) != identity for frame in profiles._LIVE_READ_FRAMES)
@@ -690,7 +691,7 @@ def test_started_frame_stream_refuses_foreign_step_and_cleanup(
 
                 def __next__(self) -> sqlite3.Row:
                     counts["step"] += 1
-                    return next(self.cursor)
+                    return cast(sqlite3.Row, next(self.cursor))
 
                 def close(self) -> None:
                     counts["close"] += 1

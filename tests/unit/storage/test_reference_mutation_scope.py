@@ -54,7 +54,7 @@ def test_batch_reuses_one_durable_reference_census(
         census_calls += 1
         yield from original(conn)
 
-    def open_observer(seal, name: str, path: Path) -> sqlite3.Connection:
+    def open_observer(seal: reference_seal.PreparedIndexMutation, name: str, path: Path) -> sqlite3.Connection:
         connection = original_open(seal, name, path)
         if name == "user":
             connection.set_trace_callback(
@@ -133,6 +133,7 @@ def test_cancelled_active_mutation_rolls_back_and_original_owner_closes(tmp_path
                         write_index_session(archive, reference_session("cancelled-pending"))
                         assert archive._conn.in_transaction
                         cancelled.set()
+                        archive._conn.set_progress_handler(lambda: int(cancelled.is_set()), 1)
                         # Admission refuses another mutation. The scope must
                         # still roll back and close on this original owner.
                         write_index_session(archive, reference_session("must-not-start"))

@@ -6,10 +6,12 @@ import hashlib
 import json
 import sqlite3
 import tempfile
+import threading
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
@@ -402,6 +404,12 @@ class SessionRevisionProjection:
     #: never persisted and never enters ``session_hash``, so nothing here
     #: changes stored identity or requires a reparse.
     anchor_free_event_identities: Set[tuple[bytes, bytes]] = frozenset()
+    _artifact_owner: _DiskRevisionStore | None = dataclass_field(default=None, repr=False, compare=False)
+
+    def close(self) -> None:
+        """Retire this projection's existing sealed artifact after native settlement."""
+        if self._artifact_owner is not None:
+            self._artifact_owner.close()
 
 
 def _retain_projection_sql_connection(connection: sqlite3.Connection, *, lifetime: object) -> NativeSQLCustodyOwner:
@@ -413,7 +421,9 @@ def _retain_projection_sql_connection(connection: sqlite3.Connection, *, lifetim
     )
 
     try:
-        return NativeOwner(connection)
+        owner = NativeOwner(connection)
+        owner.retain_lifetime(lifetime)
+        return owner
     except NativeConnectionSettlementError as failure:
         failure.owner.retain_lifetime(lifetime)
         raise
@@ -424,6 +434,7 @@ class _DiskRevisionStore:
 
     def __init__(self, parent: Path | None) -> None:
         self._closed = False
+        self._lifetime_lock = threading.RLock()
         self._native_owner: NativeSQLCustodyOwner | None = None
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-revision-", dir=parent)
         self.conn = sqlite3.connect(Path(self._scratch.name) / "projection.db")
@@ -464,43 +475,57 @@ class _DiskRevisionStore:
 
     @contextmanager
     def reader(self) -> Iterator[sqlite3.Connection]:
-        path = Path(self._scratch.name) / "projection.db"
-        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
-        owner = _retain_projection_sql_connection(conn, lifetime=self)
-        try:
-            yield conn
-        except BaseException as primary:
+        with self._lifetime_lock:
+            if self._closed:
+                raise RuntimeError("revision projection artifact is closed")
+            path = Path(self._scratch.name) / "projection.db"
+            conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+            owner = _retain_projection_sql_connection(conn, lifetime=self)
             try:
-                owner.close()
-            except BaseException as close_error:
-                owner.retain_lifetime(self)
-                primary.add_note(f"revision projection reader cleanup also failed: {close_error}")
-            raise
-        else:
-            try:
-                owner.close()
-            except BaseException:
-                owner.retain_lifetime(self)
+                yield conn
+            except BaseException as primary:
+                try:
+                    owner.close()
+                except BaseException as close_error:
+                    owner.retain_lifetime(self)
+                    primary.add_note(f"revision projection reader cleanup also failed: {close_error}")
                 raise
+            else:
+                try:
+                    owner.close()
+                except BaseException:
+                    owner.retain_lifetime(self)
+                    raise
 
     def close(self) -> None:
-        if getattr(self, "_closed", False):
-            return
-        owner = getattr(self, "_native_owner", None)
-        if owner is not None:
-            try:
-                owner.close()
-            except BaseException:
-                owner.retain_lifetime(self)
-                raise
-            self._native_owner = None
-            del self.conn
-        elif hasattr(self, "conn"):
-            self.conn.close()
-            del self.conn
-        if hasattr(self, "_scratch"):
-            self._scratch.cleanup()
-        self._closed = True
+        with self._lifetime_lock:
+            if getattr(self, "_closed", False):
+                return
+            owner = getattr(self, "_native_owner", None)
+            if owner is not None:
+                try:
+                    owner.close()
+                except BaseException:
+                    owner.retain_lifetime(self)
+                    raise
+                self._native_owner = None
+                del self.conn
+            elif hasattr(self, "conn"):
+                self.conn.close()
+                del self.conn
+            from polylogue.storage.sqlite.connection_profile import (
+                NativeConnectionSettlementError,
+                retained_native_sql_owners_for_lifetime,
+            )
+
+            pending = retained_native_sql_owners_for_lifetime(self)
+            if pending:
+                raise NativeConnectionSettlementError(
+                    pending[0], RuntimeError("revision projection artifact still has a native owner")
+                )
+            if hasattr(self, "_scratch"):
+                self._scratch.cleanup()
+            self._closed = True
 
     def __del__(self) -> None:
         self.close()
@@ -2318,6 +2343,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
             event_contents=_DiskRevisionSet[tuple[bytes, bytes]](store, "event_content"),
             anchor_free_event_identities=_DiskRevisionSet[tuple[bytes, bytes]](store, "anchor_free_event"),
             mutable_message_identities=_DiskRevisionSet[bytes](store, "mutable_message"),
+            _artifact_owner=store,
         )
     except BaseException as primary:
         try:

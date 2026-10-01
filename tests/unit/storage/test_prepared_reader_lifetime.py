@@ -1,5 +1,6 @@
 """Sealed preparation iterators transport rows without live SQLite handles."""
 
+from collections.abc import Generator, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -37,6 +38,7 @@ def test_sealed_prepared_iterator_can_resume_or_be_abandoned_on_another_thread(
     store.conn.commit()
     store.close()
     sealed_messages = SqliteMessageSink(path, messages.session_ordinal, count=700)
+    carrier: Iterable[object]
     if kind == "messages":
         carrier = sealed_messages
     elif kind == "attachments":
@@ -48,13 +50,13 @@ def test_sealed_prepared_iterator_can_resume_or_be_abandoned_on_another_thread(
     else:
         carrier = sealed_messages.provider_message_ids(include_none=False)
 
-    def start():
+    def start() -> tuple[object, Iterator[object]]:
         iterator = iter(carrier)
         first = next(iterator)
         assert retained_native_sql_owners() == ()
         return first, iterator
 
-    def finish(iterator):
+    def finish(iterator: Iterator[object]) -> list[object]:
         remaining = list(iterator)
         assert retained_native_sql_owners() == ()
         return remaining
@@ -64,6 +66,7 @@ def test_sealed_prepared_iterator_can_resume_or_be_abandoned_on_another_thread(
         if action == "resume":
             assert len(consumer.submit(finish, iterator).result()) == 699
         else:
+            assert isinstance(iterator, Generator)
             consumer.submit(iterator.close).result()
             assert consumer.submit(retained_native_sql_owners).result() == ()
     assert retained_native_sql_owners() == ()

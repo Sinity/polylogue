@@ -263,8 +263,8 @@ def test_ascii_key_order_stays_harmless() -> None:
 
 @pytest.mark.parametrize("carrier", ["tool_input", "metadata", "event", "file_edit", "pending_drafts"])
 def test_nested_nonstring_mapping_keys_keep_typed_associations(carrier: str) -> None:
-    first = {1: "integer", "1": "string"}
-    second = {"1": "string", 1: "integer"}
+    first: dict[object, object] = {1: "integer", "1": "string"}
+    second: dict[object, object] = {"1": "string", 1: "integer"}
 
     def build(mapping: dict[object, object]) -> ParsedSession:
         if carrier == "event":
@@ -297,7 +297,7 @@ def test_nested_nonstring_mapping_keys_keep_typed_associations(carrier: str) -> 
 def test_nested_mapping_keys_preserve_runtime_type_and_exact_spelling(
     key: object, other_key: str, value: str, other: str
 ) -> None:
-    payload = {"nested": {key: value, other_key: other}}
+    payload: dict[str, object] = {"nested": {key: value, other_key: other}}
     forward = _session(tool_input=payload)
     reverse = _session(tool_input={"nested": {other_key: other, key: value}})
     _assert_same(forward, reverse)
@@ -309,17 +309,19 @@ def test_declared_string_key_maps_reject_before_pydantic_can_drop_bytes_key(fiel
     collision = {b"a": "bytes", "a": "string"}
     with pytest.raises(ValueError, match="string mapping keys"):
         if field in {"tool_input", "metadata"}:
-            ParsedContentBlock(
-                type=BlockType.TOOL_USE,
-                tool_name="read_file",
-                **{field: collision},
-            )
+            ParsedContentBlock.model_validate({"type": BlockType.TOOL_USE, "tool_name": "read_file", field: collision})
         elif field == "event_payload":
-            ParsedSessionEvent(event_type="turn_context", payload=collision)
+            ParsedSessionEvent.model_validate({"event_type": "turn_context", "payload": collision})
         elif field == "structured_patch":
-            ParsedFileEdit(structured_patch=[collision])
+            ParsedFileEdit.model_validate({"structured_patch": [collision]})
         else:
-            _session(pending_drafts=[collision])
+            ParsedSession.model_validate(
+                {
+                    "source_name": Provider.CHATGPT,
+                    "provider_session_id": "identity-contract",
+                    "pending_drafts": [collision],
+                }
+            )
 
 
 # -- operational strings hash exactly (polylogue-aki9t) -----------------------

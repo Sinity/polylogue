@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -785,11 +786,11 @@ class PreparedIndexMutation:
             version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
             schema = self._candidate_schema_identity(observer)
             observer.execute("BEGIN")
-            rows = self._scratch.execute(
+            reference_rows = self._scratch.execute(
                 "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
                 "FROM resolved_refs ORDER BY kind, object_id, qualifier"
             )
-            for row in rows:
+            for row in reference_rows:
                 _check_reference_cancellation()
                 ref = _ResolvedReference(
                     str(row[0]),
@@ -819,7 +820,7 @@ class PreparedIndexMutation:
             active.execute("BEGIN")
             source.execute("BEGIN")
             missing_count = 0
-            first_missing: str | None = None
+            first_missing = None
             after = ""
             page_size = min(
                 512,
@@ -1090,7 +1091,7 @@ class PreparedIndexMutation:
                 return False
 
         for name, observer in tuple(self._observers.items()):
-            if settle(lambda observer=observer: self._close_native_connection(observer)):
+            if settle(partial(self._close_native_connection, observer)):
                 self._observers.pop(name, None)
         for name, leaf in tuple(self._observer_leaves.items()):
             if name not in self._observers and settle(leaf.close):
@@ -1232,6 +1233,7 @@ def _owned_index_transaction(scope: IndexMutationScope) -> Iterator[IndexMutatio
     except BaseException as primary:
         try:
             if scope.conn.in_transaction:
+                scope.conn.set_progress_handler(None, 0)
                 scope.conn.rollback()
         except BaseException as rollback_error:
             primary.add_note(f"Index transaction rollback also failed: {rollback_error}")
@@ -1323,6 +1325,7 @@ class IndexMutationScope:
 
     def rollback(self) -> None:
         self.require_connection(self.conn)
+        self.conn.set_progress_handler(None, 0)
         self.conn.rollback()
         self._active = False
 

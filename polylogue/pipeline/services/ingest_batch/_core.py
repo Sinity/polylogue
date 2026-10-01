@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, NotRequired, Protocol, TypedDict, Unpack, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
@@ -118,7 +118,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_membership_raw_ids,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
-    ArchiveSourceBlobRef,
     ContentExcisedError,
     is_blob_hash_excised,
 )
@@ -1104,70 +1103,15 @@ class _CohortCachingBlobPublisher(ArchiveBlobPublisher):
 
 
 class _DriveRevisionGovernanceAdapter:
-    """Minimal ``RawRevisionGovernanceHost`` for Drive lineage bookkeeping.
-
-    ``bind_raw_revision``/``classify_raw_revision_cohort`` and their
-    transitive call graph (``raw_membership_raw_ids``,
-    ``_raw_revision_candidates``, ``_promote_contiguous_append_evidence``,
-    ``raw_membership_retired_full_revision_siblings``,
-    ``_raw_revision_source_path_has_divergent_evidence``) touch only
-    ``store._ensure_source_conn()`` and, inside
-    ``classify_raw_revision_cohort`` itself, ``store._blob_publisher``
-    (verified by reading every line of that call graph, polylogue-sp72).
-    Nothing in it touches ``_conn`` (index.db), ``_pending_raw_parse_states``,
-    ``_preacquire_attachment_blobs``, ``_write_counts``, or
-    ``_skipped_counts`` -- those Protocol members exist only because
-    ``ArchiveStore`` (the Protocol's only other implementer) happens to
-    carry them. This adapter implements them as typed stubs that raise if
-    ever actually invoked, rather than reaching into ``ArchiveStore``'s
-    ~9,000-line read surface just to satisfy an unused Protocol member.
-    ``_conn`` is declared a plain settable attribute (not a read-only
-    property) because the Protocol types it that way -- it is set to the
-    same ``source_conn`` handle as a harmless placeholder that is never
-    actually read by anything this adapter is used for.
-    """
+    """Bind and classify Source revisions without claiming an Index destination."""
 
     def __init__(self, source_conn: sqlite3.Connection, blob_publisher: ArchiveBlobPublisher) -> None:
         self._source_conn = source_conn
         self._blob_publisher: ArchiveBlobPublisher | None = blob_publisher
         self.archive_root = blob_publisher.source_db_path.parent
-        self._inactive_candidate_durable_read_only = False
-        # Never read by bind_raw_revision/classify_raw_revision_cohort; see
-        # class docstring for why this is a harmless placeholder value.
-        self._conn = source_conn
-        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
 
     def _ensure_source_conn(self) -> sqlite3.Connection:
         return self._source_conn
-
-    def commit(self) -> None:
-        raise NotImplementedError("ingest_batch owns the index.db commit; this adapter never manages it")
-
-    def _preacquire_attachment_blobs(
-        self,
-        session: ParsedSession,
-        *,
-        source_path: str,
-        acquired_at_ms: int,
-    ) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
-        raise NotImplementedError(
-            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
-            "classify_raw_revision_cohort, which never call this"
-        )
-
-    @staticmethod
-    def _write_counts(session: ParsedSession) -> dict[str, int]:
-        raise NotImplementedError(
-            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
-            "classify_raw_revision_cohort, which never call this"
-        )
-
-    @staticmethod
-    def _skipped_counts(session: ParsedSession, *, session_events: int = 0) -> dict[str, int]:
-        raise NotImplementedError(
-            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
-            "classify_raw_revision_cohort, which never call this"
-        )
 
 
 def _drive_structural_growth_predecessor(
@@ -3521,7 +3465,7 @@ def _publish_drive_revision_updates(
     permit: KnownSourceMutationPermit,
 ) -> KnownSourceMutationReceipt | None:
     if not prepared.drive_revision_updates:
-        return
+        return None
     permit.require_rows("raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates)
     assignments = ",".join(f"{column}=?" for column in _DRIVE_REVISION_COLUMNS)
     with (
@@ -3853,9 +3797,32 @@ def _process_ingest_batch_sync_owned(
     return summary
 
 
-def _process_ingest_batch_sync(raw_artifacts: list[RawSessionRecord], **kwargs: object) -> _IngestBatchSummary:
+class _IngestBatchOptions(TypedDict):
+    db_path: Path
+    archive_root_str: str
+    blob_root_str: str
+    validation_mode: str
+    ingest_workers: int | None
+    measure_ingest_result_size: bool
+    publication_mode: NotRequired[PublicationMode]
+    force_write: NotRequired[bool]
+    heartbeat: NotRequired[IngestHeartbeat | None]
+    progress: NotRequired[_WorkerProgress | None]
+    ingest_result_chunk_size: NotRequired[int]
+    suspend_fts_triggers: NotRequired[bool]
+    force_process_pool: NotRequired[bool]
+    fresh_build: NotRequired[bool]
+    prepared_unit: NotRequired[_PreparedIngestUnit | None]
+    marker_acceptance_enabled: NotRequired[bool]
+
+
+def _process_ingest_batch_sync(
+    raw_artifacts: list[RawSessionRecord],
+    *,
+    reference_seal: PreparedIndexMutation | None = None,
+    **kwargs: Unpack[_IngestBatchOptions],
+) -> _IngestBatchSummary:
     """Prepare the reference proof before this route opens an index writer."""
-    reference_seal = kwargs.pop("reference_seal", None)
     if reference_seal is not None:
         if not isinstance(reference_seal, PreparedIndexMutation):
             raise TypeError("ingest reference_seal must be a prepared index mutation")
@@ -4065,7 +4032,7 @@ async def process_ingest_batch(
         except _StaleDrivePreparationError:
             if prepared_unit is not None:
                 discard_ingest_result_payload(prepared_unit.result)
-            logger.info("Drive preparation became stale before index publication")
+            emit("ingest.drive.preparation_stale")
             return None
     heavy_batch = (
         batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD

@@ -25,6 +25,7 @@ from polylogue.core.json import JSONValue
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
+from polylogue.sinex.models import PublicationMode
 from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -182,7 +183,7 @@ def test_prepared_drive_source_commit_advances_only_its_retained_seal(tmp_path: 
         db_path=root / "index.db",
         archive_root=root,
         validation_mode="strict",
-        publication_mode=ingest_batch_core.PublicationMode.OFF,
+        publication_mode=PublicationMode.OFF,
         measure_ingest_result_size=False,
     )
     assert prepared is not None

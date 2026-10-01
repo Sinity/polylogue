@@ -245,7 +245,7 @@ def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: 
         changed, counts = write_fixture_ingest_payload(
             conn,
             SessionWritePayload(session_id=session_id, content_hash="00" * 32, parsed_session=parsed, message_count=1),
-            blob_publisher=_Publisher(),  # type: ignore[arg-type]
+            blob_publisher=_Publisher(),
             pending_attachment_receipts=receipts,
         )
     finally:

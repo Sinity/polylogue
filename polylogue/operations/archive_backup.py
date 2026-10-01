@@ -1234,7 +1234,7 @@ def _require_exclusive_archive_ownership(root: Path) -> None:
     ``check_only`` never reaches here: it opens nothing writable, and a
     prerequisite check is what an operator runs *before* stopping the daemon.
     """
-    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+    from polylogue.core.write_lease import coordinator_write_lease_active
     from polylogue.maintenance.offline_guard import (
         ArchiveWriterOwnershipError,
         ArchiveWriterOwnershipUndecidableError,
@@ -1242,7 +1242,7 @@ def _require_exclusive_archive_ownership(root: Path) -> None:
         resident_daemon_pid,
     )
 
-    if daemon_write_lease_active():
+    if coordinator_write_lease_active():
         # The caller's daemon lease must own this exact archive, not merely
         # some archive in the current process.
         require_write_lease("maintenance.backup", archive_root=root)
@@ -1309,7 +1309,7 @@ def backup_archive(
             elapsed_s=round(time.monotonic() - started, 3),
         )
 
-    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+    from polylogue.core.write_lease import coordinator_write_lease_active
     from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
 
     # The daemon's coordinator already owns a durable writer hold. A direct
@@ -1321,7 +1321,7 @@ def backup_archive(
         assert_holds_archive_ownership(archive_owner, root)
     owner_scope = (
         nullcontext()
-        if daemon_write_lease_active() or archive_owner is not None
+        if coordinator_write_lease_active() or archive_owner is not None
         else scoped_offline_archive_writer(root, owner_id="maintenance.backup")
     )
     with owner_scope:

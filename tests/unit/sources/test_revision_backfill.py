@@ -3367,7 +3367,7 @@ def test_census_batching_reduces_commit_count(tmp_path: Path) -> None:
 
         def recording_bind(self: ArchiveStore, raw_id: str, revision: object, **bind_kwargs: object) -> None:
             flags.append(bool(bind_kwargs.get("manage_transaction", True)))
-            original_bind(self, raw_id, revision, **bind_kwargs)  # type: ignore[arg-type]
+            original_bind(self, raw_id, revision, **bind_kwargs)
 
         def counting_commit(self: ArchiveStore) -> None:
             nonlocal commit_count
@@ -3447,7 +3447,7 @@ def test_census_batch_crash_loses_at_most_one_batch_and_resumes_cleanly(
         calls += 1
         if calls == crash_at_call:
             raise RuntimeError("injected crash mid-batch")
-        original_bind(self, raw_id, revision, **kwargs)  # type: ignore[arg-type]
+        original_bind(self, raw_id, revision, **kwargs)
 
     monkeypatch.setattr(ArchiveStore, "bind_raw_revision", crash_partway)
     with pytest.raises(RuntimeError, match="injected crash mid-batch"):
@@ -3508,7 +3508,7 @@ def test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly(
         calls += 1
         if calls == crash_at_call:
             raise RuntimeError("injected crash mid replay-batch")
-        return original_apply(self, plan, parsed_by_raw_id, **kwargs)  # type: ignore[arg-type]
+        return original_apply(self, plan, parsed_by_raw_id, **kwargs)
 
     monkeypatch.setattr(ArchiveStore, "apply_raw_revision_replay", crash_partway)
     with pytest.raises(RuntimeError, match="injected crash mid replay-batch"):

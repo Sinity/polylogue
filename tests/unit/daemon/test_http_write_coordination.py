@@ -26,6 +26,7 @@ from polylogue.daemon.http import (
     DaemonAPIHTTPServer,
 )
 from polylogue.daemon.web_auth import WebCredentialScope
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
 from tests.infra.daemon_operations import running_daemon_operations
 
@@ -1019,9 +1020,15 @@ def test_coordinated_mutation_uses_existing_writer_worker_without_compute_admiss
     workers: list[str] = []
 
     async def mutation(_polylogue: object) -> str:
-        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+        from polylogue.core.write_lease import coordinator_write_lease_active
 
-        assert daemon_write_lease_active()
+        assert coordinator_write_lease_active()
+
+        async def inherited_child() -> bool:
+            return coordinator_write_lease_active()
+
+        assert not await asyncio.create_task(inherited_child())
+        assert coordinator_write_lease_active()
         workers.append(threading.current_thread().name)
         return "persisted"
 
@@ -1038,9 +1045,9 @@ def test_coordinated_mutation_uses_existing_writer_worker_without_compute_admiss
         stop()
 
 
-def _loop_owned_bridge(archive_root: Path) -> tuple[object, object, Callable[[], None]]:
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-
+def _loop_owned_bridge(
+    archive_root: Path,
+) -> tuple[DaemonWriteCoordinator, DaemonWriteThreadBridge, Callable[[], None]]:
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     holder: list[DaemonWriteCoordinator] = []

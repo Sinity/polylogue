@@ -45,21 +45,19 @@ possibly many times), this module decides:
 
 ## The connection interface
 
-Every function here takes ``store: RawRevisionGovernanceHost`` as its first
-argument instead of being a method on ``ArchiveStore``. ``ArchiveStore`` owns
+Source-only classification and revision binding take ``RawRevisionSourceHost``.
+Functions that lower Index changes take ``RawRevisionGovernanceHost`` and require
+the Store's exact mutation scope. Both protocols use the caller's actual tier
+connections. ``ArchiveStore`` owns
 a persistent lazy ``source.db`` connection plus in-flight write-batch state
 (pending blob receipts, pending raw-parse-state flushes, the blob publisher)
 as instance attributes; the governance surface needs a subset of that state
 but must not gain silent access to the other ~9,000 lines of read-surface
 internals that live alongside it. ``RawRevisionGovernanceHost`` is a
-``Protocol`` naming exactly the seven members this module touches
-(``_conn``, ``_ensure_source_conn``, ``_blob_publisher``,
-``_pending_raw_parse_states``, ``_preacquire_attachment_blobs``,
-``_write_counts``, ``_skipped_counts``). ``ArchiveStore`` already defines all
-seven under those exact names, so it satisfies the protocol structurally —
-no inheritance, no explicit adapter, and no import of ``ArchiveStore`` here
-(which would create an import cycle: ``archive.py`` must import this module
-to expose the governance surface as ``ArchiveStore`` methods again).
+``Protocol`` extending Source authority with the actual Index connection,
+mutation scope and pending publication state. ``ArchiveStore`` satisfies both
+interfaces structurally. The Drive Source adapter implements only Source
+classification and binding; it carries no placeholder Index handle.
 
 This was chosen over two alternatives: (a) passing the raw ``sqlite3.Connection``
 alone — insufficient, because several functions need the lazily-opened
@@ -271,7 +269,16 @@ def _policy_snapshot_for_store(store: RawRevisionGovernanceHost) -> ExcisionPoli
     return build_excision_policy_snapshot(Path(archive_root))
 
 
-class RawRevisionGovernanceHost(Protocol):
+class RawRevisionSourceHost(Protocol):
+    """The actual Source authority used by classification and revision binding."""
+
+    archive_root: Path
+    _blob_publisher: ArchiveBlobPublisher | None
+
+    def _ensure_source_conn(self) -> sqlite3.Connection: ...
+
+
+class RawRevisionGovernanceHost(RawRevisionSourceHost, Protocol):
     """The narrow slice of ``ArchiveStore`` this module is allowed to touch.
 
     ``ArchiveStore`` satisfies this structurally (duck typing) — it is never
@@ -284,13 +291,9 @@ class RawRevisionGovernanceHost(Protocol):
 
     def index_mutation_scope(self) -> AbstractContextManager[IndexMutationScope]: ...
 
-    archive_root: Path
     _write_lease_archive_root: Path
-    _blob_publisher: ArchiveBlobPublisher | None
     _inactive_candidate_durable_read_only: bool
     _pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]]
-
-    def _ensure_source_conn(self) -> sqlite3.Connection: ...
 
     def commit(self) -> None: ...
 
@@ -1152,7 +1155,7 @@ def write_parsed_for_retained_raw_result(
 
 
 def bind_raw_revision(
-    store: RawRevisionGovernanceHost, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True
+    store: RawRevisionSourceHost, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True
 ) -> None:
     """Bind acquisition evidence; ``manage_transaction=False`` batches (polylogue-amg1)."""
     bind_source_raw_revision(store._ensure_source_conn(), raw_id, revision, manage_transaction=manage_transaction)
@@ -1338,7 +1341,7 @@ def raw_legacy_append_resynthesis_receipt(store: RawRevisionGovernanceHost, raw_
 
 
 def raw_membership_retired_full_revision_siblings(
-    store: RawRevisionGovernanceHost, logical_source_key: str
+    store: RawRevisionSourceHost, logical_source_key: str
 ) -> tuple[str, ...]:
     """Return raws previously retired from full-revision byte governance for this key.
 
@@ -1384,7 +1387,7 @@ def raw_membership_retired_full_revision_siblings(
     return tuple(str(row[0]) for row in rows)
 
 
-def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanceHost, logical_source_key: str) -> bool:
+def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionSourceHost, logical_source_key: str) -> bool:
     """Detect a same-``source_path`` sibling under a DIFFERENT byte-revision key.
 
     Polylogue-eqnv: two raws of the identical physical document can end
@@ -1492,7 +1495,7 @@ def classify_raw_revision_cohort_for_frozen_candidate(
 
 
 def classify_raw_revision_cohort_for_live_watch(
-    store: RawRevisionGovernanceHost,
+    store: RawRevisionSourceHost,
     logical_source_key: str,
 ) -> RevisionReplayPlan:
     """Classify a cohort for the live incremental-watch path.
@@ -1664,7 +1667,7 @@ def apply_prepared_raw_revision_classification(
 
 
 def _classify_raw_revision_cohort(
-    store: RawRevisionGovernanceHost,
+    store: RawRevisionSourceHost,
     logical_source_key: str,
     *,
     check_source_path_identity_split: bool,
@@ -2003,11 +2006,11 @@ def _raw_revision_authority(store: RawRevisionGovernanceHost, raw_id: str) -> st
     return None if row is None or row[0] is None else str(row[0])
 
 
-def raw_revision_replay_plan(store: RawRevisionGovernanceHost, logical_source_key: str) -> RevisionReplayPlan:
+def raw_revision_replay_plan(store: RawRevisionSourceHost, logical_source_key: str) -> RevisionReplayPlan:
     return plan_revision_replay(_raw_revision_candidates(store, logical_source_key))
 
 
-def _raw_revision_candidates(store: RawRevisionGovernanceHost, logical_source_key: str) -> list[RevisionCandidate]:
+def _raw_revision_candidates(store: RawRevisionSourceHost, logical_source_key: str) -> list[RevisionCandidate]:
     rows = (
         store._ensure_source_conn()
         .execute(
@@ -2219,7 +2222,7 @@ def raw_revision_material(
     return provider, payload_store.read_all(blob_hash), source_path, kind
 
 
-def _retained_blob_store(store: RawRevisionGovernanceHost) -> BlobStore:
+def _retained_blob_store(store: RawRevisionSourceHost) -> BlobStore:
     return store._blob_publisher or BlobStore(store.archive_root / "blob")
 
 
@@ -3001,7 +3004,7 @@ def expand_raw_membership_selection_sync(
 
 
 def raw_membership_raw_ids(
-    store: RawRevisionGovernanceHost,
+    store: RawRevisionSourceHost,
     logical_source_key: str,
     *,
     include_complete_raw_ids: frozenset[str] = frozenset(),

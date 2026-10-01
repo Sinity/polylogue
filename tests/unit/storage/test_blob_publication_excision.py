@@ -413,14 +413,14 @@ def test_retained_replay_writes_hold_the_publisher_slot_through_their_commit(tmp
     try:
         with ArchiveStore(root, read_only=False) as store:
             store.write_parsed_for_retained_raw_result(
-                object(),  # type: ignore[arg-type]
+                object(),
                 raw_id="raw-1",
                 source_path="s.jsonl",
                 acquired_at_ms=1,
             )
             assert exclusion_available()
             store.write_parsed_for_retained_raw_result(
-                object(),  # type: ignore[arg-type]
+                object(),
                 raw_id="raw-2",
                 source_path="s.jsonl",
                 acquired_at_ms=1,
@@ -475,8 +475,8 @@ def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path:
     monkeypatch.setattr(archive_module, "write_parsed_for_retained_raw", observed)
     try:
         with ArchiveStore(root, read_only=False) as store:
-            store.apply_raw_membership_classification("key", object(), {}, {}, acquired_at_ms=1)  # type: ignore[arg-type]
-            store.write_parsed_for_retained_raw(object(), raw_id="raw", source_path="s.jsonl", acquired_at_ms=1)  # type: ignore[arg-type]
+            store.apply_raw_membership_classification("key", object(), {}, {}, acquired_at_ms=1)
+            store.write_parsed_for_retained_raw(object(), raw_id="raw", source_path="s.jsonl", acquired_at_ms=1)
     finally:
         monkeypatch.undo()
 

@@ -577,7 +577,7 @@ async def test_unreadable_bootstrap_audit_returns_one_fault_and_retries_after_sc
     """Actual SQLite discovery failure cannot be retried inside one backlog call."""
     archive_root = tmp_path / "fresh"
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     try:
         composed = compose_session_profile_callback(
             archive_root,
@@ -646,7 +646,7 @@ async def test_faulted_or_unchanged_audit_retains_owed_domains_and_serves_siblin
 
     monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", converge)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -727,7 +727,7 @@ async def test_rotating_unsettled_sweeps_reach_every_domain_tail_and_retry_the_p
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     adapters = install_audit_derivations(monkeypatch, failure)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,
@@ -775,7 +775,7 @@ async def test_new_generation_resets_unsettled_sweep_facts_and_restarts_the_pref
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     adapters = install_audit_derivations(monkeypatch, "fault")
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
     try:
         composed = compose_session_profile_callback(
             recovered.root,

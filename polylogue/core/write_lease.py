@@ -22,6 +22,11 @@ def current_write_lease() -> Any:
     return _implementation().current_write_lease()
 
 
+def coordinator_write_lease_active() -> bool:
+    """Observe the current execution unit's actual coordinator-owned lease."""
+    return bool(_implementation().coordinator_write_lease_active())
+
+
 def require_write_lease(purpose: str, *, archive_root: str | Path | None = None) -> Any:
     return _implementation().require_write_lease(purpose, archive_root=archive_root)
 

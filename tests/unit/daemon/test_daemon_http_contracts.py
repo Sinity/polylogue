@@ -1049,7 +1049,7 @@ class TestBoundedArchiveQueryExecutor:
         async def mutation(_poly: object) -> object:
             return {"written": True}
 
-        handler._run_archive_query = run_direct  # type: ignore[method-assign]
+        object.__setattr__(handler, "_run_archive_query", run_direct)
         try:
             with handler._write_gate("test.http.contract"):
                 assert handler._sync_run(mutation) == {"written": True}

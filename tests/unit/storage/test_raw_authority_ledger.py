@@ -790,9 +790,9 @@ def test_v5_semantic_refusal_is_recensused_and_replayed_from_retained_bytes(
             == "accepted"
         )
     with ArchiveStore.open_existing(tmp_path) as archive:
-        assert archive.resolve_exact_session_ids(("codex-session:semantic-receipt",)) == (
-            "codex-session:semantic-receipt",
-        )
+        assert archive.resolve_exact_session_ids(("codex-session:semantic-receipt",)) == {
+            "codex-session:semantic-receipt": "codex-session:semantic-receipt",
+        }
         assert (
             archive._conn.execute(
                 "SELECT text FROM messages WHERE session_id = ?", ("codex-session:semantic-receipt",)

@@ -5,9 +5,10 @@ import json
 import multiprocessing
 import os
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -863,6 +864,7 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
     from polylogue.core.enums import BlockType, Provider
     from polylogue.core.refs import ObjectRef
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
     from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.index_writer import write_fixture_index_session
@@ -1429,7 +1431,7 @@ def test_refused_rebuild_releases_custody_while_existing_sh_owner_remains(tmp_pa
 
 @pytest.mark.uses_real_clock("independent process probes retained SQL after outer owner retires")
 def test_outer_lease_retirement_keeps_store_sql_until_actual_commit(tmp_path: Path) -> None:
-    from polylogue.core.sources import Provider
+    from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.write_lease import UnleasedWriteError, current_write_lease, write_lease
 
     _archive(tmp_path)
@@ -1482,7 +1484,9 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
         finally:
             connection.close()
     seen: list[str] = []
-    actual_materialize = artifacts.materialize_artifact_observations
+    actual_materialize = cast(
+        Callable[[sqlite3.Connection], object], vars(artifacts)["materialize_artifact_observations"]
+    )
 
     def materialize(connection: sqlite3.Connection) -> object:
         seen.append(connection.execute("SELECT value FROM cache_generation_probe").fetchone()[0])
@@ -1500,7 +1504,7 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
             old.execute("SELECT * FROM cache_generation_probe").fetchall()
         elif pending == "failed_close":
             handle = SettlementHandle(old)
-            owner.connection = handle  # type: ignore[assignment]
+            owner.connection = handle
         if pending != "idle":
             with pytest.raises(NativeConnectionSettlementError):
                 store.promote(generation)
@@ -1601,14 +1605,14 @@ def test_generation_native_failed_close_retains_selected_descriptor_and_sql(
 
     _archive(tmp_path)
     handles: list[SettlementHandle] = []
-    actual_connect = generations.sqlite3.connect
+    actual_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
 
     def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(actual_connect(*args, **kwargs))  # type: ignore[arg-type]
+        handle = SettlementHandle(actual_connect(*args, **kwargs))
         handles.append(handle)
         return handle  # type: ignore[return-value]
 
-    monkeypatch.setattr(generations.sqlite3, "connect", connect)
+    monkeypatch.setattr(sqlite3, "connect", connect)
     owner = None
     try:
         with write_lease("test.generation_anchor", archive_root=tmp_path):

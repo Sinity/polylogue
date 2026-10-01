@@ -132,7 +132,7 @@ class _MixedLoad:
                     frame.connection.execute("SELECT count(*) FROM payload").fetchone()
 
     async def _run(self, tmp_path: Path) -> None:
-        coordinator = DaemonWriteCoordinator()
+        coordinator = DaemonWriteCoordinator(archive_root=self.db.parent)
         stop = threading.Event()
         reader = threading.Thread(target=self._interactive_reads, args=(stop,), daemon=True)
         reader.start()

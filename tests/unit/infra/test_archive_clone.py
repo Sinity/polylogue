@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable, Generator
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -212,7 +213,11 @@ def test_workspace_fixture_teardown_retains_failed_population_fence(
     from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
     from tests import conftest
 
-    fixture = conftest.workspace_paths.__wrapped__(tmp_path, monkeypatch)
+    create_fixture = cast(
+        Callable[[Path, pytest.MonkeyPatch], Generator[dict[str, Path], None, None]],
+        conftest.workspace_paths.__wrapped__,
+    )
+    fixture = create_fixture(tmp_path, monkeypatch)
     paths = next(fixture)
     root = paths["archive_root"]
     root.mkdir()

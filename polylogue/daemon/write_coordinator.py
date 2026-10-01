@@ -272,17 +272,6 @@ _LATEST_TELEMETRY: dict[str, object] = {
 }
 
 
-def daemon_write_lease_active() -> bool:
-    """Return whether the current context owns the daemon's writer gate.
-
-    ``run_sync`` deliberately propagates context into its worker thread, so
-    storage code can distinguish a coordinator-authorized online write from an
-    unrelated maintenance process racing the daemon.  This is an authority
-    check, not merely a daemon-process check.
-    """
-    return active_write_admission.get() is not None
-
-
 class DaemonWriterSettlementError(RuntimeError):
     """An original writer still owns SQL; a later admission may retry cleanup."""
 

@@ -15,7 +15,7 @@ import asyncio
 import os
 import sqlite3
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,9 +111,9 @@ if hasattr(os, "register_at_fork"):
 
 
 async def _settled_connection_operation(
-    awaitable: object,
+    awaitable: Awaitable[object],
 ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
-    task = asyncio.ensure_future(awaitable)  # type: ignore[arg-type]
+    task = asyncio.ensure_future(awaitable)
     cancellation = None
     while not task.done():
         try:
@@ -133,15 +133,21 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
     """Retain the raw handle and worker until native close has actually settled."""
     error = None
     cancellation = None
+    if conn._connection is not None:
+        error, cancellation = await _settled_connection_operation(conn.set_progress_handler(None, 0))
     if rollback and conn._connection is not None:
-        error, cancellation = await _settled_connection_operation(conn.rollback())
+        rollback_error, rollback_cancellation = await _settled_connection_operation(conn.rollback())
+        error = error or rollback_error
+        cancellation = cancellation or rollback_cancellation
     if conn._connection is not None:
 
         def close_raw() -> None:
             conn._conn.close()
             conn._connection = None
 
-        close_error, close_cancellation = await _settled_connection_operation(conn._execute(close_raw))
+        close_error, close_cancellation = await _settled_connection_operation(
+            conn._execute(close_raw)  # type: ignore[no-untyped-call]
+        )
         error = error or close_error
         cancellation = cancellation or close_cancellation
     actual_closed = conn._connection is None
@@ -165,7 +171,7 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
     return _ConnectionCloseResult(actual_closed, error, cancellation)
 
 
-async def _await_settled(awaitable: object) -> None:
+async def _await_settled(awaitable: Awaitable[object]) -> None:
     """Propagate cancellation only after the canonical queued operation settles."""
     error, cancellation = await _settled_connection_operation(awaitable)
     if error is not None:
@@ -605,6 +611,10 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
                 depth_entered = True
                 yield
             except BaseException as primary:
+                try:
+                    await _await_settled(backend._bulk_conn.set_progress_handler(None, 0))
+                except BaseException as cleanup:
+                    primary.add_note(f"bulk cancellation guard cleanup also failed: {cleanup}")
                 for statement in (f"ROLLBACK TO SAVEPOINT {sp_name}", f"RELEASE SAVEPOINT {sp_name}"):
                     try:
                         await _await_settled(backend._bulk_conn.execute(statement))
@@ -719,6 +729,7 @@ async def _backend_rollback(backend: SQLiteBackend) -> None:
         backend._transaction_owner_task = None
     else:
         next_depth = backend._transaction_depth - 1
+        await _await_settled(backend._txn_conn.set_progress_handler(None, 0))
         await _await_settled(backend._txn_conn.execute(f"ROLLBACK TO SAVEPOINT sp_{next_depth}"))
         await _await_settled(backend._txn_conn.execute(f"RELEASE SAVEPOINT sp_{next_depth}"))
         backend._transaction_depth = next_depth
