@@ -151,10 +151,6 @@
       "digest": "d12cc3652d9cbc72aa95836708c30c8054d2c93e"
     },
     {
-      "file": "polylogue/operations/archive_backup.py",
-      "digest": "d65f6f25331da8af186e0fb925ca6f48905e683c"
-    },
-    {
       "file": "polylogue/daemon/catchup_status.py",
       "digest": "4b3006182f4d41706f2bb43b6e16fe0f2b77b694"
     },

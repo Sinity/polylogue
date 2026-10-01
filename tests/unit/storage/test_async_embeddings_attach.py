@@ -381,7 +381,7 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
         connections.append(conn)
         return conn
 
-    monkeypatch.setattr(async_sqlite.aiosqlite, "connect", capture_connection)
+    monkeypatch.setattr(aiosqlite, "connect", capture_connection)
 
     async def exercise() -> None:
         backend = async_sqlite.SQLiteBackend(tmp_path / "index.db")

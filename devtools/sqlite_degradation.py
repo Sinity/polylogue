@@ -6,7 +6,9 @@ indistinguishable from a real answer. The typed route
 (``polylogue.core.evidence`` plus ``polylogue.storage.tier_access``) classifies
 that once at the seam instead, so this census exists to ratchet the improvised
 sites down. Handlers that preserve an explicit failure boundary by raising are
-not degradation sites; handlers that return a value (including an empty or
+not degradation sites. Imported canonical operation envelopes returning only
+``failed``/``rejected`` with an explicit error and no result are also visible
+failure boundaries; handlers that return a value (including an empty or
 otherwise fabricated projection) remain in the census.
 
 The census is **content-anchored**, the same mechanism
@@ -29,6 +31,7 @@ import ast
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TypeAlias
 
@@ -64,15 +67,105 @@ def _handles_sqlite(node: ast.ExceptHandler) -> bool:
     return False
 
 
+def _scope_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Inspect one lexical scope without importing nested definitions' bindings."""
+    pending = list(ast.iter_child_nodes(scope))
+    while pending:
+        child = pending.pop()
+        yield child
+        if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+            pending.extend(ast.iter_child_nodes(child))
+
+
+def _canonical_envelope_name(node: ast.Return, parents: dict[ast.AST, ast.AST], name: str) -> bool:
+    scope = parents.get(node)
+    while scope is not None:
+        if isinstance(scope, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef):
+            bindings: list[bool] = []
+            if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+                arguments = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]
+                if scope.args.vararg is not None:
+                    arguments.append(scope.args.vararg)
+                if scope.args.kwarg is not None:
+                    arguments.append(scope.args.kwarg)
+                if any(argument.arg == name for argument in arguments):
+                    bindings.append(False)
+            for child in _scope_nodes(scope):
+                if isinstance(child, ast.ImportFrom):
+                    for alias in child.names:
+                        if (alias.asname or alias.name) == name:
+                            bindings.append(
+                                child.module == "polylogue.operations.daemon_execution"
+                                and child.level == 0
+                                and alias.name == "operation_envelope"
+                                and child.lineno < node.lineno
+                            )
+                elif isinstance(child, ast.Import):
+                    if any((alias.asname or alias.name.split(".")[0]) == name for alias in child.names):
+                        bindings.append(False)
+                elif (
+                    isinstance(child, ast.Name)
+                    and isinstance(child.ctx, ast.Store | ast.Del)
+                    and child.id == name
+                    or isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+                    and child.name == name
+                    or isinstance(child, ast.ExceptHandler)
+                    and child.name == name
+                ):
+                    bindings.append(False)
+            if bindings:
+                return all(bindings)
+        scope = parents.get(scope)
+    return False
+
+
+def _explicit_failure_return(node: ast.Return, parents: dict[ast.AST, ast.AST]) -> bool:
+    call = node.value
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+        return False
+    if not _canonical_envelope_name(node, parents, call.func.id) or len(call.args) != 2:
+        return False
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    if None in keywords or "result" in keywords or "error" not in keywords:
+        return False
+    error = keywords["error"]
+    if isinstance(error, ast.Constant) and error.value is None:
+        return False
+
+    def failure_only(value: ast.AST | None) -> bool:
+        if isinstance(value, ast.Constant):
+            return value.value in {"failed", "rejected"}
+        if isinstance(value, ast.IfExp):
+            return failure_only(value.body) and failure_only(value.orelse)
+        return False
+
+    return failure_only(keywords.get("outcome"))
+
+
 def _returns_value(node: ast.ExceptHandler, parents: dict[ast.AST, ast.AST]) -> bool:
     """Include every handler except one whose failure boundary is explicit.
 
     ``continue``, ``break``, ``pass`` and fallback assignments all degrade
     even when no return appears in the handler itself. A bare re-raise or an
-    explicit exception raise preserves the boundary.
+    explicit exception raise preserves the boundary. Canonical operation envelopes
+    with failure-only outcomes and an explicit error preserve it as well.
     """
     children = list(ast.walk(node))
-    if any(isinstance(child, ast.Return | ast.Continue | ast.Break | ast.Pass) for child in children):
+
+    def escapes_handler_loop(child: ast.AST) -> bool:
+        ancestor = parents.get(child)
+        while ancestor is not None and ancestor is not node:
+            if isinstance(ancestor, ast.For | ast.AsyncFor | ast.While):
+                return False
+            ancestor = parents.get(ancestor)
+        return True
+
+    if any(
+        isinstance(child, ast.Pass)
+        or (isinstance(child, ast.Continue | ast.Break) and escapes_handler_loop(child))
+        or (isinstance(child, ast.Return) and not _explicit_failure_return(child, parents))
+        for child in children
+    ):
         return True
     assigned = {
         target.id
@@ -89,6 +182,7 @@ def _returns_value(node: ast.ExceptHandler, parents: dict[ast.AST, ast.AST]) -> 
     return any(
         isinstance(child, ast.Return)
         and child.value is not None
+        and not _explicit_failure_return(child, parents)
         and any(isinstance(value, ast.Name) and value.id in assigned for value in ast.walk(child.value))
         for child in ast.walk(scope)
         if child is not node
