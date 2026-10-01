@@ -807,36 +807,65 @@ def test_a_404_claiming_the_operation_protocol_is_validated_strictly(_short_uds_
             DaemonClient(socket_path, timeout_s=5).operation("status", {}, archive_root="/archive")
 
 
-def test_a_read_waits_on_the_socket_for_its_own_deadline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A default-timeout client reading a scan-shaped request waits out its deadline.
-
-    Anti-vacuity (Codex P2, #5695): pass the derived deadline to the transport
-    for writes only and the read socket keeps the client's 0.1-second default,
-    failing while a valid 120-second scan is still running.
-    """
-    import polylogue.daemon_client as daemon_client_module
+@pytest.mark.parametrize(
+    "operation,payload",
+    [
+        ("query.aggregate", {"mode": "count"}),
+        ("read.chronicle", {"params": {"sort": "messages"}}),
+        ("read.chronicle", {"params": {"sort": "date"}}),
+    ],
+)
+def test_reads_have_no_implicit_request_or_transport_deadline(
+    operation: str, payload: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Restoring any spec/scan timeout or the client fallback makes this fail."""
     from polylogue.daemon_client import DaemonClient
 
     client = DaemonClient(tmp_path / "daemon.sock")
-    captured: list[object] = []
+    captured: list[tuple[object, object]] = []
 
-    def request(*args: object, **kwargs: object) -> None:
-        captured.append(kwargs["timeout_s"])
+    def request(_method: str, _path: str, body: dict[str, object], **kwargs: object) -> None:
+        captured.append((body["deadline_ms"], kwargs["timeout_s"]))
         return None
 
-    monkeypatch.setattr(daemon_client_module, "_request_deadline_s", lambda *_args: 120.0)
     monkeypatch.setattr(client, "_request_json_response", request)
-
-    assert client.operation("read.chronicle", {}, archive_root=str(tmp_path)) is None
-    assert captured == [121.0]
+    assert client.operation(operation, payload, archive_root=str(tmp_path)) is None
+    assert captured == [(None, None)]
     assert client.timeout_s == 0.1
+
+
+def test_unbounded_response_does_not_inherit_the_clients_short_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Drive the actual transport constructor; forwarding None alone is insufficient."""
+    import errno
+
+    from polylogue.daemon_client import DaemonClient
+
+    observed: list[float | None] = []
+
+    class AbsentConnection:
+        connected = False
+
+        def __init__(self, _path: Path, timeout: float | None) -> None:
+            observed.append(timeout)
+
+        def connect(self) -> None:
+            raise FileNotFoundError(errno.ENOENT, "synthetic absent daemon")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", AbsentConnection)
+    assert DaemonClient(tmp_path / "daemon.sock").operation("query.aggregate", {"mode": "count"}) is None
+    assert observed == [None]
 
 
 def test_an_explicit_dispatch_deadline_reaches_the_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A caller's ``deadline_ms`` is the request's deadline, not the derived scan one.
 
     Anti-vacuity (Codex P1, #5695): let ``_ask_daemon`` omit ``deadline_ms``
-    and a one-second scan-shaped read goes out with the 120-second deadline.
+    and a one-second scan-shaped read goes out without its explicit deadline.
     """
     from types import SimpleNamespace
 
@@ -863,9 +892,8 @@ def test_invalid_chronicle_payloads_reach_execution_for_their_typed_refusal() ->
     Anti-vacuity (Codex P2, #5695): catch only ``ValueError`` and a bogus
     sort's ``QuerySpecError`` escapes the classifier before execution.
     """
-    from polylogue.operations.daemon_reads import operation_deadline_s, read_is_archive_scan, requires_vector_snapshot
+    from polylogue.operations.daemon_reads import read_is_archive_scan, requires_vector_snapshot
 
     payload = {"params": {"sort": "bogus"}}
     assert read_is_archive_scan("read.chronicle", payload) is False
     assert requires_vector_snapshot("read.chronicle", payload) is False
-    assert operation_deadline_s("read.chronicle", payload) > 0
