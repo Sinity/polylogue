@@ -344,9 +344,12 @@ def read_is_archive_scan(name: str, payload: Mapping[str, object]) -> bool:
     """Whether this read request must read every candidate, decided before it runs.
 
     A chronicle page ordered by a composed count hydrates every matching
-    session whatever its page size, so it is admitted as scan work rather
-    than against the capacity reserved for interactive reads.
+    session whatever its page size. Aggregates reduce the matching selection
+    rather than returning a page. Both use scan admission instead of the
+    capacity reserved for interactive reads.
     """
+    if name == "query.aggregate":
+        return str(payload.get("mode") or "") in {"count", "stats", "stats_by"}
     if name != "read.chronicle":
         return False
     from polylogue.core.errors import PolylogueError

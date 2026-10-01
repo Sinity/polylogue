@@ -2446,6 +2446,26 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
             assert envelope["result"] is None
 
 
+def test_socket_aggregate_uses_bulk_compute_admission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def seed(root: Path) -> None:
+        _seed_sessions(root, count=2)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        actual_submit = stack.execution_kernel.submit
+        admitted: list[str] = []
+
+        def record_submit(function: Any, **kwargs: Any) -> Any:
+            admitted.append(kwargs["admission_class"])
+            return actual_submit(function, **kwargs)
+
+        monkeypatch.setattr(stack.execution_kernel, "submit", record_submit)
+        envelope = stack.client.operation("query.aggregate", {"mode": "count", "params": {"limit": 1}})
+        assert envelope is not None
+        assert envelope["outcome"] == "completed"
+        assert envelope["result"]["count"] == 2
+        assert admitted == ["bulk-candidate"]
+
+
 @pytest.mark.parametrize("lane", ["semantic", "hybrid"])
 @pytest.mark.parametrize("vector_fault", ["missing", "unreadable", "runtime_unavailable"])
 def test_keyless_text_read_skips_vector_snapshot_admission(

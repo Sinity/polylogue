@@ -565,10 +565,15 @@ def publish_prepared_materials(materials: Iterable[PreparedMaterial]) -> None:
         if publisher is None:
             return
         publisher.flush()
-        for material in page:
-            assert material.blob is not None
-            require_published(publisher, material.blob.hash_hex, source_path=material.source_uri)
-        page.clear()
+        try:
+            for material in page:
+                assert material.blob is not None
+                require_published(publisher, material.blob.hash_hex, source_path=material.source_uri)
+        finally:
+            for material in page:
+                assert material.publication_claim is not None
+                publisher.forget_completed_claim(material.publication_claim)
+            page.clear()
 
     for material in materials:
         check_compute_cancelled()

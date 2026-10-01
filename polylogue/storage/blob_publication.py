@@ -529,6 +529,27 @@ class ArchiveBlobPublisher(BlobStore):
         """
         self._refused_as_excised.clear()
 
+    def forget_completed_claim(self, claim: PreparedBlobPublicationClaim) -> None:
+        """Retire local tracking after this exact claim is sealed and flushed.
+
+        The carrier and Source reservation retain the receipt. Other queued
+        captures of identical bytes retain their own publication ownership.
+        """
+        if claim.publisher is not self or claim.receipt.publisher_id != self.publisher_id:
+            raise ValueError("prepared claim belongs to another publisher")
+        publication_id = claim.receipt.publication_id
+        if any(receipt.publication_id == publication_id for receipt, _ in self._pending) or any(
+            receipt.publication_id == publication_id for receipt in self._adoptions
+        ):
+            raise RuntimeError("queued publication claim has not completed")
+        blob_hash = claim.receipt.blob_hash
+        if self._latest_receipt_by_hash.get(blob_hash) == publication_id:
+            self._latest_receipt_by_hash.pop(blob_hash)
+        if not any(receipt.blob_hash == blob_hash for receipt, _ in self._pending) and not any(
+            receipt.blob_hash == blob_hash for receipt in self._adoptions
+        ):
+            self._refused_as_excised.discard(blob_hash)
+
     def discard_pending_receipt(self, publication_id: str) -> bool:
         """Drop one queued publication or adoption by its receipt, before any flush.
 

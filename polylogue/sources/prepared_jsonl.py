@@ -966,19 +966,25 @@ class PreparedJsonl:
     def publish_blobs(self) -> None:
         """Publish exact closed-page claims before any Source transaction."""
         publisher = self.publication_publisher
-        page_count = 0
+        page: list[PreparedBlobPublicationClaim] = []
+
+        def flush_page() -> None:
+            assert publisher is not None
+            publisher.flush()
+            for completed in page:
+                publisher.forget_completed_claim(completed)
+            page.clear()
+
         for _session_ordinal, _attachment_ordinal, claim in self.iter_attachment_claims():
             assert publisher is not None
             publisher.queue_prepared(
                 PreparedBlob(claim.receipt.blob_hash, claim.receipt.size_bytes, claim.prepared_path), claim=claim
             )
-            page_count += 1
-            if page_count == 256:
-                publisher.flush()
-                page_count = 0
-        if page_count:
-            assert publisher is not None
-            publisher.flush()
+            page.append(claim)
+            if len(page) == 256:
+                flush_page()
+        if page:
+            flush_page()
         from polylogue.storage.materials import publish_prepared_materials
 
         if self.codex_state_kind not in {"goals", "memories"}:

@@ -14,12 +14,61 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
+
+
+def test_completed_claim_retirement_preserves_other_same_hash_capture(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    prepared = publisher.prepare_from_bytes(b"same captured bytes")
+    claim = publisher.prepare_claim(prepared)
+    publisher.queue_prepared(prepared, claim=claim)
+    with pytest.raises(RuntimeError):
+        publisher.forget_completed_claim(claim)
+    assert publisher.flush() == (claim.receipt,)
+
+    blob_hash, _size = publisher.write_from_bytes(b"same captured bytes")
+    other_receipt = publisher.receipt_id(blob_hash)
+    assert other_receipt is not None and other_receipt != claim.receipt.publication_id
+    publisher.forget_completed_claim(claim)
+    assert publisher.receipt_id(blob_hash) == other_receipt
+    assert publisher.has_pending
+    assert tuple(receipt.publication_id for receipt in publisher.flush()) == (other_receipt,)
+    publisher.queue_prepared(prepared, claim=claim)
+    assert not publisher.has_pending
+
+
+def test_completed_excised_claim_releases_local_refusal_but_preserves_ledger(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    prepared = publisher.prepare_from_bytes(b"excised prepared capture")
+    claim = publisher.prepare_claim(prepared)
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=bytes.fromhex(prepared.hash_hex),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+    publisher.queue_prepared(prepared, claim=claim)
+    assert publisher.flush() == ()
+    assert publisher.refused_as_excised(prepared.hash_hex)
+    publisher.forget_completed_claim(claim)
+    assert not publisher.refused_as_excised(prepared.hash_hex)
+    assert publisher.excised_now(prepared.hash_hex)
+    assert not publisher.exists(prepared.hash_hex)
 
 
 def test_an_excised_payload_is_never_published(tmp_path: Path) -> None:
