@@ -296,7 +296,7 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
         with sqlite3.connect(root / "index.db") as conn:
             conn.row_factory = sqlite3.Row
             composed = read_archive_session_envelope(conn, "codex-session:child-native")
-            assert composed is not None and composed.lineage_complete
+            assert composed.lineage_complete
             assert composed.parent_session_id == "codex-session:tool-call-session-1"
             # A child-only attachment on an inherited turn legitimately ends
             # prefix sharing. Compare the composed authored transcript, not

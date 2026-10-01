@@ -909,6 +909,7 @@ class ProductionCorpusRuntime:
         self._raw_ids: dict[str, tuple[str, ...]] = {}
         self._source_paths: dict[str, Path] = {}
         self._raw_ids_by_wire: dict[tuple[str, bytes], tuple[str, ...]] = {}
+        self._raw_ids_by_source_revision: dict[tuple[str, Path, bytes], tuple[str, ...]] = {}
         self._crashed = False
         self.last_results: list[object] = []
 
@@ -937,11 +938,19 @@ class ProductionCorpusRuntime:
                 self.last_results.append(result)
                 wire_hash = hashlib.sha256(wire_payload).digest()
                 wire_key = (source_name, wire_hash)
-                known_ids = self._raw_ids_by_wire.get(wire_key, ())
+                source_revision = (source_name, path, wire_hash)
+                # Prefer the exact acquisition coordinate on a skipped
+                # reacquisition. Equal bytes at another path can have their
+                # own raw identity; wire evidence remains valid for a newly
+                # observed duplicate whose admission reports only a skip.
+                known_ids = self._raw_ids_by_source_revision.get(source_revision) or self._raw_ids_by_wire.get(
+                    wire_key, ()
+                )
                 if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
                     raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
                 self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
                 self._raw_ids_by_wire[wire_key] = self._raw_ids[artifact.artifact_id]
+                self._raw_ids_by_source_revision[source_revision] = self._raw_ids[artifact.artifact_id]
                 self._source_paths[artifact.artifact_id] = path
                 return result
             finally:
