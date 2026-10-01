@@ -28,6 +28,8 @@ __all__ = [
     "archive_fts_surface",
     "bound_archive_fts_surface",
     "fts_readiness_binding",
+    "fts_readiness_binding_needed",
+    "publish_fts_readiness_binding",
     "fts_triggers_present",
     "make_fts_derivation",
     "make_fts_frame",
@@ -169,3 +171,38 @@ def bound_archive_fts_surface(conn: sqlite3.Connection) -> dict[str, int | bool 
         "ready": True,
         "exact": True,
     }
+
+
+def fts_readiness_binding_needed(archive_root: Path) -> bool:
+    """Inspect the active generation for a missing authoritative FTS binding."""
+    index_db = resolve_active_index_path(archive_root)
+    if not index_db.exists():
+        return False
+    conn = open_readonly_connection(index_db, validate_schema=False)
+    try:
+        if not _table_exists(conn, "messages_fts_readiness_binding"):
+            return False
+        if not _table_exists(conn, "blocks") or not _table_exists(conn, "messages_fts"):
+            return False
+        return fts_readiness_binding(conn) is None
+    finally:
+        conn.close()
+
+
+def publish_fts_readiness_binding(archive_root: Path) -> bool | None:
+    """Stamp one generation in an admitted transaction; None means no index."""
+    index_db = resolve_active_index_path(archive_root)
+    if not index_db.exists():
+        return None
+    conn = open_daemon_connection(index_db, archive_root=archive_root)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        bound = stamp_fts_readiness_binding(conn)
+        conn.execute("COMMIT" if bound else "ROLLBACK")
+        return bound
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()

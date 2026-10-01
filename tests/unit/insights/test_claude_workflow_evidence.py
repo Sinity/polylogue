@@ -256,7 +256,7 @@ def test_claude_workflow_stage_reads_without_daemon_writer_lease(tmp_path) -> No
     import pytest
 
     from polylogue.core.stage_admission import stage_write_admission
-    from polylogue.daemon.convergence_stages import make_claude_workflow_stage
+    from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
     from polylogue.storage.sqlite.write_guard import install_archive_write_guard
     from polylogue.storage.sqlite.write_lease import (
         UnleasedWriteError,

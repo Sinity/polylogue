@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon.health import HealthSeverity, _check_hook_flow_fast
-from polylogue.daemon.metrics import format_metrics
 from polylogue.hooks import hook_status, plan_hook_change, resolve_events
+from polylogue.operations.daemon_metrics import format_metrics
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture

@@ -38,6 +38,7 @@ def test_verify_wheel_surface_requires_declared_package_resources(
 def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("UV_BUILD_CONSTRAINT", raising=False)
     calls: list[tuple[str, ...]] = []
 
     def fake_run(cmd: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> None:
@@ -65,15 +66,21 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
 
     rendered = [" ".join(call[:2]) for call in calls]
     assert rendered.count("uv build") == 2
+    for call in calls:
+        if call[:2] == ("uv", "build"):
+            assert "--require-hashes" in call
+            assert call[call.index("--build-constraints") + 1] == str(surface.ROOT / "packaging/hatchling.txt")
     assert rendered.count("uv venv") == 2
     import_probes = [call for call in calls if len(call) >= 4 and call[1:3] == ("-I", "-c")]
     assert len(import_probes) == 2
     assert all("polylogue.archive.query.expression" in call[3] for call in import_probes)
     assert all("devtools.storage_correctness_scenario" in call[3] for call in import_probes)
     assert all("resources_to_read = ()" in call[3] for call in import_probes)
-    smoke_commands = [" ".join(call) for call in calls]
-    assert sum("polylogue --plain ops diagnostics workload --json" in call for call in smoke_commands) == 2
-    assert sum("polylogue --plain ops diagnostics space --json" in call for call in smoke_commands) == 2
+    smoke_commands = [
+        call for call in calls if len(call) > 2 and call[2] == str(surface.ROOT / "packaging/smoke-installed.py")
+    ]
+    assert len(smoke_commands) == 2
+    assert all("--bin-dir" in call and "--python" in call for call in smoke_commands)
 
 
 def test_smoke_env_removes_source_pythonpath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

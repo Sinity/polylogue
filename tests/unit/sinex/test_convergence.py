@@ -108,7 +108,7 @@ def test_real_sinex_stage_blocks_affected_file_and_session_scopes(
     )
     service.stage_payload(publication_payload(object_id=blocked_id))
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages._sinex_session_ids_for_paths",
+        "polylogue.daemon.convergence_stages.session_ids_for_paths",
         lambda _db, paths: {path: [blocked_id] if path == blocked_path else [free_id] for path in paths},
     )
     projected: list[Path] = []

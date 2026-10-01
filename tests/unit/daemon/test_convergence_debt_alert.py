@@ -699,7 +699,7 @@ def test_metrics_debt_counts_read_aggregates_without_materializing_rows(
     """
     import sqlite3
 
-    from polylogue.daemon.metrics import _ops_convergence_debt_by_stage
+    from polylogue.operations.daemon_metrics import _ops_convergence_debt_by_stage
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     ops_path = tmp_path / "ops.db"

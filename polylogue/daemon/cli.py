@@ -2820,9 +2820,9 @@ async def _run_daemon_services_under_active_writer_lease(
             )
 
             from polylogue.daemon.convergence import DerivationConvergenceOwner
-            from polylogue.daemon.convergence_stages import configured_derivation_barrier
             from polylogue.daemon.fts_convergence import FtsConvergenceOwner
             from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
+            from polylogue.operations.sinex_convergence import configured_derivation_barrier
 
             fts_index = archive_root_path / "index.db"
             fts_owner = FtsConvergenceOwner(
