@@ -66,20 +66,32 @@ def redact_status_error(value: object, *, relative_path_spans: Sequence[tuple[in
         character = value[position]
         match = _URL.match(value, position)
         if match is not None:
+            url = None
             try:
-                url = urlsplit(match.group())
-                network_url = bool(url.scheme and url.netloc and url.hostname) and url.scheme != "file"
+                parsed = urlsplit(match.group())
+                if parsed.scheme and parsed.netloc and parsed.hostname and parsed.scheme != "file":
+                    url = parsed
             except ValueError:
-                network_url = False
-            if network_url:
-                authority_start = position + len(url.scheme) + 3
+                pass
+            authority_start = value.index("://", position, match.end()) + 3
+            local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_start, match.end())
+            # A validated bracketed IP authority owns its closing bracket.
+            # An invalid whole token can still have an independently valid
+            # network prefix before a diagnostic bracket and local-path tail.
+            if url is not None and local_suffix is not None:
                 authority_end = authority_start + len(url.netloc)
-                local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_start, match.end())
-                # urlsplit has validated bracketed IP authorities: their closing
-                # bracket before the first URI slash is structural URL syntax.
-                if local_suffix is not None and local_suffix.start() < authority_end and local_suffix.group() == "]":
+                if local_suffix.start() < authority_end and local_suffix.group() == "]":
                     local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_end, match.end())
-                url_end = local_suffix.start() if local_suffix is not None else match.end()
+            url_end = local_suffix.start() if local_suffix is not None else match.end()
+            if local_suffix is not None:
+                url = None
+                try:
+                    parsed = urlsplit(value[position:url_end])
+                    if parsed.scheme and parsed.netloc and parsed.hostname and parsed.scheme != "file":
+                        url = parsed
+                except ValueError:
+                    pass
+            if url is not None:
                 parts.append(value[position:url_end])
                 position = url_end
                 continue
