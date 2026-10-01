@@ -25,7 +25,6 @@ from polylogue.storage.index_generation import (
     source_revision_snapshot,
 )
 from polylogue.storage.sqlite.write_lease import write_lease
-from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 # A pid guaranteed to never correspond to a running process: it exceeds any
 # realistic pid_max (Linux defaults to <= 4194304 even with 64-bit pids).
@@ -37,21 +36,17 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_custody_probe import archive_custody_available
-from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+from tests.infra.archive_templates import bootstrap_archive_root, clone_archive_template, finalize_archive_template
 
 _ARCHIVE_TEMPLATE: Path | None = None
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _archive_template(tmp_path_factory: pytest.TempPathFactory) -> Generator[None]:
-    """Build the deterministic five-tier fixture once, then clone per test."""
+    """Build the canonical six-tier fixture once, then clone per test."""
     global _ARCHIVE_TEMPLATE
     template = tmp_path_factory.mktemp("index-generation-template") / "archive"
-    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS, ArchiveTier.INDEX):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(template / f"{tier.value}.db")
-        else:
-            initialize_archive_database(template / f"{tier.value}.db", tier)
+    bootstrap_archive_root(template)
     finalize_archive_template(template)
     _ARCHIVE_TEMPLATE = template
     try:
@@ -673,19 +668,19 @@ def test_failed_inactive_generation_is_discarded(tmp_path: Path) -> None:
     assert not Path(generation.index_path).parent.exists()
 
 
-def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) -> None:
+def _configured_symlink_archive(tmp_path: Path) -> tuple[Path, Path]:
     configured = tmp_path / "configured"
     canonical = tmp_path / "canonical"
     configured.mkdir()
     canonical.mkdir()
-    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(canonical / f"{tier.value}.db")
-        else:
-            initialize_archive_database(canonical / f"{tier.value}.db", tier)
+    _archive(canonical)
+    for tier in ArchiveTier:
         (configured / f"{tier.value}.db").symlink_to(canonical / f"{tier.value}.db")
-    initialize_archive_database(canonical / "index.db", ArchiveTier.INDEX)
-    (configured / "index.db").symlink_to(canonical / "index.db")
+    return configured, canonical
+
+
+def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) -> None:
+    configured, canonical = _configured_symlink_archive(tmp_path)
 
     store = IndexGenerationStore.for_archive_root(configured)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
@@ -716,11 +711,12 @@ def test_source_snapshot_connection_stays_bound_across_path_replacement(tmp_path
     with sqlite3.connect(replacement) as conn:
         conn.execute("CREATE TABLE raw_sessions (raw_id TEXT)")
         conn.execute("INSERT INTO raw_sessions VALUES ('replacement')")
-    with _open_source_snapshot(tmp_path) as conn:
-        original = conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0]
-        source.replace(tmp_path / "source-original.db")
-        replacement.replace(source)
-        assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == original
+    with pytest.raises(RuntimeError):
+        with _open_source_snapshot(tmp_path) as conn:
+            original = conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0]
+            source.replace(tmp_path / "source-original.db")
+            replacement.replace(source)
+            assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == original
 
 
 def test_source_snapshot_changes_when_retained_blob_identity_changes(tmp_path: Path) -> None:
@@ -1375,7 +1371,7 @@ def test_rebuild_preparation_is_off_custody_between_committed_segments(tmp_path:
                 )
                 try:
                     connection.execute("BEGIN IMMEDIATE")
-                    connection.execute("UPDATE sessions SET session_id = session_id WHERE 0")
+                    connection.execute("UPDATE sessions SET title = title WHERE 0")
                     assert connection.in_transaction
                     connection.commit()
                     assert not connection.in_transaction
@@ -1441,7 +1437,7 @@ def test_outer_lease_retirement_keeps_store_sql_until_actual_commit(tmp_path: Pa
         with write_lease("test.store.outer", archive_root=tmp_path):
             archive._enter_mutation_lease()
             archive._conn.execute("BEGIN IMMEDIATE")
-            archive._conn.execute("UPDATE sessions SET session_id = session_id WHERE 0")
+            archive._conn.execute("UPDATE sessions SET title = title WHERE 0")
         assert current_write_lease() is None
         assert archive._conn.in_transaction
         assert not archive_custody_available(tmp_path)
@@ -1692,7 +1688,7 @@ def test_promotion_preparation_retains_primary_and_one_native_cleanup_attempt(
 
     with write_lease("test.promotion-native-proof", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
-        with ArchiveStore.open_existing(tmp_path) as archive:
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
             with archive.index_mutation_scope():
                 session_id = write_fixture_index_session(archive._conn, reference_session("proof-target"))
             archive.save_annotation("proof-anchor", "session", session_id, "Retain the target")
@@ -1769,7 +1765,7 @@ def test_proof_snapshot_failure_rolls_back_once_and_preserves_both_errors(
 
     with write_lease("test.promotion-snapshot-cleanup", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
-        with ArchiveStore.open_existing(tmp_path) as archive:
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
             with archive.index_mutation_scope():
                 session_id = write_fixture_index_session(archive._conn, reference_session("snapshot-target"))
             archive.save_annotation("snapshot-anchor", "session", session_id, "Retain the target")
@@ -1868,3 +1864,67 @@ def test_retained_promotion_proof_context_settles_its_creator_and_preserves_fail
         assert cursor.close_attempts == 1
     assert prepared.reference_seal._closed
     assert retained_native_settlement_owners_on_current_thread() == ()
+
+
+@pytest.mark.parametrize("tier", ["source", "user", "audit", "index"])
+@pytest.mark.parametrize("phase", ["open", "promotion"])
+def test_configured_tier_retarget_cannot_inherit_prepared_promotion_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str, phase: str
+) -> None:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+
+    configured, canonical = _configured_symlink_archive(tmp_path)
+    replacement = tmp_path / "replacement"
+    _archive(replacement)
+    store = IndexGenerationStore.for_archive_root(configured)
+    generation = store.create(owner_id="retarget-control", source_snapshot="same-input")
+    original_open = PreparedIndexMutation._open_observer
+
+    def retarget() -> None:
+        link = configured / f"{tier}.db"
+        link.unlink()
+        link.symlink_to(replacement / f"{tier}.db")
+
+    def open_after_retarget(seal: PreparedIndexMutation, name: str, path: Path) -> sqlite3.Connection:
+        if name == "index":
+            retarget()
+        return original_open(seal, name, path)
+
+    if phase == "open":
+        monkeypatch.setattr(PreparedIndexMutation, "_open_observer", open_after_retarget)
+        with pytest.raises(ReferenceSealStaleError):
+            store.prepare_promotion(generation)
+    else:
+        with store.prepare_promotion(generation) as prepared:
+            retarget()
+            with write_lease("test.retargeted-promotion", archive_root=configured):
+                with pytest.raises(ReferenceSealStaleError):
+                    store.promote(generation, prepared)
+    assert store.load(generation.generation_id).state == "inactive"
+    assert (canonical / "index.db").resolve() != Path(generation.index_path).resolve()
+
+
+@pytest.mark.parametrize("tier", ["source", "user", "audit"])
+def test_recreated_configured_link_to_same_leaf_invalidates_seal(tmp_path: Path, tier: str) -> None:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+
+    configured, canonical = _configured_symlink_archive(tmp_path)
+    with PreparedIndexMutation(canonical / "index.db", archive_root=configured) as seal:
+        link = configured / f"{tier}.db"
+        # Keep the original incarnation allocated so this cannot pass through
+        # immediate inode reuse while still resolving to the identical leaf.
+        link.rename(configured / f"previous-{tier}.link")
+        link.symlink_to(canonical / f"{tier}.db")
+        with pytest.raises(ReferenceSealStaleError):
+            seal.validate_observers_current()
+
+
+def test_source_snapshot_rejects_recreated_configured_link_to_same_leaf(tmp_path: Path) -> None:
+    configured, canonical = _configured_symlink_archive(tmp_path)
+    with pytest.raises(RuntimeError):
+        with _open_source_snapshot(configured) as connection:
+            count = connection.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+            link = configured / "source.db"
+            link.rename(configured / "previous-source.link")
+            link.symlink_to(canonical / "source.db")
+            assert connection.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == count

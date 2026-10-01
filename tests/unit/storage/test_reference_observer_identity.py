@@ -46,3 +46,77 @@ def test_observer_metadata_custody_refuses_missing_platform_capability(
     monkeypatch.delattr(os, "O_PATH", raising=False)
     with pytest.raises(AuditLeafError):
         VerifiedAuditLeaf(tmp_path, identity_access="lock-preserving")
+
+
+@pytest.mark.parametrize("constructor_fault", [False, True])
+def test_verified_leaf_failed_descriptor_cleanup_retains_existing_native_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, constructor_fault: bool
+) -> None:
+    from builtins import BaseExceptionGroup
+
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        retained_native_sql_owners_on_current_thread,
+    )
+
+    path = tmp_path / "audit.db"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE evidence(value TEXT)")
+        connection.commit()
+    leaf = VerifiedAuditLeaf(tmp_path, identity_access="lock-preserving")
+    real_close = os.close
+    attempts: list[int] = []
+    refused: list[int] = []
+    primary = ValueError("synthetic audit leaf constructor failure")
+    original_open = leaf._open_leaf
+
+    def open_leaf() -> int:
+        descriptor = original_open()
+        refused.append(descriptor)
+        return descriptor
+
+    def close_before_effect(descriptor: int) -> None:
+        attempts.append(descriptor)
+        if descriptor in refused:
+            raise OSError("synthetic leaf close before effect")
+        real_close(descriptor)
+
+    monkeypatch.setattr(leaf, "_open_leaf", open_leaf)
+    monkeypatch.setattr(os, "close", close_before_effect)
+    try:
+        if constructor_fault:
+
+            def fail_after_assignment() -> Path:
+                raise primary
+
+            monkeypatch.setattr(leaf, "_resolve_portable_child_path", fail_after_assignment)
+            with pytest.raises(BaseExceptionGroup) as caught:
+                leaf.__enter__()
+            assert caught.value.exceptions[0] is primary
+            failure = caught.value.exceptions[1]
+            assert isinstance(failure, NativeConnectionSettlementError)
+        else:
+            leaf.__enter__()
+            with pytest.raises(NativeConnectionSettlementError) as caught_native:
+                leaf.close()
+            failure = caught_native.value
+        owner = failure.owner
+        assert owner in retained_native_sql_owners_on_current_thread()
+        assert owner.anchored_descriptors == tuple(refused)
+        assert os.fstat(refused[0]).st_ino == path.stat().st_ino
+        recorded = list(attempts)
+        with pytest.raises(NativeConnectionSettlementError):
+            leaf.close()
+        assert attempts == recorded
+    finally:
+        monkeypatch.setattr(os, "close", real_close)
+        for descriptor in refused:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            real_close(descriptor)
+        leaf.close()
+    assert owner not in retained_native_sql_owners_on_current_thread()
+    leaf.close()
+    assert attempts == recorded

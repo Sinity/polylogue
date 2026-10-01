@@ -644,12 +644,38 @@ def rebuild_lease_status(archive_root: Path) -> RebuildLeaseStatus:
         os.close(fd)
 
 
-def _stable_link_target(source: Path, *, label: str) -> tuple[Path, tuple[int, int], bool]:
-    """Capture one durable tier target and verify its inode across resolution."""
+def _configured_link_identity(path: Path) -> tuple[int, int, int, str | None, int, int, int, int]:
+    metadata = path.lstat()
+    target = os.readlink(path) if stat.S_ISLNK(metadata.st_mode) else None
+    after = path.lstat()
+    parent = path.parent.stat()
+    target_parent = path.resolve(strict=True).parent.stat()
+    identity = (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        target,
+        parent.st_dev,
+        parent.st_ino,
+        target_parent.st_dev,
+        target_parent.st_ino,
+    )
+    if (after.st_dev, after.st_ino, after.st_mode) != identity[:3]:
+        raise RuntimeError(f"configured tier link changed during capture: {path}")
+    return identity
+
+
+def _stable_link_target(
+    source: Path, *, label: str
+) -> tuple[Path, tuple[int, int], bool, tuple[int, int, int, str | None, int, int, int, int]]:
+    """Capture the declared link incarnation and its exact durable leaf."""
     try:
+        link_identity = _configured_link_identity(source)
         before = source.stat()
         resolved = source.resolve(strict=True)
         after = source.stat()
+        if _configured_link_identity(source) != link_identity:
+            raise RuntimeError(f"{label} namespace changed during identity capture: {source}")
     except FileNotFoundError:
         raise
     except OSError as exc:
@@ -658,12 +684,20 @@ def _stable_link_target(source: Path, *, label: str) -> tuple[Path, tuple[int, i
     after_identity = (after.st_dev, after.st_ino)
     if before_identity != after_identity:
         raise RuntimeError(f"{label} changed during identity capture: {source}")
-    return resolved, after_identity, stat.S_ISDIR(after.st_mode)
+    return resolved, after_identity, stat.S_ISDIR(after.st_mode), link_identity
 
 
-def _require_path_identity(path: Path, identity: tuple[int, int], *, label: str) -> None:
-    """Fail closed if a pathname no longer names the captured inode."""
+def _require_path_identity(
+    path: Path,
+    identity: tuple[int, int],
+    *,
+    label: str,
+    link_identity: tuple[int, int, int, str | None, int, int, int, int],
+) -> None:
+    """Require both the configured link and the selected leaf to survive."""
     try:
+        if _configured_link_identity(path) != link_identity:
+            raise RuntimeError(f"{label} configured link was replaced: {path}")
         metadata = path.stat()
     except OSError as exc:
         raise RuntimeError(f"cannot verify {label}: {path}") from exc
@@ -905,7 +939,9 @@ class IndexGenerationStore:
             for filename in _GENERATION_READ_THROUGH_MEMBERS:
                 source = self.archive_root / filename
                 if source.exists() or source.is_symlink():
-                    target, identity, is_directory = _stable_link_target(source, label=f"durable tier {filename}")
+                    target, identity, is_directory, link_identity = _stable_link_target(
+                        source, label=f"durable tier {filename}"
+                    )
                     link = root / filename
                     link.symlink_to(target, target_is_directory=is_directory)
                     try:
@@ -917,7 +953,9 @@ class IndexGenerationStore:
                     # The source pathname is still an authority boundary after the
                     # link is installed.  Do not proceed if it was replaced between
                     # capture and post-link verification.
-                    _require_path_identity(source, identity, label=f"durable tier {filename}")
+                    _require_path_identity(
+                        source, identity, label=f"durable tier {filename}", link_identity=link_identity
+                    )
             index_path = root / "index.db"
             from polylogue.storage.sqlite.write_lease import require_write_lease
 
@@ -1783,7 +1821,7 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     against.
     """
     path = archive_root / "source.db"
-    target, expected_identity, is_directory = _stable_link_target(path, label="source snapshot")
+    target, expected_identity, is_directory, link_identity = _stable_link_target(path, label="source snapshot")
     if is_directory:
         raise RuntimeError(f"source snapshot is not a regular file: {path}")
     from polylogue.storage.sqlite.connection_profile import (
@@ -1798,7 +1836,7 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         opened = os.fstat(fd)
         if (opened.st_dev, opened.st_ino) != expected_identity:
             raise RuntimeError(f"source snapshot changed during descriptor admission: {path}")
-        _require_path_identity(path, expected_identity, label="source snapshot")
+        _require_path_identity(path, expected_identity, label="source snapshot", link_identity=link_identity)
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for source snapshot: {path}")
@@ -1817,6 +1855,7 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
         try:
             yield conn
+            _require_path_identity(path, expected_identity, label="source snapshot", link_identity=link_identity)
         except BaseException as primary:
             _close_failed_native_construction(owner, primary)
             raise

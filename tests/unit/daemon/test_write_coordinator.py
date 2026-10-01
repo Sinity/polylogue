@@ -2495,3 +2495,176 @@ async def test_admitted_reader_failed_close_remains_in_terminal_writer_census(
         for handle in handles:
             handle.allow_cleanup.set()
         assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("last grant returns physical custody on actual creator worker")
+async def test_last_worker_grant_failure_retains_terminal_worker_and_submission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import Future
+
+    from polylogue.storage.sqlite.write_lease import async_write_lease
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    real_close = os.close
+    entered, release = threading.Event(), threading.Event()
+    physical: Future[None] = Future()
+    threads: list[threading.Thread] = []
+    attempts: list[threading.Thread] = []
+
+    async with async_write_lease("test.last_worker_grant", archive_root=tmp_path) as lease:
+        custody = lease.custody
+        assert custody is not None
+        lock = custody._fd
+
+        def refuse_close(descriptor: int) -> None:
+            if descriptor == lock:
+                attempts.append(threading.current_thread())
+                raise OSError("synthetic worker descriptor close before effect")
+            real_close(descriptor)
+
+        def operation() -> None:
+            entered.set()
+            release.wait()
+
+        def submit(function: Callable[[], None]) -> Future[None]:
+            def run() -> None:
+                try:
+                    function()
+                except BaseException as error:
+                    physical.set_exception(error)
+                else:
+                    physical.set_result(None)
+
+            thread = threading.Thread(target=run, name="test-last-grant-creator")
+            threads.append(thread)
+            thread.start()
+            assert entered.wait(5)
+            # Actual owner retirement leaves the executing worker's grant as
+            # the last reference. Its complete() must not erase new cleanup.
+            lease.retire()
+            custody.close_owner()
+            monkeypatch.setattr(os, "close", refuse_close)
+            release.set()
+            return physical
+
+        dispatch = write_coordinator_module._WorkerDispatch(submit, lambda: ())
+        try:
+            with pytest.raises(DaemonWriterSettlementError):
+                await write_coordinator_module._run_writer_worker(coordinator, dispatch, operation, "test.last_grant")
+            assert not physical.done()
+            assert threads[0].is_alive()
+            assert custody._descriptor_cleanup_thread is threads[0]
+            assert coordinator._retained_workers()
+            assert not archive_custody_available(tmp_path)
+            assert attempts == [threads[0]]
+        finally:
+            monkeypatch.setattr(os, "close", real_close)
+            release.set()
+            for descriptor in tuple(custody._pending_descriptor_closes):
+                real_close(descriptor)
+            if coordinator._retained_workers():
+                await coordinator._settle_terminal_workers()
+            for thread in threads:
+                await asyncio.to_thread(thread.join)
+        assert physical.done()
+        physical.result()
+        assert not coordinator._retained_workers()
+        assert custody._fd == -1
+        assert attempts == [threads[0]]
+    assert await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("explicit coordinator retry wakes original async cleanup task")
+@pytest.mark.parametrize("cancelled_waiter", [False, True])
+async def test_coordinator_second_settlement_retries_original_last_grant_cleanup(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, cancelled_waiter: bool
+) -> None:
+    from typing import Any
+
+    from polylogue.storage.sqlite import async_sqlite
+    from polylogue.storage.sqlite.write_lease import current_write_lease
+
+    root = workspace_env["archive_root"]
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    backend = async_sqlite.SQLiteBackend(root / "index.db")
+    real_close = os.close
+    failed = asyncio.Event()
+    custodies = []
+    connections = []
+    original_failure = OSError("synthetic first worker close refusal")
+    descriptor_failure = OSError("synthetic later grant close before effect")
+    attempts = []
+
+    async def operation() -> None:
+        lease = current_write_lease()
+        assert lease is not None and lease.custody is not None
+        custodies.append(lease.custody)
+        conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        connections.append(conn)
+        execute = conn._execute
+        first = True
+
+        async def refuse_first_close(function: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal first
+            if first and getattr(function, "__name__", None) == "close_raw":
+                first = False
+                raise original_failure
+            return await execute(function, *args, **kwargs)
+
+        monkeypatch.setattr(conn, "_execute", refuse_first_close)
+        with pytest.raises(OSError) as caught:
+            await async_sqlite._close_backend_connection(conn)
+        assert caught.value is original_failure
+
+    with pytest.raises(DaemonWriterSettlementError):
+        await coordinator.run("test.async_last_grant", operation)
+    custody = custodies[0]
+    lock = custody._fd
+
+    def refuse_descriptor(descriptor: int) -> None:
+        if descriptor == lock:
+            attempts.append(threading.current_thread())
+            failed.set()
+            raise descriptor_failure
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "close", refuse_descriptor)
+    first = asyncio.create_task(coordinator._settle_terminal_workers())
+    second = None
+    try:
+        await asyncio.wait_for(failed.wait(), 5)
+        original = coordinator._terminal_async_attempt
+        assert original is not None and not original.done()
+        entry = async_sqlite._BACKEND_CONNECTIONS[id(connections[0])]
+        assert entry.cleanup_task is original
+        assert entry.cleanup_attempt is not None and not entry.cleanup_attempt.done()
+        if cancelled_waiter:
+            second = asyncio.create_task(coordinator._settle_terminal_workers())
+            await asyncio.sleep(0)
+            second.cancel()
+            await asyncio.sleep(0)
+            assert not original.done()
+            assert not entry.cleanup_attempt.done()
+        monkeypatch.setattr(os, "close", real_close)
+        real_close(lock)
+        if second is None:
+            second = asyncio.create_task(coordinator._settle_terminal_workers())
+        else:
+            backend.request_sql_settlement()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+        assert isinstance(outcomes[0], BaseException)
+        assert isinstance(outcomes[1], asyncio.CancelledError if cancelled_waiter else BaseException)
+        assert original.done()
+        assert attempts == [threading.current_thread()]
+        assert id(connections[0]) not in async_sqlite._BACKEND_CONNECTIONS
+        assert not coordinator._retained_async_backends()
+    finally:
+        monkeypatch.setattr(os, "close", real_close)
+        for descriptor in tuple(custody._pending_descriptor_closes):
+            real_close(descriptor)
+        backend.request_sql_settlement()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+        assert await coordinator.shutdown(timeout=1.0)

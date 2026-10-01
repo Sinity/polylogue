@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -116,9 +117,16 @@ def retained_native_settlement_owners_on_current_thread(
     preserved_native_owners: tuple[SQLCustodyOwner, ...] | None = (),
 ) -> tuple[SQLCustodyOwner, ...]:
     """Settle complete parents, preserving exact outer handles during nesting."""
+    from polylogue.storage.sqlite.write_lease import retained_custody_settlement_owners_on_current_thread
+
     physical = retained_native_sql_owners_on_current_thread()
+    custodies = tuple(
+        custody
+        for custody in retained_custody_settlement_owners_on_current_thread()
+        if not any(owner.custody is custody for owner in physical)
+    )
     if preserved_native_owners is None:
-        return physical
+        return (*physical, *custodies)
     preserved_ids = {id(owner) for owner in preserved_native_owners}
     terminal_parents = {
         id(owner._terminal_parent)
@@ -152,6 +160,9 @@ def retained_native_settlement_owners_on_current_thread(
         else:
             terminal = parent if parent is not None else owner
         result[id(terminal)] = terminal
+    # Failed terminal bindings are selected even if an outer unit captured
+    # their healthy owner on entry. They use the same custody registry.
+    result.update((id(custody), custody) for custody in custodies)
     return tuple(result.values())
 
 
@@ -376,7 +387,7 @@ class NativeSQLCustodyOwner:
             return
         self.close_required = True
         connection = self.connection
-        failure: BaseException | None = None
+        failures: list[BaseException] = []
         if connection is not None:
             try:
                 settle_connection_cursors(connection)
@@ -397,14 +408,18 @@ class NativeSQLCustodyOwner:
                 if connection.in_transaction:
                     connection.rollback()
             except BaseException as error:
-                failure = failure or error
+                failures.append(error)
             try:
                 connection.close()
             except BaseException as error:
                 if self.frame is not None:
                     with _LIVE_READ_FRAMES_LOCK:
                         _LIVE_READ_FRAMES.add(self.frame)
-                raise NativeConnectionSettlementError(self, failure or error) from error
+                failures.append(error)
+                failure = (
+                    failures[0] if len(failures) == 1 else BaseExceptionGroup("Native SQL cleanup failed", failures)
+                )
+                raise NativeConnectionSettlementError(self, failure) from error
             self.connection = None
         frame, self.frame = self.frame, None
         if frame is not None:
@@ -424,7 +439,7 @@ class NativeSQLCustodyOwner:
                 else:
                     # An ambiguous close is never retried by numeric slot.
                     # Keep creator custody until original settlement is proven.
-                    failure = failure or pending
+                    failures.append(pending)
                 continue
             close_descriptor = os.close
             native_linux_close = (
@@ -436,7 +451,7 @@ class NativeSQLCustodyOwner:
             try:
                 close_descriptor(descriptor)
             except BaseException as error:
-                failure = failure or error
+                failures.append(error)
                 # Linux's actual close syscall releases the descriptor before
                 # reporting an OSError. A substituted/non-Linux closer has no
                 # such guarantee; preserve ambiguity without an inode-only
@@ -450,14 +465,14 @@ class NativeSQLCustodyOwner:
             try:
                 self.leaf.close()
             except BaseException as error:
-                failure = failure or error
+                failures.append(error)
             else:
                 self.leaf = None
-        if self.scratch_directory is not None and not self.anchored_descriptors:
+        if self.scratch_directory is not None and self.leaf is None and not self.anchored_descriptors:
             try:
                 self.scratch_directory.cleanup()
             except BaseException as error:
-                failure = failure or error
+                failures.append(error)
             else:
                 self.scratch_directory = None
         resources_settled = self.leaf is None and self.scratch_directory is None and not self.anchored_descriptors
@@ -465,7 +480,7 @@ class NativeSQLCustodyOwner:
             try:
                 self.custody.release_sql_owner(self)
             except BaseException as error:
-                failure = failure or error
+                failures.append(error)
             else:
                 self.custody = None
         self._settled = resources_settled and self.custody is None
@@ -473,7 +488,8 @@ class NativeSQLCustodyOwner:
             with _LIVE_NATIVE_SQL_OWNERS_LOCK:
                 _LIVE_NATIVE_SQL_OWNERS.pop(id(self), None)
             self._lifetime_dependencies.clear()
-        if failure is not None:
+        if failures:
+            failure = failures[0] if len(failures) == 1 else BaseExceptionGroup("Native SQL cleanup failed", failures)
             if not self._settled:
                 raise NativeConnectionSettlementError(self, failure) from failure
             raise failure

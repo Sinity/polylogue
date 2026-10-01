@@ -32,12 +32,33 @@ selected path without inspecting every source row
 
 ## Write custody and connection lifetime
 
+Reference preparation supports declared configured tier symlinks by opening
+exact resolved leaves with no-follow admission. It retains the configured root
+and link incarnations and rechecks those names through writer admission and
+promotion. Recreating a link to the same leaf invalidates the old proof.
+Generation linking and Source snapshots preserve those same configured names
+and selected directory incarnations through their operation.
+
 Each outer write lease names its archive root and holds an owned, descriptor-anchored
 `.archive-write-custody.lock` before writable archive SQL begins. Nested owners
 borrow that custody; a thread receives authority through a single-use grant,
 and a task cannot acquire authority by inheriting another task's context.
 The lock file remains in place after release. Directory and lock identities
 are checked before and after acquisition; replacement is a visible refusal.
+
+Descriptor cleanup attempts every owned binding once and keeps the actual
+primary and cleanup errors. Closing the lock descriptor releases flock; it is
+never unlocked before a close that could fail without taking effect. Actual
+Linux native close errors retire the descriptor, while an ambiguous substituted
+or non-Linux failure retains the exact binding on its creator. A numeric slot
+is never blindly closed again. Failed async acquisition keeps its existing
+worker, task, context and admission alive through physical settlement; an
+explicit request reaches that same custody owner. Successful acquisition binds
+the returned custody to the loop task, whose failed cleanup likewise keeps
+that task alive until settlement. The async backend retains its original cleanup
+Task and attempt Future through last-grant retirement. Later backend or
+coordinator settlement requests wake the same custody retry and shield that
+attempt; they never start a parallel close or join the owner's application Task.
 
 An ArchiveStore retains custody while any write transaction or temporary User
 writer handle remains unsettled. Commit, rollback and close settle its actual

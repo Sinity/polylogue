@@ -28,19 +28,28 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import errno
 import fcntl
 import os
 import stat
+import sys
 import threading
 import time
 import weakref
-from collections.abc import AsyncIterator, Iterator
+from builtins import BaseExceptionGroup
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import BuiltinFunctionType
 from typing import Any
 
-from polylogue.core.sql_settlement import SQLCustodyOwner
+from polylogue.core.sql_settlement import (
+    SQLCustodyOwner,
+    SQLSettlementRetry,
+    capture_native_sql_owners,
+    settle_native_sql,
+)
 from polylogue.logging import WARNING, emit, get_logger
 
 ARCHIVE_WRITE_CUSTODY_LOCK_NAME = ".archive-write-custody.lock"
@@ -54,6 +63,7 @@ __all__ = [
     "WriteLeaseDelegation",
     "WriteLeaseThreadGrant",
     "ArchiveWriteCustody",
+    "ArchiveCustodySettlementError",
     "adopt_write_lease",
     "archive_write_custody",
     "async_write_lease",
@@ -71,6 +81,27 @@ logger = get_logger(__name__)
 _CUSTODY_REGISTRY_LOCK = threading.RLock()
 _CUSTODIES: set[ArchiveWriteCustody] = set()
 _FORK_ABANDONED_CUSTODIES: list[ArchiveWriteCustody] = []
+
+
+def _finish_cleanup(
+    message: str,
+    actions: tuple[Callable[[], object], ...],
+    primary: BaseException | None = None,
+) -> None:
+    """Attempt each owned terminal action once and preserve its actual error."""
+    failures: list[BaseException] = []
+    for action in actions:
+        try:
+            action()
+        except BaseException as error:
+            failures.append(error)
+    if not failures:
+        return
+    if primary is not None:
+        raise BaseExceptionGroup(message, [primary, *failures]) from primary
+    if len(failures) == 1:
+        raise failures[0]
+    raise BaseExceptionGroup(message, failures)
 
 
 class ArchiveWriteCustody:
@@ -98,10 +129,22 @@ class ArchiveWriteCustody:
         "owner_task",
         "_abandoned_after_fork",
         "_fork_cleanup_error",
+        "_pending_descriptor_closes",
+        "_descriptor_cleanup_thread",
+        "_descriptor_cleanup_task",
+        "settlement_retry",
         "__weakref__",
     )
 
-    def __init__(self, archive_root: Path, path: Path, fd: int, directory_fd: int) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        path: Path,
+        fd: int,
+        directory_fd: int,
+        *,
+        settlement_retry: SQLSettlementRetry | None = None,
+    ) -> None:
         self.archive_root = archive_root
         self.path = path
         self._fd = fd
@@ -118,17 +161,24 @@ class ArchiveWriteCustody:
         self.owner_task: asyncio.Task[Any] | None = None
         self._abandoned_after_fork = False
         self._fork_cleanup_error: BaseException | None = None
+        self._pending_descriptor_closes: dict[int, BaseException] = {}
+        self._descriptor_cleanup_thread: threading.Thread | None = None
+        self._descriptor_cleanup_task: asyncio.Task[Any] | None = None
+        self.settlement_retry = settlement_retry
         _CUSTODIES.add(self)
         try:
             directory = os.fstat(directory_fd)
             self._directory_identity = (directory.st_dev, directory.st_ino)
-            metadata = os.fstat(fd)
-            self._file_identity = (metadata.st_dev, metadata.st_ino)
+            if fd >= 0:
+                metadata = os.fstat(fd)
+                self._file_identity = (metadata.st_dev, metadata.st_ino)
         except BaseException as primary:
             try:
                 self.abandon_failed_acquisition()
             except BaseException as cleanup_error:
-                raise cleanup_error from primary
+                raise BaseExceptionGroup(
+                    "Archive custody acquisition and cleanup failed", [primary, cleanup_error]
+                ) from primary
             raise
 
     def bind_owner_context(self) -> None:
@@ -207,28 +257,88 @@ class ArchiveWriteCustody:
                 raise UnleasedWriteError("archive write custody cannot be borrowed by an inherited task or thread")
             self._refs += 1
 
-    def _close_terminal_descriptors(self) -> None:
-        """Retire each numeric descriptor once; never close a reused number."""
-        first_error: BaseException | None = None
-        fd, self._fd = self._fd, -1
-        locked, self._locked = self._locked, False
-        if fd >= 0:
-            if locked and self.owner_pid == os.getpid():
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except BaseException as exc:
-                    first_error = exc
-            try:
-                os.close(fd)
-            except BaseException as exc:
-                first_error = first_error or exc
+    def _descriptor_binding_retired(self, descriptor: int, identity: tuple[int, int] | None) -> bool:
         try:
-            self._close_directory_descriptor()
-        except BaseException as exc:
-            first_error = first_error or exc
-        _CUSTODIES.discard(self)
-        if first_error is not None:
-            raise first_error
+            metadata = os.fstat(descriptor)
+        except OSError as error:
+            return error.errno == errno.EBADF
+        # A different file proves replacement. Equal inode metadata cannot
+        # establish whether the original open-file-description survived.
+        return identity is not None and identity != (metadata.st_dev, metadata.st_ino)
+
+    def _close_descriptor(self, attribute: str, identity: tuple[int, int] | None) -> None:
+        descriptor = getattr(self, attribute)
+        if descriptor < 0:
+            return
+        pending = self._pending_descriptor_closes.get(descriptor)
+        if pending is not None:
+            if not self._descriptor_binding_retired(descriptor, identity):
+                raise ArchiveCustodySettlementError(self, pending) from pending
+            self._pending_descriptor_closes.pop(descriptor)
+            setattr(self, attribute, -1)
+            if attribute == "_fd":
+                self._locked = False
+            return
+        closer = os.close
+        native_linux_close = (
+            sys.platform == "linux"
+            and isinstance(closer, BuiltinFunctionType)
+            and closer.__module__ == "posix"
+            and closer.__name__ == "close"
+        )
+        try:
+            closer(descriptor)
+        except BaseException as error:
+            if (native_linux_close and isinstance(error, OSError)) or self._descriptor_binding_retired(
+                descriptor, identity
+            ):
+                setattr(self, attribute, -1)
+                if attribute == "_fd":
+                    self._locked = False
+                raise
+            self._pending_descriptor_closes[descriptor] = error
+            self._descriptor_cleanup_thread = threading.current_thread()
+            self._descriptor_cleanup_task = _current_task()
+            raise ArchiveCustodySettlementError(self, error) from error
+        else:
+            setattr(self, attribute, -1)
+            if attribute == "_fd":
+                self._locked = False
+
+    def _close_terminal_descriptors(self) -> None:
+        """Settle both bindings once, retaining every ambiguous close."""
+        if self._pending_descriptor_closes and (
+            self._descriptor_cleanup_thread is not threading.current_thread()
+            or self._descriptor_cleanup_task is not _current_task()
+        ):
+            raise UnleasedWriteError("failed archive descriptor cleanup belongs to its original execution unit")
+        try:
+            # Closing the actual lock descriptor releases flock. Explicitly
+            # unlocking first would surrender exclusion on a pre-effect close
+            # failure. Fork cleanup likewise must never unlock the parent.
+            _finish_cleanup(
+                "Archive custody descriptor cleanup failed",
+                (
+                    lambda: self._close_descriptor("_fd", self._file_identity),
+                    self._close_directory_descriptor,
+                ),
+            )
+        finally:
+            if self._fd < 0 and self._directory_fd < 0:
+                _CUSTODIES.discard(self)
+                self._descriptor_cleanup_thread = None
+                self._descriptor_cleanup_task = None
+
+    def close(self) -> None:
+        """Existing custody's terminal callback for its creator census."""
+        self.close_owner()
+
+    def request_sql_settlement(self) -> None:
+        """Request cleanup on this existing async acquisition's physical owner."""
+        retry = self.settlement_retry
+        if retry is None:
+            raise UnleasedWriteError("this custody has no asynchronous acquisition task")
+        retry.request()
 
     def abandon_failed_acquisition(self) -> None:
         """Retire a failed acquisition without admitting SQL work."""
@@ -266,37 +376,36 @@ class ArchiveWriteCustody:
 
     def close_owner(self) -> None:
         self._check_process()
+        if self._pending_descriptor_closes and (
+            self._descriptor_cleanup_thread is not threading.current_thread()
+            or self._descriptor_cleanup_task is not _current_task()
+        ):
+            raise UnleasedWriteError("failed archive descriptor cleanup belongs to its original execution unit")
         from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
 
-        failure: BaseException | None = None
-        try:
-            settle_cached_connections_on_current_thread(self)
-        except BaseException as error:
-            failure = error
-        try:
-            release_owner = False
+        def release_owner() -> None:
+            release = False
             with _CUSTODY_REGISTRY_LOCK, self._guard:
                 if not self._owner_open:
                     if self._refs == 0:
                         self._close_terminal_descriptors()
                 else:
                     self._owner_open = False
-                    release_owner = True
-            if release_owner:
+                    release = True
+            if release:
                 self.release()
-        except BaseException as error:
-            failure = failure or error
-        if failure is not None:
-            raise failure
+
+        _finish_cleanup(
+            "Archive cache and custody cleanup failed",
+            (lambda: settle_cached_connections_on_current_thread(self), release_owner),
+        )
 
     def _check_process(self) -> None:
         if self.owner_pid != os.getpid():
             raise UnleasedWriteError("archive write custody cannot be used from a forked process")
 
     def _close_directory_descriptor(self) -> None:
-        descriptor, self._directory_fd = self._directory_fd, -1
-        if descriptor >= 0:
-            os.close(descriptor)
+        self._close_descriptor("_directory_fd", self._directory_identity)
 
     def assert_namespace(self) -> None:
         """Require the owned lock namespace to retain its selected inodes."""
@@ -312,18 +421,38 @@ class ArchiveWriteCustody:
                 raise UnleasedWriteError("archive write custody lock was replaced")
 
     def abandon_after_fork(self) -> None:
-        """Close an inherited descriptor without unlocking its parent's flock."""
-        fd = self._fd
-        self._fd = -1
+        """Close copied bindings without unlocking the parent's flock."""
         self._refs = 0
         self._owner_open = False
         self._abandoned_after_fork = True
-        self._locked = False
-        if fd >= 0:
-            try:
-                os.close(fd)
-            finally:
-                self._close_directory_descriptor()
+        # The child owns its copied descriptor cleanup, never parent SQL.
+        self._descriptor_cleanup_thread = threading.current_thread()
+        self._descriptor_cleanup_task = _current_task()
+        self._close_terminal_descriptors()
+
+
+class ArchiveCustodySettlementError(RuntimeError):
+    """An exact custody binding has not been proven physically retired."""
+
+    code = "archive_custody_unsettled"
+    retryable = True
+
+    def __init__(self, owner: ArchiveWriteCustody, failure: BaseException) -> None:
+        self.owner = owner
+        self.failure = failure
+        super().__init__("archive custody descriptor cleanup remains unresolved")
+
+
+def retained_custody_settlement_owners_on_current_thread() -> tuple[ArchiveWriteCustody, ...]:
+    """Extend the existing custody census with its failed terminal bindings."""
+    with _CUSTODY_REGISTRY_LOCK:
+        return tuple(
+            custody
+            for custody in _CUSTODIES
+            if custody.owner_pid == os.getpid()
+            and custody._pending_descriptor_closes
+            and custody._descriptor_cleanup_thread is threading.current_thread()
+        )
 
 
 def retained_sql_owners_on_current_thread() -> tuple[SQLCustodyOwner, ...]:
@@ -391,9 +520,15 @@ def _validate_custody_lock(metadata: os.stat_result, path: Path) -> None:
         raise UnleasedWriteError(f"archive custody lock must be owned, single-link and privately writable: {path}")
 
 
-def _acquire_archive_write_custody(archive_root: str | Path) -> ArchiveWriteCustody:
+def _acquire_archive_write_custody(
+    archive_root: str | Path,
+    *,
+    settlement_retry: SQLSettlementRetry | None = None,
+) -> ArchiveWriteCustody:
     with _CUSTODY_REGISTRY_LOCK:
         for inherited in _CUSTODIES:
+            if inherited._pending_descriptor_closes and inherited.archive_root == Path(archive_root).resolve():
+                raise UnleasedWriteError("archive custody requires original-owner descriptor settlement")
             if inherited._fork_cleanup_error is not None:
                 raise UnleasedWriteError(
                     "inherited archive descriptor cleanup failed; a fresh process is required for writes"
@@ -419,14 +554,14 @@ def _acquire_archive_write_custody(archive_root: str | Path) -> ArchiveWriteCust
             # guard is released before flock, which may wait for another
             # process to finish its archive mutation.
             directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
-            directory = os.fstat(directory_fd)
+            selected_directory_fd, directory_fd = directory_fd, -1
+            custody = ArchiveWriteCustody(root, path, -1, selected_directory_fd, settlement_retry=settlement_retry)
+            directory = os.fstat(selected_directory_fd)
             _validate_custody_directory(directory, root)
-            fd = os.open(path.name, flags | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
-            selected_fd, selected_directory_fd = fd, directory_fd
-            fd = directory_fd = -1
-            custody = ArchiveWriteCustody(root, path, selected_fd, selected_directory_fd)
-            fd = selected_fd
+            fd = os.open(path.name, flags | os.O_CLOEXEC, 0o600, dir_fd=selected_directory_fd)
+            custody._fd = fd
             opened = os.fstat(fd)
+            custody._file_identity = (opened.st_dev, opened.st_ino)
             _validate_custody_lock(opened, path)
             if before is not None and (opened.st_dev, opened.st_ino) != before:
                 raise UnleasedWriteError(f"archive write custody path changed while opening: {path}")
@@ -444,13 +579,94 @@ def _acquire_archive_write_custody(archive_root: str | Path) -> ArchiveWriteCust
             if custody is not None:
                 custody.abandon_failed_acquisition()
             else:
-                if fd >= 0:
-                    os.close(fd)
-                if directory_fd >= 0:
-                    os.close(directory_fd)
+                _finish_cleanup(
+                    "Unregistered custody acquisition cleanup failed",
+                    tuple(lambda value=value: os.close(value) for value in (fd, directory_fd) if value >= 0),
+                )
         except BaseException as cleanup_error:
-            raise cleanup_error from primary
+            raise BaseExceptionGroup(
+                "Archive custody acquisition and cleanup failed", [primary, cleanup_error]
+            ) from primary
         raise
+
+
+def _acquire_async_archive_custody(
+    archive_root: str | Path,
+    retry: SQLSettlementRetry,
+    observed_generation: int,
+) -> ArchiveWriteCustody:
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+
+    # Loading the sole provider precedes both entry capture and acquisition.
+    # No new registry or physical executor owns this cleanup.
+    retained_native_settlement_owners_on_current_thread(None)
+    entry = capture_native_sql_owners()
+    try:
+        return _acquire_archive_write_custody(archive_root, settlement_retry=retry)
+    except BaseException as primary:
+        cleanup = settle_native_sql(
+            retry=retry,
+            initial_observed_generation=observed_generation,
+            preserved_native_owners=entry,
+            on_pending=lambda evidence: emit(
+                "storage.write_custody.acquisition_unsettled",
+                level=WARNING,
+                owner_count=evidence.owner_count,
+                failure_types=evidence.failure_types,
+            ),
+            on_settled=lambda: None,
+        )
+        if cleanup is not None:
+            raise BaseExceptionGroup(
+                "Custody acquisition and physical settlement failed", [primary, cleanup]
+            ) from primary
+        raise
+
+
+async def _close_async_archive_custody(
+    custody: ArchiveWriteCustody, *, borrowed: bool = False, initial_observed_generation: int | None = None
+) -> None:
+    """Keep transferred loop-task ownership alive through failed cleanup."""
+    retry = custody.settlement_retry
+    observed = (
+        (retry.generation() if retry is not None else 0)
+        if initial_observed_generation is None
+        else initial_observed_generation
+    )
+    cleanup_failure: BaseException | None = None
+    cancellation: asyncio.CancelledError | None = None
+    wait_failure: BaseException | None = None
+    first = True
+    while True:
+        try:
+            if borrowed and first:
+                custody.release()
+            else:
+                custody.close_owner()
+        except BaseException as error:
+            # Preserve the first complete terminal attempt. Repeated requests
+            # only recheck the same retained ambiguity, never accumulate a
+            # transcript of fresh wrappers around that identical failure.
+            cleanup_failure = cleanup_failure or error
+        first = False
+        if not custody._pending_descriptor_closes:
+            break
+        if retry is None:
+            # Borrowed custody is physically owned by its existing outer
+            # executor. Preserve that owner rather than inventing an executor.
+            break
+        wait = asyncio.create_task(asyncio.to_thread(retry.wait_after, observed))
+        value, interrupted, failure = await _settle_task(wait, retry=retry)
+        cancellation = cancellation or interrupted
+        if failure is not None:
+            wait_failure = failure
+            break
+        observed = int(value)
+    failures = tuple(error for error in (cleanup_failure, cancellation, wait_failure) if error is not None)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Async custody cleanup failed", failures)
 
 
 @contextmanager
@@ -463,10 +679,14 @@ def archive_write_custody(archive_root: str | Path) -> Iterator[ArchiveWriteCust
             raise UnleasedWriteError("nested archive custody requested for a different archive root")
         inherited.require_owner_context("nested archive custody")
         inherited.retain_owner_scope()
+        primary: BaseException | None = None
         try:
             yield inherited
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            inherited.release()
+            _finish_cleanup("Borrowed archive custody and cleanup failed", (inherited.release,), primary)
         return
     try:
         asyncio.get_running_loop()
@@ -477,11 +697,18 @@ def archive_write_custody(archive_root: str | Path) -> Iterator[ArchiveWriteCust
     custody = _acquire_archive_write_custody(archive_root)
     custody.bind_owner_context()
     previous = _set_context_custody(custody)
+    primary: BaseException | None = None
     try:
         yield custody
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        _restore_context_custody(previous)
-        custody.close_owner()
+        _finish_cleanup(
+            "Archive custody and cleanup failed",
+            (lambda: _restore_context_custody(previous), custody.close_owner),
+            primary,
+        )
 
 
 class UnleasedWriteError(RuntimeError):
@@ -692,14 +919,10 @@ class WriteLease:
             self._active = False
             grants = tuple(self.thread_grants)
             delegations = tuple(self.delegations)
-        failure: BaseException | None = None
-        for revoke in (*tuple(grant.revoke for grant in grants), *tuple(item.revoke for item in delegations)):
-            try:
-                revoke()
-            except BaseException as error:
-                failure = failure or error
-        if failure is not None:
-            raise failure
+        _finish_cleanup(
+            "Writer grant and delegation retirement failed",
+            (*tuple(grant.revoke for grant in grants), *tuple(item.revoke for item in delegations)),
+        )
 
 
 _ACTIVE: contextvars.ContextVar[WriteLease | None] = contextvars.ContextVar(
@@ -970,6 +1193,13 @@ class WriteLeaseThreadGrant:
         if release_custody and self.lease.custody is not None:
             self.lease.custody.release()
 
+    @property
+    def custody_retired(self) -> bool:
+        """Whether this grant returned its reference to the existing custody."""
+        self._require_process()
+        with self._guard:
+            return not self._custody_held
+
     def complete(self) -> None:
         self._require_process()
         release_custody = False
@@ -1118,27 +1348,20 @@ def adopt_write_lease(delegation: WriteLeaseDelegation) -> Iterator[WriteLease]:
         primary = error
         raise
     finally:
-        failure: BaseException | None = None
-        try:
-            _ACTIVE.reset(token)
-        except BaseException as error:
-            failure = error
-        try:
-            adopted.retire()
-        except BaseException as error:
-            failure = failure or error
-        with delegation._guard:
-            delegation._adopted_by = None
-            delegation._settled.set()
+
+        def retire_delegation() -> None:
+            with delegation._guard:
+                delegation._adopted_by = None
+                delegation._settled.set()
+
+        actions: tuple[Callable[[], object], ...] = (
+            lambda: _ACTIVE.reset(token),
+            adopted.retire,
+            retire_delegation,
+        )
         if custody is not None:
-            try:
-                custody.release()
-            except BaseException as error:
-                failure = failure or error
-        if failure is not None:
-            if primary is None:
-                raise failure
-            primary.add_note(f"adopted writer cleanup also failed: {type(failure).__name__}")
+            actions += (custody.release,)
+        _finish_cleanup("Adopted writer and cleanup failed", actions, primary)
 
 
 def _restore_active_lease(token: contextvars.Token[WriteLease | None], lease: WriteLease) -> None:
@@ -1239,45 +1462,35 @@ def write_lease(
         bound_thread_ids={threading.get_ident()},
     )
     token = _ACTIVE.set(lease)
+    primary: BaseException | None = None
     try:
         yield lease
-    except BaseException:
-        # Elapsed hold telemetry cannot change the operation's own outcome.
-        if lease.over_budget and lease.max_hold_seconds is not None:
-            emit(
-                "storage.write_lease.hold_exceeded",
-                level=WARNING,
-                actor=actor,
-                hold_ms=lease.held_seconds * 1000,
-                budget_ms=lease.max_hold_seconds * 1000,
-                outcome="failed",
-            )
-        _restore_active_lease(token, lease)
-        # Release revokes, whether or not the hold succeeded: the delegation
-        # contract is that a stashed delegation authorizes nothing once its
-        # lease is gone, and a failing hold releases the lease just the same.
-        lease.retire()
-        if lease.owns_custody_ref and lease.custody is not None:
-            lease.custody.release()
-        elif lease.owns_custody and lease.custody is not None:
-            lease.custody.close_owner()
+    except BaseException as error:
+        primary = error
         raise
-    else:
-        _restore_active_lease(token, lease)
-        lease.retire()
-        if lease.over_budget and lease.max_hold_seconds is not None:
-            emit(
-                "storage.write_lease.hold_exceeded",
-                level=WARNING,
-                actor=actor,
-                hold_ms=lease.held_seconds * 1000,
-                budget_ms=lease.max_hold_seconds * 1000,
-                outcome="committed",
-            )
-        if lease.owns_custody_ref and lease.custody is not None:
-            lease.custody.release()
-        elif lease.owns_custody and lease.custody is not None:
-            lease.custody.close_owner()
+    finally:
+
+        def report_hold() -> None:
+            if lease.over_budget and lease.max_hold_seconds is not None:
+                emit(
+                    "storage.write_lease.hold_exceeded",
+                    level=WARNING,
+                    actor=actor,
+                    hold_ms=lease.held_seconds * 1000,
+                    budget_ms=lease.max_hold_seconds * 1000,
+                    outcome="failed" if primary is not None else "committed",
+                )
+
+        actions: tuple[Callable[[], object], ...] = (
+            lambda: _restore_active_lease(token, lease),
+            lease.retire,
+            report_hold,
+        )
+        if lease.owns_custody_ref:
+            actions += (custody.release,)
+        elif lease.owns_custody:
+            actions += (custody.close_owner,)
+        _finish_cleanup("Writer and lease cleanup failed", actions, primary)
 
 
 @asynccontextmanager
@@ -1315,15 +1528,27 @@ async def async_write_lease(
         inherited_custody.retain_owner_scope()
         custody = inherited_custody
     else:
-        acquire_task = asyncio.create_task(asyncio.to_thread(_acquire_archive_write_custody, archive_root))
-        custody, cancellation, failure = await _settle_task(acquire_task)
+        retry = SQLSettlementRetry()
+        observed_generation = retry.generation()
+        acquire_task = asyncio.create_task(
+            asyncio.to_thread(_acquire_async_archive_custody, archive_root, retry, observed_generation)
+        )
+        custody, cancellation, failure = await _settle_task(acquire_task, retry=retry)
         if cancellation is not None:
+            if failure is not None:
+                raise BaseExceptionGroup("Custody acquisition failed during cancellation", [cancellation, failure])
             if custody is not None:
-                custody.close_owner()
+                try:
+                    await _close_async_archive_custody(custody)
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup(
+                        "Cancelled custody acquisition and cleanup failed", [cancellation, cleanup]
+                    ) from cancellation
             raise cancellation
         if failure is not None:
             raise failure
         assert custody is not None
+    primary: BaseException | None = None
     try:
         if not borrowed_custody:
             custody.bind_owner_context()
@@ -1335,14 +1560,23 @@ async def async_write_lease(
             _custody=custody,
         ) as lease:
             yield lease
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        if borrowed_custody:
-            custody.release()
-        else:
-            custody.close_owner()
+        try:
+            await _close_async_archive_custody(custody, borrowed=borrowed_custody)
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup("Async writer and custody cleanup failed", [primary, cleanup]) from primary
+            raise
 
 
-async def _settle_task(task: asyncio.Future[Any]) -> tuple[Any, asyncio.CancelledError | None, BaseException | None]:
+async def _settle_task(
+    task: asyncio.Future[Any],
+    *,
+    retry: SQLSettlementRetry | None = None,
+) -> tuple[Any, asyncio.CancelledError | None, BaseException | None]:
     """Drain a shielded task through repeated caller cancellation requests."""
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
@@ -1351,6 +1585,8 @@ async def _settle_task(task: asyncio.Future[Any]) -> tuple[Any, asyncio.Cancelle
         except asyncio.CancelledError as exc:
             if cancellation is None:
                 cancellation = exc
+            if retry is not None:
+                retry.request()
         except BaseException:
             # The task is done with its own exception; collect it below.
             break

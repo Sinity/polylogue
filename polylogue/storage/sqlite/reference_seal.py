@@ -464,6 +464,7 @@ class PreparedIndexMutation:
     """Live observer set and typed reachability captured before writer admission."""
 
     def __init__(self, index_path: Path, *, archive_root: Path) -> None:
+        self._configured_root = archive_root.absolute()
         self.archive_root = archive_root.resolve(strict=True)
         self.index_path = index_path.resolve(strict=True)
         from polylogue.storage.archive_identity import resolve_active_index_path
@@ -474,12 +475,26 @@ class PreparedIndexMutation:
         self.index_pid = os.getpid()
         self.index_task = _current_task()
         self.index_identity = _tier_identity(self.index_path)
+        # Resolve declared links before opening, then retain both the link
+        # incarnation and the exact selected leaf. A configured symlink farm
+        # is supported; a retargeted link cannot inherit the old proof.
+        self._configured_paths = {
+            "source": self._configured_root / "source.db",
+            "user": self._configured_root / "user.db",
+            "audit": self._configured_root / "audit.db",
+        }
+        self._namespace_paths = (
+            self._configured_root,
+            self._configured_root / "index.db",
+            self._configured_root / ".index-active-pointer",
+            *self._configured_paths.values(),
+        )
+        self._namespace = {path: self._namespace_identity(path) for path in self._namespace_paths}
         self._paths = {
             "index": self.index_path,
-            "source": self.archive_root / "source.db",
-            "user": self.archive_root / "user.db",
-            "audit": self.archive_root / "audit.db",
+            **{name: path.resolve(strict=True) for name, path in self._configured_paths.items()},
         }
+        self._assert_configured_namespace()
         self._identities = {name: _tier_identity(path) for name, path in self._paths.items()}
         self._observers: dict[str, sqlite3.Connection] = {}
         self._observer_leaves: dict[str, VerifiedAuditLeaf] = {}
@@ -548,6 +563,7 @@ class PreparedIndexMutation:
         return connection
 
     def _open_observer(self, name: str, path: Path) -> sqlite3.Connection:
+        self._assert_configured_namespace()
         leaf = VerifiedAuditLeaf(path.parent, filename=path.name, identity_access="lock-preserving")
         leaf.__enter__()
         self._observer_leaves[name] = leaf
@@ -559,6 +575,7 @@ class PreparedIndexMutation:
         # Constructor and promotion callers settle this parent once on every
         # failure. Closing here would retry a failed child during that unwind.
         leaf.assert_unchanged()
+        self._assert_configured_namespace()
         conn.row_factory = sqlite3.Row
         conn.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
         return conn
@@ -568,7 +585,33 @@ class PreparedIndexMutation:
 
         close_parent_native_connection(self, connection)
 
+    @staticmethod
+    def _namespace_identity(path: Path) -> tuple[int, int, int, str | None] | None:
+        try:
+            before = path.lstat()
+        except FileNotFoundError:
+            return None
+        link = os.readlink(path) if path.is_symlink() else None
+        after = path.lstat()
+        identity = (before.st_dev, before.st_ino, before.st_mode, link)
+        if (after.st_dev, after.st_ino, after.st_mode) != identity[:3]:
+            raise ReferenceSealStaleError("configured archive namespace changed during capture")
+        return identity
+
+    def _assert_configured_namespace(self) -> None:
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        for path, identity in self._namespace.items():
+            if self._namespace_identity(path) != identity:
+                raise ReferenceSealStaleError("configured archive namespace changed after reference preparation")
+        for name, path in self._configured_paths.items():
+            if path.resolve(strict=True) != self._paths[name]:
+                raise ReferenceSealStaleError(f"configured {name}.db target changed after reference preparation")
+        if resolve_active_index_path(self._configured_root).resolve(strict=True) != self.index_path:
+            raise ReferenceSealStaleError("configured active Index changed after reference preparation")
+
     def _observer_identity(self, name: str) -> tuple[int, int, int, int]:
+        self._assert_configured_namespace()
         metadata = self._observer_leaves[name].identity_metadata()
         return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
 
@@ -865,6 +908,7 @@ class PreparedIndexMutation:
         observer.commit()
         version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
         identity_after = _tier_identity(candidate)
+        self._assert_configured_namespace()
         if identity_after != identity_before or version_after != version_before:
             raise ReferenceSealStaleError("promotion candidate changed during durable-reference validation")
         if lost_count and first is not None:
@@ -967,6 +1011,7 @@ class PreparedIndexMutation:
             or receipt._prior_data_version != self._versions["source"]
         ):
             raise ReferenceSealError("Source commit receipt does not belong to this prepared seal")
+        self._assert_configured_namespace()
         identity_before = _tier_identity(self._paths["source"])
         if not _same_incarnation(identity_before, receipt._source_identity):
             raise ReferenceSealStaleError("source.db incarnation changed during the prepared source publication")
@@ -986,6 +1031,7 @@ class PreparedIndexMutation:
             ).fetchone()
             if actual is None or tuple(actual) != expected_values:
                 raise ReferenceSealStaleError("committed Source rows differ from the exact prepared mutation")
+        self._assert_configured_namespace()
         identity_after = _tier_identity(self._paths["source"])
         version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
         if not _same_incarnation(identity_before, identity_after) or version_after != version_before:
@@ -1036,6 +1082,7 @@ class PreparedIndexMutation:
         if self._cleanup_requested:
             raise ReferenceSealError("reference seal requires original-owner terminal cleanup")
         _check_reference_cancellation()
+        self._assert_configured_namespace()
 
     def _require_live_owner(self) -> None:
         if self._closed:

@@ -15,9 +15,10 @@ import asyncio
 import os
 import sqlite3
 import threading
+from builtins import BaseExceptionGroup
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import quote
 
@@ -25,6 +26,7 @@ import aiosqlite
 
 import polylogue.paths as _paths
 from polylogue.core.errors import DatabaseError
+from polylogue.core.sql_settlement import SQLSettlementRetry
 from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.runtime import (
@@ -53,6 +55,8 @@ from polylogue.storage.sqlite.write_lease import (
     UnleasedWriteError,
     WriteLease,
     WriteLeaseThreadGrant,
+    _close_async_archive_custody,
+    _settle_task,
     async_write_lease,
     bind_write_lease_thread,
     current_write_lease,
@@ -76,6 +80,8 @@ class _BackendConnectionOwner:
     task: asyncio.Task[object] | None
     pid: int
     grant: WriteLeaseThreadGrant | None = None
+    cleanup_task: asyncio.Task[object] | None = None
+    cleanup_attempt: asyncio.Future[None] | None = None
 
 
 # Strong custody survives loss of the caller after a failed raw close.
@@ -140,13 +146,16 @@ async def _clear_connection_progress_guard(conn: aiosqlite.Connection) -> None:
 
 async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool) -> _ConnectionCloseResult:
     """Retain the raw handle and worker until native close has actually settled."""
-    error = None
+    errors: list[BaseException] = []
     cancellation = None
     if conn._connection is not None:
         error, cancellation = await _settled_connection_operation(_clear_connection_progress_guard(conn))
+        if error is not None:
+            errors.append(error)
     if rollback and conn._connection is not None:
         rollback_error, rollback_cancellation = await _settled_connection_operation(conn.rollback())
-        error = error or rollback_error
+        if rollback_error is not None:
+            errors.append(rollback_error)
         cancellation = cancellation or rollback_cancellation
     if conn._connection is not None:
 
@@ -157,7 +166,8 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
         close_error, close_cancellation = await _settled_connection_operation(
             conn._execute(close_raw)  # type: ignore[no-untyped-call]
         )
-        error = error or close_error
+        if close_error is not None:
+            errors.append(close_error)
         cancellation = cancellation or close_cancellation
     actual_closed = conn._connection is None
     if actual_closed and conn._thread.is_alive():
@@ -168,7 +178,8 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
             stop_error = None
             if stopped is not None:
                 stop_error, stop_cancellation = await _settled_connection_operation(stopped)
-                error = error or stop_error
+                if stop_error is not None:
+                    errors.append(stop_error)
                 cancellation = cancellation or stop_cancellation
             if stop_error is None:
                 # aiosqlite schedules the stop future before breaking its worker
@@ -176,7 +187,14 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
                 # event-loop response; join proves its actual exit.
                 conn._thread.join()
         except BaseException as stop_error:
-            error = error or stop_error
+            errors.append(stop_error)
+    error = (
+        errors[0]
+        if len(errors) == 1
+        else BaseExceptionGroup("SQLite worker cleanup failed", errors)
+        if errors
+        else None
+    )
     return _ConnectionCloseResult(actual_closed, error, cancellation)
 
 
@@ -185,7 +203,7 @@ async def _await_settled(awaitable: Awaitable[object]) -> None:
     error, cancellation = await _settled_connection_operation(awaitable)
     if error is not None:
         if cancellation is not None:
-            error.add_note("caller cancellation also occurred while SQLite work settled")
+            raise BaseExceptionGroup("SQLite work failed during cancellation", [error, cancellation])
         raise error
     if cancellation is not None:
         raise cancellation
@@ -197,8 +215,11 @@ def _new_write_connection(backend: SQLiteBackend, purpose: str) -> aiosqlite.Con
     grant = grant_write_lease_thread()
     try:
         conn = aiosqlite.Connection(lambda: _connect_write_thread(backend, grant), iter_chunk_size=64)
-    except BaseException:
-        grant.complete()
+    except BaseException as primary:
+        try:
+            grant.complete()
+        except BaseException as cleanup:
+            raise BaseExceptionGroup("SQLite construction and grant cleanup failed", [primary, cleanup]) from primary
         raise
     with _BACKEND_CONNECTIONS_LOCK:
         _BACKEND_CONNECTIONS[id(conn)] = _BackendConnectionOwner(
@@ -214,45 +235,105 @@ def _connect_write_thread(backend: SQLiteBackend, grant: WriteLeaseThreadGrant) 
 
 def _retire_backend_connection_owner(conn: aiosqlite.Connection) -> None:
     with _BACKEND_CONNECTIONS_LOCK:
-        entry = _BACKEND_CONNECTIONS.pop(id(conn), None)
-    if entry is not None:
-        backend = entry.backend
-        # Closing succeeded on the actual SQLite worker. Retire the handle
-        # before a pending cancellation escapes to its transaction owner.
-        if getattr(backend, "_txn_conn", None) is conn:
-            backend._txn_conn = None
-            backend._transaction_depth = 0
-            backend._transaction_owner_task = None
-        if getattr(backend, "_bulk_conn", None) is conn:
-            backend._bulk_conn = None
-            backend._transaction_depth = 0
-            backend._transaction_owner_task = None
-        if entry.grant is not None:
+        entry = _BACKEND_CONNECTIONS.get(id(conn))
+    if entry is None:
+        return
+    # Returning the last grant can expose a descriptor close failure. Keep
+    # this exact backend owner reachable until that physical custody settles.
+    if entry.grant is not None:
+        if not entry.grant.custody_retired:
             entry.grant.complete()
+        custody = entry.grant.lease.custody
+        if custody is not None and custody._pending_descriptor_closes:
+            raise UnleasedWriteError("async connection retains unsettled archive descriptor custody")
+    with _BACKEND_CONNECTIONS_LOCK:
+        _BACKEND_CONNECTIONS.pop(id(conn), None)
+    backend = entry.backend
+    if getattr(backend, "_txn_conn", None) is conn:
+        backend._txn_conn = None
+        backend._transaction_depth = 0
+        backend._transaction_owner_task = None
+    if getattr(backend, "_bulk_conn", None) is conn:
+        backend._bulk_conn = None
+        backend._transaction_depth = 0
+        backend._transaction_owner_task = None
 
 
 async def _close_backend_connection(conn: aiosqlite.Connection, *, rollback: bool = False) -> None:
+    task = _current_async_task()
     with _BACKEND_CONNECTIONS_LOCK:
         owner = _BACKEND_CONNECTIONS.get(id(conn))
-    if owner is not None and (
-        owner.pid != os.getpid() or owner.thread is not threading.current_thread() or not _task_can_settle(owner.task)
-    ):
-        raise UnleasedWriteError("async SQLite cleanup belongs to its original task and thread")
+        if owner is not None:
+            if (
+                owner.pid != os.getpid()
+                or owner.thread is not threading.current_thread()
+                or not _task_can_settle(owner.task)
+                or (owner.cleanup_task is not None and owner.cleanup_task is not task and not owner.cleanup_task.done())
+            ):
+                raise UnleasedWriteError("async SQLite cleanup belongs to its original task and thread")
+            attempt: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            attempt.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            owner = replace(owner, cleanup_task=task, cleanup_attempt=attempt)
+            _BACKEND_CONNECTIONS[id(conn)] = owner
+    try:
+        await _finish_backend_connection_close(conn, owner=owner, rollback=rollback)
+    except BaseException as error:
+        if owner is not None and owner.cleanup_attempt is not None:
+            owner.cleanup_attempt.set_exception(error)
+        raise
+    else:
+        if owner is not None and owner.cleanup_attempt is not None:
+            owner.cleanup_attempt.set_result(None)
+
+
+async def _finish_backend_connection_close(
+    conn: aiosqlite.Connection, *, owner: _BackendConnectionOwner | None, rollback: bool
+) -> None:
+    custody = owner.grant.lease.custody if owner is not None and owner.grant is not None else None
+    if custody is not None and custody.settlement_retry is None:
+        custody.settlement_retry = SQLSettlementRetry()
+    retry = custody.settlement_retry if custody is not None else None
+    observed = retry.generation() if retry is not None else 0
     result = await _settle_connection_close(conn, rollback=rollback)
-    error = result.error
+    errors = [result.error] if result.error is not None else []
+    cancellation = result.cancellation
+    if cancellation is not None and retry is not None:
+        retry.request()
     if result.actual_closed and not conn._thread.is_alive():
-        try:
-            _retire_backend_connection_owner(conn)
-        except BaseException as retirement_error:
-            if error is not None:
-                error.add_note(f"connection custody retirement also failed: {type(retirement_error).__name__}")
-            error = error or retirement_error
-    if error is not None:
-        if result.cancellation is not None:
-            error.add_note("caller cancellation also occurred during connection cleanup")
-        raise error
-    if result.cancellation is not None:
-        raise result.cancellation
+        first_retirement_error: BaseException | None = None
+        while True:
+            try:
+                _retire_backend_connection_owner(conn)
+                break
+            except BaseException as retirement_error:
+                first_retirement_error = first_retirement_error or retirement_error
+            if custody is None or retry is None:
+                break
+            wait = asyncio.create_task(asyncio.to_thread(retry.wait_after, observed))
+            value, interrupted, wait_error = await _settle_task(wait, retry=retry)
+            cancellation = cancellation or interrupted
+            if wait_error is not None:
+                errors.append(wait_error)
+                break
+            observed = int(value)
+            if custody._pending_descriptor_closes:
+                try:
+                    await _close_async_archive_custody(custody, initial_observed_generation=observed)
+                except BaseException as cleanup_error:
+                    errors.append(cleanup_error)
+                # The original loop task has retained custody until the same
+                # owner's descriptor evidence certifies physical retirement.
+                continue
+            # No descriptor was released by this failed callback. The next
+            # loop iteration retries only that still-held grant reference.
+        if first_retirement_error is not None:
+            errors.append(first_retirement_error)
+    if cancellation is not None:
+        errors.append(cancellation)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("Async SQLite cleanup failed", errors)
 
 
 async def _close_backend_connection_preserving(
@@ -261,20 +342,22 @@ async def _close_backend_connection_preserving(
     try:
         await _close_backend_connection(conn, rollback=rollback)
     except BaseException as cleanup_error:
-        primary.add_note(f"writer connection cleanup also failed: {cleanup_error}")
+        raise BaseExceptionGroup("SQLite operation and cleanup failed", [primary, cleanup_error]) from primary
 
 
 async def _cleanup_backend_connections(connections: list[aiosqlite.Connection], primary: BaseException | None) -> None:
-    first_error: BaseException | None = None
+    errors: list[BaseException] = []
     for connection in connections:
         try:
             await _close_backend_connection(connection, rollback=True)
         except BaseException as error:
-            if primary is not None:
-                primary.add_note(f"connection cleanup also failed: {error}")
-            first_error = first_error or error
-    if primary is None and first_error is not None:
-        raise first_error
+            errors.append(error)
+    if errors:
+        if primary is not None:
+            errors.insert(0, primary)
+        if len(errors) == 1:
+            raise errors[0]
+        raise BaseExceptionGroup("SQLite operation and owned connection cleanup failed", errors)
 
 
 async def _open_configured_backend_connection(
@@ -299,9 +382,14 @@ async def _open_configured_backend_connection(
 
         try:
             connection = aiosqlite.Connection(connect_reader, iter_chunk_size=64)
-        except BaseException:
+        except BaseException as primary:
             if grant is not None:
-                grant.complete()
+                try:
+                    grant.complete()
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup(
+                        "SQLite reader construction and grant cleanup failed", [primary, cleanup]
+                    ) from primary
             raise
         with _BACKEND_CONNECTIONS_LOCK:
             _BACKEND_CONNECTIONS[id(connection)] = _BackendConnectionOwner(
@@ -620,15 +708,18 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
                 depth_entered = True
                 yield
             except BaseException as primary:
+                errors = [primary]
                 try:
                     await _await_settled(_clear_connection_progress_guard(backend._bulk_conn))
                 except BaseException as cleanup:
-                    primary.add_note(f"bulk cancellation guard cleanup also failed: {cleanup}")
+                    errors.append(cleanup)
                 for statement in (f"ROLLBACK TO SAVEPOINT {sp_name}", f"RELEASE SAVEPOINT {sp_name}"):
                     try:
                         await _await_settled(backend._bulk_conn.execute(statement))
                     except BaseException as cleanup:
-                        primary.add_note(f"bulk savepoint cleanup also failed: {cleanup}")
+                        errors.append(cleanup)
+                if len(errors) > 1:
+                    raise BaseExceptionGroup("Bulk transaction and savepoint cleanup failed", errors) from primary
                 raise
             else:
                 await _await_settled(backend._bulk_conn.execute(f"RELEASE SAVEPOINT {sp_name}"))
@@ -643,30 +734,33 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
                 yield
                 await _backend_commit(backend)
             except BaseException as primary:
-                if backend._transaction_depth > 0:
-                    try:
-                        await _backend_rollback(backend)
-                    except BaseException as rollback_error:
-                        primary.add_note(f"transaction rollback also failed: {rollback_error}")
-                        if backend._txn_conn is not None:
-                            conn = backend._txn_conn
-                            try:
-                                await _close_backend_connection(conn, rollback=True)
-                            except BaseException as close_error:
-                                primary.add_note(f"transaction connection cleanup also failed: {close_error}")
-                            else:
-                                backend._txn_conn = None
-                                backend._transaction_depth = 0
-                                backend._transaction_owner_task = None
-                elif backend._txn_conn is not None:
-                    conn = backend._txn_conn
-                    try:
-                        await _close_backend_connection(conn, rollback=True)
-                    except BaseException as close_error:
-                        primary.add_note(f"transaction connection cleanup also failed: {close_error}")
+                errors = [primary]
+                conn = backend._txn_conn
+                with _BACKEND_CONNECTIONS_LOCK:
+                    entry = _BACKEND_CONNECTIONS.get(id(conn)) if conn is not None else None
+                # Commit/rollback already attempted terminal cleanup on this
+                # connection. Its retained owner is for an explicit retry;
+                # unwinding the transaction must not attempt it a second time.
+                if conn is not None and (entry is None or entry.cleanup_task is None):
+                    if backend._transaction_depth > 0:
+                        try:
+                            await _backend_rollback(backend)
+                        except BaseException as rollback_error:
+                            errors.append(rollback_error)
+                            with _BACKEND_CONNECTIONS_LOCK:
+                                entry = _BACKEND_CONNECTIONS.get(id(conn))
+                            if entry is not None and entry.cleanup_task is None:
+                                try:
+                                    await _close_backend_connection(conn, rollback=False)
+                                except BaseException as close_error:
+                                    errors.append(close_error)
                     else:
-                        backend._txn_conn = None
-                        backend._transaction_owner_task = None
+                        try:
+                            await _close_backend_connection(conn, rollback=True)
+                        except BaseException as close_error:
+                            errors.append(close_error)
+                if len(errors) > 1:
+                    raise BaseExceptionGroup("Transaction and owned cleanup failed", errors) from primary
                 raise
 
 
@@ -705,7 +799,7 @@ async def _backend_commit(backend: SQLiteBackend) -> None:
             try:
                 await _close_backend_connection(conn, rollback=True)
             except BaseException as cleanup_error:
-                primary.add_note(f"transaction connection cleanup also failed: {cleanup_error}")
+                raise BaseExceptionGroup("Transaction commit and cleanup failed", [primary, cleanup_error]) from primary
             else:
                 backend._txn_conn = None
                 backend._transaction_depth = 0
@@ -761,10 +855,33 @@ def retained_write_backends_on_current_thread(*, lease: WriteLease | None = None
 async def _close_backend(backend: SQLiteBackend) -> None:
     """Close database connections, retaining custody when settlement fails."""
     _require_backend_process(backend)
+    with _BACKEND_CONNECTIONS_LOCK:
+        pending_attempts = tuple(
+            entry.cleanup_attempt
+            for entry in _BACKEND_CONNECTIONS.values()
+            if entry.backend is backend
+            and entry.pid == os.getpid()
+            and entry.thread is threading.current_thread()
+            and entry.cleanup_task is not _current_async_task()
+            and entry.cleanup_attempt is not None
+            and not entry.cleanup_attempt.done()
+        )
+    if pending_attempts:
+        backend.request_sql_settlement()
+        attempt_errors: list[BaseException] = []
+        for attempt in pending_attempts:
+            try:
+                await _await_settled(attempt)
+            except BaseException as error:
+                attempt_errors.append(error)
+        if len(attempt_errors) == 1:
+            raise attempt_errors[0]
+        if attempt_errors:
+            raise BaseExceptionGroup("Original backend cleanup attempts failed", attempt_errors)
     _require_manual_owner(backend, "close", cleanup=True)
     if backend._transaction_owner_task is not None and not _task_can_settle(backend._transaction_owner_task):
         raise UnleasedWriteError("a live async transaction task owns its cleanup")
-    first_error: BaseException | None = None
+    errors: list[BaseException] = []
     with _BACKEND_CONNECTIONS_LOCK:
         owned_connections = tuple(_BACKEND_CONNECTIONS.values())
     for entry in owned_connections:
@@ -779,8 +896,7 @@ async def _close_backend(backend: SQLiteBackend) -> None:
             try:
                 await _close_backend_connection(entry.connection, rollback=True)
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+                errors.append(exc)
     with _BACKEND_CONNECTIONS_LOCK:
         txn_registered = backend._txn_conn is not None and id(backend._txn_conn) in _BACKEND_CONNECTIONS
         has_unsettled = any(entry.backend is backend for entry in _BACKEND_CONNECTIONS.values())
@@ -794,10 +910,11 @@ async def _close_backend(backend: SQLiteBackend) -> None:
         try:
             await _release_manual_lease(backend)
         except BaseException as exc:
-            if first_error is None:
-                first_error = exc
-    if first_error is not None:
-        raise first_error
+            errors.append(exc)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("Backend and manual lease cleanup failed", errors)
 
 
 def _current_async_task() -> asyncio.Task[object] | None:
@@ -838,12 +955,13 @@ async def _manual_begin(backend: SQLiteBackend) -> None:
     try:
         await _backend_begin(backend)
     except BaseException as primary:
+        errors = [primary]
         if backend._txn_conn is not None:
             conn = backend._txn_conn
             try:
                 await _close_backend_connection(conn, rollback=True)
             except BaseException as cleanup_error:
-                primary.add_note(f"manual transaction cleanup also failed: {cleanup_error}")
+                errors.append(cleanup_error)
             else:
                 backend._txn_conn = None
                 backend._transaction_depth = 0
@@ -852,7 +970,9 @@ async def _manual_begin(backend: SQLiteBackend) -> None:
             try:
                 await _release_manual_lease(backend)
             except BaseException as cleanup_error:
-                primary.add_note(f"manual lease cleanup also failed: {cleanup_error}")
+                errors.append(cleanup_error)
+        if len(errors) > 1:
+            raise BaseExceptionGroup("Manual transaction and cleanup failed", errors) from primary
         raise
 
 
@@ -867,20 +987,42 @@ async def _release_manual_lease(backend: SQLiteBackend) -> None:
 
 async def _manual_commit(backend: SQLiteBackend) -> None:
     _require_manual_owner(backend, "commit")
+    primary: BaseException | None = None
     try:
         await _backend_commit(backend)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
         if backend._transaction_depth == 0 and backend._txn_conn is None:
-            await _release_manual_lease(backend)
+            try:
+                await _release_manual_lease(backend)
+            except BaseException as cleanup:
+                if primary is not None:
+                    raise BaseExceptionGroup(
+                        "Manual transaction and lease cleanup failed", [primary, cleanup]
+                    ) from primary
+                raise
 
 
 async def _manual_rollback(backend: SQLiteBackend) -> None:
     _require_manual_owner(backend, "rollback")
+    primary: BaseException | None = None
     try:
         await _backend_rollback(backend)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
         if backend._transaction_depth == 0 and backend._txn_conn is None:
-            await _release_manual_lease(backend)
+            try:
+                await _release_manual_lease(backend)
+            except BaseException as cleanup:
+                if primary is not None:
+                    raise BaseExceptionGroup(
+                        "Manual transaction and lease cleanup failed", [primary, cleanup]
+                    ) from primary
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -1128,8 +1270,25 @@ class SQLiteBackend(
         """Rollback to the last begin() or savepoint."""
         await _manual_rollback(self)
 
+    def request_sql_settlement(self) -> None:
+        """Wake only this backend's existing creator cleanup attempts."""
+        _require_backend_process(self)
+        with _BACKEND_CONNECTIONS_LOCK:
+            custodies = {
+                id(entry.grant.lease.custody): entry.grant.lease.custody
+                for entry in _BACKEND_CONNECTIONS.values()
+                if entry.backend is self
+                and entry.thread is threading.current_thread()
+                and entry.cleanup_attempt is not None
+                and not entry.cleanup_attempt.done()
+                and entry.grant is not None
+                and entry.grant.lease.custody is not None
+            }
+        for custody in custodies.values():
+            custody.request_sql_settlement()
+
     async def close(self) -> None:
-        """Close database connections."""
+        """Close database connections or retry their existing creator cleanup."""
         await _close_backend(self)
 
     # -- Derived insights (formerly SQLiteDerivedInsightsMixin) --------------
