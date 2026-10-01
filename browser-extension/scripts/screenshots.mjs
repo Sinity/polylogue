@@ -11,12 +11,12 @@
 //    750x1334 (AMO mobile)
 //
 // Usage:
-//   node scripts/screenshots.mjs [--out DIR]
+//   node scripts/screenshots.mjs [--out DIR] [--browser-executable PATH]
 //
-// Skips gracefully if Playwright is not installed. CI installs it via
-// `npx playwright install chromium`.
+// Install Playwright with `npm install --no-save playwright@1`, then
+// `npx playwright install chromium` (the release workflow does both).
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -27,6 +27,7 @@ function parseArgs(argv) {
   const args = { out: join(EXT_ROOT, "dist", "screenshots") };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--out") args.out = resolve(argv[++i]);
+    else if (argv[i] === "--browser-executable") args.browserExecutable = resolve(argv[++i]);
   }
   return args;
 }
@@ -34,6 +35,7 @@ function parseArgs(argv) {
 const STATES = [
   {
     name: "online-captured",
+    tabUrl: "https://chatgpt.com/c/example",
     storage: {
       receiverBaseUrl: "http://127.0.0.1:8765",
       polylogueState: {
@@ -49,6 +51,7 @@ const STATES = [
   },
   {
     name: "online-unsupported",
+    tabUrl: "https://example.com/",
     storage: {
       receiverBaseUrl: "http://127.0.0.1:8765",
       polylogueState: {
@@ -61,6 +64,7 @@ const STATES = [
   },
   {
     name: "offline",
+    tabUrl: "https://chatgpt.com/c/example",
     storage: {
       receiverBaseUrl: "http://127.0.0.1:8765",
       polylogueState: {
@@ -83,10 +87,8 @@ async function main() {
   let playwright;
   try {
     playwright = await import("playwright");
-  } catch {
-    process.stdout.write("playwright not installed — skipping screenshots\n");
-    process.stdout.write("install with: npx playwright install chromium\n");
-    return;
+  } catch (cause) {
+    throw new Error("Install screenshot dependencies: npm install --no-save playwright@1 && npx playwright install chromium", { cause });
   }
 
   const args = parseArgs(process.argv.slice(2));
@@ -94,10 +96,13 @@ async function main() {
 
   const popupPath = join(EXT_ROOT, "src", "popup.html");
   const popupUrl = pathToFileURL(popupPath).toString();
-  const popupJsPath = join(EXT_ROOT, "src", "popup.js");
-  const popupJsSource = readFileSync(popupJsPath, "utf8");
 
-  const browser = await playwright.chromium.launch();
+  const browser = await playwright.chromium.launch({
+    executablePath: args.browserExecutable,
+    // Packaged launchers can carry a fixed debugging port. Keep this
+    // isolated headless process off an operator's existing CDP listener.
+    args: ["--remote-debugging-port=0"],
+  });
   try {
     for (const state of STATES) {
       for (const size of SIZES) {
@@ -106,6 +111,24 @@ async function main() {
           deviceScaleFactor: 2,
         });
         const page = await context.newPage();
+        const loadErrors = [];
+        const scriptFailure = new Promise((_, reject) => {
+          const fail = (error) => {
+            loadErrors.push(error);
+            reject(error);
+          };
+          page.on("pageerror", fail);
+          page.on("requestfailed", (request) => {
+            if (request.resourceType() === "script") {
+              fail(new Error(`popup_script_load_failed: ${request.url()}: ${request.failure()?.errorText || "unknown"}`));
+            }
+          });
+          page.on("response", (response) => {
+            if (response.request().resourceType() === "script" && response.status() >= 400) {
+              fail(new Error(`popup_script_load_failed: ${response.url()}: HTTP ${response.status()}`));
+            }
+          });
+        });
         // Inject a minimal chrome.* stub before any popup script runs.
         await page.addInitScript({
           content: `
@@ -128,7 +151,7 @@ async function main() {
                 onMessage: { addListener: () => {} },
               },
               tabs: {
-                query: async () => [{ id: 1, url: "https://chatgpt.com/c/example" }],
+                query: async () => [{ id: 1, url: ${JSON.stringify(state.tabUrl)} }],
               },
               action: {
                 setBadgeText: async () => {},
@@ -137,14 +160,19 @@ async function main() {
             };
           `,
         });
-        await page.goto(popupUrl);
-        // The popup is normally driven by chrome.runtime messaging; run
-        // its actual script so we screenshot real layout, not a mock.
-        await page.addScriptTag({ content: popupJsSource });
-        // Allow async fetch-skipping to settle.
-        await page.waitForTimeout(150);
+        // popup.html loads its scripts once. Wait for its real asynchronous
+        // initialization, and fail on script errors instead of capturing a
+        // broken checking screen. A slow render may continue until cancelled.
+        await Promise.race([
+          page.goto(popupUrl).then(() => page.waitForFunction(() => (
+            document.getElementById("badge")?.textContent !== "checking"
+            && Boolean(document.getElementById("state-detail")?.textContent)
+          ), null, { timeout: 0 })),
+          scriptFailure,
+        ]);
         const outFile = join(args.out, `popup-${state.name}-${size.name}.png`);
         await page.screenshot({ path: outFile, fullPage: false });
+        if (loadErrors.length) throw loadErrors[0];
         process.stdout.write(`captured ${outFile}\n`);
         await context.close();
       }
