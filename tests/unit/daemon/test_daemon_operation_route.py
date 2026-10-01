@@ -2013,7 +2013,7 @@ def test_annotation_import_that_outlives_its_deadline_never_commits(
                 + "\n",
                 "batch_id": "late-batch",
                 "schema_id": "seed.activity",
-                "schema_version": 1,
+                "schema_version": 2,
                 "target_ref": f"session:{session_id}",
                 "source_result_ref": "result-set:late",
                 "actor_ref": "agent:labeler",

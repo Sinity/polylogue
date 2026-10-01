@@ -53,7 +53,7 @@ def _annotation_import_fields(session_id: str, batch_id: str) -> dict[str, objec
         ),
         "batch_id": batch_id,
         "schema_id": "seed.activity",
-        "schema_version": 1,
+        "schema_version": 2,
         "target_ref": f"session:{session_id}",
         "source_result_ref": f"result-set:{batch_id}",
         "actor_ref": "agent:writer-boundary-test",
