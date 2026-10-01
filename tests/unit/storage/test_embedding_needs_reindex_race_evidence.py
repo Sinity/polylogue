@@ -98,6 +98,8 @@ def test_message_publication_refuses_source_mutation_during_provider_call(tmp_pa
     with write_lease("test.embedding.publish", archive_root=root):
         assert adapter.publish(frame, replacement) is False
     assert adapter.inspect(frame, (key,))[key] == "missing"
+    with sqlite3.connect(embeddings_db) as conn:
+        assert conn.execute("SELECT message_id FROM message_embedding_refs").fetchall() == []
 
 
 def test_message_publication_refuses_identity_change_with_same_prose(tmp_path: Path) -> None:
@@ -147,7 +149,12 @@ def test_message_publication_refuses_identity_change_with_same_prose(tmp_path: P
 
     with write_lease("test.embedding.publish", archive_root=root):
         assert adapter.publish(frame, replacement) is False
-    assert adapter.inspect(frame, (key,))[key] == "missing"
+    (current_key,), cursor = adapter.required_page(frame, cursor=None, limit=10)
+    assert cursor is None
+    assert current_key != key
+    assert adapter.inspect(frame, (current_key,))[current_key] == "missing"
+    with sqlite3.connect(embeddings_db) as conn:
+        assert conn.execute("SELECT message_id FROM message_embedding_refs").fetchall() == []
 
 
 def test_session_attempt_lock_serializes_owners_for_the_same_session() -> None:

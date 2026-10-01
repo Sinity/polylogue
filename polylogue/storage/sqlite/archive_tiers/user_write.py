@@ -1170,6 +1170,100 @@ def list_archive_blackboard_note_envelopes(
     return envelopes
 
 
+def prepare_assertion_row(
+    conn: sqlite3.Connection,
+    *,
+    assertion_id: str,
+    target_ref: str,
+    kind: str | AssertionKind,
+    scope_ref: str | None = None,
+    key: str | None = None,
+    value: object | None = None,
+    body_text: str | None = None,
+    author_ref: str | None = None,
+    author_kind: str | None = None,
+    evidence_refs: Sequence[str] | None = None,
+    status: str | AssertionStatus | None = None,
+    visibility: str | AssertionVisibility | None = None,
+    confidence: float | None = None,
+    staleness: Mapping[str, object] | None = None,
+    context_policy: Mapping[str, object] | AssertionContextPolicy | None = None,
+    supersedes: Sequence[str] | None = None,
+    now_ms: int | None = None,
+    require_promotion: bool = True,
+) -> tuple[object, ...]:
+    """Shape the complete canonical assertion row without writing it.
+
+    The original observer supplies existing creation time and judgment state;
+    actual writes and exact-effect preparation use this same normalization.
+    """
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    existing = conn.execute(
+        "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
+        (assertion_id,),
+    ).fetchone()
+    created_at_ms = int(existing[0]) if existing is not None else timestamp
+    existing_status = (
+        _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
+    )
+
+    normalized_target_ref = normalize_object_ref_text(target_ref)
+    normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
+    normalized_author_ref = (
+        normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
+        if author_ref is not None
+        else ASSERTION_DEFAULT_AUTHOR_REF
+    )
+    resolved_kind = _normalize_assertion_kind(kind)
+    resolved_value = _normalize_assertion_value(value)
+    resolved_staleness = _normalize_assertion_staleness(staleness)
+    normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
+    resolved_status = _normalize_assertion_status(status)
+    resolved_visibility = _normalize_assertion_visibility(visibility)
+    resolved_author_kind = _normalize_assertion_author_kind(author_kind)
+    resolved_context_policy = _normalize_assertion_context_policy(context_policy)
+
+    if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
+        if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
+            resolved_status = existing_status
+        else:
+            resolved_status = AssertionStatus.CANDIDATE
+            resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
+
+    resolved_context_policy = constrain_assertion_context_policy(
+        resolved_context_policy,
+        author_kind=resolved_author_kind,
+        author_ref=normalized_author_ref,
+        status=resolved_status,
+    )
+
+    evidence_refs_json = _dumps_optional(normalized_evidence_refs)
+    supersedes_json = _dumps_optional(list(supersedes or ()))
+
+    return (
+        assertion_id,
+        normalized_scope_ref,
+        normalized_target_ref,
+        key,
+        resolved_kind.value,
+        _dumps_optional(resolved_value.as_json_value()),
+        body_text,
+        normalized_author_ref,
+        resolved_author_kind,
+        evidence_refs_json,
+        resolved_status.value,
+        resolved_visibility.value,
+        confidence,
+        _dumps_optional(
+            None if resolved_staleness is None else resolved_staleness.as_json_document(),
+        ),
+        _dumps_optional(resolved_context_policy.as_json_document()),
+        supersedes_json,
+        created_at_ms,
+        timestamp,
+    )
+
+
 def upsert_assertion(
     conn: sqlite3.Connection,
     *,
@@ -1219,49 +1313,27 @@ def upsert_assertion(
     """
     _ensure_foreign_keys_pragma(conn)
     with _immediate_user_write_transaction(conn):
-        timestamp = now_ms if now_ms is not None else _now_ms()
-        existing = conn.execute(
-            "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
-            (assertion_id,),
-        ).fetchone()
-        created_at_ms = int(existing[0]) if existing is not None else timestamp
-        existing_status = (
-            _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
+        row = prepare_assertion_row(
+            conn,
+            assertion_id=assertion_id,
+            target_ref=target_ref,
+            kind=kind,
+            scope_ref=scope_ref,
+            key=key,
+            value=value,
+            body_text=body_text,
+            author_ref=author_ref,
+            author_kind=author_kind,
+            evidence_refs=evidence_refs,
+            status=status,
+            visibility=visibility,
+            confidence=confidence,
+            staleness=staleness,
+            context_policy=context_policy,
+            supersedes=supersedes,
+            now_ms=now_ms,
+            require_promotion=require_promotion,
         )
-
-        normalized_target_ref = normalize_object_ref_text(target_ref)
-        normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
-        normalized_author_ref = (
-            normalize_object_ref_text(_normalize_assertion_author_ref(author_ref))
-            if author_ref is not None
-            else ASSERTION_DEFAULT_AUTHOR_REF
-        )
-        resolved_kind = _normalize_assertion_kind(kind)
-        resolved_value = _normalize_assertion_value(value)
-        resolved_staleness = _normalize_assertion_staleness(staleness)
-        normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
-        resolved_status = _normalize_assertion_status(status)
-        resolved_visibility = _normalize_assertion_visibility(visibility)
-        resolved_author_kind = _normalize_assertion_author_kind(author_kind)
-        resolved_context_policy = _normalize_assertion_context_policy(context_policy)
-
-        if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
-            if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
-                resolved_status = existing_status
-            else:
-                resolved_status = AssertionStatus.CANDIDATE
-                resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
-
-        resolved_context_policy = constrain_assertion_context_policy(
-            resolved_context_policy,
-            author_kind=resolved_author_kind,
-            author_ref=normalized_author_ref,
-            status=resolved_status,
-        )
-
-        evidence_refs_json = _dumps_optional(normalized_evidence_refs)
-        supersedes_json = _dumps_optional(list(supersedes or ()))
-
         conn.execute(
             """
         INSERT INTO assertions (
@@ -1287,28 +1359,7 @@ def upsert_assertion(
             supersedes_json = excluded.supersedes_json,
             updated_at_ms = excluded.updated_at_ms
         """,
-            (
-                assertion_id,
-                normalized_scope_ref,
-                normalized_target_ref,
-                key,
-                resolved_kind.value,
-                _dumps_optional(resolved_value.as_json_value()),
-                body_text,
-                normalized_author_ref,
-                resolved_author_kind,
-                evidence_refs_json,
-                resolved_status.value,
-                resolved_visibility.value,
-                confidence,
-                _dumps_optional(
-                    None if resolved_staleness is None else resolved_staleness.as_json_document(),
-                ),
-                _dumps_optional(resolved_context_policy.as_json_document()),
-                supersedes_json,
-                created_at_ms,
-                timestamp,
-            ),
+            row,
         )
         envelope = read_assertion_envelope(conn, assertion_id)
         assert envelope is not None

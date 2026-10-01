@@ -48,7 +48,9 @@ from polylogue.storage.sqlite.connection_profile import (
     NativeSQLCustodyOwner,
     _close_failed_native_construction,
     _open_readonly_owner,
+    native_sql_children,
     native_sql_parent_for_connection,
+    open_isolated_write_connection,
     open_readonly_connection,
     open_scratch_connection,
     open_source_tier_write_connection,
@@ -109,11 +111,26 @@ class ReferenceSealStaleError(ReferenceSealError):
 
 
 @dataclass(frozen=True, slots=True)
+class KnownTierRowEffect:
+    """One complete, declared SQLite row transition of an existing producer.
+
+    Columns use the canonical table order. Absence is distinct from a row
+    containing NULL values. Producers include trigger and foreign-key effects
+    in the same stream; a missing transition cannot be absorbed at commit.
+    """
+
+    table: str
+    columns: tuple[str, ...]
+    old: tuple[object, ...] | None
+    new: tuple[object, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
 class KnownTierMutationReceipt:
-    """Proof handle for one exact Source mutation committed under this seal."""
+    """Proof handle for one exact durable-tier mutation committed under this seal."""
 
     _seal: PreparedIndexMutation
-    _source_identity: tuple[int, int, int, int]
+    _tier_identity: tuple[int, int, int, int]
     _prior_data_version: int
     _table: str
     _columns: tuple[str, ...]
@@ -126,10 +143,10 @@ class KnownTierMutationReceipt:
 
 @dataclass(frozen=True, slots=True)
 class KnownTierMutationPermit:
-    """Exact rows an admitted Source writer is authorized to update."""
+    """Complete row effects of one admitted dedicated durable-tier transaction."""
 
     _seal: PreparedIndexMutation
-    _source_identity: tuple[int, int, int, int]
+    _tier_identity: tuple[int, int, int, int]
     _prior_data_version: int
     _table: str
     _columns: tuple[str, ...]
@@ -144,7 +161,17 @@ class KnownTierMutationPermit:
     _effects: int = field(default=0, init=False, compare=False, repr=False)
     _commit_allowed: bool = field(default=False, init=False, compare=False, repr=False)
     _commit_attempted: bool = field(default=False, init=False, compare=False, repr=False)
+    _acceptance_reservation: bool = field(default=False, init=False, compare=False, repr=False)
+    _writer_data_version: int | None = field(default=None, init=False, compare=False, repr=False)
     _failure: BaseException | None = field(default=None, init=False, compare=False, repr=False)
+
+    @property
+    def tier(self) -> Literal["source", "user"]:
+        return self._tier
+
+    @property
+    def terminal_parent(self) -> PreparedIndexMutation:
+        return self._seal
 
     @contextmanager
     def hold_authority(self) -> Iterator[KnownTierMutationPermit]:
@@ -153,6 +180,7 @@ class KnownTierMutationPermit:
         custody = current_sql_custody()
         if custody is None:
             raise ReferenceSealError("known Source mutation requires actual physical archive custody")
+        self._seal._retain_mutation_custody(custody)
         object.__setattr__(self, "_custody", custody)
         try:
             with custody.known_tier_mutation(self):
@@ -162,13 +190,13 @@ class KnownTierMutationPermit:
 
     @contextmanager
     def mutation_connection(self) -> Iterator[sqlite3.Connection]:
-        owner = NativeSQLCustodyOwner(
-            open_source_tier_write_connection(
-                self._seal._paths["source"],
-                archive_root=self._seal.archive_root,
-                mutation_permit=self,
-            )
+        factory = (
+            open_source_tier_write_connection
+            if self._tier == "source"
+            else partial(open_isolated_write_connection, purpose="prepared User mutation")
         )
+        connection = factory(self._seal._paths[self._tier], archive_root=self._seal.archive_root, mutation_permit=self)
+        owner = next(child for child in native_sql_children(self._seal) if child.connection is connection)
         try:
             yield owner.require_connection()
         except BaseException as primary:
@@ -189,35 +217,91 @@ class KnownTierMutationPermit:
         if self._connection is not None or connection.in_transaction:
             raise ReferenceSealError("known Source mutation requires one fresh dedicated connection")
         path = next(str(row[2]) for row in connection.execute("PRAGMA database_list") if row[1] == "main")
-        if Path(path).resolve() != self._seal._paths["source"].resolve():
+        if Path(path).resolve() != self._seal._paths[self._tier].resolve():
             raise ReferenceSealError("known Source mutation selected another tier")
         object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "_writer_data_version", int(connection.execute("PRAGMA data_version").fetchone()[0]))
 
-        def check_effect(*values: object) -> int:
-            try:
-                self._seal._require_live_owner()
-                key, actual = values[0], tuple(values[1:])
-                row = self._seal._scratch.execute(
-                    "SELECT values_blob FROM known_tier_mutation_rows WHERE row_key = ?", (key,)
-                ).fetchone()
-                if row is None or pickle.loads(row[0]) != actual:
-                    raise ReferenceSealError("Source transaction attempted an undeclared key or value")
-                object.__setattr__(self, "_effects", self._effects + 1)
-                return 1
-            except BaseException as failure:
-                object.__setattr__(self, "_failure", failure)
-                raise
-
-        function = "polylogue_known_source_effect"
-        connection.create_function(function, len(self._columns) + 1, check_effect)
-        values = ", ".join(f"NEW.{column}" for column in (self._key_column, *self._columns))
         object.__setattr__(self, "_guard_setup", True)
         try:
-            for operation in ("INSERT", "UPDATE"):
-                connection.execute(
-                    f"CREATE TEMP TRIGGER polylogue_known_source_{operation.lower()} "
-                    f"BEFORE {operation} ON main.{self._table} BEGIN SELECT {function}({values}); END"
-                )
+            metadata = self._seal._scratch.execute(
+                "SELECT table_name, columns_blob, keys_blob FROM known_tier_effect_tables WHERE tier=? ORDER BY table_name",
+                (self._tier,),
+            )
+            for ordinal, (table, columns_blob, keys_blob) in enumerate(metadata):
+                if table == "sqlite_sequence":
+                    # SQLite updates AUTOINCREMENT state internally without
+                    # authorizer callbacks and forbids triggers on this table.
+                    # Its selected complete effect is verified at commit.
+                    continue
+                columns = pickle.loads(columns_blob)
+                keys = pickle.loads(keys_blob)
+                count = len(columns)
+
+                def check_effect(
+                    phase: str,
+                    operation: str,
+                    *values: object,
+                    table: str = table,
+                    columns: tuple[str, ...] = columns,
+                    keys: tuple[int, ...] = keys,
+                    count: int = count,
+                ) -> int:
+                    try:
+                        self._seal._require_new_work()
+                        old = None if operation == "INSERT" else tuple(values[:count])
+                        new = None if operation == "DELETE" else tuple(values[count:])
+                        image = new if new is not None else old
+                        assert image is not None
+                        row_key = tuple(image[position] for position in keys)
+                        key = pickle.dumps(row_key, protocol=5)
+                        if phase == "BEFORE" and operation == "INSERT":
+                            if row_key == (-1,):
+                                # SQLite assigns an omitted INTEGER rowid
+                                # after BEFORE INSERT. AFTER carries its actual
+                                # selected key and consumes the exact effect.
+                                return 1
+                            # UPSERT first attempts INSERT, then performs its
+                            # actual UPDATE. Compare the original existing row
+                            # without consuming the effect until AFTER SQL.
+                            old = self._seal._known_tier_row(connection, table, columns, keys, row_key)
+                            if old is not None:
+                                # Omitted INSERT columns take defaults even
+                                # when UPSERT preserves the existing values.
+                                # Only the actual AFTER UPDATE image consumes
+                                # authority; BEFORE UPDATE checks it exactly.
+                                return 1
+                        expected = self._seal._scratch.execute(
+                            "SELECT effect_id, old_blob, new_blob FROM known_tier_effects "
+                            "WHERE tier=? AND table_name = ? AND key_blob = ? AND consumed = 0 ORDER BY effect_id LIMIT 1",
+                            (self._tier, table, key),
+                        ).fetchone()
+                        if expected is None or pickle.loads(expected[1]) != old or pickle.loads(expected[2]) != new:
+                            raise ReferenceSealError("tier transaction attempted an undeclared OLD-to-NEW row effect")
+                        if phase == "AFTER":
+                            self._seal._scratch.execute(
+                                "UPDATE known_tier_effects SET consumed = 1 WHERE effect_id = ?", (expected[0],)
+                            )
+                            object.__setattr__(self, "_effects", self._effects + 1)
+                        return 1
+                    except BaseException as failure:
+                        object.__setattr__(self, "_failure", failure)
+                        raise
+
+                function = f"polylogue_known_tier_effect_{ordinal}"
+                connection.create_function(function, 2 * count + 2, check_effect)
+                old = ", ".join(f'OLD."{column}"' for column in columns)
+                new = ", ".join(f'NEW."{column}"' for column in columns)
+                absent = ", ".join("NULL" for _ in columns)
+                for operation in ("INSERT", "UPDATE", "DELETE"):
+                    before = absent if operation == "INSERT" else old
+                    after = absent if operation == "DELETE" else new
+                    for phase in ("BEFORE", "AFTER"):
+                        connection.execute(
+                            f"CREATE TEMP TRIGGER polylogue_known_tier_{ordinal}_{operation.lower()}_{phase.lower()} "
+                            f'{phase} {operation} ON main."{table}" '
+                            f"BEGIN SELECT {function}('{phase}', '{operation}', {before}, {after}); END"
+                        )
         finally:
             object.__setattr__(self, "_guard_setup", False)
 
@@ -230,6 +314,20 @@ class KnownTierMutationPermit:
         schema: str | None,
         trigger: str | None,
     ) -> bool:
+        if action == sqlite3.SQLITE_TRANSACTION and first == "ROLLBACK":
+            if connection is self._connection:
+                if (
+                    os.getpid() != self._seal.index_pid
+                    or threading.current_thread() is not self._seal.index_thread
+                    or _current_task() is not self._seal.index_task
+                ):
+                    return False
+                # Physical cleanup remains available after seal retirement or
+                # cancellation. A foreign connection's rollback cannot alter
+                # this dedicated transaction's receipt state.
+                if not self._acceptance_reservation:
+                    object.__setattr__(self, "_commit_attempted", False)
+            return True
         self._seal._require_live_owner()
         if self._custody is None or current_sql_custody() is not self._custody:
             return False
@@ -239,9 +337,12 @@ class KnownTierMutationPermit:
         if action == sqlite3.SQLITE_PRAGMA:
             if second is None:
                 return True
-            if first == "temp_store":
-                return self._connection is None
+            if self._connection is not None:
+                # TEMP guards and FK/trigger semantics are immutable after
+                # the factory has finalized this dedicated connection.
+                return False
             return first in {
+                "temp_store",
                 "busy_timeout",
                 "foreign_keys",
                 "cache_size",
@@ -254,20 +355,24 @@ class KnownTierMutationPermit:
         if self._guard_setup and schema == "temp":
             return True
         if action == sqlite3.SQLITE_TRANSACTION:
-            if first == "ROLLBACK":
-                object.__setattr__(self, "_commit_attempted", False)
+            if first == "BEGIN" and self._acceptance_reservation and self._commit_attempted:
                 return True
-            if first == "COMMIT" and self._commit_allowed:
+            if first == "COMMIT" and self._commit_allowed and not self._commit_attempted:
                 object.__setattr__(self, "_commit_attempted", True)
                 return True
             return first == "BEGIN" and not self._commit_attempted
         if self._commit_attempted:
             return False
-        if action == sqlite3.SQLITE_INSERT:
-            return schema == "main" and first == self._table
-        if action == sqlite3.SQLITE_UPDATE:
-            return schema == "main" and first == self._table and second in self._columns
-        return False
+        if action in {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}:
+            return (
+                schema == "main"
+                and first != "sqlite_sequence"
+                and self._seal._scratch.execute(
+                    "SELECT 1 FROM known_tier_effect_tables WHERE tier=? AND table_name = ?", (self._tier, first)
+                ).fetchone()
+                is not None
+            )
+        return action == sqlite3.SQLITE_SAVEPOINT and self._connection.in_transaction
 
     def allow_commit(self, connection: sqlite3.Connection) -> None:
         self._seal._require_live_owner()
@@ -275,7 +380,64 @@ class KnownTierMutationPermit:
             raise ReferenceSealError("known Source commit does not own its dedicated transaction")
         if self._failure is not None:
             raise self._failure
+        # BEGIN IMMEDIATE has now reserved this physical tier. Validate the
+        # original observers after reservation so a foreign commit between
+        # preparation and BEGIN cannot be absorbed by this mutation.
+        self._seal.validate_observers_current()
+        self.require_writer_currency()
+        # Internal sequence writes are admitted only as the declared terminal
+        # image of guarded AUTOINCREMENT inserts. Explicit SQL to that table
+        # is denied, and the same writer version excludes foreign changes.
+        self._seal._verify_known_tier_postimage(connection, self._tier)
+        implicit = self._seal._scratch.execute(
+            "UPDATE known_tier_effects SET consumed=1 WHERE tier=? AND table_name='sqlite_sequence' AND consumed=0",
+            (self._tier,),
+        ).rowcount
+        object.__setattr__(self, "_effects", self._effects + implicit)
+        if self._seal._scratch.execute(
+            "SELECT 1 FROM known_tier_effects WHERE tier=? AND consumed = 0 LIMIT 1", (self._tier,)
+        ).fetchone():
+            raise ReferenceSealError("tier commit is missing declared row effects")
         object.__setattr__(self, "_commit_allowed", True)
+
+    def require_writer_currency(self) -> None:
+        connection = self._connection
+        if connection is None or self._writer_data_version is None:
+            raise ReferenceSealError("tier mutation has no original dedicated writer version")
+        if int(connection.execute("PRAGMA data_version").fetchone()[0]) != self._writer_data_version:
+            raise ReferenceSealStaleError("another connection committed during the known tier mutation")
+
+    @contextmanager
+    def acceptance_reservation(self) -> Iterator[None]:
+        """Reserve the same tier through advancement of the original observer.
+
+        SQLite leaves this connection's data_version unchanged for its own
+        commit. A foreign commit in the commit-to-reservation gap changes it.
+        Read transactions cache that value, so compare again after acquiring
+        BEGIN IMMEDIATE, which excludes foreign commits until rollback.
+        """
+        connection = self._connection
+        if connection is None or connection.in_transaction or not self._commit_attempted:
+            raise ReferenceSealError("tier acceptance requires its completed dedicated writer")
+        self.require_writer_currency()
+        object.__setattr__(self, "_acceptance_reservation", True)
+        try:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                self.require_writer_currency()
+                yield
+            except BaseException as primary:
+                try:
+                    connection.rollback()
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup(
+                        "Tier acceptance and reservation cleanup failed", [primary, cleanup]
+                    ) from primary
+                raise
+            else:
+                connection.rollback()
+        finally:
+            object.__setattr__(self, "_acceptance_reservation", False)
 
     def require_rows(
         self,
@@ -705,8 +867,9 @@ class PreparedIndexMutation:
         self.candidate_missing_session_count = 0
         self.candidate_first_missing_session_id: str | None = None
         self._tier_mutation_nonce = object()
-        self._pending_tier_permit: KnownTierMutationPermit | None = None
-        self._pending_tier_receipt: KnownTierMutationReceipt | None = None
+        self._pending_tier_permits: dict[str, KnownTierMutationPermit] = {}
+        self._pending_tier_receipts: dict[str, KnownTierMutationReceipt] = {}
+        self._mutation_custody: ArchiveWriteCustody | None = None
         self._publication_exclusion: ActiveWriterLease | None = None
         self._publication_payload_cleanup: Callable[[], None] | None = None
         self._publication_lifetime_bound = False
@@ -740,6 +903,7 @@ class PreparedIndexMutation:
                 "CREATE TEMP TABLE reference_anchors("
                 "wire_ref TEXT NOT NULL, tier TEXT NOT NULL, assertion_id TEXT NOT NULL, field TEXT NOT NULL, "
                 "position INTEGER NOT NULL, assertion_target TEXT NOT NULL, permits_absence INTEGER NOT NULL, "
+                "retired INTEGER NOT NULL DEFAULT 0, projected_retired INTEGER NOT NULL DEFAULT 0, "
                 "PRIMARY KEY(wire_ref, tier, assertion_id, field, position)) WITHOUT ROWID;"
                 "CREATE TEMP TABLE authorized_removals(session_id TEXT PRIMARY KEY) WITHOUT ROWID;"
                 "CREATE TEMP TABLE candidate_refs ("
@@ -854,7 +1018,9 @@ class PreparedIndexMutation:
                     target = _resolve(index_observer, parsed)
                     if target is not None:
                         self._scratch.execute(
-                            "INSERT OR IGNORE INTO reference_anchors VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT OR IGNORE INTO reference_anchors "
+                            "(wire_ref,tier,assertion_id,field,position,assertion_target,permits_absence) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
                             (
                                 target.wire_ref,
                                 name,
@@ -920,16 +1086,22 @@ class PreparedIndexMutation:
             "INSERT OR IGNORE INTO authorized_removals VALUES (?)", ((sid,) for sid in session_ids)
         )
 
-    def _intentional_absence(self, conn: sqlite3.Connection, ref: _ResolvedReference) -> bool:
+    def _intentional_absence(
+        self, conn: sqlite3.Connection, ref: _ResolvedReference, *, projected_user_effects: bool = False
+    ) -> bool:
         from polylogue.storage.sqlite.write_lease import permitted_session_removals
 
         permitted = permitted_session_removals(archive_root=self.archive_root)
         if self._scratch.execute(
-            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND permits_absence = 0", (ref.wire_ref,)
+            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND retired = 0 AND permits_absence = 0 "
+            "AND (?=0 OR projected_retired=0)",
+            (ref.wire_ref, int(projected_user_effects)),
         ).fetchone():
             return False
         if not self._scratch.execute(
-            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND permits_absence = 1", (ref.wire_ref,)
+            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND retired = 0 AND permits_absence = 1 "
+            "AND (?=0 OR projected_retired=0)",
+            (ref.wire_ref, int(projected_user_effects)),
         ).fetchone():
             return False
         for session_id in (ref.owner_session_id, ref.scope_session_id):
@@ -1213,62 +1385,355 @@ class PreparedIndexMutation:
             raise ReferenceSealStaleError("publisher Source incarnation changed after preparation")
         self.validate_observers_current()
 
-    def prepare_known_tier_mutation(
+    def _known_tier_table_shape(self, tier: str, table: str) -> tuple[tuple[str, ...], tuple[int, ...]]:
+        if not table.isidentifier():
+            raise ReferenceSealError("known tier effects require declared table identifiers")
+        info = self._observers[tier].execute(f'PRAGMA table_info("{table}")').fetchall()
+        columns = tuple(str(row[1]) for row in info)
+        if table == "sqlite_sequence" and columns == ("name", "seq"):
+            return columns, (0,)
+        keys = tuple(
+            position
+            for _order, position in sorted((int(row[5]), position) for position, row in enumerate(info) if row[5])
+        )
+        if not columns or not keys or any(not column.isidentifier() for column in columns):
+            raise ReferenceSealError("known tier effects require a canonical keyed table")
+        return columns, keys
+
+    def _known_tier_row(
         self,
+        connection: sqlite3.Connection,
         table: str,
         columns: tuple[str, ...],
-        rows: tuple[tuple[object, ...], ...],
-        *,
+        keys: tuple[int, ...],
+        key: tuple[object, ...],
+    ) -> tuple[object, ...] | None:
+        selected = ", ".join(f'"{column}"' for column in columns)
+        predicate = " AND ".join(f'"{columns[position]}" IS ?' for position in keys)
+        row = connection.execute(f'SELECT {selected} FROM "{table}" WHERE {predicate}', key).fetchone()
+        return None if row is None else tuple(row)
+
+    def _updated_row_effects(
+        self,
+        tier: str,
+        table: str,
+        columns: tuple[str, ...],
+        rows: Iterable[tuple[object, ...]],
         key_column: str,
-        tier: Literal["source", "user"],
-    ) -> KnownTierMutationPermit:
-        """Bind one exact prepared Source write to this observer baseline."""
-        self._require_new_work()
-        if tier != "source":
-            raise ReferenceSealError("User effects require the exact removal effect witness")
-        if (
-            not table.isidentifier()
-            or not key_column.isidentifier()
-            or not columns
-            or any(not column.isidentifier() for column in columns)
+    ) -> Iterator[KnownTierRowEffect]:
+        complete, keys = self._known_tier_table_shape(tier, table)
+        if tuple(complete[position] for position in keys) != (key_column,) or any(
+            column not in complete for column in columns
         ):
-            raise ReferenceSealError("known Source mutation must name declared SQL identifiers")
-        if any(len(row) != len(columns) + 1 for row in rows):
-            raise ReferenceSealError("known Source mutation rows must carry declared values and their exact key")
-        source_identity = _tier_identity(self._paths["source"])
-        if source_identity != self._identities["source"]:
-            raise ReferenceSealStaleError("source.db incarnation changed before prepared source publication")
-        if self._pending_tier_permit is not None:
-            raise ReferenceSealError("this seal already has a pending known Source mutation")
+            raise ReferenceSealError("prepared values do not match their declared table key and columns")
+        defaults = {str(row[1]): row[4] for row in self._observers[tier].execute(f'PRAGMA table_info("{table}")')}
+        for values in rows:
+            _check_reference_cancellation()
+            if len(values) != len(columns) + 1:
+                raise ReferenceSealError("prepared values must carry every declared column and exact key")
+            old = self._known_tier_row(self._observers[tier], table, complete, keys, (values[-1],))
+            if old is None:
+                image = {
+                    column: None
+                    if defaults[column] is None
+                    else self._observers[tier].execute(f"SELECT {defaults[column]}").fetchone()[0]
+                    for column in complete
+                }
+            else:
+                image = dict(zip(complete, old, strict=True))
+            image.update(zip(columns, values[:-1], strict=True))
+            image[key_column] = values[-1]
+            yield KnownTierRowEffect(table, complete, old, tuple(image[column] for column in complete))
+
+    def _validate_user_row_effect(self, effect: KnownTierRowEffect) -> None:
+        """Accept only the existing bound removal's declared assertion effects."""
+        from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+        if effect.table == "query_unit_frame_state":
+            if effect.columns != ("singleton", "epoch") or effect.old is None or effect.new is None:
+                raise ReferenceSealError("User frame effects must retain their canonical singleton")
+            if effect.old[0] != 1 or effect.new != (1, int(effect.old[1]) + 1):
+                raise ReferenceSealError("each assertion effect must advance the User frame exactly once")
+            return
+        if effect.table != "assertions":
+            raise ReferenceSealError("known User effects are confined to the bound assertion producer")
+        old = None if effect.old is None else dict(zip(effect.columns, effect.old, strict=True))
+        new = None if effect.new is None else dict(zip(effect.columns, effect.new, strict=True))
+        image = old if old is not None else new
+        assert image is not None
+        lifecycle = {"suppression", "excision_record", "excision_request"}
+        if str(image["kind"]) in lifecycle:
+            permitted = permitted_session_removals(archive_root=self.archive_root)
+            target = str(image["target_ref"])
+            if new is None or not target.startswith("session:") or target[len("session:") :] not in permitted:
+                raise ReferenceSealError("lifecycle effects require the exact validated session removal")
+            if old is not None:
+                immutable = set(effect.columns) - {"value_json", "status", "updated_at_ms"}
+                if any(old[column] != new[column] for column in immutable):
+                    raise ReferenceSealError("lifecycle update changed undeclared assertion provenance")
+            else:
+                if new["scope_ref"] is not None or str(new["author_ref"]) != "user:local":
+                    raise ReferenceSealError("new removal receipt has unrelated reference provenance")
+                if str(new["evidence_refs_json"]) not in {"[]", "null"}:
+                    raise ReferenceSealError("new removal receipt introduces unrelated evidence anchors")
+            return
+        permitted = permitted_session_removals(archive_root=self.archive_root, assertion_content=True)
+        if old is None or not permitted:
+            raise ReferenceSealError("content assertion effects require the bound excision owner")
+        parsed = _relevant_ref(str(old["target_ref"]))
+        resolved = None if parsed is None else _resolve_target(self._observers["index"], parsed)
+        if resolved is None or resolved.owner_session_id not in permitted:
+            raise ReferenceSealError("assertion content is outside the exact excision closure")
+        if resolved.scope_session_id is not None and resolved.scope_session_id not in permitted:
+            raise ReferenceSealError("assertion target belongs to a surviving composed session")
+        if new is None:
+            return
+        changed = {column for column in effect.columns if old[column] != new[column]}
+        if not str(old["assertion_id"]).startswith("marker-") or not changed.issubset(
+            {"target_ref", "value_json", "body_text", "evidence_refs_json", "status", "updated_at_ms"}
+        ):
+            raise ReferenceSealError("excision assertion update is not its exact marker tombstone")
+        if (
+            new["target_ref"] != f"assertion:{old['assertion_id']}"
+            or new["value_json"] != "{}"
+            or new["body_text"] is not None
+            or new["evidence_refs_json"] != "[]"
+            or new["status"] != "deleted"
+        ):
+            raise ReferenceSealError("marker tombstone retains undeclared content or target")
+
+    def _verify_user_effect_conservation(self) -> None:
+        assertion_count = int(
+            self._scratch.execute(
+                "SELECT count(*) FROM known_tier_effects WHERE tier='user' AND table_name='assertions'"
+            ).fetchone()[0]
+        )
+        frame_count = int(
+            self._scratch.execute(
+                "SELECT count(*) FROM known_tier_effects WHERE tier='user' AND table_name='query_unit_frame_state'"
+            ).fetchone()[0]
+        )
+        if assertion_count != frame_count:
+            raise ReferenceSealError("User effects omit an assertion frame trigger transition")
+
+    def _retire_user_fields(self, *, projected: bool) -> None:
+        """Retire only provenance physically removed by the accepted exact effects."""
+        field_column = "projected_retired" if projected else "retired"
+        rows = self._scratch.execute(
+            "SELECT e.old_blob,e.new_blob,t.columns_blob FROM known_tier_effects e "
+            "JOIN known_tier_effect_tables t USING(tier,table_name) WHERE e.tier='user' AND e.table_name='assertions'"
+        )
+        for old_blob, new_blob, columns_blob in rows:
+            if projected:
+                _check_reference_cancellation()
+            old_image = pickle.loads(old_blob)
+            if old_image is None:
+                continue
+            columns = pickle.loads(columns_blob)
+            old = dict(zip(columns, old_image, strict=True))
+            new_image = pickle.loads(new_blob)
+            if new_image is None:
+                self._scratch.execute(
+                    f"UPDATE reference_anchors SET {field_column}=1 WHERE tier='user' AND assertion_id=?",
+                    (old["assertion_id"],),
+                )
+                continue
+            new = dict(zip(columns, new_image, strict=True))
+            for provenance_field, column in (
+                ("target_ref", "target_ref"),
+                ("scope_ref", "scope_ref"),
+                ("author_ref", "author_ref"),
+                ("evidence_refs_json", "evidence_refs_json"),
+            ):
+                if old[column] != new[column]:
+                    self._scratch.execute(
+                        f"UPDATE reference_anchors SET {field_column}=1 WHERE tier='user' AND assertion_id=? AND field=?",
+                        (old["assertion_id"], provenance_field),
+                    )
+
+    def prepare_known_tier_mutation(
+        self,
+        table: str | None = None,
+        columns: tuple[str, ...] = (),
+        rows: tuple[tuple[object, ...], ...] = (),
+        *,
+        key_column: str | None = None,
+        tier: Literal["source", "user"],
+        effects: Iterable[KnownTierRowEffect] | None = None,
+    ) -> KnownTierMutationPermit:
+        """Retain complete OLD-to-NEW effects against this original observer."""
+        self._require_new_work()
+        if tier == "user" and effects is None:
+            raise ReferenceSealError("User effects require the exact removal effect witness")
+        if effects is None:
+            if table is None or key_column is None or not columns:
+                raise ReferenceSealError("prepared values require a declared table, columns and key")
+            effects = self._updated_row_effects(tier, table, columns, rows, key_column)
+        elif table is not None or columns or rows or key_column is not None:
+            raise ReferenceSealError("complete row effects cannot also declare partial prepared values")
+        identity = self._tier_identity_for_known_mutation(tier)
+        if tier in self._pending_tier_permits:
+            raise ReferenceSealError("this original seal already has a pending known tier mutation")
+        self._scratch.executescript(
+            "CREATE TABLE IF NOT EXISTS known_tier_effect_tables("
+            "tier TEXT NOT NULL, table_name TEXT NOT NULL, columns_blob BLOB NOT NULL, keys_blob BLOB NOT NULL, "
+            "PRIMARY KEY(tier,table_name)) WITHOUT ROWID;"
+            "CREATE TABLE IF NOT EXISTS known_tier_effects("
+            "effect_id INTEGER PRIMARY KEY, tier TEXT NOT NULL, table_name TEXT NOT NULL, key_blob BLOB NOT NULL, "
+            "old_blob BLOB NOT NULL, new_blob BLOB NOT NULL, consumed INTEGER NOT NULL DEFAULT 0);"
+            "CREATE INDEX IF NOT EXISTS known_tier_effect_key ON known_tier_effects(tier,table_name,key_blob,effect_id);"
+        )
+        self._scratch.execute("SAVEPOINT prepare_known_tier_effects")
+        try:
+            if tier == "user":
+                self._scratch.execute("UPDATE reference_anchors SET projected_retired=0 WHERE tier='user'")
+            self._scratch.execute("DELETE FROM known_tier_effects WHERE tier=?", (tier,))
+            self._scratch.execute("DELETE FROM known_tier_effect_tables WHERE tier=?", (tier,))
+            for effect in effects:
+                _check_reference_cancellation()
+                canonical, keys = self._known_tier_table_shape(tier, effect.table)
+                if effect.columns != canonical or (effect.old is None and effect.new is None):
+                    raise ReferenceSealError("row effect does not carry the canonical complete table image")
+                for image in (effect.old, effect.new):
+                    if image is not None and len(image) != len(canonical):
+                        raise ReferenceSealError("row effect omits canonical columns")
+                if tier == "user":
+                    self._validate_user_row_effect(effect)
+                image = effect.new if effect.new is not None else effect.old
+                assert image is not None
+                key = tuple(image[position] for position in keys)
+                if effect.old is not None and tuple(effect.old[position] for position in keys) != key:
+                    raise ReferenceSealError("known row effects cannot change their durable primary key")
+                key_blob = pickle.dumps(key, protocol=5)
+                prior = self._scratch.execute(
+                    "SELECT new_blob FROM known_tier_effects WHERE tier=? AND table_name = ? AND key_blob = ? ORDER BY effect_id DESC LIMIT 1",
+                    (tier, effect.table, key_blob),
+                ).fetchone()
+                old = (
+                    self._known_tier_row(self._observers[tier], effect.table, canonical, keys, key)
+                    if prior is None
+                    else pickle.loads(prior[0])
+                )
+                if old != effect.old:
+                    raise ReferenceSealStaleError(
+                        "declared OLD row differs from the original observer or prior exact effect"
+                    )
+                self._scratch.execute(
+                    "INSERT OR IGNORE INTO known_tier_effect_tables VALUES (?, ?, ?, ?)",
+                    (tier, effect.table, pickle.dumps(canonical, protocol=5), pickle.dumps(keys, protocol=5)),
+                )
+                self._scratch.execute(
+                    "INSERT INTO known_tier_effects(tier,table_name,key_blob,old_blob,new_blob) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        tier,
+                        effect.table,
+                        key_blob,
+                        pickle.dumps(effect.old, protocol=5),
+                        pickle.dumps(effect.new, protocol=5),
+                    ),
+                )
+            self._verify_implicit_sequence_effects(tier)
+            if tier == "user":
+                self._verify_user_effect_conservation()
+                self._retire_user_fields(projected=True)
+            self.validate_observers_current()
+            self._scratch.commit()
+        except BaseException as primary:
+            # A failed or cancelled projection has no pending permit. Restore
+            # this tier without retiring fields or disturbing its sibling.
+            self._scratch.set_progress_handler(None, 0)
+            try:
+                self._scratch.execute("ROLLBACK TO prepare_known_tier_effects")
+                self._scratch.execute("RELEASE prepare_known_tier_effects")
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "Tier preparation and witness rollback failed", [primary, cleanup]
+                ) from primary
+            finally:
+                self._scratch.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
+            raise
         permit = KnownTierMutationPermit(
             self,
-            source_identity,
-            self._versions["source"],
-            table,
+            identity,
+            self._versions[tier],
+            table or "",
             columns,
             rows,
             self._tier_mutation_nonce,
-            key_column,
+            key_column or "",
             tier,
         )
-        self._scratch.execute(
-            "CREATE TABLE IF NOT EXISTS known_tier_mutation_rows(row_key TEXT PRIMARY KEY, values_blob BLOB NOT NULL) WITHOUT ROWID"
-        )
-        self._scratch.execute("DELETE FROM known_tier_mutation_rows")
-        self._scratch.executemany(
-            "INSERT INTO known_tier_mutation_rows VALUES (?, ?)",
-            ((row[-1], pickle.dumps(row[:-1], protocol=5)) for row in rows),
-        )
-        self._scratch.commit()
-        self._pending_tier_permit = permit
+        self._pending_tier_permits[tier] = permit
         return permit
+
+    def _tier_identity_for_known_mutation(self, tier: str) -> tuple[int, int, int, int]:
+        self.validate_observers_current()
+        identity = self._observer_identity(tier)
+        if identity != self._identities[tier]:
+            raise ReferenceSealStaleError(f"{tier}.db changed before exact tier preparation")
+        return identity
+
+    def _verify_implicit_sequence_effects(self, tier: str) -> None:
+        """Every admitted AUTOINCREMENT insertion carries its internal effect."""
+        tables = self._scratch.execute(
+            "SELECT table_name,keys_blob FROM known_tier_effect_tables WHERE tier=? AND table_name!='sqlite_sequence'",
+            (tier,),
+        )
+        observer = self._observers[tier]
+        for table, key_blob in tables:
+            _check_reference_cancellation()
+            schema = observer.execute(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if schema is None or "AUTOINCREMENT" not in str(schema[0]).upper():
+                continue
+            original = observer.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (table,)).fetchone()
+            sequence = 0 if original is None else int(original[0])
+            inserts = self._scratch.execute(
+                "SELECT new_blob FROM known_tier_effects WHERE tier=? AND table_name=? AND old_blob=?",
+                (tier, table, pickle.dumps(None, protocol=5)),
+            )
+            inserted = False
+            for (image_blob,) in inserts:
+                _check_reference_cancellation()
+                image = pickle.loads(image_blob)
+                if image is not None:
+                    inserted = True
+                    sequence = max(sequence, int(image[pickle.loads(key_blob)[0]]))
+            if not inserted:
+                continue
+            declared = self._scratch.execute(
+                "SELECT new_blob FROM known_tier_effects WHERE tier=? AND table_name='sqlite_sequence' AND key_blob=? "
+                "ORDER BY effect_id DESC LIMIT 1",
+                (tier, pickle.dumps((table,), protocol=5)),
+            ).fetchone()
+            if declared is None or pickle.loads(declared[0]) != (table, sequence):
+                raise ReferenceSealError("AUTOINCREMENT insertion omits its exact internal sequence effect")
+
+    def _verify_known_tier_postimage(self, connection: sqlite3.Connection, tier: str) -> None:
+        rows = self._scratch.execute(
+            "SELECT e.table_name,e.key_blob,e.new_blob,t.columns_blob,t.keys_blob "
+            "FROM known_tier_effects e JOIN known_tier_effect_tables t USING(tier,table_name) "
+            "WHERE e.tier=? AND NOT EXISTS(SELECT 1 FROM known_tier_effects later "
+            "WHERE later.tier=e.tier AND later.table_name=e.table_name AND later.key_blob=e.key_blob AND later.effect_id>e.effect_id)",
+            (tier,),
+        )
+        for table, key, expected, columns, keys in rows:
+            actual = self._known_tier_row(
+                connection, table, pickle.loads(columns), pickle.loads(keys), pickle.loads(key)
+            )
+            if actual != pickle.loads(expected):
+                raise ReferenceSealStaleError("tier post-image differs from its complete declared row effects")
 
     def _record_known_tier_commit(self, permit: KnownTierMutationPermit) -> KnownTierMutationReceipt:
         self._require_live_owner()
-        if permit is not self._pending_tier_permit or permit._seal_nonce is not self._tier_mutation_nonce:
-            raise ReferenceSealError("Source writer used a permit outside its prepared seal")
-        if self._pending_tier_receipt is not None:
-            raise ReferenceSealError("known Source mutation permit was already committed")
+        if (
+            permit is not self._pending_tier_permits.get(permit._tier)
+            or permit._seal_nonce is not self._tier_mutation_nonce
+        ):
+            raise ReferenceSealError("Tier writer used a permit outside its prepared seal")
+        if permit._tier in self._pending_tier_receipts:
+            raise ReferenceSealError("known tier mutation permit was already committed")
         if (
             permit._custody is None
             or current_sql_custody() is not permit._custody
@@ -1279,10 +1744,10 @@ class PreparedIndexMutation:
             or not permit._commit_attempted
             or permit._failure is not None
         ):
-            raise ReferenceSealError("Source receipt requires its actual completed dedicated transaction")
+            raise ReferenceSealError("Tier receipt requires its actual completed dedicated transaction")
         receipt = KnownTierMutationReceipt(
             self,
-            permit._source_identity,
+            permit._tier_identity,
             permit._prior_data_version,
             permit._table,
             permit._columns,
@@ -1292,76 +1757,91 @@ class PreparedIndexMutation:
             permit._effects,
             permit._tier,
         )
-        self._pending_tier_receipt = receipt
+        self._pending_tier_receipts[permit._tier] = receipt
         return receipt
 
     def accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
-        """Settle an already committed Source receipt even after cancellation."""
+        """Settle an already committed tier receipt even after cancellation."""
         self._require_live_owner()
-        observer = self._observers["source"]
-        observer.set_progress_handler(None, 0)
+        permit = self._pending_tier_permits.get(receipt._tier)
+        if permit is None or receipt is not self._pending_tier_receipts.get(receipt._tier):
+            raise ReferenceSealError("tier acceptance requires its original pending receipt")
+        # Settlement reads both selected effect evidence and every original
+        # observer. Cancellation must not interrupt any of those handles after
+        # the durable producer has already committed.
+        settlement_connections = (*self._observers.values(), self._scratch)
+        for connection in settlement_connections:
+            connection.set_progress_handler(None, 0)
         try:
-            self._accept_known_tier_commit(receipt)
+            with permit.acceptance_reservation():
+                self._accept_known_tier_commit(receipt)
         finally:
-            observer.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
+            for connection in settlement_connections:
+                connection.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
 
     def _accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
         if (
             receipt._seal is not self
-            or receipt is not self._pending_tier_receipt
+            or receipt is not self._pending_tier_receipts.get(receipt._tier)
             or receipt._seal_nonce is not self._tier_mutation_nonce
-            or receipt._source_identity != self._identities["source"]
-            or receipt._prior_data_version != self._versions["source"]
+            or receipt._tier_identity != self._identities[receipt._tier]
+            or receipt._prior_data_version != self._versions[receipt._tier]
         ):
-            raise ReferenceSealError("Source commit receipt does not belong to this prepared seal")
+            raise ReferenceSealError("Tier commit receipt does not belong to this prepared seal")
         self._assert_configured_namespace()
-        identity_before = _tier_identity(self._paths["source"])
-        if not _same_incarnation(identity_before, receipt._source_identity):
-            raise ReferenceSealStaleError("source.db incarnation changed during the prepared source publication")
-        observer = self._observers["source"]
+        identity_before = _tier_identity(self._paths[receipt._tier])
+        if not _same_incarnation(identity_before, receipt._tier_identity):
+            raise ReferenceSealStaleError("durable tier incarnation changed during the prepared publication")
+        observer = self._observers[receipt._tier]
         if observer.in_transaction:
-            raise ReferenceSealError("cannot advance Source authority while its observer has a read transaction")
-        permit = self._pending_tier_permit
+            raise ReferenceSealError("cannot advance tier authority while its observer has a read transaction")
+        permit = self._pending_tier_permits.get(receipt._tier)
         if (
             permit is None
             or permit._custody is None
             or current_sql_custody() is not permit._custody
             or permit._custody.known_tier_authority is not permit
         ):
-            raise ReferenceSealError("Source acceptance lost its exact physical mutation authority")
-        for tier in ("index", "user", "audit"):
+            raise ReferenceSealError("Tier acceptance lost its exact physical mutation authority")
+        for tier in self._observers:
+            if tier == receipt._tier:
+                continue
             if (
                 self._observer_identity(tier) != self._identities[tier]
                 or int(self._observers[tier].execute("PRAGMA data_version").fetchone()[0]) != self._versions[tier]
             ):
-                raise ReferenceSealStaleError(f"{tier}.db changed during known Source publication")
+                raise ReferenceSealStaleError(f"{tier}.db changed during known tier publication")
         version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
         if receipt._effect_count == 0 and version_before != receipt._prior_data_version:
-            raise ReferenceSealStaleError("a no-op Source transaction cannot absorb another mutation")
+            raise ReferenceSealStaleError("a no-op tier transaction cannot absorb another mutation")
         if receipt._effect_count and version_before == receipt._prior_data_version:
-            raise ReferenceSealStaleError("Source effects did not reach an actual committed transaction")
-        columns_sql = ", ".join(receipt._columns)
-        for expected in receipt._rows:
-            expected_values, row_key = expected[:-1], expected[-1]
-            actual = observer.execute(
-                f"SELECT {columns_sql} FROM {receipt._table} WHERE {receipt._key_column} = ?", (row_key,)
-            ).fetchone()
-            if actual is None or tuple(actual) != expected_values:
-                raise ReferenceSealStaleError("committed Source rows differ from the exact prepared mutation")
+            raise ReferenceSealStaleError("Tier effects did not reach an actual committed transaction")
+        self._verify_known_tier_postimage(observer, receipt._tier)
         self._assert_configured_namespace()
-        identity_after = _tier_identity(self._paths["source"])
+        identity_after = _tier_identity(self._paths[receipt._tier])
         version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
         if not _same_incarnation(identity_before, identity_after) or version_after != version_before:
-            raise ReferenceSealStaleError("source.db changed while the exact committed rows were being verified")
+            raise ReferenceSealStaleError("durable tier changed while the exact committed rows were being verified")
         # This is the sole baseline advance: a one-shot receipt from the
         # declared update path, with exact rows reread through this observer
         # between stable incarnation and data_version checks.
-        self._identities["source"] = identity_after
-        self._versions["source"] = version_after
-        self._pending_tier_permit = None
-        self._pending_tier_receipt = None
+        if receipt._tier == "user":
+            self._retire_user_fields(projected=False)
+        self._identities[receipt._tier] = identity_after
+        self._versions[receipt._tier] = version_after
+        self._pending_tier_permits.pop(receipt._tier)
+        self._pending_tier_receipts.pop(receipt._tier)
 
     def validate_reachability(self, conn: sqlite3.Connection) -> None:
+        self._validate_reachability(conn, projected_user_effects=False)
+
+    def preflight_reachability(self, conn: sqlite3.Connection) -> None:
+        """Compare staged Index against only this bound User effect projection."""
+        if "user" not in self._pending_tier_permits:
+            raise ReferenceSealError("projected User preflight requires its original exact pending effects")
+        self._validate_reachability(conn, projected_user_effects=True)
+
+    def _validate_reachability(self, conn: sqlite3.Connection, *, projected_user_effects: bool) -> None:
         self._require_new_work()
         if not _same_incarnation(self._writer_identity(conn), self.index_identity):
             raise ReferenceSealStaleError("reference seal settled on a different index incarnation")
@@ -1384,7 +1864,15 @@ class PreparedIndexMutation:
                 str(row[6]),
                 bool(row[7]),
             )
-            if not _still_resolves(conn, ref) and not self._intentional_absence(conn, ref):
+            if not self._scratch.execute(
+                "SELECT 1 FROM reference_anchors WHERE wire_ref=? AND retired=0 "
+                "AND (?=0 OR projected_retired=0) LIMIT 1",
+                (ref.wire_ref, int(projected_user_effects)),
+            ).fetchone():
+                continue
+            if not _still_resolves(conn, ref) and not self._intentional_absence(
+                conn, ref, projected_user_effects=projected_user_effects
+            ):
                 lost_count += 1
                 if first is None:
                     first = ref
@@ -1410,6 +1898,14 @@ class PreparedIndexMutation:
             or _current_task() is not self.index_task
         ):
             raise ReferenceSealError("reference seal must be used by its observing index owner")
+
+    def _retain_mutation_custody(self, custody: ArchiveWriteCustody) -> None:
+        self._require_new_work()
+        if self._mutation_custody is not None and self._mutation_custody is not custody:
+            raise ReferenceSealError("original tier mutation witness cannot borrow another physical custody")
+        if self._mutation_custody is None:
+            custody.retain_sql_owner(self)
+            self._mutation_custody = custody
 
     def retain_publication_lifetime(self, exclusion: ActiveWriterLease, close_payload: Callable[[], None]) -> None:
         """Keep this publication's rebuild exclusion through physical cleanup."""
@@ -1463,7 +1959,21 @@ class PreparedIndexMutation:
         for name, leaf in tuple(self._observer_leaves.items()):
             if name not in self._observers and settle(leaf.close):
                 self._observer_leaves.pop(name, None)
-        if self._owned_scratch_connection is not None:
+        for owner in native_sql_children(self):
+            if (
+                not owner._settled
+                and owner._connection_identity not in attempted_connections
+                and owner.connection is not self._owned_scratch_connection
+            ):
+                attempted_connections.add(owner._connection_identity)
+                settle(owner.close)
+        dependents_settled = all(
+            owner._settled
+            or owner.connection is self._owned_scratch_connection
+            or any(owner.connection is observer for observer in self._observers.values())
+            for owner in native_sql_children(self)
+        )
+        if dependents_settled and self._owned_scratch_connection is not None:
             scratch = self._owned_scratch_connection
             attempted_connections.add(id(scratch))
             if settle(lambda: self._close_native_connection(scratch)):
@@ -1472,11 +1982,8 @@ class PreparedIndexMutation:
             directory = self._scratch_directory
             if settle(directory.cleanup):
                 self._scratch_directory = None
-        from polylogue.storage.sqlite.connection_profile import native_sql_children, retire_native_sql_parent
+        from polylogue.storage.sqlite.connection_profile import retire_native_sql_parent
 
-        for owner in native_sql_children(self):
-            if not owner._settled and owner._connection_identity not in attempted_connections:
-                settle(owner.close)
         sql_settled = (
             not self._observers
             and not self._observer_leaves
@@ -1484,11 +1991,25 @@ class PreparedIndexMutation:
             and self._scratch_directory is None
             and all(owner._settled for owner in native_sql_children(self))
         )
-        if sql_settled and self._publication_payload_cleanup is None and self._publication_exclusion is not None:
+        if sql_settled and self._publication_payload_cleanup is None and self._mutation_custody is not None:
+            custody = self._mutation_custody
+            if settle(lambda: custody.release_sql_owner(self)):
+                self._mutation_custody = None
+        if (
+            sql_settled
+            and self._mutation_custody is None
+            and self._publication_payload_cleanup is None
+            and self._publication_exclusion is not None
+        ):
             exclusion = self._publication_exclusion
             if settle(exclusion.close) or not exclusion.held:
                 self._publication_exclusion = None
-        self._closed = sql_settled and self._publication_payload_cleanup is None and self._publication_exclusion is None
+        self._closed = (
+            sql_settled
+            and self._mutation_custody is None
+            and self._publication_payload_cleanup is None
+            and self._publication_exclusion is None
+        )
         if self._closed:
             retire_native_sql_parent(self)
             with _LIVE_SEALS_LOCK:
@@ -1770,6 +2291,12 @@ class IndexMutationScope:
             )
             if not matches:
                 raise ReferenceSealStaleError("Index transaction destination changed")
+
+    def preflight_reachability(self) -> None:
+        self.require_new_work(self.conn)
+        if self.seal is None:
+            raise ReferenceSealError("durable removal preflight requires the original reference witness")
+        self.seal.preflight_reachability(self.conn)
 
     def commit(self) -> None:
         self.require_connection(self.conn)

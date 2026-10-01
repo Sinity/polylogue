@@ -1247,7 +1247,7 @@ async def test_bound_removal_permission_stays_with_actual_apply_task_and_thread(
         assert await coordinator.shutdown()
 
 
-@pytest.mark.parametrize("commit_route", ["explicit", "native_context"])
+@pytest.mark.parametrize("commit_route", ["explicit", "native_context", "cancelled_after_commit"])
 def test_known_source_receipt_accepts_only_its_declared_native_commit(tmp_path: Path, commit_route: str) -> None:
     from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
@@ -1273,7 +1273,23 @@ def test_known_source_receipt_accepts_only_its_declared_native_commit(tmp_path: 
                     source.execute("UPDATE authority_control SET value = 'accepted' WHERE key = 'selected'")
                     permit.allow_commit(source)
                     source.commit()
-                seal.accept_known_tier_commit(permit.committed())
+                if commit_route == "cancelled_after_commit":
+                    import threading
+
+                    from polylogue.core.compute_cancel import compute_cancel
+
+                    cancelled = threading.Event()
+                    token = compute_cancel.set(cancelled)
+                    try:
+                        for observer in (*seal._observers.values(), seal._scratch):
+                            observer.set_progress_handler(lambda: int(cancelled.is_set()), 1)
+                        cancelled.set()
+                        seal.accept_known_tier_commit(permit.committed())
+                    finally:
+                        cancelled.clear()
+                        compute_cancel.reset(token)
+                else:
+                    seal.accept_known_tier_commit(permit.committed())
             seal.validate_observers_current()
             assert seal.observer("source").execute("SELECT value FROM authority_control").fetchone()[0] == "accepted"
 
@@ -1322,8 +1338,9 @@ def test_known_source_exact_row_guard_survives_factory_profile_setup(tmp_path: P
             with permit.hold_authority():
                 with pytest.raises(ReferenceSealError):
                     with permit.mutation_connection() as source:
-                        with pytest.raises(sqlite3.DatabaseError):
-                            source.execute("PRAGMA temp_store=DEFAULT")
+                        for setting in ("temp_store=DEFAULT", "foreign_keys=OFF", "synchronous=OFF"):
+                            with pytest.raises(sqlite3.DatabaseError):
+                                source.execute(f"PRAGMA {setting}")
                         source.execute("BEGIN IMMEDIATE")
                         sql = "UPDATE authority_control SET value = ? WHERE key = ?"
                         if route == "custom_cursor":
@@ -1339,3 +1356,334 @@ def test_known_source_exact_row_guard_survives_factory_profile_setup(tmp_path: P
                     .fetchone()[0]
                     == "retained"
                 )
+
+
+def test_known_source_partial_upsert_preserves_undeclared_columns(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.source-partial-upsert", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute(
+                "CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT, retained TEXT DEFAULT 'default')"
+            )
+            setup.execute("INSERT INTO authority_control VALUES ('selected', 'original', 'preserved')")
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+            )
+            with permit.hold_authority(), permit.mutation_connection() as source:
+                source.execute("BEGIN IMMEDIATE")
+                source.execute(
+                    "INSERT INTO authority_control (key,value) VALUES ('selected','accepted') "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+                )
+                permit.allow_commit(source)
+                source.commit()
+                seal.accept_known_tier_commit(permit.committed())
+            assert tuple(seal.observer("source").execute("SELECT * FROM authority_control").fetchone()) == (
+                "selected",
+                "accepted",
+                "preserved",
+            )
+
+
+@pytest.mark.parametrize("boundary", ["before_begin", "commit_gap"])
+def test_known_source_refuses_foreign_unrelated_commit(tmp_path: Path, boundary: str) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+
+    with write_lease("test.source-foreign-commit", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+            setup.executemany(
+                "INSERT INTO authority_control VALUES (?,?)", [("selected", "original"), ("other", "retained")]
+            )
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+            )
+            original_version = seal.observer_version("source")
+            with permit.hold_authority(), permit.mutation_connection() as source:
+                with closing(sqlite3.connect(tmp_path / "source.db")) as foreign:
+                    if boundary == "before_begin":
+                        foreign.execute("UPDATE authority_control SET value='foreign' WHERE key='other'")
+                        foreign.commit()
+                    source.execute("BEGIN IMMEDIATE")
+                    source.execute("UPDATE authority_control SET value='accepted' WHERE key='selected'")
+                    if boundary == "before_begin":
+                        with pytest.raises(ReferenceSealStaleError):
+                            permit.allow_commit(source)
+                        source.rollback()
+                    else:
+                        permit.allow_commit(source)
+                        source.commit()
+                        receipt = permit.committed()
+                        foreign.execute("UPDATE authority_control SET value='foreign' WHERE key='other'")
+                        foreign.commit()
+                        with pytest.raises(ReferenceSealStaleError):
+                            seal.accept_known_tier_commit(receipt)
+                    assert seal.observer_version("source") == original_version
+                    assert not source.in_transaction
+
+
+def test_known_source_reserves_tier_during_original_observer_advancement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.source-acceptance-reservation", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+            setup.execute("INSERT INTO authority_control VALUES ('selected','original')")
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+            )
+            original_verify = seal._verify_known_tier_postimage
+            attempted = False
+            with closing(sqlite3.connect(tmp_path / "source.db", timeout=0)) as foreign:
+
+                def verify_reserved(connection: sqlite3.Connection, tier: str) -> None:
+                    nonlocal attempted
+                    if connection is seal.observer("source"):
+                        attempted = True
+                        with pytest.raises(sqlite3.OperationalError) as refusal:
+                            foreign.execute("UPDATE authority_control SET value='foreign' WHERE key='selected'")
+                        assert refusal.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+                        foreign.rollback()
+                    original_verify(connection, tier)
+
+                monkeypatch.setattr(seal, "_verify_known_tier_postimage", verify_reserved)
+                with permit.hold_authority(), permit.mutation_connection() as source:
+                    source.execute("BEGIN IMMEDIATE")
+                    source.execute("UPDATE authority_control SET value='accepted' WHERE key='selected'")
+                    permit.allow_commit(source)
+                    source.commit()
+                    seal.accept_known_tier_commit(permit.committed())
+                    assert not source.in_transaction
+            assert attempted
+            seal.validate_observers_current()
+
+
+@pytest.mark.parametrize("include_cascade", [True, False])
+def test_known_source_guards_declared_foreign_key_trigger_and_sequence_effects(
+    tmp_path: Path, include_cascade: bool
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import KnownTierRowEffect, PreparedIndexMutation
+
+    with write_lease("test.source-cascade-effects", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.executescript(
+                "CREATE TABLE authority_parent (key TEXT PRIMARY KEY);"
+                "CREATE TABLE authority_child (key TEXT PRIMARY KEY, parent TEXT REFERENCES authority_parent(key) ON DELETE CASCADE);"
+                "CREATE TABLE authority_log (sequence INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT);"
+                "CREATE TRIGGER authority_delete AFTER DELETE ON authority_parent BEGIN "
+                "INSERT INTO authority_log(key) VALUES (OLD.key); END;"
+                "INSERT INTO authority_parent VALUES ('selected');"
+                "INSERT INTO authority_child VALUES ('child','selected');"
+            )
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            effects = [
+                KnownTierRowEffect("authority_parent", ("key",), ("selected",), None),
+                KnownTierRowEffect("authority_log", ("sequence", "key"), None, (1, "selected")),
+                KnownTierRowEffect("sqlite_sequence", ("name", "seq"), None, ("authority_log", 1)),
+            ]
+            if include_cascade:
+                effects.append(KnownTierRowEffect("authority_child", ("key", "parent"), ("child", "selected"), None))
+            permit = seal.prepare_known_tier_mutation(tier="source", effects=effects)
+            with permit.hold_authority():
+                if include_cascade:
+                    with permit.mutation_connection() as source:
+                        source.execute("BEGIN IMMEDIATE")
+                        source.execute("DELETE FROM authority_parent WHERE key='selected'")
+                        permit.allow_commit(source)
+                        source.commit()
+                        seal.accept_known_tier_commit(permit.committed())
+                    assert seal.observer("source").execute("SELECT * FROM authority_child").fetchone() is None
+                    assert tuple(seal.observer("source").execute("SELECT * FROM authority_log").fetchone()) == (
+                        1,
+                        "selected",
+                    )
+                else:
+                    with pytest.raises(sqlite3.DatabaseError):
+                        with permit.mutation_connection() as source:
+                            source.execute("BEGIN IMMEDIATE")
+                            source.execute("DELETE FROM authority_parent WHERE key='selected'")
+                    assert seal.observer("source").execute("SELECT * FROM authority_parent").fetchone() is not None
+                    assert seal.observer("source").execute("SELECT * FROM authority_log").fetchone() is None
+
+
+def test_native_settlement_callbacks_wait_for_actual_close_and_retry_once() -> None:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    connection = sqlite3.connect(":memory:", factory=ControlledConnection)
+    owner = NativeSQLCustodyOwner(connection)
+    completions: list[str] = []
+    callback_fails = True
+
+    def final_callback() -> None:
+        if callback_fails:
+            raise ValueError("synthetic receipt completion fault")
+        completions.append("final")
+
+    owner.retain_settlement_callback(lambda: completions.append("first"))
+    owner.retain_settlement_callback(final_callback)
+    try:
+        connection.close_failure = OSError("synthetic native close fault")
+        with pytest.raises(NativeConnectionSettlementError):
+            owner.close()
+        assert completions == [] and not owner._settled
+        connection.close_failure = None
+        with pytest.raises(NativeConnectionSettlementError):
+            owner.close()
+        assert completions == ["first"] and owner.connection is None and not owner._settled
+        callback_fails = False
+        owner.close()
+        assert completions == ["first", "final"] and owner._settled
+        owner.close()
+        assert completions == ["first", "final"]
+    finally:
+        connection.close_failure = None
+        callback_fails = False
+        owner.close()
+
+
+def test_archive_settlement_callback_waits_for_all_original_read_children(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.archive-callback-bootstrap", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+    archive = ArchiveStore.open_existing(tmp_path, read_only=True)
+    completions: list[str] = []
+    archive.retain_settlement_callback(lambda: completions.append("complete"))
+    reader = archive._open_read_connection(tmp_path / "user.db")
+    cursor = reader.cursor(factory=ControlledCursor)
+    cursor.execute("SELECT 1 UNION ALL SELECT 2")
+    next(cursor)
+    cursor.allow_cleanup.clear()
+    try:
+        with pytest.raises(ArchiveStoreSettlementError):
+            archive.close()
+        assert completions == [] and archive._owned_index_connection is None
+        cursor.allow_cleanup.set()
+        archive.close()
+        assert completions == ["complete"]
+        archive.close()
+        assert completions == ["complete"]
+    finally:
+        cursor.allow_cleanup.set()
+        archive.close()
+
+
+@pytest.mark.parametrize("surviving_anchor", [False, True])
+def test_original_excision_projection_survives_source_commit_and_protects_other_rows(
+    tmp_path: Path, surviving_anchor: bool
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import stage_index_session_deletions
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import KnownTierRowEffect, PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import authorized_session_removal
+
+    with write_lease("test.original-excision-projection", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            target = write_index_session(archive, reference_session("projected-target"))
+            survivor = write_index_session(archive, reference_session("projected-survivor"))
+            archive.commit()
+        with closing(open_connection(tmp_path / "user.db", archive_root=tmp_path)) as user:
+            upsert_assertion(
+                user, assertion_id="removable", target_ref=f"session:{target}", kind=AssertionKind.ANNOTATION, now_ms=1
+            )
+            upsert_assertion(
+                user,
+                assertion_id="request-history",
+                target_ref=f"session:{target}",
+                kind=AssertionKind.EXCISION_REQUEST,
+                now_ms=1,
+            )
+            if surviving_anchor:
+                upsert_assertion(
+                    user,
+                    assertion_id="retained",
+                    target_ref=f"session:{survivor}",
+                    kind=AssertionKind.ANNOTATION,
+                    scope_ref=f"session:{target}",
+                    evidence_refs=(f"session:{target}",),
+                    now_ms=1,
+                )
+            user.commit()
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+            setup.execute("INSERT INTO authority_control VALUES ('selected','original')")
+            setup.commit()
+        with (
+            authorized_session_removal(
+                archive_root=tmp_path, plan_hash="exact-projection", session_ids=(target,), excise_assertions=True
+            ),
+            PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal,
+            closing(open_connection(tmp_path / "index.db", archive_root=tmp_path)) as index,
+        ):
+            user = seal.observer("user")
+            columns = tuple(str(row[1]) for row in user.execute("PRAGMA table_info(assertions)"))
+            old = tuple(user.execute("SELECT * FROM assertions WHERE assertion_id='removable'").fetchone())
+            frame = tuple(user.execute("SELECT * FROM query_unit_frame_state").fetchone())
+            user_permit = seal.prepare_known_tier_mutation(
+                tier="user",
+                effects=(
+                    KnownTierRowEffect("assertions", columns, old, None),
+                    KnownTierRowEffect("query_unit_frame_state", ("singleton", "epoch"), frame, (1, int(frame[1]) + 1)),
+                ),
+            )
+            source_permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+            )
+
+            def apply_staged() -> None:
+                with seal.mutation_scope(index) as scope:
+                    scope.authorize_session_removal((target,))
+                    assert stage_index_session_deletions(index, scope, (target,)) == (target,)
+                    # Projected removal never changes the verified live proof.
+                    with pytest.raises(ReferenceSealError):
+                        scope.validate_reachability(index)
+                    scope.preflight_reachability()
+                    with source_permit.hold_authority(), source_permit.mutation_connection() as source:
+                        source.execute("BEGIN IMMEDIATE")
+                        source.execute("UPDATE authority_control SET value='accepted' WHERE key='selected'")
+                        source_permit.allow_commit(source)
+                        source.commit()
+                        seal.accept_known_tier_commit(source_permit.committed())
+                    with user_permit.hold_authority(), user_permit.mutation_connection() as writer:
+                        assert writer.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+                        with pytest.raises(sqlite3.DatabaseError):
+                            writer.execute("PRAGMA foreign_keys=OFF")
+                        writer.execute("BEGIN IMMEDIATE")
+                        writer.execute("DELETE FROM assertions WHERE assertion_id='removable'")
+                        user_permit.allow_commit(writer)
+                        writer.commit()
+                        seal.accept_known_tier_commit(user_permit.committed())
+
+            if surviving_anchor:
+                with pytest.raises(ReferenceSealError):
+                    apply_staged()
+                assert index.execute("SELECT 1 FROM sessions WHERE session_id=?", (target,)).fetchone()
+                assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='removable'").fetchone()
+                assert (
+                    seal.observer("source").execute("SELECT value FROM authority_control").fetchone()[0] == "original"
+                )
+            else:
+                apply_staged()
+                assert index.execute("SELECT 1 FROM sessions WHERE session_id=?", (target,)).fetchone() is None
+                assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='removable'").fetchone() is None
+                assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='request-history'").fetchone()

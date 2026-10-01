@@ -28,7 +28,7 @@ import tempfile
 import threading
 import time
 from builtins import BaseExceptionGroup
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -270,6 +270,7 @@ class NativeSQLCustodyOwner:
         self.scratch_directory = scratch_directory
         self._connection_identity = id(connection)
         self._lifetime_dependencies: list[object] = list(lifetime_dependencies)
+        self._settlement_callbacks: list[Callable[[], None]] = []
         self.leaf = leaf
         self.cache_entry = cache_entry
         self.anchored_descriptors = anchored_descriptors
@@ -352,7 +353,12 @@ class NativeSQLCustodyOwner:
         self._require_owner()
         if self.close_required or self._parent_cleanup_requested:
             raise RuntimeError("native SQLite connection requires terminal cleanup")
-        if self._terminal_parent is not None or self.scratch_directory is not None or self._lifetime_dependencies:
+        if (
+            self._terminal_parent is not None
+            or self.scratch_directory is not None
+            or self._lifetime_dependencies
+            or self._settlement_callbacks
+        ):
             raise RuntimeError("native SQLite handle with terminal obligations cannot be handed off")
         connection = self.connection
         if connection is None:
@@ -402,6 +408,13 @@ class NativeSQLCustodyOwner:
             raise RuntimeError("a settled native owner cannot retain an artifact")
         with _LIVE_NATIVE_SQL_OWNERS_LOCK:
             self._lifetime_dependencies.append(dependency)
+
+    def retain_settlement_callback(self, callback: Callable[[], None]) -> None:
+        """Notify this actual handle's successful creator-owned settlement."""
+        self._require_owner()
+        if self._settled or self.close_required or self._parent_cleanup_requested:
+            raise RuntimeError("settlement callback requires its existing live native owner")
+        self._settlement_callbacks.append(callback)
 
     def retire_terminal_parent(self, parent: SQLCustodyOwner) -> None:
         """Retire only after the actual handle and its parent's obligations settle."""
@@ -508,14 +521,23 @@ class NativeSQLCustodyOwner:
             else:
                 self.scratch_directory = None
         resources_settled = self.leaf is None and self.scratch_directory is None and not self.anchored_descriptors
-        if resources_settled and self.custody is not None:
+        if resources_settled and not failures:
+            for callback in tuple(self._settlement_callbacks):
+                try:
+                    callback()
+                except BaseException as error:
+                    failures.append(error)
+                else:
+                    self._settlement_callbacks.remove(callback)
+        callbacks_settled = not self._settlement_callbacks
+        if resources_settled and callbacks_settled and self.custody is not None:
             try:
                 self.custody.release_sql_owner(self)
             except BaseException as error:
                 failures.append(error)
             else:
                 self.custody = None
-        self._settled = resources_settled and self.custody is None
+        self._settled = resources_settled and callbacks_settled and self.custody is None
         if self._settled and self._terminal_parent is None:
             with _LIVE_NATIVE_SQL_OWNERS_LOCK:
                 _LIVE_NATIVE_SQL_OWNERS.pop(id(self), None)
@@ -1146,21 +1168,24 @@ def _connect_archive_writer(
     selected = Path(path)
     root = configured_archive_root(path, archive_root)
     is_source = selected.resolve() == (root / "source.db").resolve()
-    if mutation_permit is not None and not is_source:
-        raise UnleasedWriteError("known Source permit cannot authorize another tier")
+    is_user = selected.resolve() == (root / "user.db").resolve()
+    selected_tier = "source" if is_source else "user" if is_user else None
+    if mutation_permit is not None and mutation_permit.tier != selected_tier:
+        raise UnleasedWriteError("known tier permit cannot authorize another physical tier")
     connection = connect_measured(
         f"{selected.resolve(strict=True).as_uri()}?mode=rw" if existing_only else path,
         uri=existing_only,
         timeout=timeout,
         check_same_thread=check_same_thread,
-        **({"cached_statements": 0} if is_source else {}),
+        **({"cached_statements": 0} if is_source or is_user else {}),
     )
-    if not is_source:
+    if not (is_source or is_user):
         return connection
     owner = NativeSQLCustodyOwner(connection)
     try:
         creator_pid = os.getpid()
         creator_thread = threading.current_thread()
+        creator_task = _native_owner_task()
         source_path = selected.resolve()
         metadata = source_path.stat()
         incarnation = metadata.st_dev, metadata.st_ino
@@ -1171,12 +1196,16 @@ def _connect_archive_writer(
             if os.getpid() != creator_pid or threading.current_thread() is not creator_thread:
                 return sqlite3.SQLITE_DENY
             if action == sqlite3.SQLITE_TRANSACTION and first == "ROLLBACK":
+                if _native_owner_task() is not creator_task:
+                    return sqlite3.SQLITE_DENY
                 # Cleanup stays available after failure, but cannot mint a
                 # successful receipt for a transaction it has rolled back.
                 custody = current_sql_custody()
                 permit = None if custody is None else custody.known_tier_authority
-                if permit is not None:
-                    permit.authorize_tier_sql(connection, action, first, second, schema, trigger)
+                if permit is not None and not permit.authorize_tier_sql(
+                    connection, action, first, second, schema, trigger
+                ):
+                    return sqlite3.SQLITE_DENY
                 return sqlite3.SQLITE_OK
             try:
                 current_metadata = source_path.stat()
@@ -1190,9 +1219,14 @@ def _connect_archive_writer(
                     sqlite3.SQLITE_FUNCTION,
                     sqlite3.SQLITE_RECURSIVE,
                 } and not (action == sqlite3.SQLITE_PRAGMA and second is None)
-                if writes and require_write_lease("Source SQL execution", archive_root=root) is None:
-                    return sqlite3.SQLITE_DENY
                 custody = current_sql_custody()
+                known = None if custody is None else custody.known_tier_authority
+                if (
+                    writes
+                    and (is_source or known is not None)
+                    and require_write_lease("durable tier SQL execution", archive_root=root) is None
+                ):
+                    return sqlite3.SQLITE_DENY
                 if custody is not None:
                     if custody.archive_root.resolve() != root.resolve():
                         return sqlite3.SQLITE_DENY
@@ -1237,7 +1271,9 @@ def open_source_tier_write_connection(
         mutation_permit=mutation_permit,
         timeout=WRITE_CONNECTION_PROFILE.timeout_seconds,
     )
-    owner = NativeSQLCustodyOwner(conn)
+    owner = NativeSQLCustodyOwner(
+        conn, terminal_parent=None if mutation_permit is None else mutation_permit.terminal_parent
+    )
     try:
         for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
             conn.execute(statement)
@@ -1248,7 +1284,7 @@ def open_source_tier_write_connection(
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
-    return owner.handoff()
+    return owner.handoff() if mutation_permit is None else owner.require_connection()
 
 
 # ---------------------------------------------------------------------------
@@ -2236,16 +2272,21 @@ def open_isolated_write_connection(
         mutation_permit=mutation_permit,
         timeout=profile.timeout_seconds if timeout is None else timeout,
     )
-    owner = NativeSQLCustodyOwner(conn)
+    owner = NativeSQLCustodyOwner(
+        conn, terminal_parent=None if mutation_permit is None else mutation_permit.terminal_parent
+    )
     try:
         for statement in write_connection_pragma_statements(profile):
             conn.execute(statement)
         if mutation_permit is not None:
+            # Complete effects include SQLite's FK actions. Fix their policy
+            # before installing immutable exact-effect guards.
+            conn.execute("PRAGMA foreign_keys = ON")
             mutation_permit.bind_mutation_connection(conn)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
-    return owner.handoff()
+    return owner.handoff() if mutation_permit is None else owner.require_connection()
 
 
 # ---------------------------------------------------------------------------

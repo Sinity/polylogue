@@ -6,12 +6,15 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Origin
+from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingFailure,
     ArchiveEmbeddingMeta,
     ArchiveEmbeddingStatus,
     ArchiveEmbeddingWrite,
+    begin_embedding_attempt,
+    finalize_embedding_attempt_success,
     list_active_embedding_failures,
     mark_session_embedding_error,
     read_embedding_failure,
@@ -93,6 +96,58 @@ def test_archive_tiers_embedding_writer_batches_message_upserts(tmp_path: Path) 
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 3
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 3
     assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 3
+
+
+@pytest.mark.parametrize("empty_source", [True, False])
+@pytest.mark.parametrize("superseded", [True, False])
+def test_empty_attempt_finalization_retires_only_proven_empty_source_bindings(
+    tmp_path: Path, empty_source: bool, superseded: bool
+) -> None:
+    """Mutation: refusing stale refs livelocks an empty source; accepting nonempty loses bindings."""
+    conn = _connect(tmp_path / "embeddings.db")
+    session_id = "codex-session:empty-successor"
+    try:
+        upsert_message_embedding(
+            conn,
+            message_id=f"{session_id}:m1",
+            session_id=session_id,
+            origin=Origin.CODEX_SESSION,
+            embedding=[0.01] * EMBEDDING_DIMENSION,
+            model="voyage-4",
+            embedded_at_ms=1_767_225_700_000,
+            vector_derivation_hash=b"x" * 32,
+        )
+        source = EmbeddingSourceDigest()
+        if not empty_source:
+            source.update(b"x" * 32)
+        attempt = begin_embedding_attempt(
+            conn,
+            session_id=session_id,
+            origin=Origin.CODEX_SESSION,
+            source_hash=source.digest(),
+            recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=EMBEDDING_DIMENSION),
+        )
+        if superseded:
+            begin_embedding_attempt(
+                conn,
+                session_id=session_id,
+                origin=Origin.CODEX_SESSION,
+                source_hash=source.digest(),
+                recipe=EmbeddingRecipe.current(model="voyage-5", dimensions=EMBEDDING_DIMENSION),
+            )
+        accepted = empty_source and not superseded
+        assert finalize_embedding_attempt_success(conn, attempt=attempt, message_ids=[]) is accepted
+        assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == (0 if accepted else 1)
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        assert read_embedding_status(conn, session_id).needs_reindex is (not accepted)
+        assert tuple(
+            conn.execute(
+                "SELECT generation, attempt_state FROM embedding_derivation_state WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        ) == (2 if superseded else 1, "succeeded" if accepted else "pending")
+    finally:
+        conn.close()
 
 
 def test_archive_tiers_embedding_writer_records_reindexable_errors(tmp_path: Path) -> None:
