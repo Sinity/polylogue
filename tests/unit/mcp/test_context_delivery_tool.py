@@ -229,9 +229,11 @@ async def test_context_receipt_routes_refuse_unavailable_user_authority(
 ) -> None:
     """Returning not_found or an empty list when the user tier fails makes this red."""
     from polylogue.mcp.server import build_server
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = tmp_path / "archive"
-    _seed_archive(root)
+    with ArchiveStore(root):
+        pass
     server = cast(MCPServerUnderTest, build_server())
     context_fn = server._tool_manager._tools["context"].fn
     with installed_runtime_services(root):
