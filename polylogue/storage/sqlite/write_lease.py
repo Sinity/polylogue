@@ -287,6 +287,18 @@ def current_write_lease() -> WriteLease | None:
     return _ACTIVE.get()
 
 
+def coordinator_write_lease_active() -> bool:
+    """Require actual task/thread and archive custody, not inherited context."""
+    lease = current_write_lease()
+    if lease is None or lease.coordinator is None:
+        return False
+    try:
+        require_write_lease("coordinator lease observation", archive_root=lease.archive_root)
+    except UnleasedWriteError:
+        return False
+    return True
+
+
 def require_write_lease(purpose: str, *, archive_root: str | Path | None = None) -> WriteLease | None:
     """Assert the caller may open a write-mode connection for ``purpose``.
 

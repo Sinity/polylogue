@@ -950,3 +950,21 @@ def test_a_nested_lease_in_an_inheriting_thread_is_refused() -> None:
 
     assert str(observed["outcome"]).startswith("refused: ")
     assert "unauthorized thread" in str(observed["outcome"])
+
+
+@pytest.mark.asyncio
+async def test_coordinator_lease_observation_rejects_inherited_child_task(tmp_path: Path) -> None:
+    """An inherited coordinator token cannot authorize a child execution unit."""
+    from polylogue.core.write_lease import coordinator_write_lease_active
+
+    assert not coordinator_write_lease_active()
+    with write_lease("test.offline", archive_root=tmp_path):
+        assert not coordinator_write_lease_active()
+    with write_lease("test.coordinator", archive_root=tmp_path, coordinator=object()):
+        assert coordinator_write_lease_active()
+
+        async def child() -> bool:
+            return coordinator_write_lease_active()
+
+        assert not await asyncio.create_task(child())
+    assert not coordinator_write_lease_active()

@@ -614,7 +614,13 @@ class DaemonOperationRuntime:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(packet, stream, sort_keys=True, separators=(",", ":"))
                 stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             Path(temporary).unlink(missing_ok=True)
 
@@ -1092,9 +1098,7 @@ class DaemonOperationRuntime:
                         audit = AuditRepository.for_archive_root(self.archive_root)
                         try:
                             with audit.settled_machine_read():
-                                record = (
-                                    audit.machine_request(exchange.binding) if exchange.binding is not None else None
-                                )
+                                record = audit.machine_request(exchange.binding)
                                 if record is None and envelope.get("outcome") == "indeterminate":
                                     # The actual worker settled and continuity
                                     # proves there is no accepted domain work.

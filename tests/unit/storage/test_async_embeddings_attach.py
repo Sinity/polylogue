@@ -199,7 +199,7 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
                 close_attempts.append(conn)
                 if refuse_close and conn in (handles[0], handles[-1]):
                     raise OSError("synthetic native close refusal")
-            return await execute(conn, function, *args, **kwargs)
+            return await execute(conn, function, *args, **kwargs)  # type: ignore[no-untyped-call]
 
         monkeypatch.setattr(async_sqlite, "configure_read_connection", configure_last)
         monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
@@ -214,7 +214,8 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
                 assert conn._connection is not None and conn._running
                 assert async_sqlite._BACKEND_CONNECTIONS[id(conn)].backend is backend
                 async with conn.execute("SELECT 1") as cursor:
-                    assert (await cursor.fetchone())[0] == 1
+                    row = await cursor.fetchone()
+                    assert row is not None and row[0] == 1
             assert handles[1]._connection is None
         finally:
             refuse_close = False
@@ -245,7 +246,7 @@ def test_failed_writer_configuration_keeps_actual_handle_until_backend_retiremen
         async def execute_with_close_fault(conn: aiosqlite.Connection, function: Any, *args: Any, **kwargs: Any) -> Any:
             if refuse_close and getattr(function, "__name__", None) == "close_raw":
                 raise OSError("synthetic native close refusal")
-            return await execute(conn, function, *args, **kwargs)
+            return await execute(conn, function, *args, **kwargs)  # type: ignore[no-untyped-call]
 
         monkeypatch.setattr(async_sqlite, "configure_connection", configure)
         monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
@@ -312,8 +313,8 @@ def test_cancelled_close_waiter_drains_actual_worker_before_retiring_handle(
                     release.wait()
                     function()
 
-                return await execute(queued_close)
-            return await execute(function, *args, **kwargs)
+                return await execute(queued_close)  # type: ignore[no-untyped-call]
+            return await execute(function, *args, **kwargs)  # type: ignore[no-untyped-call]
 
         monkeypatch.setattr(conn, "_execute", delay_close)
         closing = asyncio.create_task(async_sqlite._close_backend_connection(conn))
@@ -373,7 +374,7 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
     from polylogue.storage.sqlite import async_sqlite
 
     connections: list[aiosqlite.Connection] = []
-    connect = async_sqlite.aiosqlite.connect
+    connect = aiosqlite.connect
 
     def capture_connection(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
         conn = connect(*args, **kwargs)
@@ -386,7 +387,7 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
         backend = async_sqlite.SQLiteBackend(tmp_path / "index.db")
         backend.db_path.unlink()
         with pytest.raises(sqlite3.OperationalError):
-            await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+            _unexpected_connection = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
         assert len(connections) == 1
         conn = connections[0]
         assert conn._connection is None

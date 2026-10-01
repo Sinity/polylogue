@@ -3409,13 +3409,13 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
     leaves the raw terminal fails the next pass's session and FTS checks.
     """
     from polylogue.core.enums import Provider
+    from polylogue.core.write_lease import coordinator_write_lease_active
     from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
     from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import (
         DaemonWriteCoordinator,
         DaemonWriteThreadBridge,
-        daemon_write_lease_active,
     )
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.archive_templates import bootstrap_archive_root
@@ -3464,7 +3464,7 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
         release = threading.Event()
 
         def paused_compute(frame: DerivationFrame, key: str) -> ReplacementLike:
-            assert not daemon_write_lease_active()
+            assert not coordinator_write_lease_active()
             started.set()
             assert release.wait(timeout=2.0)
             return original_compute(frame, key)

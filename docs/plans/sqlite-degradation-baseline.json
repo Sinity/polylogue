@@ -869,11 +869,6 @@
       "digest": "e14acf26c2e2b319ce44760fb6c9e17f5408ab24"
     },
     {
-      "file": "polylogue/storage/sqlite/archive_tiers/archive_plan.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
-      "count": 2
-    },
-    {
       "file": "polylogue/storage/sqlite/archive_tiers/bootstrap.py",
       "digest": "272e7ae7cbba0e9bc2d204176e6c710b81ba8e56"
     },
