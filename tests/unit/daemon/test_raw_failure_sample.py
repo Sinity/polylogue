@@ -1175,6 +1175,10 @@ class TestRawFailureSampleRedactionPattern:
         "/opt/synthetic space/leaf.json",
         r"C:\Users\private space\leaf.json",
         "C:/Users/private space/leaf.json",
+        "C://Users/private space/leaf.json",
+        "c:///Users/private space/leaf.json",
+        "drive=Z://Users/private space/leaf.json",
+        "z:////Users/例/leaf.json",
         r"\\server\share\private\leaf.json",
         r"\private space\leaf.json",
         r"prefixC:\Users\private\leaf.json",
@@ -1365,6 +1369,8 @@ def test_raw_failure_routes_conceal_local_paths_adjacent_to_url_tokens(
     "url",
     [
         "https://api.example.test/a%2C%2Fsegment?q=%2Fvalue",
+        "customC://api.example.test/v1/data",
+        "custom+v1://api.example.test/v1/data",
         "https://api.example.test/a,b;c?ids=a,b;c",
         "https://[::1]/v1/data",
         "https://api.example.test:443/v1/data?q=%2Fvalue",
@@ -1392,7 +1398,13 @@ def test_relative_declarations_refuse_every_platform_anchor(path: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", [r"C:\Users\private\leaf.json", r"\\server\share\private\leaf.json", r"\private\leaf.json"]
+    "path",
+    [
+        r"C:\Users\private\leaf.json",
+        "C://Users/private/leaf.json",
+        r"\\server\share\private\leaf.json",
+        r"\private\leaf.json",
+    ],
 )
 @pytest.mark.parametrize("separator", [",", ";", "|", ":", "=", "(", ")", "[", "]", "{", "}", "<", ">", "'", '"', " "])
 def test_url_exemptions_do_not_absorb_adjacent_windows_paths(path: str, separator: str) -> None:

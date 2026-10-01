@@ -64,7 +64,15 @@ def redact_status_error(value: object, *, relative_path_spans: Sequence[tuple[in
             position = relative_end
             continue
         character = value[position]
-        match = _URL.match(value, position)
+        # A drive path with repeated forward separators (C://...) also
+        # parses as a one-letter URL scheme. Its filesystem ownership wins.
+        drive_path = (
+            character.isascii()
+            and character.isalpha()
+            and value[position + 1 : position + 2] == ":"
+            and value[position + 2 : position + 3] in {"/", "\\"}
+        )
+        match = None if drive_path else _URL.match(value, position)
         if match is not None:
             url = None
             try:
@@ -95,12 +103,6 @@ def redact_status_error(value: object, *, relative_path_spans: Sequence[tuple[in
                 parts.append(value[position:url_end])
                 position = url_end
                 continue
-        drive_path = (
-            character.isascii()
-            and character.isalpha()
-            and value[position + 1 : position + 2] == ":"
-            and value[position + 2 : position + 3] in {"/", "\\"}
-        )
         if character in {"/", "\\"} or drive_path:
             # Unquoted text has no filename terminator. Inside a quoted
             # diagnostic, only its enclosing (unescaped) quote terminates it.
