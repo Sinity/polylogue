@@ -27,7 +27,8 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast, runtime_checkable
 
-from polylogue.core.compute_cancel import compute_cancel
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel
 from polylogue.daemon.derivation import (
     Budget,
     DerivationAdapter,
@@ -486,6 +487,8 @@ def _converge_selected_prerequisites(
                 if barrier is not None:
                     try:
                         waiting = session_id in barrier((session_id,))
+                    except DaemonOperationCancelled:
+                        raise
                     except Exception as exc:
                         held.append(f"publication barrier unreadable: {exc}")
                         return False
@@ -562,6 +565,8 @@ def _converge_selected_session_parts_sync(
             continue
         try:
             before = _selected_session_facts(adapter, frame, target.session_id)
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             outcomes.append(_selected_outcome(target, "failed", None, reason=f"inspect: {exc}"))
             continue
@@ -577,6 +582,8 @@ def _converge_selected_session_parts_sync(
         if barrier is not None and target.expected == "required":
             try:
                 waiting = target.session_id in barrier((target.session_id,))
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 outcomes.append(
                     _selected_outcome(target, "pending", before, reason=f"publication barrier unreadable: {exc}")
@@ -589,6 +596,8 @@ def _converge_selected_session_parts_sync(
             if adapter.quiet(frame, target.session_id):
                 outcomes.append(_selected_outcome(target, "pending", before, reason="quiet"))
                 continue
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             outcomes.append(_selected_outcome(target, "failed", before, reason=f"quiet: {exc}"))
             continue
@@ -604,6 +613,8 @@ def _converge_selected_session_parts_sync(
                     barrier=barrier,
                     stop_requested=stop_requested,
                 )
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 outcomes.append(_selected_outcome(target, "failed", before, reason=f"prerequisite: {exc}"))
                 continue
@@ -637,6 +648,8 @@ def _converge_selected_session_parts_sync(
                 break
             try:
                 replacement = adapter.compute(frame, target.session_id)
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 outcomes.append(_selected_outcome(target, "failed", before, reason=f"compute: {exc}"))
                 break
@@ -645,6 +658,8 @@ def _converge_selected_session_parts_sync(
                 prepared_binding = replacement.input_binding if target.expected == "required" else None
                 try:
                     before_publication = _selected_session_facts(adapter, frame, target.session_id)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     outcomes.append(
                         _selected_outcome(
@@ -725,6 +740,8 @@ def _converge_selected_session_parts_sync(
                     if barrier is not None and target.expected == "required":
                         try:
                             waiting = target.session_id in barrier((target.session_id,))
+                        except DaemonOperationCancelled:
+                            raise
                         except Exception as exc:
                             held_at_admission.append(f"publication barrier unreadable: {exc}")
                             return False
@@ -736,6 +753,8 @@ def _converge_selected_session_parts_sync(
 
                 try:
                     accepted = admission("session_profile", publish_unless_held)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     # polylogue-ylh7v: session-profile publication is one index
                     # transaction with one outcome. The partial-commit branch this
@@ -771,6 +790,8 @@ def _converge_selected_session_parts_sync(
                     break
                 try:
                     after = _selected_session_facts(adapter, frame, target.session_id)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     outcomes.append(
                         _selected_outcome(
@@ -1112,10 +1133,13 @@ class DaemonConverger:
         """Return bounded stage-owned status without propagating secret detail."""
         result: dict[str, dict[str, object]] = {}
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             if stage.status is None:
                 continue
             try:
                 result[stage_name] = dict(stage.status())
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 # An unavailable probe is reported as unavailable, never as a
                 # healthy default: a status surface must not render a failed
@@ -1155,6 +1179,8 @@ class DaemonConverger:
             return state.stages.get(stage_name) is not StageState.DONE
         try:
             return bool(stage.barrier_check(path))
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             emit(
                 "daemon.barrier.failed",
@@ -1181,6 +1207,8 @@ class DaemonConverger:
             return {path for path in paths if self._path_barrier_blocked(stage_name, stage, path)}
         try:
             blocked = set(stage.barrier_check_many(paths))
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             emit(
                 "daemon.barrier.failed",
@@ -1213,6 +1241,8 @@ class DaemonConverger:
             }
         try:
             blocked = set(stage.barrier_check_sessions(session_ids))
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             emit(
                 "daemon.barrier.failed",
@@ -1260,6 +1290,7 @@ class DaemonConverger:
         downstream_blocked = False
 
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             if downstream_blocked:
                 state.stages[stage_name] = StageState.PENDING
                 continue
@@ -1268,6 +1299,8 @@ class DaemonConverger:
             if current is not StageState.DONE:
                 try:
                     needs_work = stage.check(path)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     emit(
                         "daemon.stage.check_failed",
@@ -1288,6 +1321,8 @@ class DaemonConverger:
                         t_stage = time.perf_counter()
                         try:
                             execute_result = _run_stage_execute(stage, partial(stage.execute, path))
+                        except DaemonOperationCancelled:
+                            raise
                         except Exception as exc:
                             emit(
                                 "daemon.stage.execute_failed",
@@ -1384,6 +1419,7 @@ class DaemonConverger:
         batch_stage_times: dict[str, float] = {}
         blocked_paths: set[Path] = set()
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             for path in blocked_paths:
                 self._file_states[path].stages[stage_name] = StageState.PENDING
             active_paths = tuple(path for path in paths if path not in blocked_paths)
@@ -1400,6 +1436,8 @@ class DaemonConverger:
                     t_check = time.perf_counter()
                     try:
                         needs_work = stage.check(path)
+                    except DaemonOperationCancelled:
+                        raise
                     except Exception as exc:
                         emit(
                             "daemon.stage.check_failed",
@@ -1424,6 +1462,8 @@ class DaemonConverger:
                     t_stage = time.perf_counter()
                     try:
                         execute_result = _run_stage_execute(stage, partial(stage.execute, path))
+                    except DaemonOperationCancelled:
+                        raise
                     except Exception as exc:
                         emit(
                             "daemon.stage.execute_failed",
@@ -1458,6 +1498,8 @@ class DaemonConverger:
                 t_check = time.perf_counter()
                 try:
                     batch_needs_work = set(stage.check_many(active_paths)).intersection(active_paths)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     _record_stage_times(batch_stage_times, f"{stage_name}.check", time.perf_counter() - t_check, {})
                     emit(
@@ -1491,6 +1533,8 @@ class DaemonConverger:
                         t_stage = time.perf_counter()
                         try:
                             execute_result = _run_stage_execute(stage, partial(stage.execute_many, ordered_needs_work))
+                        except DaemonOperationCancelled:
+                            raise
                         except Exception as exc:
                             _record_stage_times(batch_stage_times, stage_name, time.perf_counter() - t_stage, {})
                             emit(
@@ -1517,6 +1561,8 @@ class DaemonConverger:
                                     remaining_needs_work = set(stage.check_many(ordered_needs_work)).intersection(
                                         batch_needs_work
                                     )
+                                except DaemonOperationCancelled:
+                                    raise
                                 except Exception as exc:
                                     emit(
                                         "daemon.stage.recheck_failed",
@@ -1583,6 +1629,7 @@ class DaemonConverger:
         batch_stage_times: dict[str, float] = {}
         blocked_ids: set[str] = set()
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             for session_id in blocked_ids:
                 self._session_states[session_id].stages[stage_name] = StageState.PENDING
             active_ids = tuple(session_id for session_id in ids if session_id not in blocked_ids)
@@ -1595,6 +1642,8 @@ class DaemonConverger:
             else:
                 try:
                     batch_needs_work = set(stage.check_sessions(active_ids)).intersection(active_ids)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception:
                     emit(
                         "daemon.stage.check_failed",
@@ -1621,6 +1670,8 @@ class DaemonConverger:
                             execute_result = _run_stage_execute(
                                 stage, partial(stage.execute_sessions, tuple(batch_needs_work))
                             )
+                        except DaemonOperationCancelled:
+                            raise
                         except Exception as exc:
                             emit(
                                 "daemon.stage.execute_failed",
@@ -1646,6 +1697,8 @@ class DaemonConverger:
                                     remaining_needs_work = set(
                                         stage.check_sessions(tuple(batch_needs_work))
                                     ).intersection(batch_needs_work)
+                                except DaemonOperationCancelled:
+                                    raise
                                 except Exception as exc:
                                     emit(
                                         "daemon.stage.recheck_failed",

@@ -2792,6 +2792,8 @@ class LiveBatchProcessor:
                             )
 
                     admit_stage_write("convergence.hook_paste_enrichment", enrich_and_clear_paste_debt)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     # A debug line made this indistinguishable from success:
                     # the stage still recorded its elapsed time and nothing
@@ -2848,6 +2850,8 @@ class LiveBatchProcessor:
                 else:
                     per_file_debt_items.extend(convergence_debt_from_state(path, state))
             return per_file_completed, time.perf_counter() - started, stage_timings, per_file_debt_items, settlements
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             logger.warning("live.watcher: post-ingest converge failed: %s", exc)
             return (

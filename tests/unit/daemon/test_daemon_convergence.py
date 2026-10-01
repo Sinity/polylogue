@@ -10,6 +10,92 @@ from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger, Stag
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 
 
+@pytest.mark.parametrize(
+    ("route", "phase"),
+    [
+        ("file", "check"),
+        ("file", "execute"),
+        ("file", "barrier"),
+        ("batch_file", "check"),
+        ("batch_file", "execute"),
+        ("batch_file", "barrier"),
+        ("batch", "check"),
+        ("batch", "execute"),
+        ("batch", "recheck"),
+        ("batch", "barrier"),
+        ("sessions", "check"),
+        ("sessions", "execute"),
+        ("sessions", "recheck"),
+        ("sessions", "barrier"),
+    ],
+)
+def test_convergence_cancellation_is_not_a_failed_stage(tmp_path: Path, route: str, phase: str) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    cancellation = DaemonOperationCancelled("synthetic cancellation")
+    checks = 0
+
+    def check(_subject: object) -> bool:
+        nonlocal checks
+        checks += 1
+        if phase == "check" or phase == "recheck" and checks == 2:
+            raise cancellation
+        return True
+
+    def execute(_subject: object) -> bool:
+        if phase == "execute":
+            raise cancellation
+        return phase != "recheck"
+
+    def barrier(_subject: object) -> bool:
+        if phase == "barrier":
+            raise cancellation
+        return False
+
+    def check_many(subjects: Sequence[Path]) -> set[Path]:
+        check(subjects)
+        return set(subjects)
+
+    def check_sessions(subjects: Sequence[str]) -> set[str]:
+        check(subjects)
+        return set(subjects)
+
+    def barrier_many(subjects: Sequence[Path]) -> set[Path]:
+        barrier(subjects)
+        return set()
+
+    def barrier_sessions(subjects: Sequence[str]) -> set[str]:
+        barrier(subjects)
+        return set()
+
+    stage = ConvergenceStage(
+        name="cancelled",
+        description="synthetic cancellation boundary",
+        check=check,
+        execute=execute,
+        check_many=check_many if route == "batch" else None,
+        execute_many=execute if route == "batch" else None,
+        check_sessions=check_sessions if route == "sessions" else None,
+        execute_sessions=execute if route == "sessions" else None,
+        barrier_check=barrier,
+        barrier_check_many=barrier_many,
+        barrier_check_sessions=barrier_sessions,
+        blocks_following_stages=True,
+        false_means_pending=True,
+        writer_admission="bridged",
+    )
+    converger = DaemonConverger([stage])
+    path = tmp_path / "session.jsonl"
+    with pytest.raises(DaemonOperationCancelled) as raised:
+        if route == "sessions":
+            converger.converge_sessions(["child"])
+        elif route in {"batch", "batch_file"}:
+            converger.converge_batch([path])
+        else:
+            converger.converge_file(path)
+    assert raised.value is cancellation
+
+
 async def test_coordinator_cancellation_keeps_the_real_writer_owned_until_it_stops(tmp_path: Path) -> None:
     """Cancellation distinguishes pre-admission from an admitted writer.
 
