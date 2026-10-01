@@ -59,10 +59,6 @@ def test_ordinary_reopen_preserves_both_post_floor_v1_definitions_and_batches(
                 assert historical.definition_json == item["definition_json"]
                 assert historical.definition_sha256 == item["definition_sha256"]
                 assert historical.schema.canonical_definition_json() == item["definition_json"]
-                with pytest.raises(AnnotationSchemaError):
-                    archive.save_annotation_schema(
-                        replace(historical.schema, title="Conflicting historical definition")
-                    )
                 assert hashlib.sha256(historical.definition_json.encode()).hexdigest() == historical.definition_sha256
                 current = archive.get_annotation_schema(schema_id)
                 assert current is not None and current.schema == get_annotation_schema(schema_id)
@@ -75,6 +71,13 @@ def test_ordinary_reopen_preserves_both_post_floor_v1_definitions_and_batches(
                 ) == (batch,)
                 assert batch.provenance_document()["target_ref"] == batch.target_ref
             assert len(archive.list_annotation_schemas()) == 11
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
+            for item in historical_seed_definitions(variant):
+                schema_id = json.loads(item["definition_json"])["schema_id"]
+                historical = writer.get_annotation_schema(schema_id, 1)
+                assert historical is not None
+                with pytest.raises(AnnotationSchemaError):
+                    writer.save_annotation_schema(replace(historical.schema, title="Conflicting historical definition"))
         assert historical_user_rows(tmp_path) == before
 
 
