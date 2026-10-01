@@ -176,6 +176,13 @@ def read_context_delivery(conn: sqlite3.Connection, snapshot_ref: str) -> Archiv
     ).fetchone()
     if row is None:
         return None
+    try:
+        return _delivery_from_stored_row(row)
+    except ValueError as exc:
+        raise sqlite3.DatabaseError("stored context delivery cannot be decoded") from exc
+
+
+def _delivery_from_stored_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveContextDeliveryEnvelope:
     omissions = _json_list(row[10])
     return ArchiveContextDeliveryEnvelope(
         snapshot_ref=str(row[0]),

@@ -1127,7 +1127,7 @@ def test_ordinary_attachment_status_distinguishes_zero_from_unavailable(
     if disposition == "unavailable":
         from polylogue.operations.daemon_status import _attachment_component
 
-        component = _attachment_component(index).model_dump(mode="json")
+        component = _attachment_component(index).to_dict()
         index.close()
         from polylogue.core.errors import SchemaVersionMismatchError
 

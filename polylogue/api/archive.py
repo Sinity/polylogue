@@ -1537,25 +1537,10 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
 
 @contextmanager
 def _readable_required_tier(config: Config, tier: ArchiveTier) -> Iterator[sqlite3.Connection]:
-    """Read required authority without recreating it or reporting a fault as absence."""
-    from polylogue.storage.tier_access import TierRefusal, open_tier_reader
+    from polylogue.operations.user_overlay_reads import readable_required_tier
 
-    path = _active_archive_root(config) / f"{tier.value}.db"
-    guidance = (
-        "Restore the user tier from a verified backup before reading."
-        if tier is ArchiveTier.USER
-        else "Restore readable archive authority, then retry."
-    )
-    try:
-        with open_tier_reader(tier, path) as acquired:
-            if isinstance(acquired, TierRefusal):
-                raise ArchiveTierUnavailableError(
-                    tier=tier.value, path=str(path), reason=acquired.reason, guidance=guidance
-                )
-            acquired.connection.row_factory = sqlite3.Row
-            yield acquired.connection
-    except (sqlite3.Error, OSError, SchemaRefusalError) as exc:
-        raise ArchiveTierUnavailableError(tier=tier.value, path=str(path), reason=str(exc), guidance=guidance) from exc
+    with readable_required_tier(_active_archive_root(config) / f"{tier.value}.db", tier) as conn:
+        yield conn
 
 
 @contextmanager

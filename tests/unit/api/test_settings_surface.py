@@ -158,3 +158,16 @@ async def test_empty_context_authority_remains_measured_absence(tmp_path: Path) 
         assert await poly.list_context_deliveries() == []
         assert await poly.list_context_injection_ledger() == []
         assert await poly.correlate_hermes_context_deliveries("neutral-session") == ()
+
+
+@pytest.mark.parametrize("route", ["get_setting", "list_settings"])
+async def test_settings_refuse_uninspectable_stored_value(tmp_path: Path, route: str) -> None:
+    root = tmp_path / "archive"
+    _init_tiers(root)
+    _seed_setting(root, "subscription_tier", "max_5x")
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("UPDATE user_settings SET value_json = 'invalid json'")
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
+        kwargs = {"setting_key": "subscription_tier"} if route == "get_setting" else {}
+        with pytest.raises(ArchiveTierUnavailableError):
+            await getattr(poly, route)(**kwargs)

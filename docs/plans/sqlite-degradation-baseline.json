@@ -35,26 +35,12 @@
     },
     {
       "file": "polylogue/api/archive.py",
-      "digest": "6042cb06f7ad5a2e6bde95d9d7de0a05c3f1e34c",
-      "count": 2
-    },
-    {
-      "file": "polylogue/api/archive.py",
-      "digest": "897c3c64873990d3ff2c841c89a0f42e459c1710"
-    },
-    {
-      "file": "polylogue/api/archive.py",
       "digest": "90aef716124fe4b9826933cc5a54bf2680fc271c"
     },
     {
       "file": "polylogue/api/archive.py",
       "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
       "count": 1
-    },
-    {
-      "file": "polylogue/api/archive.py",
-      "digest": "b8f5aecd31c164ace91b4949e056e04de0b4fb54",
-      "count": 3
     },
     {
       "file": "polylogue/api/archive.py",
@@ -151,14 +137,6 @@
       "digest": "d12cc3652d9cbc72aa95836708c30c8054d2c93e"
     },
     {
-      "file": "polylogue/daemon/catchup_status.py",
-      "digest": "4b3006182f4d41706f2bb43b6e16fe0f2b77b694"
-    },
-    {
-      "file": "polylogue/daemon/catchup_status.py",
-      "digest": "9198064b17098044e3a9af4623b1e43ebc84346b"
-    },
-    {
       "file": "polylogue/daemon/cli.py",
       "digest": "8eb587bcf838ae5e852841cf5d7fe9652f69bca2"
     },
@@ -237,23 +215,7 @@
     },
     {
       "file": "polylogue/daemon/status.py",
-      "digest": "e93509779dc8dd0162a8535546559a9b2469c123"
-    },
-    {
-      "file": "polylogue/daemon/status.py",
-      "digest": "3b7e4088dd7ecd925fe0977617d3de7c93bd1671"
-    },
-    {
-      "file": "polylogue/daemon/status.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
-    },
-    {
-      "file": "polylogue/daemon/status.py",
       "digest": "ba55f78412d7a28f8c4908be7ac1ce3440d7e4c8"
-    },
-    {
-      "file": "polylogue/daemon/status.py",
-      "digest": "d1d0d328543f93591501dc334a172db16fdb4ca4"
     },
     {
       "file": "polylogue/demo/seed.py",

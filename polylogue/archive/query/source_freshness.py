@@ -1695,7 +1695,7 @@ def _classify_operational_state(
     if cursor.present:
         if cursor.pending_bytes is None:
             return (NamedSourceOperationalState.DEGRADED, NamedSourceOperationalReason.CURSOR_UNKNOWN)
-        if cursor.pending_bytes is not None and cursor.pending_bytes > 0:
+        if cursor.pending_bytes > 0:
             return (
                 NamedSourceOperationalState.ACTIVE,
                 NamedSourceOperationalReason.PENDING_BYTES,

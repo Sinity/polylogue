@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, StrictInt, ValidationInfo, field_validato
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.config import Config
 from polylogue.core.errors import SchemaRefusalError
+from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
@@ -96,6 +97,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection as open_readonly_connection,
 )
+from polylogue.storage.tier_access import capture_sqlite_read
 
 
 def _authoritative_lifecycle_artifact_kind(sample: Mapping[str, object]) -> str | None:
@@ -1215,6 +1217,14 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
 
 
 def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
+    evidence = capture_sqlite_read(lambda: _read_archive_live_cursor_summary_info(ops_db))
+    if isinstance(evidence, Unavailable):
+        return LiveCursorSummary(available=False, unavailable_reason=evidence.detail or evidence.reason)
+    assert isinstance(evidence, Measured)
+    return evidence.value
+
+
+def _read_archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
     """Return cursor backlog/failure state from archive OPS when populated."""
     if not ops_db.exists():
         return None
@@ -1264,8 +1274,8 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
             ).fetchone()
         finally:
             conn.close()
-    except (sqlite3.Error, OSError, SchemaRefusalError):
-        return None
+    except (OSError, SchemaRefusalError) as exc:
+        raise sqlite3.OperationalError(str(exc)) from exc
 
     now = datetime.now(UTC)
     retry_due_file_count = sum(1 for row in retry_rows if _retry_due(_optional_str(row[0]), now=now))
@@ -1311,6 +1321,14 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
 
 
 def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttemptSummary | None:
+    evidence = capture_sqlite_read(lambda: _read_archive_live_ingest_attempt_summary_info(ops_db))
+    if isinstance(evidence, Unavailable):
+        return LiveIngestAttemptSummary(available=False, unavailable_reason=evidence.detail or evidence.reason)
+    assert isinstance(evidence, Measured)
+    return evidence.value
+
+
+def _read_archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttemptSummary | None:
     """Return live ingest-attempt status from archive OPS when populated."""
     if not ops_db.exists():
         return None
@@ -1352,12 +1370,8 @@ def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttempt
             slow_threshold_s = compute_slow_threshold_s(conn)
         finally:
             conn.close()
-    except (sqlite3.Error, OSError, SchemaRefusalError) as exc:
-        # A failed canonical query is unmeasured, never an absence of writers.
-        return LiveIngestAttemptSummary(
-            available=False,
-            unavailable_reason=f"ops ingest_attempts unreadable: {exc}",
-        )
+    except (OSError, SchemaRefusalError) as exc:
+        raise sqlite3.OperationalError(str(exc)) from exc
 
     now = datetime.now(UTC)
     recent_attempts = [

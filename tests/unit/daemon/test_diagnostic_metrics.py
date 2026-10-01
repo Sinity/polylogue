@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import closing
 from http import HTTPStatus
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -243,7 +243,7 @@ def test_ops_only_openability_probe_uses_a_closed_query_only_reader(
     opened: list[sqlite3.Connection] = []
     original_open = connection_profile.open_readonly_connection
 
-    def observe_open(path: str | Path, *, validate_schema: bool = True, **kwargs: object) -> sqlite3.Connection:
+    def observe_open(path: str | Path, *, validate_schema: bool = True, **kwargs: Any) -> sqlite3.Connection:
         conn = original_open(path, validate_schema=validate_schema, **kwargs)
         assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
         with pytest.raises(sqlite3.DatabaseError):

@@ -800,14 +800,15 @@ def _components(
     return components
 
 
-def _attachment_component(index_conn: sqlite3.Connection) -> Any:
+def _attachment_component(index_conn: sqlite3.Connection) -> ComponentReadiness:
     """Expose owed contested identity from the same index view as ordinary status."""
+    from polylogue.core.evidence import Measured, Unavailable
     from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
     from polylogue.storage.sqlite.queries.attachment_records import unresolved_attachment_identity_count
+    from polylogue.storage.tier_access import capture_sqlite_read
 
-    try:
-        count = unresolved_attachment_identity_count(index_conn)
-    except sqlite3.Error:
+    evidence = capture_sqlite_read(lambda: unresolved_attachment_identity_count(index_conn))
+    if isinstance(evidence, Unavailable):
         return ComponentReadiness(
             component="attachments",
             scope="owed_drive_references",
@@ -816,6 +817,8 @@ def _attachment_component(index_conn: sqlite3.Connection) -> Any:
             counts={},
             caveats=("attachment_identity_unavailable",),
         )
+    assert isinstance(evidence, Measured)
+    count = evidence.value
     return ComponentReadiness(
         component="attachments",
         scope="owed_drive_references",
