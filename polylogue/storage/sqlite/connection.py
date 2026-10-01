@@ -112,6 +112,9 @@ def _get_cached_connection(path: Path, *, archive_root: Path) -> sqlite3.Connect
     sqlite-vec, and connection-local runtime setup — all exactly once per connection.
     """
     cache: dict[str, NativeSQLCustodyOwner] = getattr(_connection_cache, "conns", {})
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(path)
     if not hasattr(_connection_cache, "conns"):
         _connection_cache.conns = cache
 

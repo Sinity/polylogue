@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.connection_profile import (
     configured_archive_root,
     write_connection_pragma_statements,
 )
+from polylogue.storage.sqlite.population_admission import assert_population_admitted
 from polylogue.storage.sqlite.queries import (
     session_insight_profile_writes as session_insight_profiles_q,
 )
@@ -268,6 +269,7 @@ async def _open_configured_backend_connection(
     purpose: str = "async configured connection",
 ) -> aiosqlite.Connection:
     _require_backend_process(backend)
+    assert_population_admitted(backend._db_path)
     if read_only:
         grant = grant_write_lease_thread() if current_write_lease() is not None else None
 
@@ -331,6 +333,7 @@ async def _scoped_backend_connection(
 async def _backend_write_lease(backend: SQLiteBackend, actor: str) -> AsyncIterator[None]:
     """Prepare a configured fresh root, then serialize its first archive SQL."""
     _require_transaction_reader(backend)
+    assert_population_admitted(backend._db_path)
     from polylogue.core.compute_cancel import compute_cancel_requested
 
     if compute_cancel_requested():
@@ -395,6 +398,7 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, archive_root: Pat
     from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
 
     main = _Path(main_path)
+    assert_population_admitted(main)
     if main.name != "index.db":
         return
     root = configured_archive_root(main, archive_root)
@@ -405,6 +409,7 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, archive_root: Pat
         if schema_name in attached:
             continue
         sibling = root / filename
+        assert_population_admitted(sibling)
         if sibling.exists():
             if schema_name == "embeddings":
                 # ``message_embeddings`` is a vec0 virtual table: without the
@@ -439,6 +444,13 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, archive_root: Pat
         custody.assert_namespace()
 
 
+async def _assert_connection_population_admitted(conn: aiosqlite.Connection) -> None:
+    async with conn.execute("PRAGMA database_list") as cursor:
+        for row in await cursor.fetchall():
+            if row[2]:
+                assert_population_admitted(row[2])
+
+
 async def configure_connection(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
     """Apply canonical connection settings.
 
@@ -447,6 +459,7 @@ async def configure_connection(conn: aiosqlite.Connection, *, archive_root: Path
     operation thrashes disk. These settings bring throughput from ~0.5/s
     to expected levels.
     """
+    await _assert_connection_population_admitted(conn)
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, write_connection_pragma_statements(WRITE_CONNECTION_PROFILE))
     await _attach_sibling_tiers(conn, archive_root=archive_root)
@@ -455,6 +468,7 @@ async def configure_connection(conn: aiosqlite.Connection, *, archive_root: Path
 
 async def configure_read_connection(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
     """Apply read-safe settings without mutating database-wide state."""
+    await _assert_connection_population_admitted(conn)
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
     await _attach_sibling_tiers(conn, archive_root=archive_root, read_only=True)
@@ -466,6 +480,7 @@ async def configure_read_connection(conn: aiosqlite.Connection, *, archive_root:
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:
     """Check whether an existing database already has the archive schema."""
+    assert_population_admitted(backend._db_path)
     if not backend._db_path.exists():
         return False
 
@@ -495,6 +510,7 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
     """Initialize backend state and shared query accessors."""
     backend._owner_pid = os.getpid()
     requested_path = Path(db_path) if db_path is not None else _paths.db_path()
+    assert_population_admitted(requested_path)
     archive_root = requested_path.parent
     if archive_root.name == ".index-generations":
         archive_root = archive_root.parent
@@ -536,6 +552,7 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
 
 async def ensure_schema_once(backend: SQLiteBackend) -> None:
     """Ensure schema initialization runs exactly once."""
+    assert_population_admitted(backend._db_path)
     if backend._schema_ensured:
         return
     async with backend._schema_lock:
@@ -860,6 +877,7 @@ async def _backend_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite
     the write lock.
     """
     _require_transaction_reader(backend)
+    assert_population_admitted(backend._db_path)
     if backend._bulk_conn is not None:
         yield backend._bulk_conn
     else:
@@ -970,6 +988,7 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
 async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Connection]:
     """Get a read-oriented connection that stays responsive during bulk writes."""
     _require_transaction_reader(backend)
+    assert_population_admitted(backend._db_path)
     if not backend._schema_ensured:
         if not await _read_schema_ready(backend):
             raise DatabaseError(f"archive index is not initialized for read access: {backend._db_path}")

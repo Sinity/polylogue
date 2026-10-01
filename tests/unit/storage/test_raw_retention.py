@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _write_blob(store: BlobStore, payload: bytes) -> tuple[str, int]:
@@ -65,7 +66,7 @@ def test_scoped_terminal_authority_does_not_mask_another_source_path(tmp_path: P
     index_db = tmp_path / "index.db"
     first_path = tmp_path / "first.jsonl"
     second_path = tmp_path / "second.jsonl"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         for number, source_path in enumerate((first_path, second_path), start=1):
@@ -347,7 +348,7 @@ def test_active_raw_protection_joins_index_seeds_to_transitive_source_chain(tmp_
     index_db = tmp_path / "index.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -425,7 +426,7 @@ def test_active_full_head_resets_retention_chain(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -527,7 +528,7 @@ def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: P
 
     source_db = tmp_path / "source.db"
     source_path = tmp_path / "terminal.json"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """
@@ -566,7 +567,7 @@ def test_terminal_retention_batches_make_progress_when_failure_kinds_fill_budget
 ) -> None:
     source_db = tmp_path / "source.db"
     source_paths = {tmp_path / "first.json", tmp_path / "second.json"}
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         for index, source_path in enumerate(sorted(source_paths)):
             raw_id = f"raw-{index}"
@@ -682,7 +683,7 @@ def test_real_revision_receipt_rejects_conflicting_source_evidence(
 def test_active_raw_protection_rejects_unreadable_index(tmp_path: Path, index_kind: str) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     if index_kind == "malformed":
         index_db.write_bytes(b"not sqlite")
 
@@ -701,7 +702,7 @@ def test_active_raw_protection_rejects_empty_index_over_retained_source(tmp_path
     index_db = tmp_path / "index.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -754,7 +755,7 @@ def test_current_terminal_artifact_authorizes_historical_raws_but_not_later_sess
     index_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "journal.jsonl"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -835,7 +836,7 @@ def test_terminal_coordinate_uses_latest_repeated_raw_observation(tmp_path: Path
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     source_path = tmp_path / "repeated.jsonl"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         raw_a = write_source_raw_session(
@@ -897,7 +898,7 @@ def test_terminal_cursor_exemption_requires_every_source_coordinate(tmp_path: Pa
     index_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "bundle.jsonl"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         conn.executemany(
@@ -939,7 +940,7 @@ def test_resolution_carrier_cannot_authorize_cursor_without_accepted_head(tmp_pa
     index_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "replaced-attempt.jsonl"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
@@ -1131,7 +1132,7 @@ def test_terminal_artifact_retention_batches_source_paths_below_sqlite_limit(tmp
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         for number in range(501):
@@ -1169,7 +1170,7 @@ def test_active_raw_protection_rejects_incomplete_predecessor_chain(tmp_path: Pa
     index_db = tmp_path / "index.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -1227,7 +1228,7 @@ def test_active_raw_protection_rejects_corrupt_chain_invariants(
     index_db = tmp_path / "index.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -1303,7 +1304,7 @@ def test_active_raw_protection_rejects_index_head_mismatch(
     index_db = tmp_path / "index.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -1748,7 +1749,7 @@ def test_raw_frontier_integrity_snapshot_healthy_full_plus_three_appends(tmp_pat
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -1838,7 +1839,7 @@ def test_raw_frontier_integrity_snapshot_detects_missing_accepted_predecessor(tm
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -1891,7 +1892,7 @@ def test_raw_frontier_integrity_snapshot_traverses_session_seed_without_head(tmp
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     with sqlite3.connect(source_db) as conn:
@@ -1955,7 +1956,7 @@ def test_raw_frontier_integrity_snapshot_detects_corrupt_chain_invariants(
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2035,7 +2036,7 @@ def test_raw_frontier_integrity_snapshot_detects_index_head_metadata_drift(
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2102,7 +2103,7 @@ def test_raw_frontier_integrity_projection_composes_real_missing_session_raw_aut
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
     with sqlite3.connect(index_db) as conn:
@@ -2156,7 +2157,7 @@ def test_raw_frontier_integrity_snapshot_detects_cursor_ahead_of_accepted_materi
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2223,7 +2224,7 @@ def test_raw_frontier_integrity_counts_one_cursor_across_multiple_byte_head_comp
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "shared.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2307,7 +2308,7 @@ def test_raw_frontier_integrity_semantic_membership_cursor_is_intentionally_not_
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "membership-export.json"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2360,7 +2361,7 @@ def test_raw_frontier_integrity_reports_missing_semantic_head_source_raw(tmp_pat
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     _seed_index_authority(
         index_db,
@@ -2398,7 +2399,7 @@ def test_raw_frontier_integrity_snapshot_cursor_at_exact_accepted_frontier_is_he
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2438,7 +2439,7 @@ def test_raw_frontier_integrity_snapshot_reads_ops_with_zero_accepted_heads(tmp_
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
 
@@ -2462,7 +2463,7 @@ def test_raw_frontier_integrity_snapshot_surfaces_cursor_without_accepted_head(t
     index_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "unmaterialized.jsonl"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2501,7 +2502,7 @@ def test_raw_frontier_integrity_snapshot_classifies_deferred_cursor_separately_f
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "deferred.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2552,7 +2553,7 @@ def test_deferred_cursor_past_its_accepted_head_is_still_a_violation(tmp_path: P
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "deferred.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2599,7 +2600,7 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "deferred.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2660,7 +2661,7 @@ def test_blocked_source_paths_refuse_violations_and_admit_authority_gaps(tmp_pat
     gap_path = tmp_path / "no-head.jsonl"
     violated_path.write_text("{}\n", encoding="utf-8")
     gap_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -2708,7 +2709,7 @@ def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_u
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
     _seed_index_authority(
@@ -2742,7 +2743,7 @@ def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(shadow_index, ArchiveTier.INDEX)
     initialize_archive_database(active_index, ArchiveTier.INDEX)
     initialize_archive_database(ops_db, ArchiveTier.OPS)
@@ -2783,7 +2784,7 @@ def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path
 
 def test_raw_frontier_integrity_projection_reports_malformed_active_pointer(tmp_path: Path) -> None:
     """Status reads degrade to an unavailable projection when a pointer is invalid."""
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
     (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
 
@@ -2799,7 +2800,7 @@ def test_raw_frontier_integrity_projection_reports_malformed_active_pointer(tmp_
 
 def test_raw_frontier_projection_retains_known_missing_source_violation_when_pointer_is_invalid(tmp_path: Path) -> None:
     """An unavailable active pointer cannot erase known source-tier loss."""
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
     (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
 
@@ -2827,7 +2828,7 @@ def test_raw_frontier_integrity_snapshot_unavailable_index_tier_is_unknown_never
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     if index_kind == "malformed":
         index_db.write_bytes(b"not sqlite")
@@ -2927,7 +2928,7 @@ def test_raw_frontier_integrity_snapshot_unavailable_ops_tier_is_unknown_never_h
     ops_db = tmp_path / "ops.db"  # never created
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
@@ -3144,7 +3145,7 @@ def test_frontier_from_connections_reports_unknown_when_the_index_reader_fails(t
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     # A readable index tier whose retention authority is not: the shape a
@@ -3238,7 +3239,7 @@ def test_snapshot_cleanup_keeps_the_raw_whose_receipt_is_newest_after_a_clock_ro
     source_db = tmp_path / "source.db"
     source_path = tmp_path / "rollout.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with closing(sqlite3.connect(source_db)) as conn:
 
         def _observe(payload: bytes, acquired_at_ms: int) -> str:

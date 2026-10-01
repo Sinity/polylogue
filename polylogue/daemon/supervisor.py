@@ -318,6 +318,8 @@ class DaemonSupervisor:
     async def _run(self, spec: DaemonServiceSpec, factory: Callable[[], Coroutine[Any, Any, None]]) -> None:
         self._publish(spec, ServiceState.RUNNING)
         try:
+            # Do not acquire a service coroutine before this owned task runs:
+            # cancellation before the first step must leave no unawaited child.
             await factory()
         except asyncio.CancelledError:
             self._settle(spec, ServiceState.STOPPED, reason="cancelled")

@@ -15,11 +15,15 @@ from polylogue.storage.sqlite.archive_tiers.schema_inventory import (
     capture_schema_census,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _fresh_archive(root: Path) -> None:
     for spec in ARCHIVE_TIER_SPECS.values():
-        initialize_archive_database(root / spec.filename, spec.tier)
+        if spec.tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(root / spec.filename)
+        else:
+            initialize_archive_database(root / spec.filename, spec.tier)
 
 
 def test_canonical_inventory_contains_all_object_kinds_and_generated_fields() -> None:

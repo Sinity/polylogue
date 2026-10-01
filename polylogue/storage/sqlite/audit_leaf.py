@@ -89,6 +89,9 @@ class VerifiedAuditLeaf:
         self._first_transaction_guard_armed = False
 
     def __enter__(self) -> VerifiedAuditLeaf:
+        from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+        assert_population_admitted(self._archive_root)
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         try:

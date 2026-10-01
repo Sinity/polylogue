@@ -13,6 +13,7 @@ from polylogue.storage.raw_retention import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def test_frontier_projection_refuses_a_source_from_a_newer_schema(tmp_path: Path) -> None:
@@ -31,7 +32,10 @@ def test_frontier_projection_refuses_a_source_from_a_newer_schema(tmp_path: Path
 
 def test_pinned_frontier_does_not_substitute_a_live_ops_file_for_missing_reader(tmp_path: Path) -> None:
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     with (
         closing(sqlite3.connect(tmp_path / "source.db")) as source,
         closing(sqlite3.connect(tmp_path / "index.db")) as index,

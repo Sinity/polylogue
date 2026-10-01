@@ -39,6 +39,7 @@ from polylogue.storage.embeddings.materialization import select_pending_archive_
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql, run_relation_sql
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 @pytest.mark.asyncio
@@ -683,9 +684,7 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import (
         initialize_active_archive_root,
-        initialize_archive_database,
     )
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True)
@@ -697,7 +696,7 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
     # admission rejects the root before the missing-index case is reached.
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
     (archive_root / "index.db").unlink(missing_ok=True)
-    initialize_archive_database(archive_root / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(archive_root / "source.db")
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute(
             """
@@ -724,3 +723,31 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
         await seed_demo_archive(archive_root, force=True, explicit_root=True)
     assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
     assert not (archive_root / "index.db").exists()
+
+
+def test_demo_generated_tier_reconvergence_applies_source_train_without_replacing_raws(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.demo.seed import _reconverge_stale_demo_generated_tiers
+    from polylogue.operations.canonical_archive_ingest import scoped_one_shot_archive_owner
+    from tests.infra.durable_tier_fixtures import bootstrap_baseline_archive
+    from tests.infra.index_replacement import source_baseline
+
+    root = tmp_path / "demo"
+    bootstrap_baseline_archive(root, monkeypatch)
+    source, raw_ids = source_baseline(root / "source.db")
+    try:
+        rows = source.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall()
+    finally:
+        source.close()
+    identity = (root / "source.db").stat().st_ino
+    with scoped_one_shot_archive_owner(root):
+        assert _reconverge_stale_demo_generated_tiers(root) == ()
+    with sqlite3.connect(root / "source.db") as source:
+        assert source.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert source.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall() == [
+            tuple(row) for row in rows
+        ]
+        assert {row[0] for row in rows} == set(raw_ids)
+    assert (root / "source.db").stat().st_ino == identity
+    assert not list(root.glob("source.db.stale-*"))

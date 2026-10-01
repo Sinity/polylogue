@@ -107,6 +107,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 _T = TypeVar("_T")
 
@@ -400,6 +401,7 @@ class IngestExecution:
 
     def changed_session_recorded(self, session_id: str) -> bool:
         """Whether this execution already recorded ``session_id`` as changed (a retry re-publishing its own work)."""
+        assert_population_admitted(self.state_path)
         with closing(sqlite3.connect(self.state_path)) as state:
             return (
                 state.execute("SELECT 1 FROM changed_sessions WHERE session_id = ?", (session_id,)).fetchone()

@@ -29,6 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _SESSION_UUID = "11111111-2222-3333-4444-555555555555"
 _OTHER_UUID = "99999999-8888-7777-6666-555555555555"
@@ -43,7 +44,7 @@ def _seed(tmp_path: Path) -> str:
     # Excision opens the archive to drop the index session; that needs the
     # archive format marker a real root carries.
     initialize_active_archive_root(tmp_path)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     blob_store = BlobStore(tmp_path / "blob")

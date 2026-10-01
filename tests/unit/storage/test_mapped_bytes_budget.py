@@ -24,6 +24,7 @@ import aiosqlite
 import pytest
 
 from polylogue.config import MAX_MEMORY_BUDGET_BYTES
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import configure_connection, configure_read_connection
 from polylogue.storage.sqlite.connection_profile import (
     BOUNDED_REPAIR_CACHE_SIZE_KIB,
@@ -49,6 +50,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_connection,
     open_daemon_connection,
 )
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _ATTACHED_SCHEMAS = ("source_tier", "user_tier", "embeddings", "ops_tier")
 
@@ -60,7 +62,10 @@ def _seed_attached_archive_tiers(root: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 
     for spec in ARCHIVE_TIER_SPECS.values():
-        initialize_archive_database(root / spec.filename, spec.tier)
+        if spec.tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(root / spec.filename)
+        else:
+            initialize_archive_database(root / spec.filename, spec.tier)
 
 
 def _mmap_values(conn: sqlite3.Connection) -> dict[str, int]:
@@ -125,7 +130,12 @@ async def test_async_attached_tier_profiles_map_main_only(
     configured_mmap_size: int,
 ) -> None:
     _seed_attached_archive_tiers(tmp_path)
-    conn = await aiosqlite.connect(tmp_path / "index.db")
+    index_path = tmp_path / "index.db"
+    conn = (
+        await aiosqlite.connect(index_path.as_uri() + "?mode=ro", uri=True)
+        if configure is configure_read_connection
+        else await aiosqlite.connect(index_path)
+    )
     try:
         await configure(conn, archive_root=tmp_path)
         values: dict[str, int] = {}

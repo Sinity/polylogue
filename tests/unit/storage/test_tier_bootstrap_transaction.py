@@ -54,9 +54,14 @@ def test_fresh_tier_schema_runs_inside_one_transaction(
         assert created > 0
         assert autocommitted == []
         assert not conn.in_transaction
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == bootstrap.archive_tier_spec(tier).version
+        assert (
+            int(conn.execute("PRAGMA user_version").fetchone()[0]) == bootstrap.archive_tier_spec(tier).baseline_version
+        )
 
     # The committed schema is what a new connection sees.
     with closing(sqlite3.connect(tmp_path / f"{tier.value}.db")) as reader:
-        assert int(reader.execute("PRAGMA user_version").fetchone()[0]) == bootstrap.archive_tier_spec(tier).version
+        assert (
+            int(reader.execute("PRAGMA user_version").fetchone()[0])
+            == bootstrap.archive_tier_spec(tier).baseline_version
+        )
         assert int(reader.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import gc
+import hashlib
 import json
 import os
 import sqlite3
@@ -528,8 +529,8 @@ def test_clone_from_unpinned_source_authenticates_the_enumerated_file_set(
 
     original_copy = artifacts._copy_tree
 
-    def tamper(source: Path, target: Path) -> None:
-        original_copy(source, target)
+    def tamper(source: Path, target: Path, **kwargs: Any) -> None:
+        original_copy(source, target, **kwargs)
         payload = target / "nested" / "payload"
         payload.chmod(payload.stat().st_mode | stat.S_IWUSR)
         payload.write_bytes(b"tampere")
@@ -588,7 +589,7 @@ def test_seeded_archive_rejects_unsupported_cache_node_and_rebuilds(tmp_path: Pa
     assert not (rebuilt.root / "u").exists()
 
 
-def test_clone_cleans_partial_output_after_short_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clone_retains_pending_output_after_short_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import tests.infra.workload_artifacts as artifacts
 
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
@@ -605,18 +606,25 @@ def test_clone_cleans_partial_output_after_short_write(tmp_path: Path, monkeypat
     )
     with pytest.raises(OSError, match="short write"):
         clone_seeded_archive(artifact, destination)
-    assert not destination.exists()
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
 
 
-def test_clone_rejects_tampered_copy_and_cleans_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clone_rejects_tampered_copy_and_retains_pending_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import tests.infra.workload_artifacts as artifacts
 
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
     destination = tmp_path / "tampered-clone"
     original_copy = artifacts._copy_tree
 
-    def tamper(source: Path, target: Path) -> None:
-        original_copy(source, target)
+    def tamper(source: Path, target: Path, **kwargs: Any) -> None:
+        original_copy(source, target, **kwargs)
         tampered = target.joinpath("manifest.json")
         tampered.chmod(tampered.stat().st_mode | stat.S_IWUSR)
         original_bytes = tampered.read_bytes()
@@ -630,7 +638,12 @@ def test_clone_rejects_tampered_copy_and_cleans_output(tmp_path: Path, monkeypat
     )
     with pytest.raises(ValueError, match="manifest bytes mismatch"):
         clone_seeded_archive(artifact, destination)
-    assert not destination.exists()
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
 
 
 def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -647,8 +660,13 @@ def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.Mo
 def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: Path) -> None:
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
     base_manifest = artifact.root.joinpath("manifest.json").read_bytes()
-    marker_relative = Path(".maintenance-state/durable-change-trains/.bootstrap")
+    marker_relative = Path(".maintenance-state/durable-change-trains/source-002.json")
     base_marker = artifact.root.joinpath(marker_relative).read_bytes()
+    inherited_provenance = {
+        path.relative_to(artifact.root): path.read_bytes()
+        for path in (artifact.root / ".archive-population-provenance").rglob("*")
+        if path.is_file()
+    }
 
     clone = clone_seeded_archive(artifact, tmp_path / "clone")
     clone.root.joinpath("private-mutation.txt").write_text("private")
@@ -661,21 +679,23 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     assert clone.root.joinpath("index.db").exists()
     assert artifact.root.joinpath("manifest.json").read_bytes() == base_manifest
     assert artifact.root.joinpath(marker_relative).read_bytes() == base_marker
-    # The committed marker records what the bootstrap created, not where
-    # (polylogue-ifb4l), so a faithful clone carries the base bytes and opens
-    # on its own content. Transplanting a marker into an archive it does not
-    # describe is still refused -- see
-    # tests/unit/storage/test_durable_change_train.py::
-    # test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe.
-    assert clone.root.joinpath(marker_relative).read_bytes() == base_marker
+    source_namespace = hashlib.sha256(artifact.manifest.manifest_id.encode()).hexdigest()
+    provenance = clone.root / ".archive-population-provenance" / source_namespace / "source.json"
+    assert all((clone.root / relative).read_bytes() == value for relative, value in inherited_provenance.items())
+    original = json.loads(provenance.read_text())
+    assert original["source_manifest_id"] == artifact.manifest.manifest_id
+    assert original["owning_artifact"] == str(artifact.root)
+    assert not provenance.parent.joinpath("original-history").exists()
+    source_train = artifact.root / ".maintenance-state/durable-change-trains/source-002.json"
+    clone_train = clone.root / ".maintenance-state/durable-change-trains/source-002.json"
+    assert source_train.read_bytes() != clone_train.read_bytes()
     assert not artifact.root.joinpath("private-mutation.txt").exists()
 
-    clone.root.joinpath(marker_relative).write_bytes(base_marker)
     with ArchiveStore.open_existing(clone.root, read_only=False) as reopened:
         assert reopened.count_sessions() == 64
 
 
-def test_seeded_archive_copy_fallback_rebinds_durable_bootstrap(
+def test_seeded_archive_copy_fallback_populates_destination_owned_train(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -743,17 +763,21 @@ def test_seeded_archive_reflink_and_copy_clones_are_equivalent(
 
     monkeypatch.setattr(subprocess, "run", reject_reflink)
     fallback = clone_seeded_archive(artifact, tmp_path / "fallback")
-    ignored = ".maintenance-state/durable-change-trains/.bootstrap"
+    regenerated = Path(".maintenance-state/durable-change-trains")
 
     def files(root: Path) -> dict[str, bytes]:
         return {
             str(path.relative_to(root)): path.read_bytes()
             for path in root.rglob("*")
-            if path.is_file() and str(path.relative_to(root)) != ignored
+            if path.is_file() and not path.relative_to(root).is_relative_to(regenerated)
         }
 
     try:
-        assert attempted == [["cp", "-a", "--reflink=always", str(artifact.root), str(fast.root)]]
+        assert len(attempted) == 1
+        assert attempted[0][:3] == ["cp", "-a", "--reflink=always"]
+        assert attempted[0][-1] == str(fast.root)
+        assert str(artifact.root / "source.db") in attempted[0][3:-1]
+        assert str(artifact.root / ".archive-ownership.lock") not in attempted[0]
         assert fast.clone_method in {"reflink", "copy"}
         assert fallback.clone_method == "copy"
         assert not fallback.root.joinpath("late-copy-residue").exists()
@@ -938,15 +962,17 @@ def test_obsolete_cleanup_skips_irrelevant_entries(tmp_path: Path) -> None:
     assert (staging_root / "also-irrelevant").read_text(encoding="utf-8") == "x"
 
 
-def test_clone_rejects_hardlinked_leaf_and_cleans_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clone_rejects_hardlinked_leaf_and_retains_pending_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import tests.infra.workload_artifacts as artifacts
 
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
     destination = tmp_path / "hardlinked-clone"
     original_copy = artifacts._copy_tree
 
-    def hardlink(source: Path, target: Path) -> None:
-        original_copy(source, target)
+    def hardlink(source: Path, target: Path, **kwargs: Any) -> None:
+        original_copy(source, target, **kwargs)
         leaf = target / "source.db"
         leaf.unlink()
         os.link(source / "source.db", leaf)
@@ -959,7 +985,12 @@ def test_clone_rejects_hardlinked_leaf_and_cleans_output(tmp_path: Path, monkeyp
     )
     with pytest.raises(ValueError, match="inode"):
         clone_seeded_archive(artifact, destination)
-    assert not destination.exists()
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
 
 
 def test_seeded_archive_rejects_malformed_self_hashed_file_entry(
@@ -1052,7 +1083,7 @@ def test_publish_attempts_rename_with_a_sealed_staging_root(
 
     monkeypatch.setattr(os, "replace", reject_rename)
     with pytest.raises(PermissionError, match="injected sealed rename failure"):
-        artifacts._publish_sealed_staging(staging, final_root)
+        artifacts._publish_sealed_staging(staging, final_root, probe=artifacts._ConstructionProbe.start())
 
     assert observed_modes
     assert not (observed_modes[0] & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
@@ -1093,7 +1124,7 @@ def test_sealed_fallback_publishes_only_sealed_final_tree(
         )
 
     monkeypatch.setattr(os, "replace", fail_once_then_replace)
-    artifacts._publish_sealed_staging(staging, final_root)
+    artifacts._publish_sealed_staging(staging, final_root, probe=artifacts._ConstructionProbe.start())
 
     assert calls == 2
     assert observed[0] == (staging, False)
@@ -1125,7 +1156,7 @@ def test_sealed_fallback_kill_injection_leaves_no_visible_final(
 
     monkeypatch.setattr(os, "replace", fail_then_interrupt)
     with pytest.raises(KeyboardInterrupt):
-        artifacts._publish_sealed_staging(staging, final_root)
+        artifacts._publish_sealed_staging(staging, final_root, probe=artifacts._ConstructionProbe.start())
 
     assert not final_root.exists()
     handoffs = tuple(final_root.parent.glob(f".{final_root.name}.*.handoff"))
@@ -2225,10 +2256,10 @@ def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
     gc_result: list[object] = []
     original_copy = artifacts._copy_tree
 
-    def blocked_copy(source: Path, destination: Path) -> None:
+    def blocked_copy(source: Path, destination: Path, **kwargs: Any) -> None:
         copy_started.set()
-        assert allow_copy.wait(5), "clone did not receive its release signal"
-        original_copy(source, destination)
+        allow_copy.wait()
+        original_copy(source, destination, **kwargs)
 
     monkeypatch.setattr(artifacts, "_copy_tree", blocked_copy)
     monkeypatch.setattr(
@@ -2256,12 +2287,18 @@ def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
 
     clone_thread = threading.Thread(target=run_clone)
     clone_thread.start()
-    assert copy_started.wait(5), "clone did not reach its source read barrier"
     gc_thread = threading.Thread(target=collect)
-    gc_thread.start()
-    gc_thread.join(5)
-    allow_copy.set()
-    clone_thread.join(5)
+    try:
+        copy_started.wait()
+        gc_thread.start()
+        # The GC must settle while the source read is pinned. Population after
+        # release owns real migration/proof work, not a five-second outcome.
+        gc_thread.join()
+    finally:
+        allow_copy.set()
+        clone_thread.join()
+        if gc_thread.ident is not None:
+            gc_thread.join()
 
     assert not gc_thread.is_alive()
     assert not clone_thread.is_alive()
@@ -2275,7 +2312,7 @@ def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
     assert artifact.root.exists()
 
 
-def test_rejected_hardlink_clone_cleans_residue_without_mutating_source(
+def test_rejected_hardlink_clone_retains_pending_residue_without_mutating_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import tests.infra.workload_artifacts as artifacts
@@ -2287,8 +2324,8 @@ def test_rejected_hardlink_clone_cleans_residue_without_mutating_source(
     destination = tmp_path / "hardlink-clone"
     original_copy = artifacts._copy_tree
 
-    def inject_hardlink(source: Path, target: Path) -> None:
-        original_copy(source, target)
+    def inject_hardlink(source: Path, target: Path, **kwargs: Any) -> None:
+        original_copy(source, target, **kwargs)
         target.chmod(target.stat().st_mode | stat.S_IWUSR)
         target_index = target / "index.db"
         target_index.unlink()
@@ -2303,13 +2340,18 @@ def test_rejected_hardlink_clone_cleans_residue_without_mutating_source(
     with pytest.raises(ValueError, match="inode was not detached"):
         clone_seeded_archive(artifact, destination)
 
-    assert not destination.exists()
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
     assert source_index.exists()
     assert stat.S_IMODE(source_index.stat().st_mode) == source_mode
     assert (artifact.root / "manifest.json").read_bytes() == source_manifest
 
 
-def test_rejected_symlink_clone_cleans_residue_and_preserves_source(
+def test_rejected_symlink_clone_retains_pending_residue_and_preserves_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import tests.infra.workload_artifacts as artifacts
@@ -2321,8 +2363,8 @@ def test_rejected_symlink_clone_cleans_residue_and_preserves_source(
     outside.write_text("must remain", encoding="utf-8")
     original_copy = artifacts._copy_tree
 
-    def inject_symlink(source: Path, target: Path) -> None:
-        original_copy(source, target)
+    def inject_symlink(source: Path, target: Path, **kwargs: Any) -> None:
+        original_copy(source, target, **kwargs)
         target.chmod(target.stat().st_mode | stat.S_IWUSR)
         (target / "unsafe-link").symlink_to(outside)
 
@@ -2335,7 +2377,12 @@ def test_rejected_symlink_clone_cleans_residue_and_preserves_source(
     with pytest.raises(ValueError, match="symlink"):
         clone_seeded_archive(artifact, destination)
 
-    assert not destination.exists()
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
     assert outside.read_text(encoding="utf-8") == "must remain"
     assert (artifact.root / "manifest.json").read_bytes() == source_manifest
 
@@ -2881,3 +2928,102 @@ def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path, offset: int) 
 
     with pytest.raises(RuntimeError, match="invalid seeded archive tier"):
         seal_fixture_tree(root)
+
+
+def test_outer_archive_publication_finalizes_before_manifest_and_freeze(tmp_path: Path) -> None:
+    """Omitting outer finalization leaves WAL headers in the sealed archive."""
+
+    def builder(root: Path) -> None:
+        with ArchiveStore(root):
+            pass
+        assert root.stat().st_mode & stat.S_IWUSR
+        assert not (root / "manifest.json").exists()
+
+    tree = build_immutable_tree(cache_root=tmp_path / "cache", key="outer-finalization", builder=builder)
+    for tier in ArchiveTier:
+        with (tree.root / f"{tier.value}.db").open("rb") as handle:
+            assert handle.read(20)[18:20] == bytes((1, 1))
+    readiness = raw_materialization_readiness_snapshot(tree.root)
+    assert readiness["available"] is True, readiness
+    assert readiness["classification"] == "not_run"
+
+
+@pytest.mark.parametrize("artifact_kind", ["seeded", "immutable"])
+def test_sealed_archive_copy_publication_owns_its_released_train(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact_kind: str
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    real_rename = artifacts._rename_sealed
+    copies = 0
+    source_manifest_id: str | None = None
+
+    def force_cross_parent_copy(source: Path, destination: Path) -> None:
+        nonlocal copies, source_manifest_id
+        if source.parent != destination.parent:
+            copies += 1
+            payload = json.loads((source / "manifest.json").read_text())
+            if "facts" in payload:
+                source_manifest_id = artifacts._read_manifest(source / "manifest.json").manifest_id
+            else:
+                source_manifest_id = ImmutableTreeArtifact(
+                    source,
+                    str(payload["key"]),
+                    tuple(payload["files"]),
+                    ArtifactResourceMeasurement(**payload["resources"]),
+                ).manifest_id
+            raise PermissionError("synthetic cross-parent sealed rename refusal")
+        real_rename(source, destination)
+
+    monkeypatch.setattr(artifacts, "_rename_sealed", force_cross_parent_copy)
+    artifact = None
+    tree = None
+    if artifact_kind == "seeded":
+        artifact = build_seeded_archive(_SMALL_SPECS, cache_root=tmp_path / "cache")
+        root = artifact.root
+        manifest_files = artifact.manifest.files
+    else:
+
+        def builder(root: Path) -> None:
+            with ArchiveStore(root):
+                pass
+
+        tree = build_immutable_tree(cache_root=tmp_path / "cache", key="sealed-archive-copy", builder=builder)
+        root = tree.root
+        manifest_files = tree.files
+    assert copies == 1
+    # Removing handoff finalization leaves Source's WAL header without
+    # sidecars in a sealed directory: ordinary mode=ro refuses with 1544.
+    for tier in ArchiveTier:
+        path = root / f"{tier.value}.db"
+        with path.open("rb") as handle:
+            assert handle.read(20)[18:20] == bytes((1, 1))
+        assert not path.with_name(path.name + "-wal").exists()
+        assert not path.with_name(path.name + "-shm").exists()
+    readiness = raw_materialization_readiness_snapshot(root)
+    assert readiness["available"] is True, readiness
+    if artifact_kind == "seeded":
+        assert raw_materialization_ready(readiness), readiness
+    else:
+        assert readiness["classification"] == "not_run"
+        assert readiness["raw_artifact_count"] == 0
+        assert readiness["materialized_raw_artifact_count"] == 0
+        assert not raw_materialization_ready(readiness)
+    assert source_manifest_id is not None
+    source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
+    provenance = root / ".archive-population-provenance" / source_namespace / "original-history/source-002.json"
+    released = root / ".maintenance-state/durable-change-trains/source-002.json"
+    assert provenance.read_bytes() != released.read_bytes()
+    assert {item["path"] for item in manifest_files} == {
+        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file() and path.name != "manifest.json"
+    }
+    if artifact_kind == "seeded":
+        assert artifact is not None
+        with clone_seeded_archive(artifact, tmp_path / "clone") as clone:
+            with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
+                assert archive.count_sessions() == 2
+    else:
+        assert tree is not None
+        cloned_tree = clone_immutable_tree(tree, tmp_path / "clone")
+        with ArchiveStore.open_existing(cloned_tree.root, read_only=False) as archive:
+            assert archive.count_sessions() == 0

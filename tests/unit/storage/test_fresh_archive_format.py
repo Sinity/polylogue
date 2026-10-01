@@ -1,15 +1,16 @@
-"""The new archive lineage starts with the current six-tier schema at version one."""
+"""Every tier is born at one before declared durable trains advance it."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -24,7 +25,7 @@ _CURRENT_OBJECTS = {
 }
 
 
-def test_fresh_archive_has_current_ddl_at_version_one(tmp_path: Path) -> None:
+def test_fresh_archive_is_born_at_one_then_applies_declared_runtime_trains(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 
     marker = json.loads((tmp_path / ".polylogue-format.json").read_text(encoding="utf-8"))
@@ -33,9 +34,9 @@ def test_fresh_archive_has_current_ddl_at_version_one(tmp_path: Path) -> None:
     assert marker["floor_version"] == 1
     assert marker["tier_versions"] == dict.fromkeys((tier.value for tier in ArchiveTier), 1)
     for tier, spec in ARCHIVE_TIER_SPECS.items():
-        assert ARCHIVE_VERSION_BY_TIER[tier] == 1
-        with sqlite3.connect(tmp_path / spec.filename) as conn:
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert ARCHIVE_BASELINE_VERSION_BY_TIER[tier] == 1
+        with closing(sqlite3.connect(tmp_path / spec.filename)) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[tier]
             assert conn.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = ? AND name = ?",
                 _CURRENT_OBJECTS[tier],

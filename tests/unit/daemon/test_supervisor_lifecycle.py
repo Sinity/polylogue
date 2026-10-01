@@ -220,6 +220,38 @@ def test_shutdown_cancels_and_awaits_within_the_declared_deadline() -> None:
     asyncio.run(scenario())
 
 
+def test_cancel_before_first_step_does_not_construct_service_and_settles_state() -> None:
+    """Eager factory invocation leaks a child coroutine before the wrapper runs."""
+    created: list[Coroutine[object, object, None]] = []
+
+    def factory() -> Coroutine[object, object, None]:
+        coroutine = _forever()
+        created.append(coroutine)
+        return coroutine
+
+    async def scenario() -> None:
+        supervisor = _supervisor()
+        task = supervisor.start("health_check", factory)
+        assert task is not None
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        report = await supervisor.shutdown()
+        assert task.cancelled()
+        assert report.clean
+        assert report.stopped == ("health_check",)
+        assert supervisor.state("health_check") is ServiceState.STOPPED
+        assert created == []
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        # Keep a regressed eager implementation's unawaited coroutine owned
+        # by the failing test rather than leaking another warning to siblings.
+        for coroutine in created:
+            coroutine.close()
+
+
 def test_a_child_that_ignores_cancellation_is_named_as_an_orphan() -> None:
     """Removing the deadline turns this into a hang, which is the regression."""
 

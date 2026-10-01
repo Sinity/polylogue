@@ -473,7 +473,6 @@ from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_t
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
-    initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
@@ -482,6 +481,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -4122,7 +4122,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4200,7 +4200,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4287,7 +4287,7 @@ def test_codex_append_identity_rejects_mixed_origins_at_same_path(
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4327,7 +4327,7 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         wrong_owner_raw_id = write_source_raw_session(
             conn,
@@ -4383,7 +4383,7 @@ def test_codex_append_identity_rejects_global_fallback_when_ownership_query_erro
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         unrelated_raw_id = write_source_raw_session(
             conn,
@@ -4434,7 +4434,7 @@ def test_latest_raw_fingerprint_ignores_archive_source_row_with_missing_blob(tmp
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     blob_hash = b"a" * 32
     with sqlite3.connect(source_db) as conn:
         conn.execute(
@@ -5804,7 +5804,7 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
     sqlite3.connect(index_db).close()
     (archive_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
     source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     path = archive_root / "sessions" / "terminal.jsonl"
     path.parent.mkdir()
     path.write_bytes(b'{"type":"session_meta"')

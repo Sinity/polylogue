@@ -20,6 +20,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 class _SessionFirstConverger:
@@ -45,7 +46,7 @@ def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None
     source = tmp_path / "session.jsonl"
     source.write_text('{"a": 1}\n')
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
