@@ -90,7 +90,7 @@ jobs:
       - bootstrap
       - run:
           name: Dependency security audit
-          command: ~/.local/bin/uv run pip-audit --skip-editable || true
+          command: ~/.local/bin/uv run pip-audit --strict --skip-editable
 
   release-verify:
     docker:

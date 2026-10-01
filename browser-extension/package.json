@@ -12,13 +12,16 @@
     "build": "node scripts/build.mjs",
     "screenshots": "node scripts/screenshots.mjs",
     "test:screenshots": "node --test scripts/screenshots.test.mjs",
-    "sync-version": "node scripts/build.mjs --sync-only"
+    "sync-version": "node scripts/build.mjs --sync-only",
+    "install:screenshot-browser": "playwright install --with-deps chromium"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "eslint": "^9.0.0",
     "fake-indexeddb": "^6.2.4",
     "jsdom": "^25.0.0",
-    "vitest": "^3.0.0"
+    "playwright": "1.63.0",
+    "vitest": "^3.0.0",
+    "web-ext": "8.10.0"
   }
 }
