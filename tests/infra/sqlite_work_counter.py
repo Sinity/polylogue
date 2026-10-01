@@ -78,7 +78,7 @@ def _mentions_derived_surface(sql: str) -> bool:
 
 def _target_table(identifier: str) -> str:
     """Lower only the table slot, including SQLite's target-context quotes."""
-    return re.findall(_IDENTIFIER, identifier)[-1].strip("\"`[]'")
+    return list(re.finditer(_IDENTIFIER, identifier))[-1].group(0).strip("\"`[]'")
 
 
 def _canonical_write_target(sql: str) -> tuple[str, str, str] | None:
