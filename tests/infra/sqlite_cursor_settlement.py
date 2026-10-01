@@ -58,12 +58,12 @@ class ControlledConnection(_MeasuredConnection):
         super().close()
 
 
-def control_archive_connections(monkeypatch: pytest.MonkeyPatch, *paths: Path) -> None:
+def control_archive_connections(monkeypatch: pytest.MonkeyPatch, *paths: str | Path) -> None:
     """Control actual writable factory bindings, before Native registration."""
     from polylogue.storage.sqlite import connection_profile
     from polylogue.storage.sqlite.archive_tiers import archive
 
-    destinations = {destination for path in paths for destination in (path, path.resolve())}
+    destinations = {destination for path in paths for destination in (Path(path), Path(path).resolve())}
     targets = {token for path in destinations for token in (str(path), f"file:{path}?mode=rw")}
     for module in (archive, connection_profile):
         original = module.connect_measured

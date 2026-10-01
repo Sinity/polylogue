@@ -176,6 +176,15 @@ def native_sql_children(parent: SQLCustodyOwner) -> tuple[NativeSQLCustodyOwner,
     return tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner._terminal_parent is parent)
 
 
+def native_sql_parent_for_connection(connection: sqlite3.Connection) -> SQLCustodyOwner | None:
+    """Resolve an exact creator-owned handle's existing terminal parent."""
+    for owner in retained_native_sql_owners_on_current_thread():
+        if owner.connection is connection:
+            owner._require_owner()
+            return owner._terminal_parent
+    return None
+
+
 def request_native_sql_parent_cleanup(parent: SQLCustodyOwner) -> None:
     """Keep all existing siblings selected once their parent begins retirement."""
     for owner in native_sql_children(parent):
@@ -292,7 +301,7 @@ class NativeSQLCustodyOwner:
         self._require_owner()
         if self.task is not _native_owner_task():
             raise RuntimeError("native SQLite work belongs to another task")
-        if self.connection is None or self.close_required:
+        if self.connection is None or self.close_required or self._parent_cleanup_requested:
             raise RuntimeError("native SQLite connection requires terminal cleanup")
         from polylogue.core.compute_cancel import compute_cancel_requested
 
@@ -303,6 +312,8 @@ class NativeSQLCustodyOwner:
     def handoff(self) -> sqlite3.Connection:
         """Retire temporary construction custody without closing the idle handle."""
         self._require_owner()
+        if self.close_required or self._parent_cleanup_requested:
+            raise RuntimeError("native SQLite connection requires terminal cleanup")
         if self._terminal_parent is not None or self.scratch_directory is not None or self._lifetime_dependencies:
             raise RuntimeError("native SQLite handle with terminal obligations cannot be handed off")
         connection = self.connection
@@ -338,7 +349,7 @@ class NativeSQLCustodyOwner:
         self._require_owner()
         if self.task is not _native_owner_task():
             raise RuntimeError("cached SQLite connection belongs to an earlier task")
-        if self.connection is None or self.close_required:
+        if self.connection is None or self.close_required or self._parent_cleanup_requested:
             raise RuntimeError("cached SQLite connection requires terminal cleanup")
         custody = current_sql_custody()
         if self.custody is None or custody is not self.custody:
@@ -1817,6 +1828,7 @@ def _open_readonly_owner(
     timeout_class: str = "interactive-read",
     check_same_thread: bool = True,
     lifetime_dependencies: tuple[object, ...] = (),
+    terminal_parent: SQLCustodyOwner | None = None,
 ) -> NativeSQLCustodyOwner:
     """Register read construction and its explicit artifact lifetime before SQL."""
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
@@ -1858,7 +1870,7 @@ def _open_readonly_owner(
             raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
         database_uri = descriptor_uri
     conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
-    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=lifetime_dependencies)
+    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=lifetime_dependencies, terminal_parent=terminal_parent)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)

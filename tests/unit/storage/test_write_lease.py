@@ -390,15 +390,21 @@ def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled
         assert current_write_lease() is not None
         acquired = threading.Event()
         finished = threading.Event()
+        contender_failures: list[BaseException] = []
 
         def competing_writer() -> None:
-            with write_lease("test.archive.waiting-writer", archive_root=root):
-                acquired.set()
-            finished.set()
+            try:
+                with write_lease("test.archive.waiting-writer", archive_root=root):
+                    acquired.set()
+            except BaseException as error:
+                contender_failures.append(error)
+            finally:
+                finished.set()
 
-        contender = threading.Thread(target=competing_writer)
+        contender = threading.Thread(target=competing_writer, context=contextvars.Context())
         contender.start()
         assert not acquired.wait(0.05)
+        assert not contender_failures
 
         connection.rollback_failure = None
         connection.close_failure = None
@@ -406,6 +412,7 @@ def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled
         assert acquired.wait(2)
         contender.join(timeout=2)
         assert finished.is_set()
+        assert not contender_failures
         assert current_write_lease() is None
         with sqlite3.connect(root / "index.db") as conn:
             assert (
