@@ -11,6 +11,7 @@
     "validate": "node scripts/validate-manifest.mjs",
     "build": "node scripts/build.mjs",
     "screenshots": "node scripts/screenshots.mjs",
+    "test:screenshots": "node --test scripts/screenshots.test.mjs",
     "sync-version": "node scripts/build.mjs --sync-only"
   },
   "devDependencies": {

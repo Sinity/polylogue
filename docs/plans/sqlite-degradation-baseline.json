@@ -281,12 +281,7 @@
     },
     {
       "file": "polylogue/daemon/status.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
-      "count": 2
-    },
-    {
-      "file": "polylogue/daemon/status.py",
-      "digest": "af05094a0146bf059222848c96ade347028f380b"
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
     },
     {
       "file": "polylogue/daemon/status.py",

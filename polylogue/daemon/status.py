@@ -5,7 +5,6 @@ from __future__ import annotations
 import itertools
 import json
 import os
-import re
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping
@@ -13,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, ValidationInfo, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.config import Config
@@ -24,6 +23,7 @@ from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
 from polylogue.core.stats import percentile
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
 )
@@ -599,46 +599,14 @@ class RawFailureSample(BaseModel):
         "terminal_unsupported_shape",
     ]
     provider_hint: str | None = None
-    redacted_error: str = ""
+    relative_path_spans: tuple[tuple[StrictInt, StrictInt], ...] = Field(default=(), exclude=True)
+    redacted_error: str = Field(default="", validate_default=True)
     lifecycle: Literal["deferred", "terminal", "unexplained"] | None = None
 
     @field_validator("redacted_error", mode="before")
     @classmethod
-    def _redact_file_paths(cls, v: object) -> str:
-        """Strip absolute file paths from error strings at construction time.
-
-        Replaces absolute Unix paths (starting with ``/``) with
-        ``[redacted]`` so that local filesystem layout is never
-        exposed in status payloads.  URL path segments (e.g.
-        ``https://host/v1/data``) and relative paths are not redacted.
-        """
-        if not isinstance(v, str):
-            return ""
-
-        def _replace(m: re.Match[str]) -> str:
-            start = m.start()
-            # Absolute path at start of string is always redacted.
-            if start == 0:
-                return "[redacted]"
-            prev = v[start - 1]
-            # Keep when preceded by a letter, digit, dot, or colon
-            # (these indicate a URL host segment like "example.com/path").
-            if prev.isalnum() or prev in (".", ":"):
-                return m.group(0)
-            # Keep when the surrounding context contains a URL protocol.
-            # Look back up to 16 chars for "://".
-            prefix = v[max(0, start - 16) : start + 1]
-            if "://" in prefix:
-                return m.group(0)
-            return "[redacted]"
-
-        return _PATH_REDACTION_RE.sub(_replace, v)
-
-
-# Matches candidate absolute Unix paths: a ``/`` followed by one or more
-# path segments (alphanumeric, dots, dashes, underscores).  The
-# ``_redact_file_paths`` validator refines matches with context checks.
-_PATH_REDACTION_RE = re.compile(r"/(?:[a-zA-Z0-9._\-]+/)*[a-zA-Z0-9._\-]+")
+    def _redact_file_paths(cls, v: object, info: ValidationInfo) -> str:
+        return redact_status_error(v, relative_path_spans=info.data.get("relative_path_spans", ()))
 
 
 # ---------------------------------------------------------------------------
@@ -979,64 +947,10 @@ def _fts_readiness_info() -> dict[str, object]:
 
 
 def _insight_freshness_info() -> dict[str, object]:
-    """Inspect session-profile outputs through their domain-owned read model."""
-    # _active_status_db_path() always names "index.db" (resolve_active_index_path
-    # raises otherwise), so the old sibling_index_db(dbf, require_exists=False)
-    # call was provably an identity operation on dbf itself.
-    dbf = _active_status_db_path()
-    if not dbf.exists():
-        index_db: Path | None = dbf
-        if index_db is not None:
-            archive_info = _archive_insight_freshness_info(index_db)
-            if archive_info is not None:
-                return archive_info
-        return {
-            "checked": False,
-            "reason": "index tier is unavailable",
-            "sessions_with_profiles": None,
-            "total_sessions": None,
-        }
-    index_db = dbf
-    if index_db is not None:
-        archive_info = _archive_insight_freshness_info(index_db)
-        if archive_info is not None:
-            return archive_info
-    try:
-        conn = open_readonly_connection(dbf, validate_schema=False)
-        try:
-            return _insight_freshness_from_connection(conn)
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        emit(
-            "daemon.status.query_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="insight_freshness_unreadable",
-            path=dbf,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return {"checked": False, "reason": str(exc), "sessions_with_profiles": None, "total_sessions": None}
+    """Project the standalone insight-status acquisition owned by operations."""
+    from polylogue.operations.status_insights import insight_freshness_for_path
 
-
-def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | None:
-    if not archive_db.exists():
-        return None
-    try:
-        conn = open_readonly_connection(archive_db, validate_schema=False)
-        try:
-            return _insight_freshness_from_connection(conn)
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-
-
-def _insight_freshness_from_connection(conn: sqlite3.Connection) -> dict[str, object]:
-    from polylogue.operations.daemon_status import insight_freshness_from_connection
-
-    return insight_freshness_from_connection(conn)
+    return insight_freshness_for_path(_active_status_db_path())
 
 
 def _session_summary_readiness_info() -> ComponentReadiness:
@@ -1068,7 +982,7 @@ def _unavailable_raw_failure_info(*, reason: str) -> dict[str, object]:
         "unexplained_failures": None,
         "raw_failure_lifecycle_available": False,
         "raw_failure_lifecycle_state": "unavailable",
-        "raw_failure_lifecycle_reason": reason,
+        "raw_failure_lifecycle_reason": redact_status_error(reason),
         "samples": [],
     }
 
@@ -2588,7 +2502,7 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
     except Exception as exc:
         return {
             "available": False,
-            "reason": str(exc),
+            "reason": redact_status_error(str(exc)),
             "candidate_count": None,
             "total_blob_bytes": None,
             "top_raw_rows": [],
@@ -2877,7 +2791,7 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                                 check_name="check_health",
                                 tier=HealthTier.FAST,
                                 severity=HealthSeverity.ERROR,
-                                message=f"health check itself failed: {exc}",
+                                message=redact_status_error(f"health check itself failed: {exc}"),
                                 checked_at=datetime.now(UTC).isoformat(),
                             )
                         ],
@@ -3018,7 +2932,7 @@ def build_daemon_status(
                         check_name="check_health",
                         tier=HealthTier.FAST,
                         severity=HealthSeverity.ERROR,
-                        message=f"health check itself failed: {exc}",
+                        message=redact_status_error(f"health check itself failed: {exc}"),
                         checked_at=datetime.now(UTC).isoformat(),
                     )
                 ],
@@ -3401,12 +3315,12 @@ def halted_unit_status() -> list[dict[str, str]]:
             {
                 "unit": "halt_store",
                 "reason": "unreadable",
-                "message": f"{type(exc).__name__}: {exc}",
+                "message": redact_status_error(f"{type(exc).__name__}: {exc}"),
                 "frame": "",
                 "halted_at": "",
             }
         ]
-    return [record.as_dict() for record in registry.halted_units()]
+    return [{**record.as_dict(), "message": redact_status_error(record.message)} for record in registry.halted_units()]
 
 
 _FAILED_SERVICE_STATES = frozenset({"failed", "orphaned"})
@@ -3449,7 +3363,9 @@ def supervised_service_snapshot() -> tuple[dict[str, str], list[dict[str, object
             {
                 "service": name,
                 "state": state.value,
-                "reason": reason[:_SERVICE_FAILURE_REASON_MAX_CHARS],
+                "reason": redact_status_error(reason[:_SERVICE_FAILURE_REASON_MAX_CHARS])[
+                    :_SERVICE_FAILURE_REASON_MAX_CHARS
+                ],
                 "at": transition.at if transition is not None else None,
             }
         )
@@ -3593,14 +3509,14 @@ def daemon_status_payload(
             "frame": None,
             "current_frame": None,
             "frame_changed": None,
-            "refresh_error": f"status snapshot metadata unavailable: {exc}",
+            "refresh_error": redact_status_error(f"status snapshot metadata unavailable: {exc}"),
         }
 
     # The periodic collector is producing the replacement for the cached
     # frame. Its health verdict must be based on the newly observed components,
     # not refuted by the previous frame's stale state. The refresh owner stamps
     # the resulting snapshot metadata after collection completes.
-    if collecting_status_snapshot:
+    if collecting_status_snapshot and status_snapshot.get("state") != "unavailable":
         status_snapshot = {**status_snapshot, "state": "refreshing"}
     service_snapshot = supervised_service_snapshot()
     service_states, service_failures = service_snapshot if service_snapshot is not None else (None, None)
@@ -3734,7 +3650,7 @@ def assertion_candidate_queue_status_summary(*, config: Config | None = None) ->
             "state": "unavailable",
             # A failed queue read is not an empty queue.
             "pending_count": None,
-            "caveats": [f"queue health unavailable: {exc}"],
+            "caveats": [redact_status_error(f"queue health unavailable: {exc}")],
         }
 
 

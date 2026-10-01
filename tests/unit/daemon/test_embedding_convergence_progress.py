@@ -16,8 +16,10 @@ from polylogue.daemon.derivation import (
     Budget,
     DerivationFrame,
     DerivationRegistry,
+    DerivationReport,
     KeyPage,
     KeyStatus,
+    WorkCounters,
     converge,
 )
 from polylogue.daemon.execution import BoundedComputeAdapter
@@ -463,21 +465,14 @@ def test_per_pass_stop_signal_keeps_the_catchup_receipt_retryable(
         captured.update(kwargs)
         return _Adapter()
 
-    class _Report:
-        pending = 0
-        work = type("Work", (), {"computed": 1})()
-
-        def count(self, _outcome: object) -> int:
-            return 0
-
     class _Owner:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        async def converge(self, _frame: object, **_kwargs: object) -> _Report:
+        async def converge(self, _frame: object, **_kwargs: object) -> DerivationReport:
             # The first provider reservation mints the RUNNING catch-up receipt.
             await asyncio.to_thread(captured["reserve"], "embedding.reserve", lambda: None)
-            return _Report()
+            return DerivationReport(frame=DerivationFrame(str(tmp_path), "synthetic"), work=WorkCounters(computed=1))
 
     def upsert(_ops_db: Path, *, status: object, run_id: str | None = None, **_fields: object) -> str:
         statuses.append(status)

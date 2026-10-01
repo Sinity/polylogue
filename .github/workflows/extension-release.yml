@@ -121,6 +121,7 @@ jobs:
       - name: Capture submission screenshots
         run: |
           npm install --no-save playwright@1
+          npm run test:screenshots
           npm run screenshots
       - name: Summarize artifacts
         id: summary
