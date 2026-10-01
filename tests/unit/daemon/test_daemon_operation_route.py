@@ -1725,7 +1725,16 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
         assert stack.session_exists(ids[0])
 
 
-def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "operation,payload",
+    [
+        ("mutation.session.delete.preview", {"session_ids": ["codex:absent"]}),
+        ("query.aggregate", {"mode": "count"}),
+    ],
+)
+def test_cancelled_queued_operation_reports_cancelled_not_failed(
+    tmp_path: Path, operation: str, payload: dict[str, object]
+) -> None:
     """A pre-acceptance cancellation is a cancellation, not an operation failure.
 
     The scheduler cancels a queued, unstarted task by completing its future
@@ -1755,7 +1764,7 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
         # its early exit would let the queued task start and void the test.
         assert release.wait(timeout=60)
 
-    request_id = "cancelled-queued-control"
+    request_id = "cancelled-queued-operation"
     principal = MutationPrincipal(
         actor_ref=f"daemon:unix:uid:{os.getuid()}",
         capabilities=frozenset(spec.capability for spec in DAEMON_OPERATION_SPECS),
@@ -1768,8 +1777,8 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
         assert all(entered.acquire(timeout=2) for _ in blockers)
 
         request = DaemonOperationRequest(
-            "mutation.session.delete.preview",
-            {"session_ids": ["codex:absent"]},
+            operation,
+            payload,
             request_id=request_id,
             archive_root=str(stack.archive_root),
         )
@@ -1789,6 +1798,10 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
             assert exchange.future is not None
             assert not exchange.future.done(), "the operation must still be queued or this test is vacuous"
             assert not exchange.acceptance_started
+            if operation == "query.aggregate":
+                assert exchange.deadline is None
+                assert exchange.context.read_control is not None
+                assert exchange.context.read_control.deadline_monotonic is None
 
             disconnect.cancel()
             caller.join(timeout=5)
@@ -2336,6 +2349,70 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
     assert stack.runtime.shutdown_settled
     with ArchiveStore.open_existing(destination, read_only=True):
         pass
+
+
+@pytest.mark.parametrize("route", ["uds", "execution"])
+@pytest.mark.parametrize("deadline_ms", [None, 1_000])
+def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, deadline_ms: int | None
+) -> None:
+    """Advance the controlled clock inside real aggregate SQL, without a sleep."""
+    from time import monotonic
+    from types import SimpleNamespace
+
+    from polylogue.archive.query.execution_control import QueryExecutionContext
+    from polylogue.operations import daemon_execution
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+    from polylogue.operations.operation_context import OperationContext
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    clock = {"now": monotonic()}
+    actual_count = ArchiveStore.count_sessions
+    counted: list[int] = []
+
+    def slow_count(self: ArchiveStore, **kwargs: Any) -> int:
+        clock["now"] += 1_000.0
+        count = actual_count(self, **kwargs)
+        counted.append(count)
+        return count
+
+    def deadline_exceeded(self: QueryExecutionContext) -> bool:
+        return self.deadline_monotonic is not None and clock["now"] > self.deadline_monotonic
+
+    def seed(root: Path) -> None:
+        _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        monkeypatch.setattr(ArchiveStore, "count_sessions", slow_count)
+        monkeypatch.setattr(QueryExecutionContext, "deadline_exceeded", deadline_exceeded)
+        monkeypatch.setattr("polylogue.daemon.operation_runtime.monotonic", lambda: clock["now"])
+        monkeypatch.setattr(daemon_execution, "monotonic", lambda: clock["now"])
+        if route == "uds":
+            envelope = stack.client.operation("query.aggregate", {"mode": "count"}, deadline_ms=deadline_ms)
+        else:
+            # The direct executor still pins a real controlled archive view;
+            # this runtime only supplies publication exclusion and observation.
+            context = OperationContext(
+                stack.archive_root,
+                MutationPrincipal("synthetic-read", frozenset({"read"}), "daemon"),
+                "daemon",
+                SimpleNamespace(
+                    publication_guard=stack.runtime.publication_guard, observe_snapshot=lambda *_args: None
+                ),
+            )
+            request = DaemonOperationRequest(
+                "query.aggregate", {"mode": "count"}, request_id="slow-direct-read", deadline_ms=deadline_ms
+            )
+            envelope = daemon_execution.execute_operation(request, context).to_dict()
+        assert envelope is not None
+        if deadline_ms is None:
+            assert envelope["outcome"] == "completed"
+            assert envelope["result"]["count"] == 1
+            assert counted == [1]
+        else:
+            assert envelope["outcome"] == "timed-out"
+            assert envelope["result"] is None
 
 
 @pytest.mark.parametrize("lane", ["semantic", "hybrid"])
