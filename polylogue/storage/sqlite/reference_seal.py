@@ -15,7 +15,7 @@ import tempfile
 import threading
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -556,20 +556,12 @@ class PreparedIndexMutation:
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
         NativeSQLCustodyOwner(conn, terminal_parent=self)
-        try:
-            leaf.assert_unchanged()
-            conn.row_factory = sqlite3.Row
-            conn.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
-            return conn
-        except BaseException:
-            try:
-                self._close_native_connection(conn)
-            except BaseException:
-                # Retain both actual handles for owner-thread recovery.
-                raise
-            else:
-                self._observers.pop(name, None)
-            raise
+        # Constructor and promotion callers settle this parent once on every
+        # failure. Closing here would retry a failed child during that unwind.
+        leaf.assert_unchanged()
+        conn.row_factory = sqlite3.Row
+        conn.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
+        return conn
 
     def _close_native_connection(self, connection: sqlite3.Connection) -> None:
         from polylogue.storage.sqlite.connection_profile import close_parent_native_connection
@@ -592,52 +584,44 @@ class PreparedIndexMutation:
         index_observer = self._observers["index"]
         before_index = int(index_observer.execute("PRAGMA data_version").fetchone()[0])
         index_observer.execute("BEGIN")
-        try:
-            for name in ("source", "user", "audit"):
-                observer = self._observers[name]
-                before = int(observer.execute("PRAGMA data_version").fetchone()[0])
-                observer.execute("BEGIN")
-                try:
-                    if name == "user":
-                        refs = _references_from_user(observer)
-                    elif name == "audit":
-                        refs = _references_from_audit(observer)
-                    else:
-                        observer.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
-                        refs = ()
-                    for raw in refs:
-                        _check_reference_cancellation()
-                        parsed = _relevant_ref(raw)
-                        if parsed is not None:
-                            target = _resolve(index_observer, parsed)
-                            if target is not None:
-                                self._scratch.execute(
-                                    "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                    (
-                                        target.kind,
-                                        target.owner_session_id,
-                                        target.object_id,
-                                        target.qualifier or "",
-                                        target.scope_session_id or "",
-                                        target.target_message_id or "",
-                                        target.wire_ref,
-                                        int(target.has_session_alias),
-                                    ),
-                                )
-                except BaseException:
-                    observer.rollback()
-                    raise
-                else:
-                    observer.commit()
-                after = int(observer.execute("PRAGMA data_version").fetchone()[0])
-                if before != after:
-                    raise ReferenceSealStaleError(f"{name}.db changed during reference preparation")
-                self._versions[name] = after
-        except BaseException:
-            index_observer.rollback()
-            raise
-        else:
-            index_observer.commit()
+        # Failed preparation retains its snapshots for the parent's one
+        # terminal cleanup attempt; successful readonly snapshots commit.
+        for name in ("source", "user", "audit"):
+            observer = self._observers[name]
+            before = int(observer.execute("PRAGMA data_version").fetchone()[0])
+            observer.execute("BEGIN")
+            if name == "user":
+                refs = _references_from_user(observer)
+            elif name == "audit":
+                refs = _references_from_audit(observer)
+            else:
+                observer.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
+                refs = ()
+            for raw in refs:
+                _check_reference_cancellation()
+                parsed = _relevant_ref(raw)
+                if parsed is not None:
+                    target = _resolve(index_observer, parsed)
+                    if target is not None:
+                        self._scratch.execute(
+                            "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                target.kind,
+                                target.owner_session_id,
+                                target.object_id,
+                                target.qualifier or "",
+                                target.scope_session_id or "",
+                                target.target_message_id or "",
+                                target.wire_ref,
+                                int(target.has_session_alias),
+                            ),
+                        )
+            observer.commit()
+            after = int(observer.execute("PRAGMA data_version").fetchone()[0])
+            if before != after:
+                raise ReferenceSealStaleError(f"{name}.db changed during reference preparation")
+            self._versions[name] = after
+        index_observer.commit()
         after_index = int(index_observer.execute("PRAGMA data_version").fetchone()[0])
         if before_index != after_index:
             raise ReferenceSealStaleError("index.db changed during reference preparation")
@@ -787,120 +771,103 @@ class PreparedIndexMutation:
         first: _ResolvedReference | None = None
         lost_count = 0
         version_before = version_after = -1
-        primary: BaseException | None = None
         schema: tuple[int, str | None] = (0, None)
         missing_count = 0
         first_missing: str | None = None
-        try:
-            version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
-            schema = self._candidate_schema_identity(observer)
-            observer.execute("BEGIN")
-            reference_rows = self._scratch.execute(
-                "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
-                "FROM resolved_refs ORDER BY kind, object_id, qualifier"
+        # The promotion preparer owns this seal on success and failure.
+        # Leave failed snapshots/handles registered for that terminal pass.
+        version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
+        schema = self._candidate_schema_identity(observer)
+        observer.execute("BEGIN")
+        reference_rows = self._scratch.execute(
+            "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
+            "FROM resolved_refs ORDER BY kind, object_id, qualifier"
+        )
+        for row in reference_rows:
+            _check_reference_cancellation()
+            ref = _ResolvedReference(
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                str(row[3]) or None,
+                str(row[4]) or None,
+                str(row[5]) or None,
+                str(row[6]),
+                bool(row[7]),
             )
-            for row in reference_rows:
-                _check_reference_cancellation()
-                ref = _ResolvedReference(
-                    str(row[0]),
-                    str(row[1]),
-                    str(row[2]),
-                    str(row[3]) or None,
-                    str(row[4]) or None,
-                    str(row[5]) or None,
-                    str(row[6]),
-                    bool(row[7]),
-                )
-                if not _still_resolves(observer, ref):
-                    lost_count += 1
-                    if first is None:
-                        first = ref
+            if not _still_resolves(observer, ref):
+                lost_count += 1
+                if first is None:
+                    first = ref
 
-            # Promotion also must not drop a session that the active index
-            # still serves from retained raw evidence. Keep this complete scan
-            # beside the typed-reference proof so neither is repeated under
-            # the lifecycle lock or physical writer lease.
-            active = self._observers["index"]
-            source = self._observers["source"]
-            active_before = int(active.execute("PRAGMA data_version").fetchone()[0])
-            source_before = int(source.execute("PRAGMA data_version").fetchone()[0])
-            if active_before != self._versions["index"] or source_before != self._versions["source"]:
-                raise ReferenceSealStaleError("archive changed before promotion coverage validation")
-            active.execute("BEGIN")
-            source.execute("BEGIN")
-            missing_count = 0
-            first_missing = None
-            after = ""
-            page_size = min(
-                512,
-                int(source.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
-                int(observer.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
-            )
-            if page_size < 1:
-                raise ReferenceSealError("SQLite variable limit cannot compare promotion coverage")
-            while True:
+        # Promotion also must not drop a session that the active index
+        # still serves from retained raw evidence. Keep this complete scan
+        # beside the typed-reference proof so neither is repeated under
+        # the lifecycle lock or physical writer lease.
+        active = self._observers["index"]
+        source = self._observers["source"]
+        active_before = int(active.execute("PRAGMA data_version").fetchone()[0])
+        source_before = int(source.execute("PRAGMA data_version").fetchone()[0])
+        if active_before != self._versions["index"] or source_before != self._versions["source"]:
+            raise ReferenceSealStaleError("archive changed before promotion coverage validation")
+        active.execute("BEGIN")
+        source.execute("BEGIN")
+        missing_count = 0
+        first_missing = None
+        after = ""
+        page_size = min(
+            512,
+            int(source.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
+            int(observer.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)),
+        )
+        if page_size < 1:
+            raise ReferenceSealError("SQLite variable limit cannot compare promotion coverage")
+        while True:
+            _check_reference_cancellation()
+            rows = active.execute(
+                "SELECT session_id, raw_id FROM sessions "
+                "WHERE session_id > ? AND raw_id IS NOT NULL ORDER BY session_id LIMIT ?",
+                (after, page_size),
+            ).fetchall()
+            if not rows:
+                break
+            after = str(rows[-1][0])
+            raw_ids = tuple(dict.fromkeys(str(row[1]) for row in rows))
+            retained = {
+                str(row[0])
+                for row in source.execute(
+                    f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
+                    raw_ids,
+                )
+            }
+            owed = tuple(str(row[0]) for row in rows if str(row[1]) in retained)
+            if not owed:
+                continue
+            present = {
+                str(row[0])
+                for row in observer.execute(
+                    f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' for _ in owed)})",
+                    owed,
+                )
+            }
+            for session_id in owed:
                 _check_reference_cancellation()
-                rows = active.execute(
-                    "SELECT session_id, raw_id FROM sessions "
-                    "WHERE session_id > ? AND raw_id IS NOT NULL ORDER BY session_id LIMIT ?",
-                    (after, page_size),
-                ).fetchall()
-                if not rows:
-                    break
-                after = str(rows[-1][0])
-                raw_ids = tuple(dict.fromkeys(str(row[1]) for row in rows))
-                retained = {
-                    str(row[0])
-                    for row in source.execute(
-                        f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
-                        raw_ids,
-                    )
-                }
-                owed = tuple(str(row[0]) for row in rows if str(row[1]) in retained)
-                if not owed:
-                    continue
-                present = {
-                    str(row[0])
-                    for row in observer.execute(
-                        f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' for _ in owed)})",
-                        owed,
-                    )
-                }
-                for session_id in owed:
-                    _check_reference_cancellation()
-                    if session_id not in present:
-                        missing_count += 1
-                        if first_missing is None:
-                            first_missing = session_id
-            source.rollback()
-            active.rollback()
-            active_after = int(active.execute("PRAGMA data_version").fetchone()[0])
-            source_after = int(source.execute("PRAGMA data_version").fetchone()[0])
-            if active_after != active_before or source_after != source_before:
-                raise ReferenceSealStaleError("archive changed during promotion coverage validation")
-            observer.rollback()
-            version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
-        except BaseException as exc:
-            primary = exc
-            with suppress(BaseException):
-                if observer.in_transaction:
-                    observer.rollback()
-            with suppress(BaseException):
-                if self._observers.get("source") is not None and self._observers["source"].in_transaction:
-                    self._observers["source"].rollback()
-            with suppress(BaseException):
-                if self._observers.get("index") is not None and self._observers["index"].in_transaction:
-                    self._observers["index"].rollback()
-        if primary is not None:
-            with suppress(BaseException):
-                observer.close()
-            raise primary
+                if session_id not in present:
+                    missing_count += 1
+                    if first_missing is None:
+                        first_missing = session_id
+        source.commit()
+        active.commit()
+        active_after = int(active.execute("PRAGMA data_version").fetchone()[0])
+        source_after = int(source.execute("PRAGMA data_version").fetchone()[0])
+        if active_after != active_before or source_after != source_before:
+            raise ReferenceSealStaleError("archive changed during promotion coverage validation")
+        observer.commit()
+        version_after = int(observer.execute("PRAGMA data_version").fetchone()[0])
         identity_after = _tier_identity(candidate)
         if identity_after != identity_before or version_after != version_before:
-            observer.close()
             raise ReferenceSealStaleError("promotion candidate changed during durable-reference validation")
         if lost_count and first is not None:
-            observer.close()
             raise ReferenceSealError(
                 f"index promotion would orphan {lost_count} resolved durable reference(s); "
                 f"first lost {first.kind} reference in session {first.owner_session_id!r}"

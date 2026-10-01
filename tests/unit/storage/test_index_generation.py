@@ -5,10 +5,11 @@ import json
 import multiprocessing
 import os
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1670,3 +1671,200 @@ def test_source_snapshot_failed_construction_exposes_ambiguous_descriptor_cleanu
     finally:
         os.close(descriptor)
         owner.close()
+
+
+@pytest.mark.parametrize("failure", ["orphan", "enumeration", "cancelled", "constructor"])
+def test_promotion_preparation_retains_primary_and_one_native_cleanup_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    import asyncio
+
+    from polylogue.storage.sqlite import reference_seal
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        native_sql_children,
+        retained_native_settlement_owners_on_current_thread,
+    )
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.index_writer import write_fixture_index_session
+    from tests.infra.reference_sessions import reference_session
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.promotion-native-proof", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            with archive.index_mutation_scope():
+                session_id = write_fixture_index_session(archive._conn, reference_session("proof-target"))
+            archive.save_annotation("proof-anchor", "session", session_id, "Retain the target")
+            archive.commit()
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    candidate = store.create(owner_id="proof-owner", source_snapshot="proof-snapshot")
+    active_before = Path(store.active_pointer).resolve(strict=True)
+    captured: list[reference_seal.PreparedIndexMutation] = []
+    cursors: list[ControlledCursor] = []
+    original_open = reference_seal.PreparedIndexMutation._open_observer
+    primary = (
+        asyncio.CancelledError("synthetic proof cancellation")
+        if failure == "cancelled"
+        else ValueError("synthetic proof enumeration failure")
+    )
+
+    def open_observer(seal: reference_seal.PreparedIndexMutation, name: str, path: Path) -> sqlite3.Connection:
+        connection = original_open(seal, name, path)
+        selected = "user" if failure == "constructor" else "candidate"
+        if name == selected:
+            captured.append(seal)
+            cursor = connection.cursor(factory=ControlledCursor)
+            cursor.execute("SELECT 1 UNION ALL SELECT 2")
+            assert next(cursor)[0] == 1
+            cursor.allow_cleanup.clear()
+            cursors.append(cursor)
+            if failure == "constructor":
+                raise primary
+        return connection
+
+    original_resolve = reference_seal._still_resolves
+
+    def resolve(connection: sqlite3.Connection, ref: reference_seal._ResolvedReference) -> bool:
+        if failure in {"enumeration", "cancelled"}:
+            raise primary
+        return original_resolve(connection, ref)
+
+    monkeypatch.setattr(reference_seal.PreparedIndexMutation, "_open_observer", open_observer)
+    monkeypatch.setattr(reference_seal, "_still_resolves", resolve)
+    with pytest.raises(BaseExceptionGroup) as refused:
+        store.prepare_promotion(candidate)
+    assert len(captured) == len(cursors) == 1
+    seal, cursor = captured[0], cursors[0]
+    original_failure, cleanup = refused.value.exceptions
+    if failure == "orphan":
+        assert isinstance(original_failure, reference_seal.ReferenceSealError)
+    else:
+        assert original_failure is primary
+    assert isinstance(cleanup, NativeConnectionSettlementError)
+    assert cleanup.owner in native_sql_children(seal)
+    assert cleanup.owner.connection is not None
+    assert cursor.close_attempts == 1
+    assert retained_native_settlement_owners_on_current_thread() == (seal,)
+    assert Path(store.active_pointer).resolve(strict=True) == active_before
+    assert store.load(candidate.generation_id).state == "inactive"
+    assert not seal._closed
+    cursor.allow_cleanup.set()
+    seal.close()
+    assert cursor.close_attempts == 2
+    assert seal._closed
+    assert native_sql_children(seal) == ()
+    assert retained_native_settlement_owners_on_current_thread() == ()
+
+
+@pytest.mark.parametrize("phase", ["constructor", "candidate"])
+def test_proof_snapshot_failure_rolls_back_once_and_preserves_both_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    from polylogue.storage.sqlite import connection_profile, reference_seal
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.index_writer import write_fixture_index_session
+    from tests.infra.reference_sessions import reference_session
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    with write_lease("test.promotion-snapshot-cleanup", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            with archive.index_mutation_scope():
+                session_id = write_fixture_index_session(archive._conn, reference_session("snapshot-target"))
+            archive.save_annotation("snapshot-anchor", "session", session_id, "Retain the target")
+            archive.commit()
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    candidate = store.create(owner_id="snapshot-owner", source_snapshot="snapshot")
+    primary = ValueError("synthetic snapshot enumeration failure")
+    rollback_failure = OSError("synthetic readonly rollback failure")
+    captured: list[ControlledConnection] = []
+
+    def connect(database: str | Path, **kwargs: Any) -> sqlite3.Connection:
+        return sqlite3.connect(database, factory=ControlledConnection, **kwargs)
+
+    def fail(connection: sqlite3.Connection) -> None:
+        assert isinstance(connection, ControlledConnection)
+        assert connection.in_transaction
+        connection.rollback_failure = rollback_failure
+        captured.append(connection)
+        raise primary
+
+    def user_references(connection: sqlite3.Connection) -> Generator[str]:
+        fail(connection)
+        yield "unreachable"
+
+    def resolve(connection: sqlite3.Connection, ref: reference_seal._ResolvedReference) -> bool:
+        fail(connection)
+        return False
+
+    monkeypatch.setattr(connection_profile, "connect_measured", connect)
+    if phase == "constructor":
+        monkeypatch.setattr(reference_seal, "_references_from_user", user_references)
+    else:
+        monkeypatch.setattr(reference_seal, "_still_resolves", resolve)
+    with pytest.raises(BaseExceptionGroup) as refused:
+        store.prepare_promotion(candidate)
+    assert refused.value.exceptions == (primary, rollback_failure)
+    assert len(captured) == 1
+    connection = captured[0]
+    assert connection.rollback_attempts == connection.close_attempts == 1
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+
+    (seal,) = retained_native_settlement_owners_on_current_thread()
+    seal.close()
+    assert connection.rollback_attempts == connection.close_attempts == 1
+    assert retained_native_settlement_owners_on_current_thread() == ()
+
+
+@pytest.mark.parametrize("mutation_failure", [False, True])
+def test_retained_promotion_proof_context_settles_its_creator_and_preserves_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation_failure: bool
+) -> None:
+    from polylogue.storage.sqlite import reference_seal
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        retained_native_settlement_owners_on_current_thread,
+    )
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.promotion-context-cleanup", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    candidate = store.create(owner_id="context-owner", source_snapshot="context-snapshot")
+    primary = ValueError("synthetic admitted promotion failure")
+    cursors: list[ControlledCursor] = []
+    original_open = reference_seal.PreparedIndexMutation._open_observer
+
+    def open_observer(seal: reference_seal.PreparedIndexMutation, name: str, path: Path) -> sqlite3.Connection:
+        connection = original_open(seal, name, path)
+        if name == "candidate":
+            cursor = connection.cursor(factory=ControlledCursor)
+            cursor.execute("SELECT 1 UNION ALL SELECT 2")
+            assert next(cursor)[0] == 1
+            cursors.append(cursor)
+        return connection
+
+    monkeypatch.setattr(reference_seal.PreparedIndexMutation, "_open_observer", open_observer)
+    prepared = store.prepare_promotion(candidate)
+    (cursor,) = cursors
+    if mutation_failure:
+        with pytest.raises(BaseExceptionGroup) as refused:
+            with prepared:
+                cursor.allow_cleanup.clear()
+                raise primary
+        assert refused.value.exceptions[0] is primary
+        cleanup = refused.value.exceptions[1]
+        assert isinstance(cleanup, NativeConnectionSettlementError)
+        assert cursor.close_attempts == 1
+        assert retained_native_settlement_owners_on_current_thread() == (prepared.reference_seal,)
+        cursor.allow_cleanup.set()
+        prepared.close()
+        assert cursor.close_attempts == 2
+    else:
+        with prepared:
+            assert cursor.close_attempts == 0
+        assert cursor.close_attempts == 1
+    assert prepared.reference_seal._closed
+    assert retained_native_settlement_owners_on_current_thread() == ()

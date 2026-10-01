@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
@@ -310,7 +311,7 @@ class PreparedIndexPromotion:
         except BaseException as close_error:
             if exc is None:
                 raise
-            raise close_error from exc
+            raise BaseExceptionGroup("Index promotion and proof cleanup failed", [exc, close_error]) from exc
 
 
 class RebuildLeaseUnavailableError(RuntimeError):
@@ -982,8 +983,13 @@ class IndexGenerationStore:
                 missing_session_count=seal.candidate_missing_session_count,
                 first_missing_session_id=seal.candidate_first_missing_session_id,
             )
-        except BaseException:
-            seal.close()
+        except BaseException as primary:
+            try:
+                seal.close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "Index promotion preparation and cleanup failed", [primary, cleanup]
+                ) from primary
             raise
 
     def promote(
