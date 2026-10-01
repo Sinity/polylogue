@@ -379,7 +379,17 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
                 kind, size = _FRAME_HEADER.unpack(_read_exact(process.stdout, _FRAME_HEADER.size))
                 if kind == b"D":
                     if (
-                        operation not in {"export", "bytes", "preflight_bytes", "staging_receipt", "copy", "backup"}
+                        operation
+                        not in {
+                            "export",
+                            "bytes",
+                            "preflight_bytes",
+                            "staging_receipt",
+                            "copy",
+                            "backup",
+                            "inspect_preflight",
+                            "inspect_explain",
+                        }
                         or handle is None
                     ):
                         raise OSError(errno.EPROTO, "unexpected SQLite export frame")
@@ -622,6 +632,7 @@ def _inspect_export_at(
     profile_identity: str,
     scratch: Path,
     classify: bool = False,
+    check_stop: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
     """Reconstruct retained exports from their accepted descriptor, preserving read semantics."""
     from polylogue.sources.parsers.hermes_state import _MESSAGE_READ_INDEXES
@@ -644,7 +655,9 @@ def _inspect_export_at(
         os.close(temporary)
         reconstruction = Path(name)
         try:
-            _materialize_export_records(_iter_export_handle(handle), reconstruction, read_indexes=_MESSAGE_READ_INDEXES)
+            _materialize_export_records(
+                _iter_export_handle(handle), reconstruction, read_indexes=_MESSAGE_READ_INDEXES, check_stop=check_stop
+            )
             parent_fd = os.open(reconstruction.parent, getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY)
             try:
                 with ExitStack() as stack:
@@ -656,6 +669,10 @@ def _inspect_export_at(
                     proof = _SourceDescriptors(parent_fd, reconstruction.name, identities)
                     with _source_connection_context(reconstruction, immutable=True, directory=parent_fd) as conn:
                         proof.validate()
+                        if check_stop is not None:
+                            conn.set_progress_handler(lambda: (check_stop(), 0)[1], 1000)
+                            if grouping is not None:
+                                grouping.connection.set_progress_handler(lambda: (check_stop(), 0)[1], 1000)
                         conn.execute("BEGIN").close()
                         _source_schema(conn)
                         proof.validate()
@@ -791,6 +808,7 @@ def _source_worker_main() -> None:
                 profile_identity=request["profile_identity"],
                 scratch=Path(request["scratch"]),
                 classify=request["operation"] == "classify",
+                check_stop=progress if request.get("progress") else None,
             )
             if export_inspection is not None:
                 _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
@@ -828,6 +846,10 @@ def _source_worker_main() -> None:
             ) as conn:
                 proof.validate()
                 _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
+                if request.get("progress"):
+                    conn.set_progress_handler(lambda: (progress(), 0)[1], 1000)
+                    if grouping is not None:
+                        grouping.connection.set_progress_handler(lambda: (progress(), 0)[1], 1000)
                 # Sorting a complete source or preview denominator must spill
                 # regardless of the SQLite build's default TEMP policy. Main
                 # descriptor proof precedes SQL; no transaction or TEMP object
@@ -1381,14 +1403,19 @@ def _materialize_export_records(
     destination: Path,
     *,
     read_indexes: Sequence[tuple[str, tuple[str, ...]]] = (),
+    check_stop: Callable[[], None] | None = None,
 ) -> None:
     with _source_connection_context(destination, readonly=False) as conn:
+        if check_stop is not None:
+            conn.set_progress_handler(lambda: (check_stop(), 0)[1], 1000)
         conn.execute("PRAGMA journal_mode=OFF")
         table: str | None = None
         columns: list[str] = []
         targets = ""
         materialized: dict[str, frozenset[str]] = {}
         for payload, kind in records:
+            if check_stop is not None:
+                check_stop()
             if kind == "header":
                 continue
             if kind == "table":

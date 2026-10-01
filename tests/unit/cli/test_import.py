@@ -268,10 +268,10 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
 
     submit = _RecordingSubmit()
 
-    def admissible(_path: Path, accumulator: Any, *, label: str, source_binding: Any) -> None:
+    def admissible(_path: Path, accumulator: Any, *, label: str, source_binding: Any, check_stop: Any) -> None:
         # Admission policy is isolated here; the real manifest owner must
         # still prove the original coordinate and staged database revision.
-        inspection = inspect_sqlite_source(_path, source_binding=source_binding)
+        inspection = inspect_sqlite_source(_path, source_binding=source_binding, check_stop=check_stop)
         assert inspection.domain == "hermes_state_db"
         accumulator.supported(label, Provider.HERMES)
 

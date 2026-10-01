@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -143,13 +144,26 @@ def _decode_inspection(value: dict[str, Any], *, preflight: bool = False) -> SQL
 
 
 def inspect_sqlite_source(
-    path: Path, *, preflight: bool = False, source_binding: SourceInputBinding | None = None
+    path: Path,
+    *,
+    preflight: bool = False,
+    source_binding: SourceInputBinding | None = None,
+    check_stop: Callable[[], None] | None = None,
 ) -> SQLiteInspection:
     """Inspect supported provider domains on one bound connection and snapshot."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
     from polylogue.sources.sqlite_export import _run_source_worker
 
+    def heartbeat() -> None:
+        if check_stop is not None:
+            check_stop()
+        check_compute_cancelled()
+
     operation = "inspect_preflight" if preflight else "inspect_explain"
-    return _decode_inspection(_run_source_worker(path, operation, source_binding=source_binding), preflight=preflight)
+    heartbeat()
+    return _decode_inspection(
+        _run_source_worker(path, operation, source_binding=source_binding, heartbeat=heartbeat), preflight=preflight
+    )
 
 
 @dataclass(frozen=True, slots=True)
