@@ -48,7 +48,7 @@ Session counters share one thirteen-measure declaration. Canonical writes recomp
 
 ## Remaining stage execution
 
-The generic stage engine remains for optional Sinex publication, raw-authority cache warming, attachment acquisition, Claude workflow, delegation evidence and standing queries. It still has path/session callbacks, barriers and stage state. Removing these requires moving each surviving product responsibility to its owner; the domain adoption does not establish complete stage retirement (`polylogue/daemon/convergence_stages.py:526-563`; `polylogue/daemon/convergence.py:733-764`).
+The generic stage engine remains for optional Sinex publication, raw-authority cache warming, attachment acquisition, Claude workflow, delegation evidence and standing queries. It still has path/session callbacks, barriers and stage state. Removing these requires moving each surviving product responsibility to its owner; the domain adoption does not establish complete stage retirement (`polylogue/daemon/convergence_stages.py:424-470`; `polylogue/daemon/convergence.py:733-764`).
 
 The stage walk itself runs off the writer lease. Each stage declares how it reaches the writer: `bridged` means it computes, downloads and drains outside admission and brackets only its short publication with `admit_stage_write`; `whole_execute` is the named residual for a stage that has not split compute from publication yet, and the engine holds the writer across its whole `execute`. Read the field, not the caller's control flow, to know which a stage is (`polylogue/daemon/convergence.py:690-697`; `polylogue/daemon/convergence.py:760-771`; `polylogue/core/stage_admission.py:59-70`). The live route no longer calls the stage pass at all: page admission takes no writer hold of its own, and the daemon's own stage walk owns the generic pass (`polylogue/daemon/convergence.py:704-712`).
 
@@ -87,6 +87,7 @@ lifecycle. Claude workflow materialization and its current ops receipt are owned
 by `operations/claude_workflow_convergence.py`. Source membership and quiet-file
 eligibility are owned by `operations/session_source_membership.py`; retained
 source paths use the configured durable root while session joins follow the
-active index generation. `operations/sinex_convergence.py` composes publication
+active index generation. An unreadable active generation raises instead of
+serving membership from a conventional shadow index. `operations/sinex_convergence.py` composes publication
 and its primary-mode derivation barrier. FTS readiness acquisition and publication
 are owned by `operations/fts_derivation.py`; the daemon stage schedules them.

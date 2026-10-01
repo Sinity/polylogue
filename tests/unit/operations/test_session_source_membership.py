@@ -49,3 +49,25 @@ def test_hot_probe_only_attachment_fault_is_optional(tmp_path: Path, monkeypatch
         conn.execute("CREATE TABLE raw_sessions (raw_id TEXT, wrong_column TEXT)")
         with pytest.raises(sqlite3.OperationalError):
             membership.hot_insight_session_ids(conn, ("session",), archive_root=tmp_path)
+
+
+def test_unreadable_promoted_index_cannot_fall_back_to_conventional_membership(tmp_path: Path) -> None:
+    """Serving the readable shadow after active acquisition fails makes this red."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    generation = tmp_path / ".index-generations" / "promoted"
+    generation.mkdir(parents=True)
+    index = generation / "index.db"
+    index.write_bytes(b"synthetic unreadable index")
+    (tmp_path / ".index-active-pointer").write_text(str(index), encoding="utf-8")
+    # The conventional initialized index remains valid and empty. It cannot
+    # supply an answer for the generation the archive has actually selected.
+    with pytest.raises(sqlite3.DatabaseError):
+        membership.session_ids_for_paths(tmp_path / "index.db", (Path("synthetic/session.jsonl"),))
+
+
+def test_absent_active_index_retains_explicit_empty_membership(tmp_path: Path) -> None:
+    """A genuinely absent tier remains distinct from a failed acquisition."""
+    path = Path("synthetic/session.jsonl")
+    assert membership.session_ids_for_paths(tmp_path / "index.db", (path,)) == {path: []}

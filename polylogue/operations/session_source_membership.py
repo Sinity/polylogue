@@ -55,38 +55,6 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection, *, archive_root: Path
     return True
 
 
-def active_archive_index_path(db_path: Path) -> Path | None:
-    """Resolve the active ``index.db`` for the archive rooted at ``db_path``'s directory.
-
-    ``db_path`` always lives directly in the archive root (whether it names
-    ``index.db``, ``source.db``, or another tier file), so ``db_path.parent``
-    is the archive root -- this mirrors ``ArchiveLocation``'s own resolution
-    instead of blindly renaming ``db_path`` to ``index.db`` in place, so an
-    active ``.index-active-pointer`` generation is still followed correctly.
-    """
-
-    index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
-    if not index_db.exists():
-        return None
-    try:
-        conn = open_readonly_connection(index_db)
-        try:
-            return index_db if _table_exists(conn, "sessions") else None
-        finally:
-            conn.close()
-    except Exception as exc:
-        emit(
-            "daemon.archive.index_probe_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="active_index_unreadable",
-            path=index_db,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return None
-
-
 def session_ids_for_source_paths(
     conn: sqlite3.Connection,
     paths: Sequence[Path],
@@ -186,10 +154,23 @@ def session_ids_for_paths(
     normalized = tuple(dict.fromkeys(Path(path) for path in paths))
     if not normalized:
         return {}
-    lookup_db = active_archive_index_path(db_path) or db_path
+    # A read failure cannot authorize serving the conventional shadow index.
+    lookup_db = ArchiveLocation.resolve(db_path.parent).active_index_path
     if not lookup_db.exists():
         return {path: [] for path in normalized}
-    conn = open_readonly_connection(lookup_db)
+    try:
+        conn = open_readonly_connection(lookup_db)
+    except Exception as exc:
+        emit(
+            "daemon.archive.index_probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="active_index_unreadable",
+            path=lookup_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        raise
     try:
         return session_ids_for_source_paths(conn, normalized, archive_root=db_path.parent)
     finally:
