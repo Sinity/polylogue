@@ -405,12 +405,12 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
             if provider_id is None:
                 if "ordinal" not in turn.model_fields_set or not 0 <= turn.ordinal < len(parsed.messages):
                     raise MessageOwnerAmbiguityError("capture attachment lacks a witnessed native message")
-                native = parsed.messages[turn.ordinal]
-                if native.role != turn.role or native.text != turn.text:
+                native_message = parsed.messages[turn.ordinal]
+                if native_message.role != turn.role or native_message.text != turn.text:
                     raise MessageOwnerAmbiguityError("capture attachment turn disagrees with its native message")
-                provider_id = native.provider_message_id or None
-                role = native.role
-                owner_coordinate = _message_owner_coordinate(native, turn.ordinal)
+                provider_id = native_message.provider_message_id or None
+                role = native_message.role
+                owner_coordinate = _message_owner_coordinate(native_message, turn.ordinal)
             candidate = _browser_capture_parsed_attachment(attachment, message_provider_id=provider_id, role=role)
             candidate.owner_coordinate = owner_coordinate
             envelope_attachments.append(candidate)

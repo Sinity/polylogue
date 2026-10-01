@@ -1131,7 +1131,9 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
         envelope["raw_provider_payload"] = payload if isinstance(payload, list) else [payload]
     elif provider.value in {"chatgpt", "claude-ai"}:
         envelope["raw_provider_payload"] = payload
-    return _canonical_json(envelope).encode("utf-8")
+    # Native mapping order supplies parser positions. Canonical key sorting
+    # here would change authored ordering while adding unrelated evidence.
+    return json.dumps(envelope, separators=(",", ":")).encode("utf-8")
 
 
 def _normalized_hook_envelope(hook: HookArtifact, provider: Any) -> dict[str, object]:

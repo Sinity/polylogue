@@ -179,7 +179,7 @@ def test_native_attachment_without_provider_id_requires_matching_retained_turn(
         turn["text"] = "Different authored content"
     payload = _capture_payload()
     session = cast(dict[str, object], payload["session"])
-    session.update(provider=provider.value, provider_session_id=native.provider_session_id, turns=[turn])
+    session.update(provider=provider.value, provider_session_id=native.provider_session_id, turns=[turn], model=None)
     payload["raw_provider_payload"] = raw
     if witness == "missing":
         # Refuse before a canonical dump can turn a default zero into evidence.
