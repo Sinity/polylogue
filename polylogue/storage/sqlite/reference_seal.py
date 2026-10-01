@@ -293,7 +293,7 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
             target_message_id=resolution.resolved_message_id,
         )
     if isinstance(ref, EvidenceRef):
-        from polylogue.storage.sqlite.queries.sessions_identity import resolve_session_id_in_index
+        from polylogue.storage.sqlite.session_identity import resolve_session_id_in_index
 
         try:
             scope_session_id = resolve_session_id_in_index(conn, ref.session_id)
@@ -368,7 +368,7 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
         row = conn.execute(f"{relation} SELECT session_id FROM {table} WHERE {column} = ?", (ref.format(),)).fetchone()
         return None if row is None else _ResolvedReference(ref.kind, str(row[0]), ref.object_id)
     if ref.kind == "session":
-        from polylogue.storage.sqlite.queries.sessions_identity import resolve_session_id_in_index
+        from polylogue.storage.sqlite.session_identity import resolve_session_id_in_index
 
         try:
             session_id = resolve_session_id_in_index(conn, ref.object_id)

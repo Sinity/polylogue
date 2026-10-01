@@ -355,13 +355,13 @@ from polylogue.storage.sqlite.connection_profile import (
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
-from polylogue.storage.sqlite.queries.sessions_identity import resolve_session_id_in_index, session_id_prefix_bounds
 from polylogue.storage.sqlite.query_watch import (
     clear_query_watch,
     register_query_watch,
     validate_watch_definition,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+from polylogue.storage.sqlite.session_identity import resolve_session_id_in_index, session_id_prefix_bounds
 from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
 

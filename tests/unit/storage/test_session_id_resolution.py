@@ -8,7 +8,8 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from polylogue.storage.sqlite.queries.sessions_identity import resolve_id, session_id_prefix_bounds
+from polylogue.storage.sqlite.queries.sessions_identity import resolve_id
+from polylogue.storage.sqlite.session_identity import session_id_prefix_bounds
 
 
 def test_session_id_prefix_bounds_make_indexable_range() -> None:
