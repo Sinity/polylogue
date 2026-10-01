@@ -1345,6 +1345,8 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
         "raw-failure-lifecycle",
         "captured-input-publication",
         "captured-input-replay",
+        "captured-zip-admission",
+        "captured-zip-restoration",
     }
     authorization = train.backup_authorization
     assert authorization is not None
