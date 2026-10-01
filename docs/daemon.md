@@ -753,14 +753,10 @@ convergence debt, cursor commits) that are not individually admitted, and
 process-wide lease enforcement refuses an unadmitted write. Convergence,
 embedding and session-profile work already runs outside it.
 
-The hold's declared bound is read at item boundaries (before each file is
-acquired, between archive records), never inside one. Past the bound the pass
-takes no new file: work already acquired or committed is finished and its
-cursor recorded, the unit reports the spent hold, and the files it did not
-reach stay backlog with no failure count. A file whose own acquisition or
-write outlasts the bound therefore lands in one pass instead of being
-re-acquired and refused on every pass. Only a hold already spent before the
-pass acquired anything ends the unit with `WriteHoldBudgetError`.
+Writer hold thresholds are telemetry. A slow acquired item finishes and
+publishes its cursor even after its actor threshold passes. An explicit
+`max_pass_seconds` schedules later items as backlog at item boundaries;
+it does not turn completed acquisition or append work into failure.
 
 Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.

@@ -263,6 +263,12 @@ class DaemonSupervisor:
         task.add_done_callback(settle_cancelled)
         self._tasks[name] = task
         self._resolve(spec, ServiceState.RUNNING)
+
+        def settle_unstarted(done: asyncio.Task[None]) -> None:
+            if done.cancelled() and self.state(name) is ServiceState.RUNNING:
+                self._settle(spec, ServiceState.STOPPED, reason="cancelled before service start")
+
+        task.add_done_callback(settle_unstarted)
         return task
 
     def mark_unavailable(self, name: str, *, reason: str) -> None:

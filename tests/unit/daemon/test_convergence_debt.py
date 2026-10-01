@@ -28,8 +28,8 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.replay_lineage import LineageGraph, LineageNode, codex_lineage_payload, seed_lineage_graph
 
 CHILD = "codex-session:s01"
@@ -89,7 +89,7 @@ def _contender(*aliases: str) -> ParsedSession:
 def _write(root: Path, session: ParsedSession) -> None:
     conn = _index(root)
     try:
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()

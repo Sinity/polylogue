@@ -48,10 +48,8 @@ from polylogue.sources.parsers.local_agent import (
 from polylogue.sources.parsers.otel_genai import parse as parse_otel_genai
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    read_archive_session_envelope,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from tests.infra.index_writer import write_fixture_index_session
 
 NOT_REPORTED = ToolResultUnknownReason.NOT_REPORTED.value
 DISTRUSTED = ToolResultUnknownReason.DISTRUSTED.value
@@ -106,7 +104,7 @@ def _action_states(conn: sqlite3.Connection, session_id: str) -> list[tuple[str 
 
 
 def _write(conn: sqlite3.Connection, session: ParsedSession) -> str:
-    return write_parsed_session_to_archive(conn, session)
+    return write_fixture_index_session(conn, session)
 
 
 # --------------------------------------------------------------------------

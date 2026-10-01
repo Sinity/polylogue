@@ -11,6 +11,7 @@ distinguished from a read that inspected it and found drift.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -134,7 +135,7 @@ async def test_async_index_connection_refuses_a_stale_attached_source_tier(tmp_p
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     source_path = tmp_path / "source.db"
     expected_source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
     with sqlite3.connect(source_path) as conn:
@@ -142,7 +143,7 @@ async def test_async_index_connection_refuses_a_stale_attached_source_tier(tmp_p
 
     async with aiosqlite.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True) as conn:
         with pytest.raises(SchemaSkew) as caught:
-            await configure_read_connection(conn)
+            await configure_read_connection(conn, archive_root=tmp_path)
 
     assert caught.value.tier == ArchiveTier.SOURCE.value
     assert caught.value.found == expected_source_version - 1

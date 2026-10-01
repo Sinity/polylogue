@@ -63,6 +63,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 if TYPE_CHECKING:
     from polylogue.sources.live.production_baseline import BaselineProgress, ProductionSourceBaseline
     from polylogue.sources.live.watcher import WatchSource
+    from polylogue.storage.index_generation import PreparedIndexPromotion
 
 
 _ACCEPTED_PROGRESS_STALL_AFTER_S = 60.0
@@ -300,6 +301,7 @@ class ColdBuildGeneration:
     _promoted: bool = False
     _discarded: bool = False
     _receipt_cleared: bool = False
+    _promotion_candidate_ready: bool = field(default=False, init=False, repr=False)
     settlement_state: str = "building"
     settlement_reason: str | None = None
     settlement_last_error: str | None = None
@@ -1006,17 +1008,16 @@ class ColdBuildGeneration:
         self._ops_checkpoint_holder = None
         holder.close()
 
-    def promote(self) -> IndexGeneration:
-        """Run the readiness pass and swap the active-index pointer."""
+    def prepare_promotion_candidate(self) -> None:
+        """Run the final candidate writes before off-gate promotion proof."""
         if self._promoted:
-            return self.reconcile_promoted()
+            return
         if self._discarded:
             raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
         import json
 
         from polylogue.sources.live.production_baseline import (
             ProductionBaselineError,
-            clear_pending_production_baseline,
         )
 
         receipt = json.loads((self.generation_root / "source-baseline.json").read_text(encoding="utf-8"))
@@ -1032,8 +1033,24 @@ class ColdBuildGeneration:
         # ``final_candidate_allocated_bytes == 0`` and ``calibrated_index_ratio``
         # returns its unmeasured default forever.
         self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
+        self._promotion_candidate_ready = True
+
+    def prepare_promotion_proof(self) -> PreparedIndexPromotion:
+        """Build the full retained reference/coverage proof outside writer custody."""
+        if not self._promotion_candidate_ready:
+            raise RuntimeError("cold-build candidate must finish readiness before promotion proof")
+        return self._store.prepare_promotion(self.generation)
+
+    def promote_prepared(self, prepared: PreparedIndexPromotion) -> IndexGeneration:
+        """Settle a previously prepared promotion while holding writer custody."""
+        if self._promoted:
+            return self.reconcile_promoted()
+        if self._discarded:
+            raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
+        if not self._promotion_candidate_ready:
+            raise RuntimeError("cold-build candidate readiness was not published")
         try:
-            promoted = self._store.promote(self.generation)
+            promoted = self._store.promote(self.generation, prepared)
         except Exception as exc:
             current = self._store.load(self.generation_id)
             if self._store.active_pointer.resolve() == Path(current.index_path).resolve():
@@ -1057,6 +1074,8 @@ class ColdBuildGeneration:
             raise
         self._promoted = True
         try:
+            from polylogue.sources.live.production_baseline import clear_pending_production_baseline
+
             clear_pending_production_baseline(self.archive_root, self.source_baseline)
             self._receipt_cleared = True
         finally:
@@ -1069,6 +1088,22 @@ class ColdBuildGeneration:
             reason=self.reason,
         )
         return promoted
+
+    def promote(self) -> IndexGeneration:
+        """Run readiness, prepare references off-gate, then swap the pointer."""
+        from polylogue.core.write_lease import current_write_lease
+
+        if self._promoted:
+            return self.reconcile_promoted()
+        if current_write_lease() is not None:
+            raise RuntimeError("cold-build promotion must prepare references before writer admission")
+        self.prepare_promotion_candidate()
+        with self.prepare_promotion_proof() as prepared:
+            from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
+
+            require_write_lease("cold-build promotion", archive_root=self.archive_root)
+            with write_lease("storage.cold_build.promote", archive_root=self.archive_root):
+                return self.promote_prepared(prepared)
 
     def reconcile_promoted(self) -> IndexGeneration:
         """Finish a failed receipt tail only after confirming the active pointer."""

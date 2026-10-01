@@ -1,20 +1,8 @@
-"""Observe the lifecycle of a private logical-source connection.
+"""Observe actual creator close on the logical-source read route.
 
-``open_logical_source`` rebuilds a retained export into a temporary SQLite
-file and unlinks it while the connection is open, so the connection is the
-only reference keeping that inode alive. A parser that returns without
-closing it leaks the inode for the rest of the process -- and that leak is
-invisible to any test that only inspects the rows the parser produced.
-
-Two independent witnesses live here:
-
-* :func:`record_logical_source_connections` patches the production
-  ``open_logical_source`` symbol a parser module imported and records whether
-  each handed-out connection was closed. The probe forwards every attribute
-  to the real connection, so the parser under test runs its real queries.
-* :func:`open_reconstruction_handles` counts this process's open file
-  descriptors that still point at a deleted reconstruction, with no patching
-  at all.
+The production context owns both native close and reconstruction cleanup.
+The proxy checks that close completed after the parser leaves that context;
+file-descriptor observation independently detects retained reconstructions.
 """
 
 from __future__ import annotations
@@ -31,7 +19,7 @@ import pytest
 
 from polylogue.sources import sqlite_export
 
-#: The prefix ``open_logical_source`` gives every reconstruction it creates.
+#: The prefix ``logical_source_context`` gives every reconstruction it creates.
 RECONSTRUCTION_PREFIX = ".polylogue-export."
 
 
@@ -48,19 +36,11 @@ class ConnectionProbe:
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(object.__getattribute__(self, "_connection"), name, value)
 
-    def __enter__(self) -> ConnectionProbe:
-        # sqlite3's own context manager commits or rolls back and never
-        # closes. Reproduce that exactly, so a caller that relies on it
-        # leaves this probe open.
-        object.__getattribute__(self, "_connection").__enter__()
-        return self
-
-    def __exit__(self, *exc_info: Any) -> Any:
-        return object.__getattribute__(self, "_connection").__exit__(*exc_info)
-
-    def close(self) -> None:
-        object.__setattr__(self, "closed", True)
-        object.__getattribute__(self, "_connection").close()
+    def observe_closed(self) -> None:
+        try:
+            object.__getattribute__(self, "_connection").execute("SELECT 1")
+        except sqlite3.ProgrammingError:
+            object.__setattr__(self, "closed", True)
 
 
 @contextmanager
@@ -68,30 +48,32 @@ def record_logical_source_connections(
     monkeypatch: pytest.MonkeyPatch,
     module: ModuleType,
 ) -> Iterator[list[ConnectionProbe]]:
-    """Record every connection *module* obtains from ``open_logical_source``.
+    """Record every connection *module* obtains from ``logical_source_context``.
 
     *module* must be the production module that imported the symbol, so the
     patch sits on the real read route rather than on a test-only wrapper.
     """
     opened: list[ConnectionProbe] = []
-    real_open = sqlite_export.open_logical_source
+    real_open = sqlite_export.logical_source_context
 
-    def _open(path: Path, **kwargs: Any) -> ConnectionProbe:
-        probe = ConnectionProbe(real_open(path, **kwargs))
-        opened.append(probe)
-        return probe
+    @contextmanager
+    def _open(path: Path, **kwargs: Any) -> Iterator[ConnectionProbe]:
+        probe: ConnectionProbe | None = None
+        try:
+            with real_open(path, **kwargs) as connection:
+                probe = ConnectionProbe(connection)
+                opened.append(probe)
+                yield probe
+        finally:
+            if probe is not None:
+                probe.observe_closed()
 
-    monkeypatch.setattr(module, "open_logical_source", _open)
-    try:
-        yield opened
-    finally:
-        for probe in opened:
-            if not probe.closed:
-                probe.close()
+    monkeypatch.setattr(module, "logical_source_context", _open)
+    yield opened
 
 
 def open_reconstruction_handles() -> int:
-    """Count open descriptors pointing at an unlinked reconstruction."""
+    """Count open descriptors pointing at a reconstruction."""
     handles = 0
     descriptors = Path("/proc/self/fd")
     for entry in descriptors.iterdir():
@@ -100,6 +82,6 @@ def open_reconstruction_handles() -> int:
         except OSError:
             continue
         name = target.removesuffix(" (deleted)")
-        if Path(name).name.startswith(RECONSTRUCTION_PREFIX):
+        if any(part.startswith(RECONSTRUCTION_PREFIX) for part in Path(name).parts):
             handles += 1
     return handles

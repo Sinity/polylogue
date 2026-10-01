@@ -27,11 +27,11 @@ from polylogue.mcp.payloads import MCPArchiveSessionSummaryPayload
 from polylogue.operations.daemon_reads import _session_list_row
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.surfaces.payloads import (
     session_list_envelope_from_summary,
     session_summary_envelope_from_summary,
 )
+from tests.infra.index_writer import write_fixture_index_session
 
 ECHOED_PROMPT = "please look at the failing test in the parser and tell me what is wrong"
 
@@ -73,7 +73,7 @@ def _write_session(
                     ],
                 )
             )
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

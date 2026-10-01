@@ -1342,7 +1342,8 @@ def test_get_context_delivery_return_annotation_resolves_at_runtime() -> None:
 
 
 async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: Path) -> None:
-    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.archive.context_models import ContextImage, ContextSegment, ContextSpec
+    from polylogue.context.compiler import context_snapshot_record_from_image
     from polylogue.core.refs import EvidenceRef
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
 
@@ -1390,7 +1391,8 @@ async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: 
 async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_path: Path) -> None:
     """fs1.11 x fs1.7: the facade method reaches the real spool + delivery ledger."""
 
-    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.archive.context_models import ContextImage, ContextSegment, ContextSpec
+    from polylogue.context.compiler import context_snapshot_record_from_image
     from polylogue.core.refs import EvidenceRef
     from polylogue.sources.hooks import append_hook_event
     from polylogue.sources.parsers.hermes_lifecycle import CONTEXT_INJECTED
@@ -1818,7 +1820,7 @@ async def test_query_completions_exposes_shared_completion_payload(tmp_path: Pat
 
 async def test_compile_context_builds_message_segments_from_refs_and_query(tmp_path: Path) -> None:
     """``compile_context`` executes ContextSpec over supported context views."""
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.archive.context_models import ContextSpec
 
     archive = _archive(tmp_path)
     await _seed_two_sessions(archive.config.db_path)
@@ -1881,7 +1883,7 @@ async def test_a_budget_degraded_image_reports_the_payload_it_carries(tmp_path: 
     Anti-vacuity: restoring `token_estimate=admission.token_cost` makes the
     squeezed image report 1 while its single segment reports 14.
     """
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.archive.context_models import ContextSpec
     from polylogue.context.scheduler import ContextLedgerRow
 
     archive = _archive(tmp_path)
@@ -1902,7 +1904,7 @@ async def test_a_budget_degraded_image_reports_the_payload_it_carries(tmp_path: 
 
 async def test_an_unsqueezed_image_still_reports_its_admitted_cost(tmp_path: Path) -> None:
     """The opposite direction: an image that fits reports the same number as before."""
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.archive.context_models import ContextSpec
     from polylogue.context.scheduler import ContextLedgerRow
 
     archive = _archive(tmp_path)
@@ -1921,7 +1923,7 @@ async def test_an_unsqueezed_image_still_reports_its_admitted_cost(tmp_path: Pat
 
 async def test_compile_context_composes_temporal_and_chronicle_views(tmp_path: Path) -> None:
     """Composed context images materialize non-message read views as segments."""
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.archive.context_models import ContextSpec
 
     archive = _archive(tmp_path)
     await _seed_two_sessions(archive.config.db_path)
@@ -1952,7 +1954,7 @@ async def test_compile_context_composes_temporal_and_chronicle_views(tmp_path: P
 
 async def test_compile_context_message_view_can_opt_out_of_assertion_injection(tmp_path: Path) -> None:
     """Plain message context stays message-shaped when assertion injection is off."""
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.archive.context_models import ContextSpec
     from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
     archive = _archive(tmp_path)
@@ -1989,7 +1991,7 @@ async def test_compile_context_message_view_can_opt_out_of_assertion_injection(t
 
 async def test_compile_context_records_missing_and_budget_omissions(tmp_path: Path) -> None:
     """``compile_context`` fails closed when seeds or budget do not resolve."""
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.archive.context_models import ContextSpec
 
     archive = _archive(tmp_path)
     await _seed_two_sessions(archive.config.db_path)
@@ -3519,6 +3521,46 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
                     ],
                 ),
             )
+            child_session_id = write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="ref-resolution-child-v1",
+                    parent_session_provider_id="ref-resolution-v1",
+                    branch_type=BranchType.FORK,
+                    title="Ref resolution child",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="resolve this public ref",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="resolve this public ref")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="child-tail",
+                            role=Role.ASSISTANT,
+                            text="child tail",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child tail")],
+                        ),
+                    ],
+                ),
+            )
+            other_session_id = write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="ref-resolution-other-v1",
+                    title="Unrelated ref resolution session",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="other-message",
+                            role=Role.USER,
+                            text="unrelated transcript",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unrelated transcript")],
+                        )
+                    ],
+                ),
+            )
 
         session_payload = await archive.resolve_ref(f"session:{session_id}")
         assert session_payload.resolved is True
@@ -3537,6 +3579,15 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         assert evidence_message_payload.resolved is True
         assert evidence_message_payload.payload_kind == "message"
         assert evidence_message_payload.evidence_refs == (f"{session_id}::{message_id}",)
+        assert (await archive.resolve_ref(f"{other_session_id}::{message_id}")).resolved is False
+        assert (await archive.resolve_ref(f"{other_session_id}::{message_id}::0")).resolved is False
+
+        inherited_message = await archive.resolve_ref(f"{child_session_id}::{message_id}")
+        assert inherited_message.resolved is True
+        assert inherited_message.payload_kind == "message"
+        inherited_block = await archive.resolve_ref(f"{child_session_id}::{message_id}::0")
+        assert inherited_block.resolved is True
+        assert inherited_block.payload_kind == "block"
 
         block_payload = await archive.resolve_ref(f"block:{message_id}:0")
         assert block_payload.resolved is True

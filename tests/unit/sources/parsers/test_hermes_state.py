@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
+from contextlib import AbstractContextManager, closing
 from pathlib import Path
 
 import pytest
@@ -25,7 +25,8 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
 from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.logical_source_probe import open_reconstruction_handles, record_logical_source_connections
 
 
@@ -488,7 +489,7 @@ def test_codex_message_items_prose_is_findable_by_search(tmp_path: Path) -> None
     initialize_archive_database(db, ArchiveTier.INDEX)
     conn = sqlite3.connect(db)
     try:
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
         matched = search_archive_blocks(conn, "wrapper untouched")
         block_texts = [
@@ -626,13 +627,13 @@ def test_the_per_session_message_read_is_answered_by_the_reconstruction_index(tm
     to re-scan and re-sort every reconstructed message for every session.
 
     Anti-vacuity: drop the ``read_indexes=`` argument at
-    ``hermes_state._connect_readonly`` (or delete the ``CREATE INDEX`` loop in
+    ``hermes_state._readonly_context`` (or delete the ``CREATE INDEX`` loop in
     ``materialize_export``) and the plan returns to the ``SCAN messages`` plus
     ``USE TEMP B-TREE FOR ORDER BY`` this asserts against.
     """
     _live, export = _state_db_export(tmp_path)
 
-    with closing(hermes_state._connect_readonly(export)) as conn:
+    with hermes_state._readonly_context(export) as conn:
         plan = [
             str(row[3])
             for row in conn.execute(
@@ -656,15 +657,15 @@ def test_the_read_index_changes_no_parsed_output(tmp_path: Path, monkeypatch: py
     the sibling test asserts the index is really there.
     """
     live, export = _state_db_export(tmp_path)
-    real_open = sqlite_export.open_logical_source
+    real_open = sqlite_export.logical_source_context
 
-    def _open_without_hint(path: Path, **kwargs: object) -> sqlite3.Connection:
+    def _open_without_hint(path: Path, **kwargs: object) -> AbstractContextManager[sqlite3.Connection]:
         kwargs.pop("read_indexes", None)
         return real_open(path, **kwargs)  # type: ignore[arg-type]
 
     hinted = [session.model_dump_json() for session in parse_state_db(export)]
     from_live = [session.model_dump_json() for session in parse_state_db(live)]
-    monkeypatch.setattr(hermes_state, "open_logical_source", _open_without_hint)
+    monkeypatch.setattr(hermes_state, "logical_source_context", _open_without_hint)
     unhinted = [session.model_dump_json() for session in parse_state_db(export)]
 
     assert hinted, "sanity: the fixture really parses"
@@ -678,11 +679,11 @@ def test_parse_state_db_closes_its_private_reader_on_success(tmp_path: Path, mon
     """A leaked connection is invisible to any assertion about rows.
 
     ``sqlite3``'s own context manager commits or rolls back and never closes,
-    so ``with _connect_readonly(...)`` returned with the connection open and
-    the already-unlinked reconstruction still backed by that handle.
+    so ``with _readonly_context(...)`` returned with the connection open and
+    the already-private reconstruction still backed by that handle.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
-    ``parse_state_db`` to a bare ``with _connect_readonly(...)`` and
+    Anti-vacuity: omit context exit in
+    ``parse_state_db`` and
     ``probe.closed`` is ``False`` while every parsed session stays correct.
     """
     _live, export = _state_db_export(tmp_path)
@@ -719,11 +720,11 @@ def test_parse_state_db_closes_its_private_reader_when_it_refuses(
 def test_parse_state_db_leaves_no_handle_on_the_unlinked_reconstruction(tmp_path: Path) -> None:
     """The production route, with nothing patched, strands no inode.
 
-    ``open_logical_source`` unlinks the reconstruction while it is open, so an
+    ``logical_source_context`` owns the reconstruction through native close, so an
     unclosed connection holds a deleted file's inode -- and the only place
     that is visible is this process's own descriptor table.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
+    Anti-vacuity: omit context exit in
     ``parse_state_db`` to a bare ``with`` and the descriptor count rises by
     one per parse and never falls.
     """

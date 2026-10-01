@@ -63,11 +63,6 @@ runtime_tables:
     disposition: disposable_scratch
     reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and tracks restored attachment references during one merge; close() removes the private scratch store."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
-    function: "_acompact_content_membership_ratio"
-    table: "membership"
-    disposition: disposable_scratch
-    reason: "The table is created only on a _DiskSignatureSequence connection backed by a TemporaryDirectory and counts one parent's signatures for one comparison; sequence cleanup closes and removes it."
-  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_prepare_cross_acquisition_union"
     table: "new_block_structural"
     disposition: disposable_scratch

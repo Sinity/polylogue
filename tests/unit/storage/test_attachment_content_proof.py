@@ -31,7 +31,7 @@ from polylogue.storage.blob_integrity import scan_attachment_coverage
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 
 _PAYLOAD = b"attachment bytes the archive claims it fetched"
 
@@ -68,7 +68,7 @@ def _seed_acquired_attachment(index_db: Path, store: BlobStore) -> tuple[str, st
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     try:
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             session,
             preacquired_attachment_blobs={

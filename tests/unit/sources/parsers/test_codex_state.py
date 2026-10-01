@@ -26,7 +26,7 @@ from polylogue.sources.parsers.codex_state import (
     marker_payload,
     parse_codex_state_db,
 )
-from polylogue.sources.sqlite_export import open_logical_source, read_export_header
+from polylogue.sources.sqlite_export import logical_source_context, read_export_header
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     snapshot_sqlite_database,
@@ -430,7 +430,7 @@ def test_state_export_retains_unprojected_thread_evidence(tmp_path: Path) -> Non
         "projects",
         "project_roots",
     }
-    with open_logical_source(export_path, immutable=True) as conn:
+    with logical_source_context(export_path, immutable=True) as conn:
         assert conn.execute("SELECT identity_key, payload FROM thread_artifacts").fetchall() == [
             ("artifact-key", '{"path":"notes.md"}')
         ]

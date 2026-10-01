@@ -134,7 +134,7 @@ def _profile_status(index_db: Path, session_id: str) -> str:
 
 def _bump_message_input_tokens(index_db: Path, session_id: str, amount: int) -> None:
     """Move a real profile input without touching an identity or a count."""
-    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.mutate", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         changed = conn.execute(
             "UPDATE messages SET input_tokens = COALESCE(input_tokens, 0) + ? WHERE session_id = ? AND position = 0",
             (amount, session_id),
@@ -153,17 +153,20 @@ def _registry(index_db: Path, session_id: str) -> DerivationRegistry:
                 lambda: _read_connection(index_db),
                 lambda: _write_connection(index_db),
                 session_scope=lambda _frame: scope,
+                archive_root=index_db.parent,
             ),
             SessionUsageRollupDerivation(
                 lambda: _read_connection(index_db),
                 lambda: _write_connection(index_db),
                 session_scope=lambda _frame: scope,
+                archive_root=index_db.parent,
             ),
             SessionProfileDerivation(
                 lambda: _read_connection(index_db),
                 lambda: _write_connection(index_db),
                 materializer_version=_MATERIALIZER_VERSION,
                 session_scope=lambda _frame: scope,
+                archive_root=index_db.parent,
             ),
         ]
     )
@@ -190,7 +193,7 @@ def _materialize(index_db: Path, session_id: str) -> bool:
     a session whose rollup ``SESSION_USAGE_ROLLUP_DOMAIN`` has not settled; it
     does not reconcile one behind the caller's back.
     """
-    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.publish", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         assert (
             publish_session_usage_rollup(
@@ -263,7 +266,7 @@ def test_a_refused_reconciliation_commits_nothing(archive: tuple[Path, str]) -> 
     _bump_message_input_tokens(index_db, session_id, 5000)
     before = _usage_rows(index_db, session_id)
 
-    with write_lease("test.rollup"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.rollup", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         refused = publish_session_usage_rollup(
             conn,
             session_id,
@@ -292,7 +295,7 @@ def test_the_profile_publisher_writes_no_canonical_usage(archive: tuple[Path, st
     with closing(_write_connection(index_db)) as conn:
         prepared = prepare_session_insight_partition(conn, session_id)
 
-    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.publish", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         assert publish_prepared_session_profile(conn, prepared) is False
 
     assert _usage_rows(index_db, session_id) == before
@@ -319,7 +322,7 @@ def test_a_bulk_rebuild_stamps_the_binding_it_reconciled(archive: tuple[Path, st
     index_db, session_id = archive
     assert _rollup_status(index_db, session_id) == "missing"
 
-    with write_lease("test.rebuild"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.rebuild", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         rebuild_session_insights_sync(conn, session_ids=[session_id])
 
     assert _rollup_status(index_db, session_id) == "valid"
@@ -368,7 +371,7 @@ def test_a_binding_row_whose_session_is_gone_retires(archive: tuple[Path, str]) 
     assert _materialize(index_db, session_id) is True
     assert _rollup_status(index_db, session_id) == "valid"
 
-    with write_lease("test.delete"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.delete", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -377,6 +380,7 @@ def test_a_binding_row_whose_session_is_gone_retires(archive: tuple[Path, str]) 
         lambda: _read_connection(index_db),
         lambda: _write_connection(index_db),
         session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
     )
     assert adapter.excess_page(None, cursor=None, limit=10) == ((session_id,), None)
 
@@ -397,7 +401,7 @@ def _skew_stored_rollup(index_db: Path, session_id: str, amount: int) -> None:
     refresh rewrites the same numbers and no assertion can tell a publisher
     that reconciles from one that does not.
     """
-    with write_lease("test.skew"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.skew", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         changed = conn.execute(
             "UPDATE session_model_usage SET input_tokens = input_tokens + ? WHERE session_id = ?",
             (amount, session_id),
@@ -433,7 +437,7 @@ def test_profile_publish_writes_no_usage(archive: tuple[Path, str]) -> None:
     skewed = _usage_rows(index_db, session_id)
     assert _rollup_status(index_db, session_id) == "valid", "a row edit does not move the binding"
 
-    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.publish", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         # True, not a blanket refusal: the profile is published, and it is
         # published without writing usage.
@@ -463,7 +467,7 @@ def test_profile_needs_a_settled_rollup(archive: tuple[Path, str]) -> None:
     assert _rollup_status(index_db, session_id) == "missing"
     before = _usage_rows(index_db, session_id)
 
-    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.publish", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         assert publish_session_profile(conn, session_id, input_binding=binding) is False
 
@@ -473,7 +477,7 @@ def test_profile_needs_a_settled_rollup(archive: tuple[Path, str]) -> None:
     assert _rollup_status(index_db, session_id) == "missing"
     assert _usage_rows(index_db, session_id) == before
 
-    with write_lease("test.rollup"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.rollup", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         assert (
             publish_session_usage_rollup(
@@ -506,7 +510,10 @@ def test_prepared_profile_requires_a_current_usage_certificate(archive: tuple[Pa
         if upstream_state == "changed-input":
             _bump_message_input_tokens(index_db, session_id, 5000)
         else:
-            with write_lease("test.old_recipe"), closing(_write_connection(index_db)) as conn:
+            with (
+                write_lease("test.old_recipe", archive_root=index_db.parent),
+                closing(_write_connection(index_db)) as conn,
+            ):
                 conn.execute(
                     "UPDATE session_usage_rollup_bindings SET recipe_version = ? WHERE session_id = ?",
                     ("previous-software-recipe", session_id),
@@ -526,7 +533,10 @@ def test_prepared_profile_requires_a_current_usage_certificate(archive: tuple[Pa
             "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
         ).fetchone()
         expected_demand_revision = 0 if pending is None else int(pending[0])
-    with write_lease("test.prepared_refusal"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.prepared_refusal", archive_root=index_db.parent),
+        closing(_write_connection(index_db)) as conn,
+    ):
         assert (
             publish_prepared_session_profile(conn, prepared, expected_demand_revision=expected_demand_revision) is False
         )
@@ -540,7 +550,7 @@ def test_prepared_profile_requires_a_current_usage_certificate(archive: tuple[Pa
             == before_latency
         )
 
-    with write_lease("test.settle_usage"), closing(_write_connection(index_db)) as conn:
+    with write_lease("test.settle_usage", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         assert publish_session_usage_rollup(
             conn,
@@ -556,7 +566,10 @@ def test_prepared_profile_requires_a_current_usage_certificate(archive: tuple[Pa
             "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
         ).fetchone()
         expected_demand_revision = 0 if pending is None else int(pending[0])
-    with write_lease("test.prepared_success"), closing(_write_connection(index_db)) as conn:
+    with (
+        write_lease("test.prepared_success", archive_root=index_db.parent),
+        closing(_write_connection(index_db)) as conn,
+    ):
         assert publish_prepared_session_profile(conn, fresh, expected_demand_revision=expected_demand_revision) is True
     assert _rollup_status(index_db, session_id) == "valid"
     assert _profile_status(index_db, session_id) == "valid"

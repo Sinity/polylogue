@@ -208,3 +208,24 @@ def test_head_declaration_matches_the_census() -> None:
     """The checked-in declaration names every current checked runtime route."""
     violations = collect_violations(repo_root=repo_root())
     assert not violations, violations
+
+
+def test_production_membership_creator_is_temporary_on_its_owned_reader() -> None:
+    root = repo_root()
+    observation = census_package(root / "polylogue", repo_root=root)
+    creations = [
+        creation
+        for creation in observation.runtime_creations
+        if creation.file == "polylogue/storage/sqlite/archive_tiers/write.py"
+        and creation.function == "_acompact_content_membership_ratio"
+        and creation.table == "membership"
+    ]
+    assert len(creations) == 1
+    assert creations[0].disposition == "temporary"
+    assert creations[0].key.endswith("::temporary")
+    assert not any(
+        str(violation.get("key", "")).startswith(
+            "polylogue/storage/sqlite/archive_tiers/write.py::_acompact_content_membership_ratio::membership"
+        )
+        for violation in collect_violations(repo_root=root)
+    )

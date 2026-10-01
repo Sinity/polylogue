@@ -19,7 +19,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.revision_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, canonical_authority_logical_key
+from polylogue.archive.revision_authority import canonical_authority_logical_key, raw_authority_parser_fingerprint
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
@@ -32,22 +32,6 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
-#: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
-#: whose classification semantics are known to have been superseded by a
-#: later, deliberately-corrected version of ``classify_membership_revisions``
-#: (polylogue-9dxn). A persisted ``ambiguous`` verdict recorded under one of
-#: these fingerprints is stale, not authoritative -- the terminal-decision
-#: check in ``storage/derived/raw.py`` treats it as replayable instead of
-#: durable debt. A verdict recorded under the CURRENT fingerprint, or with no census
-#: row at all (never independently confirmed which parser produced it),
-#: stays terminal -- absent evidence must default to conservative, not to
-#: "assume it's fixed". This set only affects the *terminal* gate; the
-#: *quiescence* gate (``uncensused_historical_revision_raw_ids``) accepts any
-#: known fingerprint (current or superseded) so a bump does not force a full
-#: archive re-census -- see that function's docstring.
-SUPERSEDED_MEMBERSHIP_FINGERPRINTS = frozenset(
-    {"revision-membership-v1", "revision-membership-v2", "revision-membership-v3"}
-)
 logger = get_logger(__name__)
 
 
@@ -923,8 +907,7 @@ def resolve_raw_authority_blocker(
 __all__ = [
     "BLOCKER_ORIGIN_FRONTIER_OBLIGATION",
     "BLOCKER_ORIGIN_KEY",
-    "RAW_AUTHORITY_PARSER_FINGERPRINT",
-    "SUPERSEDED_MEMBERSHIP_FINGERPRINTS",
+    "raw_authority_parser_fingerprint",
     "RawReplayPlan",
     "build_raw_replay_plan",
     "build_raw_replay_plans",

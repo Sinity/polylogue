@@ -45,21 +45,19 @@ possibly many times), this module decides:
 
 ## The connection interface
 
-Every function here takes ``store: RawRevisionGovernanceHost`` as its first
-argument instead of being a method on ``ArchiveStore``. ``ArchiveStore`` owns
+Source-only classification and revision binding take ``RawRevisionSourceHost``.
+Functions that lower Index changes take ``RawRevisionGovernanceHost`` and require
+the Store's exact mutation scope. Both protocols use the caller's actual tier
+connections. ``ArchiveStore`` owns
 a persistent lazy ``source.db`` connection plus in-flight write-batch state
 (pending blob receipts, pending raw-parse-state flushes, the blob publisher)
 as instance attributes; the governance surface needs a subset of that state
 but must not gain silent access to the other ~9,000 lines of read-surface
 internals that live alongside it. ``RawRevisionGovernanceHost`` is a
-``Protocol`` naming exactly the seven members this module touches
-(``_conn``, ``_ensure_source_conn``, ``_blob_publisher``,
-``_pending_raw_parse_states``, ``_preacquire_attachment_blobs``,
-``_write_counts``, ``_skipped_counts``). ``ArchiveStore`` already defines all
-seven under those exact names, so it satisfies the protocol structurally —
-no inheritance, no explicit adapter, and no import of ``ArchiveStore`` here
-(which would create an import cycle: ``archive.py`` must import this module
-to expose the governance surface as ``ArchiveStore`` methods again).
+``Protocol`` extending Source authority with the actual Index connection,
+mutation scope and pending publication state. ``ArchiveStore`` satisfies both
+interfaces structurally. The Drive Source adapter implements only Source
+classification and binding; it carries no placeholder Index handle.
 
 This was chosen over two alternatives: (a) passing the raw ``sqlite3.Connection``
 alone — insufficient, because several functions need the lazily-opened
@@ -100,11 +98,10 @@ import hashlib
 import itertools
 import json
 import sqlite3
-import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -116,7 +113,6 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -127,6 +123,7 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     is_work_event_raw_id,
     parser_census_is_complete,
+    raw_authority_parser_fingerprint,
     revision_authority_for_census_detail,
 )
 from polylogue.archive.revision_replay import (
@@ -147,7 +144,6 @@ from polylogue.core.raw_failure_evidence import (
     raw_failure_classification_reason,
 )
 from polylogue.core.sources import origin_from_provider, provider_from_origin
-from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.core.timestamp_authority import (
     normalize_session_timestamps,
     session_evidence_timestamps,
@@ -207,13 +203,14 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWriteRefusedError,
     _json_dumps,
     _next_session_event_position,
-    _repair_stale_session_observations,
+    _retain_stale_session_observations,
     raw_source_path,
     recorded_attachment_owner_gaps,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.reference_seal import IndexMutationScope
 
 
 class ActiveByteRevisionChainError(RuntimeError):
@@ -272,7 +269,16 @@ def _policy_snapshot_for_store(store: RawRevisionGovernanceHost) -> ExcisionPoli
     return build_excision_policy_snapshot(Path(archive_root))
 
 
-class RawRevisionGovernanceHost(Protocol):
+class RawRevisionSourceHost(Protocol):
+    """The actual Source authority used by classification and revision binding."""
+
+    archive_root: Path
+    _blob_publisher: ArchiveBlobPublisher | None
+
+    def _ensure_source_conn(self) -> sqlite3.Connection: ...
+
+
+class RawRevisionGovernanceHost(RawRevisionSourceHost, Protocol):
     """The narrow slice of ``ArchiveStore`` this module is allowed to touch.
 
     ``ArchiveStore`` satisfies this structurally (duck typing) — it is never
@@ -281,12 +287,13 @@ class RawRevisionGovernanceHost(Protocol):
     """
 
     _conn: sqlite3.Connection
-    archive_root: Path
-    _blob_publisher: ArchiveBlobPublisher | None
+    index_db_path: Path
+
+    def index_mutation_scope(self) -> AbstractContextManager[IndexMutationScope]: ...
+
+    _write_lease_archive_root: Path
     _inactive_candidate_durable_read_only: bool
     _pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]]
-
-    def _ensure_source_conn(self) -> sqlite3.Connection: ...
 
     def commit(self) -> None: ...
 
@@ -530,11 +537,11 @@ def _write_parsed_precedence_result(
 
     def write_with_reparse_receipt(*, force_replace: bool) -> None:
         """Keep a reparse receipt and its session replacement in one index txn."""
-        starts_transaction = not store._conn.in_transaction
-        commits_transaction = manage_transaction and starts_transaction
-        if starts_transaction:
-            store._conn.execute("BEGIN")
-        try:
+        from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+        if not manage_transaction and current_index_mutation_scope() is None:
+            raise RuntimeError("manage_transaction=False requires the caller's live Index mutation scope")
+        with store.index_mutation_scope() as mutation_scope:
             _reissue_accepted_head_reparse_receipt(
                 store,
                 raw_id=raw_id,
@@ -558,6 +565,7 @@ def _write_parsed_precedence_result(
                 # otherwise the caller owns it. Do not let the session
                 # writer's own ``with conn`` commit an outer transaction.
                 manage_transaction=False,
+                mutation_scope=mutation_scope,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
                 fresh_build=fresh_build,
@@ -575,13 +583,6 @@ def _write_parsed_precedence_result(
             )
             if not (writer_outcomes and writer_outcomes[-1].suppression_skipped):
                 _bind_retained_enrichment(store, session, session_id=session_id, raw_id=raw_id)
-        except BaseException:
-            if commits_transaction:
-                store._conn.rollback()
-            raise
-        else:
-            if commits_transaction:
-                store._conn.commit()
 
     if revision_authoritative:
         write_with_reparse_receipt(force_replace=source_index >= 0 and not fresh_build)
@@ -605,8 +606,8 @@ def _write_parsed_precedence_result(
         raw_id=raw_id,
         provider_session_id=session.provider_session_id,
     ):
-        with store._conn if manage_transaction else nullcontext():
-            _repair_stale_session_observations(store._conn, session_id, session)
+        with store.index_mutation_scope():
+            _retain_stale_session_observations(store._conn, session_id, session)
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,
@@ -678,8 +679,8 @@ def _write_parsed_precedence_result(
         ):
             # This early return bypasses the ordinary index write transaction;
             # make stale observation repair durable for direct governance calls.
-            with store._conn if manage_transaction else nullcontext():
-                _repair_stale_session_observations(store._conn, session_id, session)
+            with store.index_mutation_scope():
+                _retain_stale_session_observations(store._conn, session_id, session)
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
                 session_id=session_id,
@@ -1194,7 +1195,7 @@ def write_parsed_for_retained_raw_result(
 
 
 def bind_raw_revision(
-    store: RawRevisionGovernanceHost, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True
+    store: RawRevisionSourceHost, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True
 ) -> None:
     """Bind acquisition evidence; ``manage_transaction=False`` batches (polylogue-amg1)."""
     bind_source_raw_revision(store._ensure_source_conn(), raw_id, revision, manage_transaction=manage_transaction)
@@ -1380,7 +1381,7 @@ def raw_legacy_append_resynthesis_receipt(store: RawRevisionGovernanceHost, raw_
 
 
 def raw_membership_retired_full_revision_siblings(
-    store: RawRevisionGovernanceHost, logical_source_key: str
+    store: RawRevisionSourceHost, logical_source_key: str
 ) -> tuple[str, ...]:
     """Return raws previously retired from full-revision byte governance for this key.
 
@@ -1426,7 +1427,7 @@ def raw_membership_retired_full_revision_siblings(
     return tuple(str(row[0]) for row in rows)
 
 
-def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanceHost, logical_source_key: str) -> bool:
+def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionSourceHost, logical_source_key: str) -> bool:
     """Detect a same-``source_path`` sibling under a DIFFERENT byte-revision key.
 
     Polylogue-eqnv: two raws of the identical physical document can end
@@ -1534,7 +1535,7 @@ def classify_raw_revision_cohort_for_frozen_candidate(
 
 
 def classify_raw_revision_cohort_for_live_watch(
-    store: RawRevisionGovernanceHost,
+    store: RawRevisionSourceHost,
     logical_source_key: str,
 ) -> RevisionReplayPlan:
     """Classify a cohort for the live incremental-watch path.
@@ -1706,7 +1707,7 @@ def apply_prepared_raw_revision_classification(
 
 
 def _classify_raw_revision_cohort(
-    store: RawRevisionGovernanceHost,
+    store: RawRevisionSourceHost,
     logical_source_key: str,
     *,
     check_source_path_identity_split: bool,
@@ -2045,11 +2046,11 @@ def _raw_revision_authority(store: RawRevisionGovernanceHost, raw_id: str) -> st
     return None if row is None or row[0] is None else str(row[0])
 
 
-def raw_revision_replay_plan(store: RawRevisionGovernanceHost, logical_source_key: str) -> RevisionReplayPlan:
+def raw_revision_replay_plan(store: RawRevisionSourceHost, logical_source_key: str) -> RevisionReplayPlan:
     return plan_revision_replay(_raw_revision_candidates(store, logical_source_key))
 
 
-def _raw_revision_candidates(store: RawRevisionGovernanceHost, logical_source_key: str) -> list[RevisionCandidate]:
+def _raw_revision_candidates(store: RawRevisionSourceHost, logical_source_key: str) -> list[RevisionCandidate]:
     rows = (
         store._ensure_source_conn()
         .execute(
@@ -2261,7 +2262,7 @@ def raw_revision_material(
     return provider, payload_store.read_all(blob_hash), source_path, kind
 
 
-def _retained_blob_store(store: RawRevisionGovernanceHost) -> BlobStore:
+def _retained_blob_store(store: RawRevisionSourceHost) -> BlobStore:
     return store._blob_publisher or BlobStore(store.archive_root / "blob")
 
 
@@ -2420,13 +2421,13 @@ def raw_membership_census_rows(
     """
     if raw_ids is None:
         rows = conn.execute(
-            f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id", (RAW_AUTHORITY_PARSER_FINGERPRINT,)
+            f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id", (raw_authority_parser_fingerprint(),)
         ).fetchall()
     elif raw_ids:
         placeholders = ",".join("?" for _ in raw_ids)
         rows = conn.execute(
             f"SELECT {columns} FROM raw_sessions AS r WHERE r.raw_id IN ({placeholders}) ORDER BY r.raw_id",
-            (RAW_AUTHORITY_PARSER_FINGERPRINT, *raw_ids),
+            (raw_authority_parser_fingerprint(), *raw_ids),
         ).fetchall()
     else:
         rows = []
@@ -2585,69 +2586,65 @@ def _file_backed_parser_census_keys(
     parser_sessions: Sequence[ParsedSession],
 ) -> tuple[bool, bool, int, str]:
     """Compare parser and durable identities without a Python cohort-sized set."""
-    with tempfile.TemporaryDirectory(prefix="polylogue-parser-census-") as directory:
-        scratch = connect_scratch_database(Path(directory) / "identities.sqlite")
-        try:
-            scratch.execute("PRAGMA cache_size = -2048")
-            scratch.execute("PRAGMA temp_store = FILE")
-            scratch.execute(
-                "CREATE TABLE census_identity (kind INTEGER NOT NULL, logical_key TEXT NOT NULL, "
-                "PRIMARY KEY(kind, logical_key)) WITHOUT ROWID"
-            )
-            durable_valid = True
-            for (value,) in conn.execute(
-                "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
-                (raw_id,),
-            ):
-                try:
-                    key = canonical_authority_logical_key(str(value))
-                except ValueError:
-                    durable_valid = False
-                    break
-                scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
-            if (
-                durable_valid
-                and raw_logical_key is not None
-                and str(revision_kind) != RawRevisionKind.UNKNOWN.value
-                and not str(raw_logical_key).startswith("pending-raw:")
-            ):
-                try:
-                    key = canonical_authority_logical_key(str(raw_logical_key))
-                except ValueError:
-                    durable_valid = False
-                else:
-                    scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
-            iter_ids = getattr(parser_sessions, "iter_session_ids", None)
-            if callable(iter_ids):
-                parser_keys: Iterator[str] = iter_ids()
+    with scratch_connection_context(prefix="polylogue-parser-census-", filename="identities.sqlite") as scratch:
+        scratch.execute("PRAGMA cache_size = -2048")
+        scratch.execute("PRAGMA temp_store = FILE")
+        scratch.execute(
+            "CREATE TABLE census_identity (kind INTEGER NOT NULL, logical_key TEXT NOT NULL, "
+            "PRIMARY KEY(kind, logical_key)) WITHOUT ROWID"
+        )
+        durable_valid = True
+        for (value,) in conn.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
+            (raw_id,),
+        ):
+            try:
+                key = canonical_authority_logical_key(str(value))
+            except ValueError:
+                durable_valid = False
+                break
+            scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
+        if (
+            durable_valid
+            and raw_logical_key is not None
+            and str(revision_kind) != RawRevisionKind.UNKNOWN.value
+            and not str(raw_logical_key).startswith("pending-raw:")
+        ):
+            try:
+                key = canonical_authority_logical_key(str(raw_logical_key))
+            except ValueError:
+                durable_valid = False
             else:
-                parser_keys = (
-                    f"{session.source_name.value}:{session.provider_session_id}" for session in parser_sessions
-                )
-            for parser_key in parser_keys:
-                key = canonical_authority_logical_key(parser_key)
-                scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (0, ?)", (key,))
-            scratch.commit()
-            observed_count = int(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind = 0").fetchone()[0])
-            differs = scratch.execute(
-                "SELECT 1 FROM census_identity AS observed "
-                "WHERE observed.kind = 0 AND NOT EXISTS ("
-                "SELECT 1 FROM census_identity AS durable "
-                "WHERE durable.kind = 1 AND durable.logical_key = observed.logical_key) "
-                "UNION ALL "
-                "SELECT 1 FROM census_identity AS durable "
-                "WHERE durable.kind = 1 AND NOT EXISTS ("
-                "SELECT 1 FROM census_identity AS observed "
-                "WHERE observed.kind = 0 AND observed.logical_key = durable.logical_key) LIMIT 1"
-            ).fetchone()
-            logical_keys_json = scratch.execute(
-                "SELECT json_group_array(logical_key) FROM ("
-                "SELECT logical_key FROM census_identity WHERE kind = 0 ORDER BY logical_key)"
-            ).fetchone()[0]
-            return durable_valid, differs is None, observed_count, str(logical_keys_json or "[]")
-        finally:
-            scratch.close()
+                scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
+
+        iter_ids = getattr(parser_sessions, "iter_session_ids", None)
+        if callable(iter_ids):
+            parser_keys: Iterator[str] = iter_ids()
+        else:
+            parser_keys = (f"{session.source_name.value}:{session.provider_session_id}" for session in parser_sessions)
+        for parser_key in parser_keys:
+            key = canonical_authority_logical_key(parser_key)
+            scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (0, ?)", (key,))
+        scratch.commit()
+        observed_count = int(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind = 0").fetchone()[0])
+        differs = scratch.execute(
+            "SELECT 1 FROM census_identity AS observed "
+            "WHERE observed.kind = 0 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS durable "
+            "WHERE durable.kind = 1 AND durable.logical_key = observed.logical_key) "
+            "UNION ALL "
+            "SELECT 1 FROM census_identity AS durable "
+            "WHERE durable.kind = 1 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS observed "
+            "WHERE observed.kind = 0 AND observed.logical_key = durable.logical_key) LIMIT 1"
+        ).fetchone()
+        logical_keys_json = scratch.execute(
+            "SELECT json_group_array(logical_key) FROM ("
+            "SELECT logical_key FROM census_identity WHERE kind = 0 ORDER BY logical_key)"
+        ).fetchone()[0]
+        return durable_valid, differs is None, observed_count, str(logical_keys_json or "[]")
 
 
 def record_current_parser_source_census(
@@ -2713,7 +2710,7 @@ def record_current_parser_source_census(
         SELECT status, revision_authority FROM raw_membership_census
         WHERE raw_id = ? AND parser_fingerprint = ?
         """,
-        (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        (raw_id, raw_authority_parser_fingerprint()),
     ).fetchone()
     if parser_sessions is not None:
         durable_valid, identities_match, observed_count, observed_keys_json = _file_backed_parser_census_keys(
@@ -2816,7 +2813,7 @@ def record_current_parser_source_census(
         """,
         (
             raw_id,
-            RAW_AUTHORITY_PARSER_FINGERPRINT,
+            raw_authority_parser_fingerprint(),
             "complete" if complete else "failed",
             logical_keys_json,
             detail,
@@ -3043,7 +3040,7 @@ def expand_raw_membership_selection_sync(
 
 
 def raw_membership_raw_ids(
-    store: RawRevisionGovernanceHost,
+    store: RawRevisionSourceHost,
     logical_source_key: str,
     *,
     include_complete_raw_ids: frozenset[str] = frozenset(),
@@ -3818,7 +3815,7 @@ def apply_raw_revision_replay(
                 for row in source_conn.execute(
                     "SELECT raw_id FROM raw_authority_parser_census "
                     f"WHERE raw_id IN ({placeholders}) AND parser_fingerprint = ? AND status = 'complete'",
-                    (*raw_ids, RAW_AUTHORITY_PARSER_FINGERPRINT),
+                    (*raw_ids, raw_authority_parser_fingerprint()),
                 )
             )
         for raw_id in plan.accepted_raw_ids:

@@ -51,7 +51,7 @@ def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(storage_helpers, "connection_context", fake_connection_context)
     # The single seeding route is the production writer; this test is about
     # the commit/lock ordering around it, not about what it stores.
-    monkeypatch.setattr(storage_helpers, "write_parsed_session_to_archive", lambda *_, **__: None)
+    monkeypatch.setattr(storage_helpers, "write_fixture_index_session", lambda *_, **__: None)
 
     result = storage_helpers.store_records(
         session=make_session("test:1", title="Test", content_hash="abc123"),

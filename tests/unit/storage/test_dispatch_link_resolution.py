@@ -29,8 +29,8 @@ from polylogue.storage.blob_store import blob_store_for_connection
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import write_fixture_index_session
 
 _PARENT = "0d9f1c2e-parent-uuid"
 _T0 = "2026-05-28T00:59:00.000Z"
@@ -145,11 +145,11 @@ def _child_records(agent_id: str, *, parent: str = _PARENT) -> list[dict[str, ob
 
 
 def _write_parent(conn: sqlite3.Connection, records: list[dict[str, object]], **kwargs: object) -> str:
-    return write_parsed_session_to_archive(conn, parse_code(records, _PARENT), **kwargs)  # type: ignore[arg-type]
+    return write_fixture_index_session(conn, parse_code(records, _PARENT), **kwargs)  # type: ignore[arg-type]
 
 
 def _write_child(conn: sqlite3.Connection, agent_id: str, **kwargs: object) -> str:
-    return write_parsed_session_to_archive(conn, parse_code(_child_records(agent_id), f"agent-{agent_id}"), **kwargs)  # type: ignore[arg-type]
+    return write_fixture_index_session(conn, parse_code(_child_records(agent_id), f"agent-{agent_id}"), **kwargs)  # type: ignore[arg-type]
 
 
 def _link(conn: sqlite3.Connection, child_id: str) -> sqlite3.Row:
@@ -383,8 +383,8 @@ def test_origin_without_dispatch_identity_is_typed(tmp_path: Path) -> None:
             ],
         )
 
-    write_parsed_session_to_archive(conn, _session("codex-parent"))
-    child_id = write_parsed_session_to_archive(conn, _session("codex-child", parent="codex-parent"))
+    write_fixture_index_session(conn, _session("codex-parent"))
+    child_id = write_fixture_index_session(conn, _session("codex-child", parent="codex-parent"))
 
     link = _link(conn, child_id)
     assert link["resolved_dst_session_id"] is not None

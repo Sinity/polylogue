@@ -242,8 +242,8 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
     with sqlite3.connect(archive_root / "index.db") as index_conn:
         initialize_archive_tier(index_conn, ArchiveTier.INDEX)
 
+    from polylogue.archive.context_models import ContextImage
     from polylogue.config import Config
-    from polylogue.context.compiler import ContextImage
     from polylogue.operations.facade_writers import _archive_record_context_delivery
 
     with pytest.raises(ValueError, match="context-delivery user tier is not initialized"):
@@ -266,7 +266,7 @@ async def test_context_scheduler_ledger_has_a_facade_reader(
 
     with facade_daemon_writer(archive_root):
         async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-            from polylogue.context.compiler import ContextSpec
+            from polylogue.archive.context_models import ContextSpec
 
             await poly.compile_context(ContextSpec(seed_refs=("session:codex-session:ledger-target",), max_tokens=100))
             records = await poly.list_context_injection_ledger(target_session="codex-session:ledger-target")

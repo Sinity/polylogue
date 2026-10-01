@@ -317,6 +317,7 @@ def _row_int(row: object, index: int, key: str) -> int:
 def iter_pending_sessions(
     backend: RepositoryBackendProtocol,
     *,
+    archive_root: Path,
     rebuild: bool = False,
     max_sessions: int | None = None,
     max_messages: int | None = None,
@@ -328,7 +329,7 @@ def iter_pending_sessions(
     """
     from polylogue.storage.sqlite.connection import open_read_connection
 
-    with open_read_connection(backend.db_path) as conn:
+    with open_read_connection(backend.db_path, archive_root=archive_root) as conn:
         return select_pending_session_window(
             conn,
             rebuild=rebuild,

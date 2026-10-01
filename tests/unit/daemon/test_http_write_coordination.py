@@ -26,6 +26,7 @@ from polylogue.daemon.http import (
     DaemonAPIHTTPServer,
 )
 from polylogue.daemon.web_auth import WebCredentialScope
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
 from tests.infra.daemon_operations import running_daemon_operations
 
@@ -1012,49 +1013,48 @@ def test_standalone_http_server_stops_loop_after_late_writer_drain() -> None:
     assert shutdown.await_count == 2
 
 
-def test_coordinated_mutation_uses_control_admission_without_the_read_timeout() -> None:
-    """A mutation is scheduled as control and waits for its own substrate call.
-
-    Anti-vacuity: routing it as ``interactive-read`` would record the work
-    under the read class, and the read contract's timeout would be free to
-    detach a request whose writer lease is still held.
-    """
-
-    from polylogue.daemon.execution import BoundedComputeAdapter
-
-    kernel = BoundedComputeAdapter(max_workers=2, queue_units=2)
-    handler = object.__new__(DaemonAPIHandler)
-    handler._write_gate_depth = 1
-
-    async def run_direct(operation: Callable[[object], Awaitable[object]]) -> object:
-        return await operation(None)
+@pytest.mark.uses_real_clock("the admitted HTTP body executes on an actual writer worker")
+def test_coordinated_mutation_uses_existing_writer_worker_without_compute_admission(tmp_path: Path) -> None:
+    _coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
+    handler = _gated_handler(bridge)
+    workers: list[str] = []
 
     async def mutation(_polylogue: object) -> str:
+        from polylogue.core.write_lease import coordinator_write_lease_active
+
+        assert coordinator_write_lease_active()
+
+        async def inherited_child() -> bool:
+            return coordinator_write_lease_active()
+
+        assert not await asyncio.create_task(inherited_child())
+        assert coordinator_write_lease_active()
+        workers.append(threading.current_thread().name)
         return "persisted"
 
-    object.__setattr__(handler, "_run_archive_query", run_direct)
-    object.__setattr__(handler, "server", SimpleNamespace(execution_kernel=kernel))
-
     try:
-        assert handler._sync_run(mutation) == "persisted"
-        snapshot = kernel.snapshot()
-        assert snapshot.by_class("control").admitted == 1
+        with handler._write_gate("test.http.worker"):
+            assert handler._sync_run(mutation) == "persisted"
+        assert workers == ["polylogue-writer:test.http.worker"]
+        snapshot = handler.server.execution_kernel.snapshot()
+        assert snapshot.by_class("control").admitted == 0
         assert snapshot.by_class("interactive-read").admitted == 0
         assert snapshot.used_units == 0
     finally:
-        kernel.shutdown(wait=True)
+        handler.server.execution_kernel.shutdown(wait=True)
+        stop()
 
 
-def _loop_owned_bridge() -> tuple[object, object, Callable[[], None]]:
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-
+def _loop_owned_bridge(
+    archive_root: Path,
+) -> tuple[DaemonWriteCoordinator, DaemonWriteThreadBridge, Callable[[], None]]:
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     holder: list[DaemonWriteCoordinator] = []
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
-        holder.append(DaemonWriteCoordinator())
+        holder.append(DaemonWriteCoordinator(archive_root=archive_root))
         ready.set()
         loop.run_forever()
 
@@ -1089,28 +1089,28 @@ def _gated_handler(bridge: object) -> DaemonAPIHandler:
     return handler
 
 
-def test_gated_route_body_is_authorized_to_write_under_process_wide_enforcement() -> None:
+def test_gated_route_body_is_authorized_to_write_under_process_wide_enforcement(tmp_path: Path) -> None:
     """The legacy gate admits its route body under process-wide enforcement.
 
     polylogue-h5l6i: ``hold()`` entered the lease in a coroutine on the owner
     loop while the route body ran on a kernel worker in a freshly created event
     loop, so a gated handler lost its admitted writer grant.
 
-    Anti-vacuity: drop the ``adopt_write_lease`` wrapper from
-    ``_archive_query_coroutine`` and this returns ``"unleased"``.
+    Anti-vacuity: drop the actual child task adoption from
+    the admitted writer worker and this returns ``"unleased"``.
     """
     from polylogue.storage.sqlite.write_lease import (
         arm_write_lease_enforcement,
         require_write_lease,
     )
 
-    coordinator, bridge, stop = _loop_owned_bridge()
+    coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
     del coordinator
     handler = _gated_handler(bridge)
 
     async def mutation(_polylogue: object) -> str:
         try:
-            require_write_lease("write gated route body")
+            require_write_lease("write gated route body", archive_root=tmp_path)
         except Exception as exc:  # the refusal is the observation under test
             return f"unleased:{type(exc).__name__}"
         return "leased"
@@ -1124,7 +1124,7 @@ def test_gated_route_body_is_authorized_to_write_under_process_wide_enforcement(
         stop()
 
 
-def test_a_thread_outside_the_admitted_body_still_cannot_write() -> None:
+def test_a_thread_outside_the_admitted_body_still_cannot_write(tmp_path: Path) -> None:
     """The load-bearing negative: holding the gate is not blanket authorization.
 
     While one request is admitted and its body is authorized, a thread that was
@@ -1144,7 +1144,7 @@ def test_a_thread_outside_the_admitted_body_still_cannot_write() -> None:
         require_write_lease,
     )
 
-    coordinator, bridge, stop = _loop_owned_bridge()
+    coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
     del coordinator
     handler = _gated_handler(bridge)
     rogue_result: list[str] = []
@@ -1153,7 +1153,7 @@ def test_a_thread_outside_the_admitted_body_still_cannot_write() -> None:
     async def mutation(_polylogue: object) -> str:
         def rogue() -> None:
             try:
-                require_write_lease("write user.db from an unadmitted thread")
+                require_write_lease("write user.db from an unadmitted thread", archive_root=tmp_path)
             except UnleasedWriteError:
                 rogue_result.append("refused")
             else:
@@ -1163,7 +1163,7 @@ def test_a_thread_outside_the_admitted_body_still_cannot_write() -> None:
         thread = threading.Thread(target=rogue)
         thread.start()
         thread.join(timeout=5.0)
-        require_write_lease("write user.db annotation")
+        require_write_lease("write user.db annotation", archive_root=tmp_path)
         return "leased"
 
     try:
@@ -1178,29 +1178,58 @@ def test_a_thread_outside_the_admitted_body_still_cannot_write() -> None:
     assert rogue_result == ["refused"]
 
 
-def test_inline_gated_write_presents_the_grant_on_the_request_thread() -> None:
-    """A route that writes inline is its own execution unit and must present it.
+@pytest.mark.uses_real_clock("actual inline Ops SQL executes and closes on the admitted writer worker")
+def test_inline_ops_route_uses_admitted_worker_and_closes_actual_handles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue import paths
+    from polylogue.storage.sqlite import connection_profile
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement
 
-    ``_handle_mcp_call_log`` opens its ops.db connection on the request thread
-    rather than through ``_sync_run``; it was refused by the same defect.
-
-    Anti-vacuity: remove the ``_write_authorization()`` block around that
-    write and this probe raises ``UnleasedWriteError``.
-    """
-    from polylogue.storage.sqlite.write_lease import (
-        arm_write_lease_enforcement,
-        require_write_lease,
-    )
-
-    coordinator, bridge, stop = _loop_owned_bridge()
-    del coordinator
+    initialize_active_archive_root(tmp_path)
+    monkeypatch.setattr(paths, "archive_root", lambda: tmp_path)
+    _coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
     handler = _gated_handler(bridge)
+    body = json.dumps(
+        {
+            "call_id": "neutral-call",
+            "tool_name": "neutral-tool",
+            "session_ids": [],
+            "started_at_ms": 1,
+            "finished_at_ms": 2,
+            "success": True,
+        }
+    ).encode()
+    handler.headers = Message()
+    handler.headers["Content-Length"] = str(len(body))
+    handler.rfile = BytesIO(body)
+    replies: list[tuple[object, object]] = []
+    object.__setattr__(handler, "_send_json", lambda status, result: replies.append((status, result)))
+    object.__setattr__(handler, "_send_error", lambda *args: pytest.fail(f"unexpected refusal: {args}"))
+    closed: list[tuple[threading.Thread, sqlite3.Connection]] = []
+    real_close = connection_profile.NativeSQLCustodyOwner.close
 
+    def observe_close(owner: connection_profile.NativeSQLCustodyOwner) -> None:
+        connection = owner.connection
+        assert connection is not None
+        real_close(owner)
+        with pytest.raises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+        closed.append((threading.current_thread(), connection))
+
+    monkeypatch.setattr(connection_profile.NativeSQLCustodyOwner, "close", observe_close)
     try:
-        with arm_write_lease_enforcement(process_wide=True):
-            with handler._write_gate("http.telemetry.mcp-call"):
-                with handler._write_authorization():
-                    assert require_write_lease("write ops.db") is not None
+        with arm_write_lease_enforcement(process_wide=True), handler._write_gate("http.telemetry.mcp-call"):
+            handler._handle_mcp_call_log()
+        assert replies == [(HTTPStatus.OK, {"ok": True, "call_id": "neutral-call"})]
+        assert len(closed) == 2
+        assert all(thread.name == "polylogue-writer:http.telemetry.mcp-call" for thread, _conn in closed)
+        with contextlib.closing(sqlite3.connect(f"file:{tmp_path / 'ops.db'}?mode=ro", uri=True)) as reader:
+            assert reader.execute("SELECT call_id FROM mcp_call_log").fetchall() == [("neutral-call",)]
+        snapshot = handler.server.execution_kernel.snapshot()
+        assert snapshot.by_class("control").admitted == 0
     finally:
         handler.server.execution_kernel.shutdown(wait=True)
         stop()
@@ -1321,7 +1350,8 @@ def test_delete_preview_plan_is_reconstructed_by_its_audit_owner(tmp_path: Path)
         _load_preview(audit, preview.preview_ref, principal, require_prepared=True)
 
 
-def test_an_indeterminate_mutation_keeps_the_writer_gate_until_its_body_settles() -> None:
+@pytest.mark.uses_real_clock("client deadline expires while its admitted writer continues to actual settlement")
+def test_an_indeterminate_mutation_keeps_the_writer_gate_until_its_body_settles(tmp_path: Path) -> None:
     """The production route's bounded wait must not release a live writer.
 
     polylogue-8r4zq AC2, at the real seam: ``_write_gate`` wraps ``_sync_run``,
@@ -1340,7 +1370,7 @@ def test_an_indeterminate_mutation_keeps_the_writer_gate_until_its_body_settles(
     """
     from polylogue.daemon.http import DaemonMutationIndeterminate
 
-    coordinator, bridge, stop = _loop_owned_bridge()
+    coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
     handler = _gated_handler(bridge)
     # A short declared deadline is the whole point: the body outlives it.
     object.__setattr__(handler, "headers", {"X-Polylogue-Deadline-Ms": "50"})
@@ -1483,3 +1513,133 @@ def test_cli_delete_keeps_progressing_past_its_request_deadline(
         assert conn.execute("SELECT COUNT(*) FROM machine_requests WHERE stop_reason IS NOT NULL").fetchone() == (0,)
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.uses_real_clock("HTTP failed cleanup remains on its admitted original worker until successor settlement")
+def test_http_body_retains_failed_sql_cleanup_and_refuses_successor(tmp_path: Path) -> None:
+    from polylogue.daemon.write_coordinator import DaemonWriterSettlementError
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_custody_probe import archive_custody_available
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    initialize_active_archive_root(tmp_path)
+    _coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
+    handler = _gated_handler(bridge)
+    handles: list[SettlementHandle] = []
+
+    async def mutation(_archive: object) -> None:
+        store = ArchiveStore(tmp_path, initialize=False)
+        handle = SettlementHandle(store._conn)
+        handles.append(handle)
+        store._conn = handle  # type: ignore[assignment]
+        store._enter_mutation_lease()
+        handle.connection.execute("BEGIN IMMEDIATE")
+        try:
+            store.close()
+        except ArchiveStoreSettlementError:
+            pass
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError), handler._write_gate("test.http.failed_sql"):
+            handler._sync_run(mutation)
+        assert handles[0].in_transaction
+        assert not archive_custody_available(tmp_path)
+        with pytest.raises(DaemonWriterSettlementError):
+            bridge.run_sync("test.http.failed_successor", lambda: None)
+        assert handles[0].in_transaction
+        handles[0].allow_cleanup.set()
+        bridge.run_sync("test.http.settled_successor", lambda: None)
+        handles[0].owner.join()
+        assert not handles[0].owner.is_alive()
+        assert archive_custody_available(tmp_path)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        if handles and handles[0].owner.is_alive():
+            bridge.run_sync("test.http.cleanup", lambda: None)
+            handles[0].owner.join()
+        handler.server.execution_kernel.shutdown(wait=True)
+        stop()
+
+
+@pytest.mark.uses_real_clock("inline Ops commit does not release original-worker custody after failed native close")
+def test_inline_ops_failed_close_has_retryable_answer_and_original_worker_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue import paths
+    from polylogue.daemon.write_coordinator import DaemonWriterSettlementError
+    from polylogue.storage.sqlite import connection_profile
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_custody_probe import archive_custody_available
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    initialize_active_archive_root(tmp_path)
+    monkeypatch.setattr(paths, "archive_root", lambda: tmp_path)
+    _coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
+    handler = _gated_handler(bridge)
+    handler._response_started = False
+    body = json.dumps(
+        {
+            "call_id": "neutral-close-call",
+            "tool_name": "neutral-tool",
+            "session_ids": [],
+            "started_at_ms": 1,
+            "finished_at_ms": 2,
+            "success": True,
+        }
+    ).encode()
+    handler.headers = Message()
+    handler.headers["Content-Length"] = str(len(body))
+    handler.rfile = BytesIO(body)
+    replies: list[tuple[object, dict[str, object]]] = []
+    object.__setattr__(handler, "_send_json", lambda status, result, **_kwargs: replies.append((status, result)))
+    handles: list[SettlementHandle] = []
+    real_open = connection_profile.open_daemon_connection
+    opened = 0
+
+    class TransactionHandle(SettlementHandle):
+        def __enter__(self) -> TransactionHandle:
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self.connection.__exit__(*args)  # type: ignore[arg-type]
+
+    def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        nonlocal opened
+        connection = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        opened += 1
+        if opened == 2:
+            handle = TransactionHandle(connection)
+            handles.append(handle)
+            return handle  # type: ignore[return-value]
+        return connection
+
+    monkeypatch.setattr(connection_profile, "open_daemon_connection", controlled_open)
+    try:
+        with handler._write_gate("http.telemetry.mcp-call"):
+            handler._handle_mcp_call_log()
+        assert len(replies) == 1
+        assert replies[0][0] == HTTPStatus.SERVICE_UNAVAILABLE
+        assert replies[0][1]["error"] == "writer_sql_unsettled"
+        assert not handles[0].in_transaction  # Actual commit succeeded before close failed.
+        assert not archive_custody_available(tmp_path)
+        with pytest.raises(DaemonWriterSettlementError):
+            bridge.run_sync("test.ops.failed_successor", lambda: None)
+        handles[0].allow_cleanup.set()
+        bridge.run_sync("test.ops.settled_successor", lambda: None)
+        handles[0].owner.join()
+        assert not handles[0].owner.is_alive()
+        assert archive_custody_available(tmp_path)
+        with contextlib.closing(sqlite3.connect(tmp_path / "ops.db")) as reader:
+            assert reader.execute("SELECT call_id FROM mcp_call_log").fetchall() == [("neutral-close-call",)]
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        if handles and handles[0].owner.is_alive():
+            bridge.run_sync("test.ops.cleanup", lambda: None)
+            handles[0].owner.join()
+        handler.server.execution_kernel.shutdown(wait=True)
+        stop()

@@ -11,9 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.context_models import ContextImage
 from polylogue.config import Config
 from polylogue.config import active_archive_root as _active_archive_root
-from polylogue.context.compiler import ContextImage
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.refs import normalize_object_ref_text, parse_public_ref
 from polylogue.operations.archive_mutation import require_archive_write_authority as _require_archive_write_authority

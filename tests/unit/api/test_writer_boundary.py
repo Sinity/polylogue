@@ -79,7 +79,7 @@ async def test_public_facade_mutations_roundtrip_through_daemon_writer(
                     == 1
                 )
 
-            from polylogue.context.compiler import ContextImage, ContextSpec
+            from polylogue.archive.context_models import ContextImage, ContextSpec
 
             image = ContextImage(spec=ContextSpec(seed_refs=("session:codex:synthetic",), read_views=()), segments=())
             delivered = await archive.record_context_delivery(

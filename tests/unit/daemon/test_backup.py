@@ -2870,10 +2870,11 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     assert not any(package.glob("*.db-shm"))
     assert detail["operational_admission"] == "degraded"
     assert detail["requires_convergence"] == ["index.db", "ops.db"]
-    assert isinstance(detail["restored_tiers"], list)
-    assert "index.db" not in detail["restored_tiers"]
-    assert "ops.db" not in detail["restored_tiers"]
-    assert "embeddings.db" in detail["restored_tiers"]
+    restored_tiers = detail["restored_tiers"]
+    assert isinstance(restored_tiers, list)
+    assert "index.db" not in restored_tiers
+    assert "ops.db" not in restored_tiers
+    assert "embeddings.db" in restored_tiers
     assert (package / ".maintenance-state/durable-change-trains/.bootstrap").read_bytes() == original_marker
     assert (destination / ".maintenance-state/durable-change-trains/source-002.json").is_file()
     namespace = hashlib.sha256(str(detail["source_manifest_id"]).encode()).hexdigest()

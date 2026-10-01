@@ -39,10 +39,8 @@ from polylogue.storage.sqlite.archive_tiers.session_suppression import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
-from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveWriteOutcome,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
+from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +99,7 @@ def _replay(archive_root: Path, session: ParsedSession) -> ArchiveWriteOutcome:
     conn = sqlite3.connect(_index_path(archive_root))
     conn.row_factory = sqlite3.Row
     try:
-        write_parsed_session_to_archive(conn, session, write_outcome=outcomes)
+        write_fixture_index_session(conn, session, write_outcome=outcomes)
     finally:
         conn.close()
     assert len(outcomes) == 1
@@ -194,7 +192,7 @@ def test_an_archive_without_a_user_tier_is_not_blocked(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     try:
         outcomes: list[ArchiveWriteOutcome] = []
-        write_parsed_session_to_archive(conn, _parsed("bare-one"), write_outcome=outcomes)
+        write_fixture_index_session(conn, _parsed("bare-one"), write_outcome=outcomes)
     finally:
         conn.close()
     assert outcomes[0].wrote is True
@@ -210,7 +208,6 @@ def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: 
     """
     import hashlib
 
-    from polylogue.pipeline.services.ingest_batch._core import _write_session
     from polylogue.pipeline.services.ingest_worker import SessionWritePayload
     from polylogue.sources.parsers.base_models import ParsedAttachment
 
@@ -245,10 +242,10 @@ def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: 
     conn = sqlite3.connect(_index_path(archive_root))
     conn.row_factory = sqlite3.Row
     try:
-        changed, counts = _write_session(
+        changed, counts = write_fixture_ingest_payload(
             conn,
             SessionWritePayload(session_id=session_id, content_hash="00" * 32, parsed_session=parsed, message_count=1),
-            blob_publisher=_Publisher(),  # type: ignore[arg-type]
+            blob_publisher=_Publisher(),
             pending_attachment_receipts=receipts,
         )
     finally:

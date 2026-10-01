@@ -23,10 +23,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RawRevisionAuthority,
     durable_authority_logical_keys,
     parser_census_is_complete,
+    raw_authority_parser_fingerprint,
 )
 from polylogue.core.compute_cancel import compute_cancel, compute_cancel_requested
 from polylogue.core.content_identity import ContentIdentityRefusal
@@ -41,7 +41,6 @@ from polylogue.pipeline.services.process_pool import terminate_process_pool
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
 from polylogue.storage.raw_authority import (
-    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     build_raw_replay_plan,
     parser_census_logical_keys,
     raw_replay_application_receipt_from_connection,
@@ -192,7 +191,10 @@ class RawObservationDerivation:
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
-    recipe_version = RAW_AUTHORITY_PARSER_FINGERPRINT
+
+    @property
+    def recipe_version(self) -> str:
+        return raw_authority_parser_fingerprint()
 
     def __init__(
         self,
@@ -367,14 +369,16 @@ class RawObservationDerivation:
 
     @staticmethod
     def _terminal_revision_refusal(conn: sqlite3.Connection, key: str, parser_fingerprint: str | None) -> bool:
-        classifier_superseded = parser_fingerprint in SUPERSEDED_MEMBERSHIP_FINGERPRINTS
+        classifier_superseded = (
+            parser_fingerprint is not None and parser_fingerprint != raw_authority_parser_fingerprint()
+        )
         unresolved = conn.execute(
             """SELECT decision FROM raw_session_memberships WHERE raw_id = ? AND decision IN ('ambiguous', 'deferred')
             UNION ALL SELECT decision FROM index_tier.raw_revision_applications
             WHERE raw_id = ? AND decision IN ('ambiguous', 'deferred')""",
             (key, key),
         ).fetchall()
-        return any(row[0] == "deferred" or not classifier_superseded for row in unresolved)
+        return bool(unresolved) and not classifier_superseded
 
     def _inspect(self, conn: sqlite3.Connection, key: str) -> str:
         from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -385,9 +389,12 @@ class RawObservationDerivation:
         ).fetchone()
         if raw is None:
             return "missing"
-        # These are durable refusals, not missing parser work. Preserve their
-        # existing authority contract without re-arbitrating rejected bytes.
+        # Semantic refusals belong to the classifier that produced them. A
+        # changed classifier must recensus retained bytes before accepting
+        # either its ambiguity or its deferral as current evidence.
         census = conn.execute("SELECT * FROM raw_authority_parser_census WHERE raw_id = ?", (key,)).fetchone()
+        if census is not None and census["parser_fingerprint"] != self.recipe_version:
+            return "stale"
         if self._terminal_revision_refusal(conn, key, census["parser_fingerprint"] if census else None) or (
             raw["validation_status"] == "failed"
             and (

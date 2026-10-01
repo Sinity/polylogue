@@ -34,6 +34,7 @@ from tests.infra.convergence_laws import (
     read_semantic_projection,
     semantic_oracle,
 )
+from tests.infra.index_writer import write_fixture_ingest_payload
 
 
 def test_convergence_property_fts_publication_mutation_red_twin(
@@ -182,7 +183,7 @@ def test_order_sensitive_overwrite_has_permutation_control(
         with closing(open_connection(root / "index.db")) as conn:
             conn.row_factory = sqlite3.Row
             with conn:
-                ingest_core._write_session(conn, payload)
+                write_fixture_ingest_payload(conn, payload)
 
     write_revision(1)
     if mutated:

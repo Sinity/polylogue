@@ -26,7 +26,6 @@ from polylogue.core.storage_faults import (
     raise_if_storage_fault,
     storage_fault_kind,
 )
-from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
 from polylogue.logging import ERROR, emit, get_logger
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
@@ -214,7 +213,6 @@ def _ingest_append_plans_archive(
     plans: list[_AppendPlan],
     archive_root: Path,
 ) -> _AppendResult:
-    check_write_hold_budget("append_start")
     timings: dict[str, float] = {}
     source_db = archive_root / "source.db"
     source_only = _source_tier_acquisition_required()
@@ -253,7 +251,6 @@ def _ingest_append_plans_archive(
         with _open_archive_for_live_write(archive_root) as archive:
             _add_timing(timings, "append.archive_open", t0)
             for plan in plans:
-                check_write_hold_budget("append_plan")
                 provider: Provider | None = None
                 raw_id: str | None = None
                 session_artifact = None
@@ -372,7 +369,6 @@ def _ingest_append_plans_archive(
                         acquired_at_ms=acquired_at_ms,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
-                    check_write_hold_budget("append_parse")
                     t0 = time.perf_counter()
                     # polylogue-u19l: prefer the resolved provider session
                     # identity over the bare filename stem. For Codex this is
@@ -461,7 +457,6 @@ def _ingest_append_plans_archive(
                         continue
                     parsed_by_raw_id: dict[str, Any] = {}
                     for replay_raw_id in replay_plan.accepted_raw_ids:
-                        check_write_hold_budget("append_replay")
                         replay_provider, _hash, replay_path, _kind, _size = archive.raw_revision_descriptor(
                             replay_raw_id
                         )
@@ -474,7 +469,6 @@ def _ingest_append_plans_archive(
                         if len(replay_sessions) != 1:
                             raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")
                         parsed_by_raw_id[replay_raw_id] = replay_sessions[0]
-                    check_write_hold_budget("append_materialize")
                     t0 = time.perf_counter()
                     session_id, _applied_raw_ids = archive.apply_raw_revision_replay(
                         replay_plan,
@@ -497,10 +491,6 @@ def _ingest_append_plans_archive(
                     _add_timing(timings, "append.raw_and_index_write", t0)
                     session_ids_by_path[plan.path] = session_id
                     succeeded.append(plan)
-                except WriteHoldBudgetError:
-                    # Scheduling refusal is not corrupt input. Retained raw
-                    # remains pending and the watcher retries without poison debt.
-                    raise
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         # Contention is infrastructure state, not a poison
@@ -538,9 +528,6 @@ def _ingest_append_plans_archive(
                         )
                     logger.warning("live.watcher: archive append ingest failed for %s", plan.path, exc_info=True)
                     failed.append(plan)
-            check_write_hold_budget("append_complete")
-    except WriteHoldBudgetError:
-        raise
     except Exception as exc:
         if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
             raise

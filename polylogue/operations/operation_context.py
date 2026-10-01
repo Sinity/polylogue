@@ -85,6 +85,15 @@ class OperationControlResult:
 
 
 def prepare_operation_journals(root: Path) -> None:
+    """Establish live WAL policy while holding the archive's writer gate."""
+    from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
+
+    require_write_lease("machine operation journal startup", archive_root=root)
+    with write_lease("machine operation journal startup", archive_root=root):
+        _prepare_operation_journals_under_lease(root)
+
+
+def _prepare_operation_journals_under_lease(root: Path) -> None:
     """Establish live WAL policy under the writer before exposing readers.
 
     Fresh/bootstrap and restored sealed tiers may use rollback journals. A
@@ -334,8 +343,7 @@ def open_operation_read(
             except DatabaseError as exc:
                 if execution_context is not None and execution_context.should_abort():
                     raise
-                vector_connection.close()
-                archive.operation_vector_connection = None
+                archive.close_operation_vector_connection()
                 vector_failure = LaneFailure(
                     "vector",
                     "construction_failed",

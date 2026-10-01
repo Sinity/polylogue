@@ -1021,3 +1021,169 @@ def test_daemon_collection_and_stage_adapters_have_no_substrate_exemptions() -> 
         )
     baseline = verify_layering._load_baseline(root / "docs/plans/layering-surface-baseline.json")
     assert not any(file in adapters for _, file, _ in baseline)
+
+
+def test_production_writer_inventory_resolves_nested_and_class_method_names_in_their_actual_scope(
+    tmp_path: Path,
+) -> None:
+    writer_root = _copy_production_writer_surface(tmp_path)
+    writer = writer_root / "write.py"
+    writer.write_text(
+        writer.read_text(encoding="utf-8")
+        + """
+class _CollisionWriter:
+    def add(self, conn):
+        self.flush(conn)
+    def flush(self, conn):
+        conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+
+class _CollisionReader:
+    def flush(self):
+        return "neutral"
+
+def read_collision():
+    visited = set()
+    def depth():
+        visited.add("neutral")
+        return 1
+    def flush():
+        return depth()
+    reader = _CollisionReader()
+    reader.flush()
+    return flush()
+
+def nested_collision_writer(conn):
+    def flush():
+        _CollisionWriter().add(conn)
+    flush()
+
+def typed_collision_writer(conn, writer: _CollisionWriter):
+    writer.add(conn)
+
+def captured_collision_writer(conn):
+    writer = _CollisionWriter()
+    def flush():
+        writer.add(conn)
+    flush()
+
+def _send_collision(writer, conn):
+    writer.add(conn)
+
+def argument_collision_writer(conn):
+    _send_collision(_CollisionWriter(), conn)
+
+class _FieldWriter:
+    def __init__(self, /):
+        self.writer = _CollisionWriter()
+    def flush(self, conn, /):
+        self.writer.add(conn)
+
+def field_collision_writer(conn):
+    _FieldWriter().flush(conn)
+
+def _writer_factory() -> _CollisionWriter:
+    return _CollisionWriter()
+
+def factory_collision_writer(conn):
+    _writer_factory().add(conn)
+
+class _ConstructorWriter:
+    def __init__(self, conn, /):
+        conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+
+def constructor_collision_writer(conn):
+    _ConstructorWriter(conn)
+
+def sql_scope_writer(conn):
+    sql = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+    def reader():
+        sql = "SELECT session_id FROM sessions"
+        return conn.execute(sql)
+    conn.execute(sql)
+    reader()
+
+_CAPTURED_SQL = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+
+def inherited_sql_writer(conn):
+    def flush():
+        conn.execute(_CAPTURED_SQL)
+    flush()
+
+class _ClassSqlReader:
+    sql = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+    @staticmethod
+    def read(conn):
+        sql = "SELECT session_id FROM sessions"
+        return conn.execute(sql)
+
+def class_sql_reader(conn):
+    return _ClassSqlReader.read(conn)
+
+class _StaticForwarder:
+    @staticmethod
+    def send(writer, conn):
+        writer.add(conn)
+
+def static_argument_writer(conn):
+    _StaticForwarder.send(_CollisionWriter(), conn)
+
+def _lexical_insert(conn):
+    conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+
+def _lexical_read(conn):
+    return conn.execute("SELECT session_id FROM sessions")
+
+class _BareNameReader:
+    def _lexical_insert(self, conn):
+        return "neutral"
+    def _lexical_read(self, conn):
+        conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+    def run_writer(self, conn):
+        _lexical_insert(conn)
+    def run_reader(self, conn):
+        return _lexical_read(conn)
+
+def bare_module_writer(conn):
+    _BareNameReader().run_writer(conn)
+
+def bare_module_reader(conn):
+    return _BareNameReader().run_reader(conn)
+
+def sql_scope_reader(conn):
+    sql = "SELECT session_id FROM sessions"
+    def unused_writer():
+        sql = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+        conn.execute(sql)
+    return conn.execute(sql)
+""",
+        encoding="utf-8",
+    )
+    violations = verify_layering._collect_writer_module_violations(tmp_path, _production_writer_policy())
+    mismatch = next(
+        item
+        for item in violations
+        if item["file"] == "polylogue/storage/sqlite/archive_tiers/write.py"
+        and item["rule"] == "writer_module_entrypoint_inventory_mismatch"
+    )
+    observed_names = mismatch["observed"]
+    expected_names = mismatch["expected"]
+    assert isinstance(observed_names, list) and isinstance(expected_names, list)
+    observed = set(observed_names)
+    assert observed == set(expected_names) | {
+        "nested_collision_writer",
+        "typed_collision_writer",
+        "captured_collision_writer",
+        "argument_collision_writer",
+        "field_collision_writer",
+        "factory_collision_writer",
+        "constructor_collision_writer",
+        "sql_scope_writer",
+        "inherited_sql_writer",
+        "static_argument_writer",
+        "bare_module_writer",
+    }
+    assert "read_collision" not in observed
+    assert "sql_scope_reader" not in observed
+    assert "class_sql_reader" not in observed
+    assert "bare_module_reader" not in observed
+    assert not any("." in name for name in observed)

@@ -160,6 +160,35 @@ def cli_archive_writer_ownership() -> Iterator[None]:
                 offline_lock_held = True
             arrived = resident_archive_writer(root)
             if arrived is None:
+                from polylogue.core.write_lease import (
+                    archive_write_custody,
+                    current_sql_custody,
+                    current_write_lease,
+                    require_write_lease,
+                )
+
+                lease = current_write_lease()
+                if lease is not None:
+                    if lease.archive_root is None or lease.archive_root.resolve() != root.resolve():
+                        raise ArchiveWriterOwnershipError(
+                            f"this CLI process has a write lease for a different archive while opening {path}",
+                            archive_root=root,
+                        )
+                    require_write_lease("CLI archive writer ownership", archive_root=root)
+                    custody = current_sql_custody()
+                    if custody is None:
+                        raise ArchiveWriterOwnershipError(
+                            "this CLI writer has no current physical archive custody",
+                            archive_root=root,
+                        )
+                    custody.assert_namespace()
+                    # The declared operation owner already holds this exact
+                    # root's custody; do not open a second flock descriptor.
+                    return
+                stack.enter_context(archive_write_custody(root))
+                # A command may open several tiers. Keep one physical owner
+                # until the Click resource closes, alongside the daemon-start
+                # exclusion acquired above.
                 return
             owned_root, reason = arrived
             raise ArchiveWriterOwnershipError(

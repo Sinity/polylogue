@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import sqlite3
@@ -46,7 +47,7 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     """The measured 61-second prefetch window is protected before persistence."""
     del workspace_env
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     backend = SQLiteBackend(db_path=archive_root / "index.db")
     source_root = tmp_path / "chatgpt-export"
     source_root.mkdir()

@@ -24,7 +24,6 @@ from pathlib import Path
 
 import pytest
 
-import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.ids import session_content_hash
@@ -35,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite, prepare_session_write
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.index_writer import write_fixture_ingest_payload
 
 _FULL_TEXT = "full sidecar output line\n" * 300
 _SESSION_ID = "claude-code-session:sidecar-bound"
@@ -120,7 +120,7 @@ def test_sidecar_locator_is_committed_beside_the_bound_session(tmp_path: Path, r
             carrier = prepare_session_write(conn, payload.parsed_session, merge_append=False)
             payload = replace(payload, prepared_write=carrier)
         try:
-            changed, counts = ingest_batch_core._write_session(
+            changed, counts = write_fixture_ingest_payload(
                 conn,
                 payload,
                 blob_publisher=publisher,
@@ -166,7 +166,7 @@ def test_excised_sidecar_is_refused_alone_and_the_session_still_writes(tmp_path:
     source_conn = sqlite3.connect(source_db)
     try:
         with open_connection(archive_root / "index.db") as conn:
-            changed, counts = ingest_batch_core._write_session(
+            changed, counts = write_fixture_ingest_payload(
                 conn, payload, blob_publisher=publisher, source_conn=source_conn
             )
             conn.commit()

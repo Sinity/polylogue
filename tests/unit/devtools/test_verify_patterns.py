@@ -397,3 +397,32 @@ def test_pattern_entrypoint_marks_sha1_as_non_security_use(
     assert verify_patterns.main(["--json"]) == 0
     assert observations and not any(observations)
     assert json.loads(capsys.readouterr().out)["blocking"] is False
+
+
+def test_replace_rule_recognizes_public_directory_barrier_and_refuses_missing_barrier(tmp_path: Path) -> None:
+    """The actual AST rule must distinguish a shipped barrier from an unsealed replace."""
+    package = tmp_path / "polylogue"
+    package.mkdir()
+    (package / "sealed.py").write_text(
+        "import os\n"
+        "from polylogue.core.durable_fs import sync_directory\n"
+        "def publish(source, destination):\n"
+        "    os.replace(source, destination)\n"
+        "    sync_directory(destination.parent)\n",
+        encoding="utf-8",
+    )
+    (package / "unsealed.py").write_text(
+        "import os\ndef publish(source, destination):\n    os.replace(source, destination)\n",
+        encoding="utf-8",
+    )
+    repository = Path(__file__).resolve().parents[3]
+    rule = verify_patterns.Rule(
+        "replace-without-parent-fsync",
+        repository / "devtools/patterns/replace-without-parent-fsync.yml",
+        tmp_path / "unused-baseline.txt",
+        "fhikb",
+        "enforcing",
+    )
+    matches = verify_patterns._scan(tmp_path, rule)
+    assert sum(matches.values()) == 1
+    assert {anchor[0] for anchor in matches} == {"polylogue/unsealed.py"}

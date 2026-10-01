@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ from tests.infra.storage_records import make_message, make_session, save_session
 
 @pytest.mark.asyncio
 async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     backend = SQLiteBackend(db_path=tmp_path / "index.db")
     current_session_id = "unknown-export:conv-message-reads"
     expected_message_ids = [
@@ -235,7 +236,7 @@ async def test_transcript_read_routes_agree_on_one_order(tmp_path: Path) -> None
     ``get_messages_batch`` and the markdown export each did -- reverses that
     route alone and turns the comparison red.
     """
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     backend = SQLiteBackend(db_path=tmp_path / "index.db")
     session_id = "unknown-export:conv-order-parity"
     conv = make_session("conv-order-parity", title="Order Parity")
@@ -297,7 +298,7 @@ async def test_transcript_reads_use_position_index_without_temp_btree(tmp_path: 
     to a per-session temp B-tree sort on every chunk (#2475)."""
     import sqlite3
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     backend = SQLiteBackend(db_path=tmp_path / "index.db")
     conv = make_session("conv-eqp", title="EQP")
     messages = [

@@ -1659,7 +1659,7 @@ def continue_verb(
             raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
         if destination == RenderDestination.FILE and not out_path:
             raise click.UsageError("continue --format json --to file requires --out.")
-        from polylogue.context.compiler import ContextSpec
+        from polylogue.archive.context_models import ContextSpec
 
         image = run_coroutine_sync(
             env.polylogue.compile_context(
@@ -2964,7 +2964,7 @@ def run_read_context_image(
     Context-image reads use the declared daemon operation. Other multi-view
     compositions continue through ``compile_context`` with resolved seed refs.
     """
-    from polylogue.context.compiler import (
+    from polylogue.archive.context_models import (
         DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
         DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
         ContextSpec,
@@ -2994,10 +2994,10 @@ def run_read_context_image(
     if views == ("context-image",):
         from datetime import datetime, timezone
 
+        from polylogue.archive.context_models import ContextImage
         from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
         from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
         from polylogue.cli.read_views.context import record_context_image_ledger
-        from polylogue.context.compiler import ContextImage
 
         observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         try:

@@ -159,7 +159,7 @@ def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, 
     from polylogue.sources.parsers.base import ParsedAttachment
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from tests.infra.index_writer import write_fixture_index_session
 
     first = ParsedSession(
         source_name=Provider.CODEX,
@@ -236,7 +236,7 @@ def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, 
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             initialize_archive_tier(conn, ArchiveTier.INDEX)
-            sid = write_parsed_session_to_archive(
+            sid = write_fixture_index_session(
                 conn, merged, preacquired_attachment_blobs={key: (blob, len(b"synthetic"), "acquired")}
             )
             stored = conn.execute(

@@ -31,7 +31,7 @@ edges from a still-running or crashed child).
 This module owns detecting and parsing that state. It is deliberately
 independent of ``parsers/codex.py`` (which owns JSONL rollout parsing) and of
 ``sources/assembly_codex.py`` (which owns live, ambient title enrichment
-during ingest). It reads through ``sources/sqlite_export.open_logical_source``,
+during ingest). It reads through ``sources/sqlite_export.logical_source_context``,
 so the same functions serve a retained canonical export and the operator's
 live file.
 """
@@ -41,13 +41,13 @@ from __future__ import annotations
 import sqlite3
 from codecs import getincrementaldecoder
 from collections.abc import Iterator
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.core.json import JSONDocument
-from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context, logical_source_shape
 
 CODEX_STATE_DB_MARKER = "codex_state_db"
 
@@ -282,15 +282,11 @@ IN_SCOPE_KINDS: frozenset[CodexSqliteKind] = frozenset(
 )
 
 
-def _connect_readonly(path: Path, *, timeout: float = 1.0, immutable: bool = False) -> sqlite3.Connection:
-    """Open *path* for reading, whether it is a retained export or a live file.
-
-    The retained material for a declared member is its canonical logical
-    export; the operator's live ``~/.codex`` databases are still read in
-    place for detection and ambient title enrichment. Never takes a write
-    lock against a live Codex.
-    """
-    return open_logical_source(path, immutable=immutable, timeout=timeout)
+@contextmanager
+def _readonly_context(path: Path, *, timeout: float = 1.0, immutable: bool = False) -> Iterator[sqlite3.Connection]:
+    """Keep the logical-source reader and reconstruction on its creator."""
+    with logical_source_context(path, immutable=immutable, timeout=timeout) as connection:
+        yield connection
 
 
 def classify_codex_sqlite_path(path: Path, *, immutable: bool = False) -> CodexSqliteKind:
@@ -450,7 +446,7 @@ def iter_codex_state_parts(
         raise ValueError("page_size and text_chars must be positive")
     table = "thread_goals" if state_kind == "goals" else "stage1_outputs"
     fields = ("objective",) if state_kind == "goals" else ("raw_memory", "rollout_summary")
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
+    with _readonly_context(path, immutable=immutable) as conn:
         conn.row_factory = sqlite3.Row
         columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
         after_rowid: int | None = None
@@ -600,7 +596,7 @@ def parse_codex_state_db(path: Path, *, immutable: bool = False) -> CodexStateSn
     from the live file are responsible for snapshotting first (polylogue-0jf4
     acceptance criterion 4).
     """
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
+    with _readonly_context(path, immutable=immutable) as conn:
         conn.row_factory = sqlite3.Row
         thread_rows = conn.execute(
             "SELECT id, title, cwd, created_at_ms, updated_at_ms, source, model, "

@@ -19,6 +19,7 @@ from time import monotonic, time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
+from polylogue.core.durable_fs import sync_directory
 from polylogue.daemon.execution import (
     BoundedComputeAdapter,
     CancellationHandle,
@@ -616,11 +617,7 @@ class DaemonOperationRuntime:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
-            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            sync_directory(path.parent)
         finally:
             Path(temporary).unlink(missing_ok=True)
 

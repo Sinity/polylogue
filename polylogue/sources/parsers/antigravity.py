@@ -501,13 +501,10 @@ def looks_like_trajectory_db_path(path: Path, *, immutable: bool = False) -> boo
     if path.suffix.lower() not in _TRAJECTORY_DB_SUFFIXES:
         return False
     try:
-        from polylogue.sources.sqlite_export import open_logical_source
+        from polylogue.sources.sqlite_export import logical_source_context
 
-        connection = open_logical_source(path, immutable=immutable)
-        try:
+        with logical_source_context(path, immutable=immutable) as connection:
             return _trajectory_schema_matches(connection)
-        finally:
-            connection.close()
     except Exception as error:
         if _is_trajectory_storage_error(error):
             return False
@@ -1073,13 +1070,10 @@ def parse_trajectory_db(
     typed admission outcomes, so the writer can never report full coverage
     for a partially understood trajectory.
     """
-    from polylogue.sources.sqlite_export import open_logical_source
+    from polylogue.sources.sqlite_export import logical_source_context
 
-    connection = open_logical_source(path, immutable=immutable)
-    try:
+    with logical_source_context(path, immutable=immutable) as connection:
         yield from _parse_trajectory_connection(connection, path, fallback_id)
-    finally:
-        connection.close()
 
 
 def _parse_trajectory_connection(

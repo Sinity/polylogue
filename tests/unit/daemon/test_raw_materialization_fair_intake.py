@@ -54,7 +54,7 @@ async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path:
     the profiles empty after the raw session rows appear.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         for index in range(2):
             archive.write_raw_payload(
@@ -73,7 +73,7 @@ async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path:
     assert sum(sizes) > largest_blob_bytes, "the fixture must carry the component/seed skew"
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     try:
         bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
         owner = RawObservationConvergenceOwner(

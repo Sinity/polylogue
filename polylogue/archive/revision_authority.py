@@ -53,14 +53,17 @@ def revision_authority_for_census_detail(detail: str) -> RawRevisionAuthority | 
 
 BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
 
-#: Current parser semantics for source-tier membership and parser receipts.
-#: Both admission writers and replay readers depend on revision authority, so
-#: this token belongs with that shared contract rather than either storage
-#: projection that consumes it.
-#: v5: claude.ai project and account-memory documents, and Codex rollouts
-#: with bare ``token_usage_record`` lines, are session-bearing; OTel session
-#: ids escape their components.
-RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v5"
+
+def raw_authority_parser_fingerprint() -> str:
+    """Return current parser/replay semantics without paying at module import.
+
+    This is derived from executable OriginSpec routes, their recursive parser
+    closures, and shared lowering. Keeping the computation lazy avoids parsing
+    the whole provider tree for imports that only need durable revision types.
+    """
+    from polylogue.sources.origin_specs import parser_semantic_authority_fingerprint
+
+    return parser_semantic_authority_fingerprint()
 
 
 def raw_receipt_order_sql(table_alias: str = "r") -> str:
@@ -606,4 +609,5 @@ __all__ = [
     "append_source_revision",
     "classify_historical_full_revisions",
     "classify_historical_full_revision_streams",
+    "raw_authority_parser_fingerprint",
 ]

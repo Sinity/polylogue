@@ -368,3 +368,37 @@ def test_bound_write_lease_rejects_a_missing_archive_identity(tmp_path: Path) ->
     with arm_write_lease_enforcement(), write_lease("bound", archive_root=tmp_path):
         with pytest.raises(UnleasedWriteError, match="omitted archive identity"):
             require_write_lease("misrouted archive writer")
+
+
+def test_cli_rejects_an_inherited_lease_without_actual_thread_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import contextvars
+    import sqlite3
+    import threading
+
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_custody_probe import archive_custody_available
+
+    root = _archive_root(monkeypatch, tmp_path)
+    failures: list[BaseException] = []
+
+    def attempt_open() -> None:
+        try:
+            connection = sqlite3.connect(root / "index.db")
+        except BaseException as error:
+            failures.append(error)
+        else:
+            connection.close()
+
+    with write_lease("test.cli_owner", archive_root=root), cli_archive_writer_ownership():
+        copied = contextvars.copy_context()
+        thread = threading.Thread(target=lambda: copied.run(attempt_open))
+        thread.start()
+        thread.join()
+        assert len(failures) == 1
+        assert isinstance(failures[0], UnleasedWriteError)
+        assert not (root / "index.db").exists()
+        assert not archive_custody_available(root)
+    assert archive_custody_available(root)

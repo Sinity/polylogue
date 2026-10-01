@@ -21,7 +21,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, Titl
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
 _TITLE_REF = "codex-history:codex-tr-native"
@@ -48,7 +48,7 @@ def _write_codex_session(db_path: Path, *, native_id: str, title: str) -> None:
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()

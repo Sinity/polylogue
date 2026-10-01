@@ -44,7 +44,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, closing, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
@@ -54,6 +54,14 @@ if TYPE_CHECKING:
 from urllib.parse import quote_from_bytes
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
+from polylogue.core.sql_settlement import current_native_sql_lifetimes, retain_native_sql_lifetimes
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.connection_profile import (
+    NativeConnectionSettlementError,
+    NativeSQLCustodyOwner,
+    _close_failed_native_construction,
+    retained_native_sql_owners_for_lifetime,
+)
 
 EXPORT_VERSION = 1
 EXPORT_MAGIC = b'{"polylogue_sqlite_export":1'
@@ -592,7 +600,7 @@ def _prepare_inspection_grouping(stack: ExitStack, scratch: Path) -> _Inspection
     path = Path(name)
     stack.callback(path.unlink, missing_ok=True)
     before = _descriptor_census()
-    connection = stack.enter_context(closing(sqlite3.connect(path)))
+    connection = stack.enter_context(_source_connection_context(path, readonly=False))
     connection.execute("PRAGMA journal_mode=OFF").close()
     identity = _identity(path.lstat())
     descriptors = {
@@ -645,7 +653,7 @@ def _inspect_export_at(
                         **dict.fromkeys(_SIDECARS),
                     }
                     proof = _SourceDescriptors(parent_fd, reconstruction.name, identities)
-                    with closing(_connect_source(reconstruction, immutable=True, directory=parent_fd)) as conn:
+                    with _source_connection_context(reconstruction, immutable=True, directory=parent_fd) as conn:
                         proof.validate()
                         conn.execute("BEGIN").close()
                         _source_schema(conn)
@@ -800,7 +808,7 @@ def _source_worker_main() -> None:
             )
             if request["operation"] == "backup":
                 before_output = _descriptor_census()
-                output = stack.enter_context(closing(sqlite3.connect(request["destination"])))
+                output = stack.enter_context(_source_connection_context(Path(request["destination"]), readonly=False))
                 output_identity = _identity(Path(request["destination"]).lstat())
                 output_descriptors = {
                     fd: identity
@@ -814,8 +822,8 @@ def _source_worker_main() -> None:
             # The existing staged-backup destination belongs to its own SQLite
             # connection and is excluded before the source descriptor baseline.
             proof = _SourceDescriptors(request["directory"], source.name, accepted)
-            with closing(
-                _connect_source(source, immutable=request["immutable"], directory=request["directory"])
+            with _source_connection_context(
+                source, immutable=request["immutable"], directory=request["directory"]
             ) as conn:
                 proof.validate()
                 _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
@@ -951,14 +959,37 @@ def _backup_source_database(
     return result
 
 
-def _connect_source(path: Path, *, immutable: bool, directory: int) -> sqlite3.Connection:
-    # Fresh process only: relative VFS main and sidecar opens stay under the
-    # accepted directory descriptor even when its pathname is substituted.
-    os.fchdir(directory)
-    uri = f"file:{quote_from_bytes(os.fsencode(path.name), safe='')}?mode=ro"
+@contextmanager
+def _source_connection_context(
+    path: Path,
+    *,
+    immutable: bool = False,
+    timeout: float = 5.0,
+    readonly: bool = True,
+    scratch_directory: tempfile.TemporaryDirectory[str] | None = None,
+    directory: int | None = None,
+) -> Iterator[sqlite3.Connection]:
+    if directory is not None:
+        # Fresh reader only: VFS sidecar opens retain the accepted parent.
+        os.fchdir(directory)
+        uri = f"file:{quote_from_bytes(os.fsencode(path.name), safe='')}?mode={'ro' if readonly else 'rwc'}"
+    else:
+        uri = f"{path.resolve().as_uri()}?mode={'ro' if readonly else 'rwc'}"
     if immutable:
         uri += "&immutable=1"
-    return sqlite3.connect(uri, uri=True)
+    connection = connect_measured(uri, uri=True, timeout=timeout)
+    owner = NativeSQLCustodyOwner(
+        connection,
+        scratch_directory=scratch_directory,
+        lifetime_dependencies=current_native_sql_lifetimes(),
+    )
+    try:
+        yield owner.require_connection()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
 
 def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[list[str], str, list[str], bool]:
@@ -1345,7 +1376,7 @@ def _materialize_export_records(
     *,
     read_indexes: Sequence[tuple[str, tuple[str, ...]]] = (),
 ) -> None:
-    with closing(sqlite3.connect(destination)) as conn:
+    with _source_connection_context(destination, readonly=False) as conn:
         conn.execute("PRAGMA journal_mode=OFF")
         table: str | None = None
         columns: list[str] = []
@@ -1391,57 +1422,54 @@ def _materialize_export_records(
         conn.commit()
 
 
-def open_logical_source(
+@contextmanager
+def logical_source_context(
     path: Path,
     *,
     immutable: bool = False,
     timeout: float = 5.0,
     read_indexes: Sequence[tuple[str, tuple[str, ...]]] = (),
-) -> sqlite3.Connection:
-    """Open *path* for reading, whether it is an export or a live database.
+) -> Iterator[sqlite3.Connection]:
+    """Read a live database or a retained export on its native creator.
 
-    Retained-export parsers and explicit external connection readers use this
-    API. Acquisition and import previews use the isolated bound operations
-    above; returning a live connection here does not make that same promise.
-    A reconstruction is unlinked as soon as it
-    is open, so the connection owns it and closing the connection releases it.
-
-    The reconstruction reuses the owner-only inode ``mkstemp`` created. Dropping
-    that inode before materializing made SQLite recreate the pathname under the
-    process umask -- mode 0644 under the usual 0022 -- publishing every row of
-    the export in the shared temporary directory for the whole materialization
-    window.
-
-    The reconstruction is not a copy of the source's schema. It declares
-    columns untyped so every stored value round-trips exactly, and that also
-    drops the source's collating sequences: a ``COLLATE NOCASE`` column
-    compares case-sensitively here (see ``_create_statement``). A parser that
-    needs case-insensitive comparison must ask for it in its own query.
-
-    ``read_indexes`` names ``(table, columns)`` the caller will filter and
-    order by. It is honoured only for the private reconstruction, which no
-    other process can observe; a live database is opened read-only and is
-    never indexed on the archive's behalf. A hint naming a table or column
-    this source does not carry is ignored.
+    Acquisition and preview use isolated bound operations; explicit connection
+    readers use this context without that physical binding promise.
+    A private reconstruction keeps the owner-only mkstemp inode throughout
+    materialization and reading. Failed native close retains both its creator
+    and directory until verified settlement. Read-index hints apply only to
+    reconstruction; live sources remain read-only. Untyped reconstructed
+    columns preserve values but do not inherit source collations.
     """
     if not looks_like_logical_source_path(path):
         raise sqlite3.DatabaseError(f"not a SQLite database or logical export: {path}")
     if not looks_like_logical_export_path(path):
-        uri = f"{path.resolve().as_uri()}?mode=ro"
-        if immutable:
-            uri += "&immutable=1"
-        return sqlite3.connect(uri, uri=True, timeout=timeout)
-    handle, name = tempfile.mkstemp(prefix=".polylogue-export.", suffix=".sqlite")
-    os.close(handle)
-    reconstruction = Path(name)
+        with _source_connection_context(path, immutable=immutable, timeout=timeout) as connection:
+            yield connection
+        return
+    scratch = tempfile.TemporaryDirectory(prefix=".polylogue-export.")
     try:
-        materialize_export(path, reconstruction, read_indexes=read_indexes)
-        conn = sqlite3.connect(f"{reconstruction.as_uri()}?mode=ro", uri=True, timeout=timeout)
-    except BaseException:
-        reconstruction.unlink(missing_ok=True)
+        with retain_native_sql_lifetimes(scratch):
+            handle, name = tempfile.mkstemp(suffix=".sqlite", dir=scratch.name)
+            os.close(handle)
+            reconstruction = Path(name)
+            materialize_export(path, reconstruction, read_indexes=read_indexes)
+            with _source_connection_context(
+                reconstruction,
+                timeout=timeout,
+                scratch_directory=scratch,
+            ) as connection:
+                yield connection
+    except NativeConnectionSettlementError as failure:
+        # Construction can fail before the final reader takes the directory.
+        # Its actual retained writer must carry cleanup through creator retry.
+        if failure.owner in retained_native_sql_owners_for_lifetime(scratch):
+            failure.owner.scratch_directory = scratch
         raise
-    reconstruction.unlink(missing_ok=True)
-    return conn
+    finally:
+        # A failed writer construction/close has not reached the reader owner.
+        # Its strong native census still owns this exact directory dependency.
+        if not retained_native_sql_owners_for_lifetime(scratch):
+            scratch.cleanup()
 
 
 def looks_like_logical_source_path(path: Path) -> bool:
@@ -1475,7 +1503,7 @@ __all__ = [
     "looks_like_logical_source_bytes",
     "looks_like_logical_source_path",
     "materialize_export",
-    "open_logical_source",
+    "logical_source_context",
     "read_export_header",
     "write_logical_export",
 ]

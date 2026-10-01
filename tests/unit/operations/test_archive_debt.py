@@ -702,7 +702,7 @@ def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_
 def _seed_codex_model_usage(index_db: Path, *, input_tokens: int) -> None:
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from tests.infra.index_writer import write_fixture_index_session
 
     with closing(sqlite3.connect(index_db)) as conn:
         session = ParsedSession(
@@ -711,7 +711,7 @@ def _seed_codex_model_usage(index_db: Path, *, input_tokens: int) -> None:
             messages=[],
             models_used=["gpt-5-codex"],
         )
-        write_parsed_session_to_archive(conn, session)
+        write_fixture_index_session(conn, session)
         conn.execute(
             "UPDATE session_model_usage SET input_tokens = ? WHERE session_id = ? AND model_name = ?",
             (input_tokens, "codex-session:s1", "gpt-5-codex"),

@@ -83,7 +83,9 @@ logger = get_logger(__name__)
 # v5: Hermes ``.jsonl.txt`` traces are recognized as JSONL (rs02d 10.F010),
 # so a cursor excluded as an unsupported source class under v4 must get a
 # fresh attempt.
-_PARSER_FINGERPRINT = "live-batched-v5"
+# v6: recursive reserved-value identity and complete branch witnesses change
+# parsed identities, including for sources whose observed bytes are unchanged.
+_PARSER_FINGERPRINT = "live-batched-v6"
 # polylogue-11cg9: the dispatcher's byte budget bounds an admitted page's
 # *size* but not the *time* a single full-ingest pass can hold the sole
 # archive writer -- a handful of files, or one slow-to-parse file, can still
@@ -94,7 +96,7 @@ _PARSER_FINGERPRINT = "live-batched-v5"
 # acquired files, full-ingest progress groups and archive-write records (a
 # single session write cannot be split mid-transaction), never mid-record, so
 # overshoot is one work item. Past the writer gate's own declared hold bound
-# the same checkpoints end the pass with ``WriteHoldBudgetError``.
+# elapsed writer thresholds are diagnostic and never refuse an admitted item.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
 _RAW_RETENTION_RETRY_BUDGET_SECONDS = 30.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
@@ -745,6 +747,11 @@ class LiveWatcher:
             # accepted head -- a source whose stat changes on every poll, a
             # live database, re-entered that window on every poll.
             return not (identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT)
+        if cursor.parser_fingerprint != _PARSER_FINGERPRINT:
+            # Retry and deferred-reconciliation state belongs to the parser
+            # that produced it. Do not restamp its old outcome from archive
+            # corroboration or postpone the new parser's first attempt.
+            return True
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False
@@ -762,9 +769,6 @@ class LiveWatcher:
                 cursor = self._cursor.get_record(path)
                 return cursor is not None and size > cursor.byte_offset
             return _retry_due(cursor.next_retry_at)
-        parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
-        if not parser_matches:
-            return True
         if self._is_hermes_database(path) or self._is_declared_codex_database(path):
             try:
                 with bind_source_input(path) as binding:

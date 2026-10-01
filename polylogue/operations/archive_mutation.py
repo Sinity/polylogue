@@ -83,10 +83,16 @@ def execute_archive_mutation(
 ) -> tuple[MutationReceipt, MutationPlan]:
     """Prepare, authorize, and execute one bound mutation at the archive owner."""
     from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.storage.sqlite.write_lease import write_lease
 
     require_archive_write_authority(config, "api.facade_mutation")
     root = active_archive_root(config)
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
+    # The operation owner takes cross-process archive custody before the first
+    # writable tier is opened; daemon callers re-enter the coordinator's lease.
+    with (
+        write_lease("api.facade_mutation", archive_root=root),
+        ArchiveStore.open_existing(root, read_only=False) as archive,
+    ):
         executor = OperationExecutor.for_archive_root(root)
         binding = runtime_operation_binding(actuator)
         principal = MutationPrincipal("facade", frozenset({capability}), "api", "write")

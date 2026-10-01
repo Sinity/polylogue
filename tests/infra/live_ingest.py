@@ -15,8 +15,9 @@ from pathlib import Path
 
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def write_session_sync(
@@ -25,6 +26,7 @@ def write_session_sync(
     *,
     raw_id: str | None = None,
     content_hash: str | None = None,
+    archive_root: Path | None = None,
 ) -> str:
     """Write one parsed session through the live archive writer (sync).
 
@@ -35,11 +37,12 @@ def write_session_sync(
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        return write_parsed_session_to_archive(
+        return write_fixture_index_session(
             conn,
             session,
             content_hash=content_hash if content_hash is not None else session_content_hash(session),
             raw_id=raw_id,
+            archive_root=archive_root,
         )
     finally:
         conn.close()
@@ -57,7 +60,7 @@ def write_session_counts_sync(
     outcomes: list[ArchiveWriteOutcome] = []
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             session,
             content_hash=content_hash if content_hash is not None else session_content_hash(session),
@@ -113,6 +116,7 @@ async def ingest_session(
         session,
         raw_id=raw_id,
         content_hash=content_hash,
+        archive_root=backend._source_db_path.parent,
     )
 
 
@@ -130,41 +134,45 @@ def write_index_session(
     db_path = getattr(archive, "index_db_path", None)
     if not isinstance(db_path, Path):
         raise TypeError("index-only fixture requires an ArchiveStore index_db_path")
+    own_scope = getattr(archive, "index_mutation_scope", None)
+    connection = getattr(archive, "_conn", None)
+    if not callable(own_scope) or not isinstance(connection, sqlite3.Connection):
+        raise TypeError("index-only fixture requires its ArchiveStore-owned Index transaction")
+    acquired = None
+    refs = ()
+    publisher = getattr(archive, "_blob_publisher", None)
     if any(
         attachment.inline_bytes is not None or attachment.precomputed_blob is not None
         for attachment in session.attachments
     ):
         preacquire = getattr(archive, "_preacquire_attachment_blobs", None)
-        connection = getattr(archive, "_conn", None)
-        publisher = getattr(archive, "_blob_publisher", None)
-        if not callable(preacquire) or not isinstance(connection, sqlite3.Connection) or publisher is None:
+        if not callable(preacquire) or publisher is None:
             raise TypeError("index-only attachment fixture requires an archive-owned blob publisher")
-        acquired, refs = preacquire(
-            session,
-            source_path=f"session:{session.provider_session_id}",
-            acquired_at_ms=0,
-        )
+        acquired, refs = preacquire(session, source_path=f"session:{session.provider_session_id}", acquired_at_ms=0)
         publisher.flush()
-        try:
-            session_id = write_parsed_session_to_archive(
+    try:
+        with own_scope() as scope:
+            session_id = write_fixture_index_session(
                 connection,
                 session,
                 content_hash=content_hash if content_hash is not None else session_content_hash(session),
                 preacquired_attachment_blobs=acquired,
+                mutation_scope=scope,
             )
-            pending = getattr(archive, "_pending_index_blob_receipts", None)
-            consume = getattr(archive, "_consume_index_blob_receipts", None)
-            if not isinstance(pending, list) or not callable(consume):
-                raise TypeError("index-only attachment fixture requires archive receipt handling")
-            pending.extend(
-                (ref.publication_receipt_id, ref.blob_hash) for ref in refs if ref.publication_receipt_id is not None
-            )
-            consume()
-            return session_id
-        except Exception:
+            if refs:
+                pending = getattr(archive, "_pending_index_blob_receipts", None)
+                if not isinstance(pending, list):
+                    raise TypeError("index-only attachment fixture requires archive receipt handling")
+                pending.extend(
+                    (ref.publication_receipt_id, ref.blob_hash)
+                    for ref in refs
+                    if ref.publication_receipt_id is not None
+                )
+        return session_id
+    except BaseException:
+        if publisher is not None:
             publisher.discard_pending()
-            raise
-    return write_session_sync(db_path, session, content_hash=content_hash)
+        raise
 
 
 __all__ = ["ingest_session", "write_index_session", "write_session_counts_sync", "write_session_sync"]
