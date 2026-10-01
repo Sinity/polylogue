@@ -26,11 +26,13 @@ import polylogue.sources.sqlite_export as sqlite_export
 import polylogue.sources.sqlite_snapshot as sqlite_snapshot
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
+from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.watcher import LiveWatcher
 from polylogue.sources.origin_specs import database_capability_for_provider
+from polylogue.sources.parsers.base import RawSessionData
 from polylogue.sources.sqlite_export import (
     logical_source_context,
     looks_like_logical_export_path,
@@ -41,7 +43,6 @@ from polylogue.sources.sqlite_snapshot import (
     is_declared_logical_export,
     is_undeclared_logical_export,
     member_export_scope,
-    retained_content_revision,
     snapshot_sqlite_to_blob,
     sqlite_logical_revision,
     sqlite_member_revision,
@@ -301,21 +302,34 @@ def test_two_empty_members_of_one_profile_keep_distinct_identities(tmp_path: Pat
     ) != hermes_profile_raw_id(verification, 0, revision, identity_path=verification, profile_identity=key)
 
 
-def test_retained_blob_yields_the_same_content_term_as_live_acquisition(tmp_path: Path) -> None:
-    """The import and replay routes must not mint a second identity.
-
-    Anti-vacuity: return ``blob_hash`` unconditionally from
-    ``retained_content_revision`` and the imported raw id stops matching the
-    live one for the same database state.
-    """
+def test_retained_blob_yields_the_same_raw_identity_as_live_acquisition(tmp_path: Path) -> None:
+    """Changing the captured export content term mints a second raw identity."""
     source = tmp_path / "state.db"
     _write_state_db(source, sessions=2)
     store = _blob_store(tmp_path)
     snapshot = snapshot_sqlite_to_blob(source, store)
-
+    record = make_raw_record(
+        RawSessionData(
+            source_path=str(snapshot.source_path),
+            canonical_source_path=str(snapshot.identity_path),
+            captured_profile_key=snapshot.captured_profile_key,
+            captured_profile_source_path=str(snapshot.captured_profile_source_path),
+            blob_hash=snapshot.blob_hash,
+            blob_size=snapshot.blob_size,
+            source_index=0,
+            provider_hint=Provider.HERMES,
+        ),
+        "hermes",
+        blob_store=store,
+        acquired_at="2026-02-02T12:00:00+00:00",
+    )
     assert is_declared_logical_export(store.blob_path(snapshot.blob_hash), source)
-    assert retained_content_revision(store.blob_path(snapshot.blob_hash), snapshot.blob_hash) == (
-        snapshot.source_revision
+    assert record.raw_id == hermes_profile_raw_id(
+        source,
+        0,
+        snapshot.source_revision,
+        identity_path=snapshot.captured_profile_source_path,
+        profile_identity=snapshot.captured_profile_key,
     )
 
 
@@ -329,7 +343,6 @@ def test_a_historical_page_image_cannot_recover_logical_source_identity(tmp_path
     page_image = store.blob_path(page_hash)
 
     assert not is_declared_logical_export(page_image, source)
-    assert retained_content_revision(page_image, page_hash) == page_hash
 
 
 def test_declared_and_undeclared_logical_export_predicates_truth_table(tmp_path: Path) -> None:
@@ -477,12 +490,35 @@ def test_an_export_round_trips_every_storage_class(tmp_path: Path) -> None:
 
 
 def test_non_sqlite_material_is_identified_by_its_bytes(tmp_path: Path) -> None:
-    """Anti-vacuity: try to open every blob as SQLite and a Hermes ATOF
-    stream's raw identity raises instead of resolving."""
-    store = _blob_store(tmp_path)
-    blob_hash, _size = store.write_from_bytes(b'{"event": "atof"}\n')
+    """Observer-stream acquisition must use captured bytes without a SQLite read."""
+    from polylogue.core.provider_identity import captured_hermes_profile_key
 
-    assert retained_content_revision(store.blob_path(blob_hash), blob_hash) == blob_hash
+    store = _blob_store(tmp_path)
+    blob_hash, blob_size = store.write_from_bytes(b'{"event": "atof"}\n')
+    profile = tmp_path / "profile"
+    source = profile / "observability/nemo-relay/atof/events.jsonl"
+    key = captured_hermes_profile_key(profile)
+    record = make_raw_record(
+        RawSessionData(
+            source_path=str(source),
+            captured_profile_key=key,
+            captured_profile_source_path=str(source),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            source_index=0,
+            provider_hint=Provider.HERMES,
+        ),
+        "hermes",
+        blob_store=store,
+        acquired_at="2026-02-02T12:00:00+00:00",
+    )
+    assert record.raw_id == hermes_profile_raw_id(
+        source,
+        0,
+        blob_hash,
+        identity_path=source,
+        profile_identity=key,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +551,7 @@ def test_wal_source_with_an_uncommitted_writer_snapshots_committed_state_only(tm
     with logical_source_context(blob) as conn:
         ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
     assert ids == {"session-0", "session-1"}
-    assert retained_content_revision(blob, snapshot.blob_hash) == snapshot.source_revision
+    assert snapshot.blob_hash == snapshot.source_revision
 
 
 def test_a_commit_during_the_export_cannot_enter_it(tmp_path: Path) -> None:
