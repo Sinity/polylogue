@@ -1174,6 +1174,7 @@ def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.Monkey
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     db.touch()
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
 
     with (
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),

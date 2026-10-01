@@ -27,8 +27,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.connection_profile import attach_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.attachment_records import (
+    UNFETCHED_DRIVE_REFERENCE_SQL,
     contested_native_id_predicate,
     unambiguous_native_id_sql,
+    unresolved_attachment_identity_count,
 )
 
 logger = get_logger(__name__)
@@ -106,15 +108,6 @@ class _Acquired:
     ref: ArchiveSourceBlobRef
 
 
-#: Drive-hosted references still owed bytes. ``upload_origin`` and
-#: ``acquisition_status`` decide eligibility; identity decides resolvability.
-_UNFETCHED_DRIVE_REFERENCE_SQL = """
-    FROM attachments AS a
-    JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id
-    WHERE a.acquisition_status = 'unfetched'
-      AND r.upload_origin = 'drive'
-"""
-
 #: Placeholder budget for one ``raw_sessions`` membership probe.
 _RAW_PROBE_CHUNK = 500
 
@@ -155,7 +148,7 @@ def _candidate_rows(conn: sqlite3.Connection, source_conn: sqlite3.Connection, *
         raise ValueError("attachment convergence source attachment changed")
     conn.row_factory = sqlite3.Row
     retained = "EXISTS (SELECT 1 FROM attachment_source.raw_sessions AS raw WHERE raw.raw_id = r.supplying_raw_id)"
-    predicate = f"{_UNFETCHED_DRIVE_REFERENCE_SQL} AND NOT {contested_native_id_predicate()}"
+    predicate = f"{UNFETCHED_DRIVE_REFERENCE_SQL} AND NOT {contested_native_id_predicate()}"
     unattributed = int(conn.execute(f"SELECT COUNT(*) {predicate} AND NOT {retained}").fetchone()[0])
     rows = conn.execute(
         f"""
@@ -187,18 +180,6 @@ def _report_unattributed(unattributed: int) -> None:
         )
 
 
-def _unresolved_identity_count(conn: sqlite3.Connection) -> int:
-    """How many owed Drive references this pass refused to resolve at all."""
-    row = conn.execute(
-        f"""
-        SELECT COUNT(*)
-        {_UNFETCHED_DRIVE_REFERENCE_SQL}
-          AND {contested_native_id_predicate()}
-        """
-    ).fetchone()
-    return int(row[0]) if row is not None else 0
-
-
 def _report_unresolved_identity(conn: sqlite3.Connection) -> int:
     """Count contested owed references and name them as a degraded outcome.
 
@@ -207,7 +188,7 @@ def _report_unresolved_identity(conn: sqlite3.Connection) -> int:
     Named on every pass that looks, rather than letting a silent lexical
     choice make the ambiguity invisible.
     """
-    unresolved_identity = _unresolved_identity_count(conn)
+    unresolved_identity = unresolved_attachment_identity_count(conn)
     if unresolved_identity:
         emit(
             "operations.attachment_convergence.identity_unresolved",

@@ -96,3 +96,25 @@ def test_setting_subcommands_expose_standard_format_alias(subcommand: str) -> No
 
     assert result.exit_code == 0, result.output
     assert "-f, --format" in result.output
+
+
+@pytest.mark.parametrize("fault", ["missing", "corrupt"])
+@pytest.mark.parametrize("subcommand", ["get", "list"])
+def test_setting_reads_refuse_unavailable_authority(
+    cli_workspace: dict[str, Path], fault: str, subcommand: str
+) -> None:
+    """An unavailable setting tier cannot render an unset preference or empty list."""
+    from polylogue.core.errors import ArchiveTierUnavailableError
+
+    user = cli_workspace["archive_root"] / "user.db"
+    if fault == "missing":
+        user.unlink()
+    else:
+        user.write_bytes(b"not sqlite")
+    args = ["--plain", "setting", subcommand]
+    if subcommand == "get":
+        args.append("subscription_tier")
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ArchiveTierUnavailableError)
+    assert user.exists() is (fault != "missing")

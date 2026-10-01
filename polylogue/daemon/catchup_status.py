@@ -13,6 +13,7 @@ from typing import cast
 
 from pydantic import BaseModel, Field, field_validator
 
+from polylogue.core.errors import SchemaRefusalError
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
@@ -140,6 +141,8 @@ class CatchupStatus(BaseModel):
     cold_build_settlement_attempts: int = 0
     cold_build_settlement_retry_due_in_s: float | None = None
     last_advanced_age_s: float | None = None
+    stage_events_available: bool = True
+    stage_events_unavailable_reason: str | None = None
     cumulative_available: bool = True
     cumulative_unavailable_reason: str | None = None
     #: Sources the running daemon refuses to ingest until restart. Empty is
@@ -148,7 +151,9 @@ class CatchupStatus(BaseModel):
     halted_sources: list[HaltedSourceStatus] = Field(default_factory=list)
     recent_events: list[CatchupStageEvent] = Field(default_factory=list)
 
-    @field_validator("cold_build_settlement_last_error", "cumulative_unavailable_reason")
+    @field_validator(
+        "cold_build_settlement_last_error", "cumulative_unavailable_reason", "stage_events_unavailable_reason"
+    )
     @classmethod
     def _redact_diagnostic(cls, value: str | None) -> str | None:
         return redact_status_error(value) if value is not None else None
@@ -167,7 +172,12 @@ def catchup_status_info(
     ops_db: Path | None = None,
 ) -> CatchupStatus:
     """Return bounded catch-up/convergence progress and throughput from durable events."""
-    events = _recent_stage_events(dbf, ops_db=ops_db)
+    stage_error: str | None = None
+    try:
+        events = _recent_stage_events(dbf, ops_db=ops_db)
+    except CatchupProgressUnavailableError as exc:
+        events = []
+        stage_error = str(exc)
     latest = events[0] if events else None
     now = datetime.now(UTC)
     halted = _halted_sources(ops_db if ops_db is not None else dbf.with_name("ops.db"))
@@ -180,6 +190,10 @@ def catchup_status_info(
         )
     except CatchupProgressUnavailableError as exc:
         cumulative = _unavailable_cumulative(str(exc))
+    cumulative["stage_events_available"] = stage_error is None
+    cumulative["stage_events_unavailable_reason"] = stage_error
+    if stage_error is not None:
+        mode = "degraded"
     completed_raw, planned_raw, raw_rate, raw_eta = _cold_build_progress()
     cumulative["planned_raw_revision_count"] = planned_raw
     cumulative["completed_raw_revision_count"] = completed_raw
@@ -579,53 +593,12 @@ def _cumulative_attempts(ops_db: Path, *, now: datetime) -> dict[str, int | floa
 
 def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[CatchupStageEvent]:
     resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
-    ops_events = _archive_recent_stage_events(resolved_ops_db)
-    if ops_events:
-        return ops_events
-    if not dbf.exists():
-        return []
-    try:
-        # Status reads tolerate a skewed or unstamped tier; the table probe below
-        # already establishes what can be read.
-        conn = open_readonly_connection(dbf, validate_schema=False)
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_ingest_stage_event'"
-            ).fetchone()
-            if has_table is None:
-                return []
-            rows = conn.execute(
-                """
-                SELECT attempt_id, sequence, observed_at, phase, status,
-                       queued_file_count, needed_file_count, skipped_file_count,
-                       succeeded_file_count, failed_file_count, input_bytes,
-                       source_payload_read_bytes, cursor_fingerprint_read_bytes,
-                       archive_write_bytes_delta, parse_time_s, convergence_time_s,
-                       total_time_s, current_source, current_path, error
-                FROM live_ingest_stage_event
-                ORDER BY observed_at DESC, event_id DESC
-                LIMIT 10
-                """
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        emit(
-            "daemon.catchup.stage_event_query_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="live_stage_events_unreadable",
-            path=dbf,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return []
-    return [_catchup_stage_event_from_row(row) for row in rows]
+    return _archive_recent_stage_events(resolved_ops_db)
 
 
 def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
     if not ops_db.exists():
-        return []
+        raise CatchupProgressUnavailableError("ops tier missing")
     try:
         conn = open_readonly_connection(ops_db)
         try:
@@ -633,7 +606,7 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_stage_events'"
             ).fetchone()
             if has_table is None:
-                return []
+                raise CatchupProgressUnavailableError("daemon stage receipts missing")
             rows = conn.execute(
                 """
                 SELECT rowid, attempt_id, observed_at_ms, stage, status, payload_json
@@ -645,7 +618,7 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, SchemaRefusalError) as exc:
         emit(
             "daemon.catchup.stage_event_query_failed",
             level=WARNING,
@@ -655,7 +628,7 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return []
+        raise CatchupProgressUnavailableError(f"stage events unreadable: {type(exc).__name__}: {exc}") from exc
     return [_archive_catchup_stage_event_from_row(row) for row in rows]
 
 
@@ -690,31 +663,6 @@ def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...])
         current_source=_payload_optional_str(payload, "current_source"),
         current_path=_payload_optional_str(payload, "current_path"),
         error=_payload_optional_str(payload, "error"),
-    )
-
-
-def _catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...]) -> CatchupStageEvent:
-    return CatchupStageEvent(
-        attempt_id=_required_str(row[0]),
-        sequence=_row_int(row[1]),
-        observed_at=_required_str(row[2]),
-        phase=_required_str(row[3]),
-        status=_required_str(row[4]),
-        queued_file_count=_row_int(row[5]),
-        needed_file_count=_row_int(row[6]),
-        skipped_file_count=_row_int(row[7]),
-        succeeded_file_count=_row_int(row[8]),
-        failed_file_count=_row_int(row[9]),
-        input_bytes=_row_int(row[10]),
-        source_payload_read_bytes=_row_int(row[11]),
-        cursor_fingerprint_read_bytes=_row_int(row[12]),
-        archive_write_bytes_delta=_row_int(row[13]),
-        parse_time_s=_row_float(row[14]) or 0.0,
-        convergence_time_s=_row_float(row[15]) or 0.0,
-        total_time_s=_row_float(row[16]) or 0.0,
-        current_source=_optional_str(row[17]),
-        current_path=_optional_str(row[18]),
-        error=_optional_str(row[19]),
     )
 
 

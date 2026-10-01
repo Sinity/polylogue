@@ -119,10 +119,10 @@ class TestComputeSlowThreshold:
         c = sqlite3.connect(tmp_path / "attempts.db")
         c.execute(
             """
-            CREATE TABLE live_ingest_attempt (
+            CREATE TABLE ingest_attempts (
                 attempt_id TEXT PRIMARY KEY,
-                started_at TEXT,
-                completed_at TEXT,
+                started_at_ms INTEGER,
+                finished_at_ms INTEGER,
                 status TEXT
             )
             """
@@ -140,14 +140,16 @@ class TestComputeSlowThreshold:
         start = datetime(2026, 1, 1, tzinfo=UTC)
         end = start + timedelta(seconds=duration_s)
         conn.execute(
-            "INSERT INTO live_ingest_attempt VALUES (?, ?, ?, ?)",
-            (attempt_id, start.isoformat(), end.isoformat(), status),
+            "INSERT INTO ingest_attempts VALUES (?, ?, ?, ?)",
+            (attempt_id, int(start.timestamp() * 1000), int(end.timestamp() * 1000), status),
         )
 
     def test_missing_table_returns_none(self, tmp_path: Path) -> None:
         empty = sqlite3.connect(tmp_path / "empty.db")
-        assert compute_slow_threshold_s(empty) is None
-        assert completed_total_time_samples(empty) == []
+        with pytest.raises(sqlite3.OperationalError):
+            compute_slow_threshold_s(empty)
+        with pytest.raises(sqlite3.OperationalError):
+            completed_total_time_samples(empty)
 
     def test_below_min_samples_returns_none(self, conn: sqlite3.Connection) -> None:
         for i in range(SLOW_MIN_SAMPLES - 1):

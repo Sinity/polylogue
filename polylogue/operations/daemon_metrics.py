@@ -117,6 +117,7 @@ from polylogue.storage.archive_layout import (
     ARCHIVE_STORAGE_LAYOUTS,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.tier_access import capture_sqlite_read
 
 # Derived from the canonical tier specs so the expected schema version per tier
@@ -326,17 +327,6 @@ def _emit_unmeasured_probe(lines: list[str], probe: str) -> None:
     lines.append(f'{_UNMEASURED_PROBE_METRIC}{{probe="{probe}"}} 1')
 
 
-def _convergence_debt_measurable(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> bool:
-    """Whether a zero debt count would be a measurement rather than a guess."""
-
-    if ops_db is not None and ops_db.exists():
-        from polylogue.daemon.convergence_debt_status import convergence_debt_stage_counts_info
-
-        if convergence_debt_stage_counts_info(ops_db, ops_db=ops_db).available:
-            return True
-    return _table_exists(conn, "live_convergence_debt")
-
-
 def _emit_metric(
     lines: list[str],
     *,
@@ -414,39 +404,13 @@ def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     return int(row[0])
 
 
-def _attempt_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, int]:
-    """Return totals of ``live_ingest_attempt`` rows by status plus stale writes."""
-    if ops_db is not None:
-        ops_counts = _ops_attempt_counts(ops_db)
-        if ops_counts is not None:
-            return ops_counts
-    counts = {"running": 0, "completed": 0, "failed": 0, "stale_cursor_writes": 0}
-    if not _table_exists(conn, "live_ingest_attempt"):
-        return counts
-    for status in ("running", "completed", "failed"):
-        counts[status] = _scalar_int(
-            conn,
-            f"SELECT COUNT(*) FROM live_ingest_attempt WHERE status = '{status}'",
-        )
-    if "stale_cursor_write_count" in _columns(conn, "live_ingest_attempt"):
-        counts["stale_cursor_writes"] = _scalar_int(
-            conn,
-            "SELECT COALESCE(SUM(stale_cursor_write_count), 0) FROM live_ingest_attempt",
-        )
-    return counts
-
-
-def _ops_attempt_counts(ops_db: Path) -> dict[str, int] | None:
-    if not ops_db.exists():
-        return None
+def _ops_attempt_counts(ops_db: Path) -> dict[str, int]:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    def read() -> dict[str, int] | None:
+    def read() -> dict[str, int]:
         try:
-            conn = open_readonly_connection(ops_db, validate_schema=False)
+            conn = open_readonly_connection(ops_db, tier=ArchiveTier.OPS)
             try:
-                if not _table_exists(conn, "ingest_attempts"):
-                    return None
                 rows = conn.execute("SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status").fetchall()
             finally:
                 conn.close()
@@ -461,7 +425,7 @@ def _ops_attempt_counts(ops_db: Path) -> dict[str, int] | None:
                 error_detail=str(exc),
             )
             raise
-        counts = {"running": 0, "completed": 0, "failed": 0, "stale_cursor_writes": 0}
+        counts = {"running": 0, "completed": 0, "failed": 0}
         for row in rows:
             status = str(row[0])
             if status in counts:
@@ -473,50 +437,16 @@ def _ops_attempt_counts(ops_db: Path) -> dict[str, int] | None:
         return evidence.value
     if not isinstance(evidence, Unavailable):
         raise AssertionError("metric reader produced unsupported evidence")
-    return None
-
-
-def _recent_attempt_durations(
-    conn: sqlite3.Connection,
-    *,
-    limit: int = 50,
-    ops_db: Path | None = None,
-) -> list[float]:
-    """Return durations of recent completed attempts (seconds)."""
-    if ops_db is not None:
-        ops_durations = _ops_recent_attempt_durations(ops_db, limit=limit)
-        if ops_durations:
-            return ops_durations
-    if not _table_exists(conn, "live_ingest_attempt"):
-        return []
-    cols = _columns(conn, "live_ingest_attempt")
-    # convergence_time_s is the canonical end-to-end timing.
-    if "convergence_time_s" not in cols:
-        return []
-    rows = conn.execute(
-        """
-        SELECT convergence_time_s
-        FROM live_ingest_attempt
-        WHERE status = 'completed' AND convergence_time_s IS NOT NULL
-        ORDER BY started_at DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    return [float(row[0]) for row in rows if row[0] is not None]
+    raise sqlite3.OperationalError(evidence.reason)
 
 
 def _ops_recent_attempt_durations(ops_db: Path, *, limit: int = 50) -> list[float]:
-    if not ops_db.exists():
-        return []
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     def read() -> list[float]:
         try:
-            conn = open_readonly_connection(ops_db, validate_schema=False)
+            conn = open_readonly_connection(ops_db, tier=ArchiveTier.OPS)
             try:
-                if not _table_exists(conn, "ingest_attempts"):
-                    return []
                 rows = conn.execute(
                     """
                     SELECT started_at_ms, finished_at_ms
@@ -551,53 +481,17 @@ def _ops_recent_attempt_durations(ops_db: Path, *, limit: int = 50) -> list[floa
         return evidence.value
     if not isinstance(evidence, Unavailable):
         raise AssertionError("metric reader produced unsupported evidence")
-    return []
+    raise sqlite3.OperationalError(evidence.reason)
 
 
-def _convergence_debt_by_stage(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> list[tuple[str, str, int]]:
-    ops_rows = _ops_convergence_debt_by_stage(ops_db) if ops_db is not None else []
-    if ops_rows:
-        return ops_rows
-    if not _table_exists(conn, "live_convergence_debt"):
-        return []
-    rows = conn.execute(
-        """
-        SELECT stage, status, COUNT(*)
-        FROM live_convergence_debt
-        WHERE status IN ('failed', 'deferred')
-        GROUP BY stage, status
-        ORDER BY stage, status
-        """
-    ).fetchall()
-    return [(str(row[0] or "unknown"), str(row[1] or "unknown"), int(row[2] or 0)) for row in rows]
-
-
-def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, str, int]]:
-    """Return (stage, status, count) triples from the durable ops-tier ledger.
-
-    Delegates to :func:`convergence_debt_status.convergence_debt_stage_counts_info`,
-    which answers this question with one ``GROUP BY stage, status`` aggregate.
-    It deliberately does NOT use ``convergence_debt_summary_info``: that
-    projection selects every convergence-debt row, ``target_id`` and
-    ``last_error`` strings included, so routing a ``/metrics`` scrape through it
-    materialized the entire ledger to produce a handful of counters.
-
-    The validation that made the summary projection worth delegating to is
-    retained: both enforce the closed ``{failed, deferred}`` status vocabulary
-    and a non-NULL ``stage``, and both surface a violation as ``available=False``
-    (caught, logged, empty metrics) rather than passing an anomalous value
-    through as an ``"unknown"`` bucket.
-    """
-    if ops_db is None or not ops_db.exists():
-        return []
+def _ops_convergence_debt_by_stage(ops_db: Path) -> list[tuple[str, str, int]]:
+    """Read only canonical current debt; an inaccessible ledger is not zero."""
     from polylogue.daemon.convergence_debt_status import convergence_debt_stage_counts_info
 
-    stage_counts = convergence_debt_stage_counts_info(ops_db, ops_db=ops_db)
-    if not stage_counts.available:
-        return []
-    rows = [(stage, status, count) for stage, status, count in stage_counts.counts if count]
-    rows.sort()
-    return rows
+    result = convergence_debt_stage_counts_info(ops_db, ops_db=ops_db)
+    if not result.available:
+        raise sqlite3.OperationalError(result.error or "convergence debt unavailable")
+    return sorted((stage, status, count) for stage, status, count in result.counts if count)
 
 
 def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
@@ -646,58 +540,13 @@ def _fts_surface_metrics(
     return ready_samples, drift_samples
 
 
-def _latest_ingest_memory(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> list[tuple[str, float]]:
-    if ops_db is not None:
-        ops_memory = _ops_latest_ingest_memory(ops_db)
-        if ops_memory:
-            return ops_memory
-    if not _table_exists(conn, "live_ingest_attempt"):
-        return []
-    cols = _columns(conn, "live_ingest_attempt")
-    metric_columns = {
-        "rss_current": "rss_current_mb",
-        "rss_peak_self": "rss_peak_self_mb",
-        "rss_peak_children": "rss_peak_children_mb",
-        "cgroup_current": "cgroup_memory_current_mb",
-        "cgroup_peak": "cgroup_memory_peak_mb",
-        "cgroup_swap_current": "cgroup_memory_swap_current_mb",
-        "cgroup_anon": "cgroup_memory_anon_mb",
-        "cgroup_file": "cgroup_memory_file_mb",
-        "cgroup_inactive_file": "cgroup_memory_inactive_file_mb",
-    }
-    available = [(kind, column) for kind, column in metric_columns.items() if column in cols]
-    if not available:
-        return []
-    select_list = ", ".join(column for _, column in available)
-    row = conn.execute(
-        f"""
-        SELECT {select_list}
-        FROM live_ingest_attempt
-        ORDER BY updated_at DESC, started_at DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    if row is None:
-        return []
-    samples: list[tuple[str, float]] = []
-    for idx, (kind, _column) in enumerate(available):
-        value = row[idx]
-        if value is not None:
-            samples.append((kind, float(value)))
-    return samples
-
-
 def _ops_latest_ingest_memory(ops_db: Path) -> list[tuple[str, float]]:
-    if not ops_db.exists():
-        return []
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     def read() -> list[tuple[str, float]]:
         try:
-            conn = open_readonly_connection(ops_db, validate_schema=False)
+            conn = open_readonly_connection(ops_db, tier=ArchiveTier.OPS)
             try:
-                if not _table_exists(conn, "daemon_stage_events"):
-                    return []
                 row = conn.execute(
                     """
                     SELECT payload_json
@@ -746,7 +595,7 @@ def _ops_latest_ingest_memory(ops_db: Path) -> list[tuple[str, float]]:
         return evidence.value
     if not isinstance(evidence, Unavailable):
         raise AssertionError("metric reader produced unsupported evidence")
-    return []
+    raise sqlite3.OperationalError(evidence.reason)
 
 
 def _json_payload(value: object) -> dict[str, object]:
@@ -773,62 +622,14 @@ def _empty_storage_route_counts() -> dict[str, int]:
     return counts
 
 
-def _storage_route_counts(
-    conn: sqlite3.Connection,
-    *,
-    ops_db: Path | None = None,
-) -> dict[str, int]:
-    """Return live-ingest attempt counts grouped by bounded storage route."""
-    if ops_db is not None:
-        ops_counts = _ops_storage_route_counts(ops_db)
-        if ops_counts is not None:
-            return ops_counts
-
-    counts = _empty_storage_route_counts()
-    if not _table_exists(conn, "live_ingest_attempt"):
-        return counts
-    columns = _columns(conn, "live_ingest_attempt")
-    if "storage_route" not in columns:
-        counts["unknown"] = _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")
-        return counts
-    rows = conn.execute("SELECT storage_route, COUNT(*) FROM live_ingest_attempt GROUP BY storage_route").fetchall()
-    for row in rows:
-        route = _normalise_storage_route(row[0])
-        counts[route] = counts.get(route, 0) + int(row[1] or 0)
-    return counts
-
-
-def _ops_storage_route_counts(ops_db: Path) -> dict[str, int] | None:
-    if not ops_db.exists():
-        return None
+def _ops_storage_route_counts(ops_db: Path) -> dict[str, int]:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    def read() -> dict[str, int] | None:
+    def read() -> dict[str, int]:
         try:
-            conn = open_readonly_connection(ops_db, validate_schema=False)
+            conn = open_readonly_connection(ops_db, tier=ArchiveTier.OPS)
             try:
-                if not _table_exists(conn, "ingest_attempts"):
-                    return None
                 counts = _empty_storage_route_counts()
-                attempt_columns = _columns(conn, "ingest_attempts")
-                if "storage_route" in attempt_columns:
-                    rows = conn.execute(
-                        "SELECT storage_route, COUNT(*) FROM ingest_attempts GROUP BY storage_route"
-                    ).fetchall()
-                    for row in rows:
-                        route = _normalise_storage_route(row[0])
-                        counts[route] = counts.get(route, 0) + int(row[1] or 0)
-                    return counts
-
-                total_attempts = _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts")
-                if not _table_exists(conn, "daemon_stage_events"):
-                    counts["unknown"] = total_attempts
-                    return counts
-                index_names = {str(row[1]) for row in conn.execute("PRAGMA index_list('daemon_stage_events')")}
-                if "idx_daemon_stage_events_attempt_observed" not in index_names:
-                    counts["unknown"] = total_attempts
-                    return counts
-
                 rows = conn.execute(
                     """
                     SELECT (
@@ -867,7 +668,7 @@ def _ops_storage_route_counts(ops_db: Path) -> dict[str, int] | None:
         return evidence.value
     if not isinstance(evidence, Unavailable):
         raise AssertionError("metric reader produced unsupported evidence")
-    return None
+    raise sqlite3.OperationalError(evidence.reason)
 
 
 def _emit_storage_route_metrics(lines: list[str], counts: dict[str, int]) -> None:
@@ -1434,6 +1235,13 @@ def format_metrics(
         _collect_group(
             lines,
             states,
+            "ops_attempts",
+            lambda group: _emit_ops_current_metrics(group, configured_root / "ops.db"),
+            path=configured_root / "ops.db",
+        )
+        _collect_group(
+            lines,
+            states,
             "archive_index",
             lambda group: _format_archive_metrics(group, db, configured_root),
             path=db,
@@ -1566,80 +1374,6 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
     conn = open_readonly_connection(db, validate_schema=False)
     try:
         ops_db = configured_root / "ops.db"
-        attempts = _attempt_counts(conn, ops_db=ops_db)
-        _emit_metric(
-            lines,
-            name="polylogue_live_ingest_attempts_total",
-            help_text="Total live ingest attempts by status.",
-            metric_type="counter",
-            samples=[
-                ({"status": "completed"}, attempts["completed"]),
-                ({"status": "failed"}, attempts["failed"]),
-                # Running counted separately so total = completed + failed + running.
-                ({"status": "running"}, attempts["running"]),
-            ],
-        )
-        _emit_metric(
-            lines,
-            name="polylogue_live_ingest_attempts_in_flight",
-            help_text="Live ingest attempts currently running.",
-            metric_type="gauge",
-            samples=[(None, attempts["running"])],
-        )
-        _emit_metric(
-            lines,
-            name="polylogue_stale_cursor_writes_total",
-            help_text="Total stale-cursor writes observed across ingest attempts.",
-            metric_type="counter",
-            samples=[(None, attempts["stale_cursor_writes"])],
-        )
-        _emit_storage_route_metrics(lines, _storage_route_counts(conn, ops_db=ops_db))
-
-        durations = _recent_attempt_durations(conn, ops_db=ops_db)
-        if durations:
-            _emit_metric(
-                lines,
-                name="polylogue_live_ingest_attempt_duration_seconds",
-                help_text=(
-                    "Convergence time (seconds) of recent completed ingest attempts: "
-                    "min/mean/max derived from the most recent 50 attempts."
-                ),
-                metric_type="gauge",
-                samples=[
-                    ({"quantile": "min"}, min(durations)),
-                    ({"quantile": "mean"}, sum(durations) / len(durations)),
-                    ({"quantile": "max"}, max(durations)),
-                ],
-            )
-        else:
-            _emit_metric(
-                lines,
-                name="polylogue_live_ingest_attempt_duration_seconds",
-                help_text="Convergence time (seconds) of recent completed ingest attempts.",
-                metric_type="gauge",
-                samples=[],
-            )
-
-        debt = _convergence_debt_by_stage(conn, ops_db=ops_db)
-        if debt:
-            _emit_metric(
-                lines,
-                name="polylogue_convergence_debt_count",
-                help_text="Unresolved convergence-debt rows by stage and status.",
-                metric_type="gauge",
-                samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt],
-            )
-        elif _convergence_debt_measurable(conn, ops_db=ops_db):
-            # A measured zero: the ledger is readable and holds no debt rows.
-            _emit_metric(
-                lines,
-                name="polylogue_convergence_debt_count",
-                help_text="Unresolved convergence-debt rows by stage and status.",
-                metric_type="gauge",
-                samples=[(None, 0)],
-            )
-        else:
-            _emit_unmeasured_probe(lines, "convergence_debt_count")
 
         triggers = _fts_trigger_presence(conn)
         _emit_metric(
@@ -1683,20 +1417,10 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
             samples=[({"surface": surface, "kind": kind}, value) for surface, kind, value in drift],
         )
 
-        memory = _latest_ingest_memory(conn, ops_db=ops_db)
-        _emit_metric(
-            lines,
-            name="polylogue_live_ingest_memory_mebibytes",
-            help_text="Latest live ingest memory sample in MiB by kind.",
-            metric_type="gauge",
-            samples=[({"kind": kind}, value) for kind, value in memory],
-        )
-
         _emit_embedding_metrics(lines, _archive_embedding_state(conn, ops_db=ops_db))
 
         # ── Rich instrumentation (#1321 ambitious scope) ──────────
         _emit_archive_metrics(lines, conn)
-        _emit_throughput_metrics(lines, ops_db=ops_db)
         _emit_db_space_metrics(lines, db)
         _emit_raw_record_metrics(lines, conn, db_path=configured_root / "index.db")
         _emit_archive_source_index_link_metrics(lines, conn, db_path=configured_root / "index.db")
@@ -1708,99 +1432,9 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
 
 
 def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
-    if ops_db.exists():
-        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-        # Bounded openability probe: reading the schema cookie touches only the
-        # header page and raises DatabaseError for a file that is not a
-        # database. Full integrity checks belong to diagnostics, not scrapes.
-        probe = open_readonly_connection(ops_db, validate_schema=False)
-        try:
-            probe.execute("PRAGMA schema_version").fetchone()
-        finally:
-            probe.close()
-    attempts = _ops_attempt_counts(ops_db)
-    durations = _ops_recent_attempt_durations(ops_db)
-    debt = _ops_convergence_debt_by_stage(ops_db)
-    memory = _ops_latest_ingest_memory(ops_db)
-    if attempts is None and not durations and not debt and not memory:
+    if not ops_db.exists():
         return None
-
-    _emit_metric(
-        lines,
-        name="polylogue_live_ingest_attempts_total",
-        help_text="Total live ingest attempts by status.",
-        metric_type="counter",
-        samples=(
-            [
-                ({"status": "completed"}, attempts["completed"]),
-                ({"status": "failed"}, attempts["failed"]),
-                ({"status": "running"}, attempts["running"]),
-            ]
-            if attempts is not None
-            else []
-        ),
-        omit_when_empty=True,
-    )
-    _emit_metric(
-        lines,
-        name="polylogue_live_ingest_attempts_in_flight",
-        help_text="Live ingest attempts currently running.",
-        metric_type="gauge",
-        samples=[(None, attempts["running"])] if attempts is not None else [],
-        omit_when_empty=True,
-    )
-    _emit_metric(
-        lines,
-        name="polylogue_stale_cursor_writes_total",
-        help_text="Total stale-cursor writes observed across ingest attempts.",
-        metric_type="counter",
-        samples=[(None, attempts["stale_cursor_writes"])] if attempts is not None else [],
-        omit_when_empty=True,
-    )
-    route_counts = _ops_storage_route_counts(ops_db)
-    if route_counts is not None:
-        _emit_storage_route_metrics(lines, route_counts)
-    else:
-        _emit_metric(
-            lines,
-            name="polylogue_live_ingest_storage_route_total",
-            help_text="Live ingest attempts grouped by storage route.",
-            metric_type="counter",
-            samples=[],
-            omit_when_empty=True,
-        )
-    _emit_metric(
-        lines,
-        name="polylogue_live_ingest_attempt_duration_seconds",
-        help_text="Convergence time (seconds) of recent completed ingest attempts.",
-        metric_type="gauge",
-        samples=[
-            ({"quantile": "min"}, min(durations)),
-            ({"quantile": "mean"}, sum(durations) / len(durations)),
-            ({"quantile": "max"}, max(durations)),
-        ]
-        if durations
-        else [],
-        omit_when_empty=True,
-    )
-    _emit_metric(
-        lines,
-        name="polylogue_convergence_debt_count",
-        help_text="Unresolved convergence-debt rows by stage and status.",
-        metric_type="gauge",
-        samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt],
-        omit_when_empty=True,
-    )
-    _emit_metric(
-        lines,
-        name="polylogue_live_ingest_memory_mebibytes",
-        help_text="Latest live ingest memory sample in MiB by kind.",
-        metric_type="gauge",
-        samples=[({"kind": kind}, value) for kind, value in memory],
-        omit_when_empty=True,
-    )
-    _emit_ops_throughput_metrics(lines, ops_db)
+    _emit_ops_current_metrics(lines, ops_db)
     for name, help_text in (
         ("polylogue_fts_trigger_present", "1 when the named FTS sync trigger is installed in index.db."),
         ("polylogue_fts_triggers_all_present", "All expected FTS sync triggers are installed."),
@@ -1823,7 +1457,75 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
         ),
     ):
         _emit_metric(lines, name=name, help_text=help_text, metric_type="gauge", samples=[], omit_when_empty=True)
-    return attempts is not None
+    return True
+
+
+def _emit_ops_current_metrics(lines: list[str], ops_db: Path) -> None:
+    """Emit current ingest and debt state from the typed ops tier."""
+    attempts = _ops_attempt_counts(ops_db)
+    durations = _ops_recent_attempt_durations(ops_db)
+    debt = _ops_convergence_debt_by_stage(ops_db)
+    memory = _ops_latest_ingest_memory(ops_db)
+    route_counts = _ops_storage_route_counts(ops_db)
+
+    _emit_metric(
+        lines,
+        name="polylogue_live_ingest_attempts_total",
+        help_text="Total live ingest attempts by status.",
+        metric_type="counter",
+        samples=[
+            ({"status": "completed"}, attempts["completed"]),
+            ({"status": "failed"}, attempts["failed"]),
+            ({"status": "running"}, attempts["running"]),
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_live_ingest_attempts_in_flight",
+        help_text="Live ingest attempts currently running.",
+        metric_type="gauge",
+        samples=[(None, attempts["running"])],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_stale_cursor_writes_total",
+        help_text="Total stale-cursor writes observed across ingest attempts.",
+        metric_type="counter",
+        samples=[],
+        omit_when_empty=True,
+    )
+    _emit_unmeasured_probe(lines, "stale_cursor_writes_total")
+    _emit_storage_route_metrics(lines, route_counts)
+    _emit_metric(
+        lines,
+        name="polylogue_live_ingest_attempt_duration_seconds",
+        help_text="Convergence time (seconds) of recent completed ingest attempts.",
+        metric_type="gauge",
+        samples=[
+            ({"quantile": "min"}, min(durations)),
+            ({"quantile": "mean"}, sum(durations) / len(durations)),
+            ({"quantile": "max"}, max(durations)),
+        ]
+        if durations
+        else [],
+        omit_when_empty=True,
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_convergence_debt_count",
+        help_text="Unresolved convergence-debt rows by stage and status.",
+        metric_type="gauge",
+        samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt] if debt else [(None, 0)],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_live_ingest_memory_mebibytes",
+        help_text="Latest live ingest memory sample in MiB by kind.",
+        metric_type="gauge",
+        samples=[({"kind": kind}, value) for kind, value in memory],
+        omit_when_empty=True,
+    )
+    _emit_ops_throughput_metrics(lines, ops_db)
 
 
 # ---------------------------------------------------------------------------
@@ -1985,22 +1687,6 @@ _THROUGHPUT_METRIC_NAMES = (
     "polylogue_ingest_throughput_raw_rows_per_second",
     "polylogue_ingest_throughput_sessions_per_second",
 )
-
-
-def _emit_throughput_metrics(lines: list[str], *, ops_db: Path | None = None) -> None:
-    """Recent ingest throughput derived from the ops-tier ``ingest_attempts`` ledger.
-
-    ``ops.db`` is the sole producer. The former ``index.db``
-    ``live_ingest_attempt`` producer emitted the same two metric names from a
-    different numerator (``message_count``) over a different denominator (the
-    convergence phase alone rather than attempt wall time), so the reported
-    value jumped by orders of magnitude the moment ``ops.db`` first appeared --
-    a switch by file existence, not by configuration (polylogue-7z8do).
-    """
-    if ops_db is not None and _emit_ops_throughput_metrics(lines, ops_db):
-        return
-    for name in _THROUGHPUT_METRIC_NAMES:
-        _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
 
 
 def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:

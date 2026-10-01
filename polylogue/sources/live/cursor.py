@@ -68,7 +68,7 @@ _INTERRUPTED_SOURCE_PAGE_RETRIES = 1
 logger = get_logger(__name__)
 
 # Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
-# not part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
+# not part of SCHEMA_VERSION — same lifecycle as live_cursor / convergence_debt.
 # DDL is shared with cursor_lag_baseline via polylogue.sources.live._lag_sample_ddl.
 
 

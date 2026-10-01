@@ -16,13 +16,13 @@ from pydantic import BaseModel, Field, StrictInt, ValidationInfo, field_validato
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.config import Config
+from polylogue.core.errors import SchemaRefusalError
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
-from polylogue.core.stats import percentile
 from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
@@ -56,16 +56,9 @@ from polylogue.daemon.live_ingest_attempt_models import (
     LiveIngestAttemptSummary as LiveIngestAttemptSummary,
 )
 from polylogue.daemon.live_ingest_attempt_progress import (
-    SLOW_MIN_SAMPLES,
-    SLOW_P95_QUANTILE,
     STUCK_AFTER_S,
     classify_attempt_progress,
     compute_slow_threshold_s,
-)
-from polylogue.daemon.live_ingest_attempt_workload import (
-    LiveIngestStageEventInfo,
-    latest_stage_events,
-    workload_fields,
 )
 from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.logging import WARNING, emit
@@ -549,7 +542,7 @@ class LiveCursorFileState(BaseModel):
 
 
 class LiveCursorSummary(BaseModel):
-    #: False when the live_cursor table could not be read at all. Every count
+    #: False when the ingest_cursor table could not be read at all. Every count
     #: below is then a model default, not an observation: rendering them as
     #: "0 failed, 0 excluded" reports a clean cursor for an unreadable one
     #: (polylogue-xvwpi).
@@ -1213,103 +1206,11 @@ def _fmt_receipt_age_ms(value: object) -> str | None:
 
 
 def _live_cursor_summary_info() -> LiveCursorSummary:
-    """Return live cursor backlog/failure state without source-tree scans."""
-    dbf = _active_status_db_path()
-    ops_summary = _archive_live_cursor_summary_info(archive_root() / "ops.db")
-    if ops_summary is not None:
-        return ops_summary
-    if not dbf.exists():
-        return LiveCursorSummary()
-    try:
-        conn = open_readonly_connection(dbf, validate_schema=False)
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_cursor'"
-            ).fetchone()
-            if has_table is None:
-                return LiveCursorSummary()
-            tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM live_cursor").fetchone()[0])
-            failed_file_count = int(
-                conn.execute("SELECT COUNT(*) FROM live_cursor WHERE failure_count > 0").fetchone()[0]
-            )
-            excluded_file_count = int(conn.execute("SELECT COUNT(*) FROM live_cursor WHERE excluded = 1").fetchone()[0])
-            attention_file_count = int(
-                conn.execute("SELECT COUNT(*) FROM live_cursor WHERE failure_count > 0 OR excluded = 1").fetchone()[0]
-            )
-            rows = conn.execute(
-                """
-                SELECT source_path, failure_count, next_retry_at, excluded, updated_at
-                FROM live_cursor
-                WHERE failure_count > 0 OR excluded = 1
-                ORDER BY source_path
-                LIMIT ?
-                """,
-                (_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT,),
-            ).fetchall()
-            # Excluded rows never retry on a schedule (revival requires the
-            # file's identity to change, not time to pass -- polylogue-ix5r),
-            # so they are deliberately excluded from the retry-due backlog.
-            retry_rows = conn.execute(
-                """
-                SELECT next_retry_at
-                FROM live_cursor
-                WHERE failure_count > 0 AND excluded = 0
-                """
-            ).fetchall()
-            oldest_excluded_row = conn.execute("SELECT MIN(updated_at) FROM live_cursor WHERE excluded = 1").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        emit(
-            "daemon.status.query_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="live_cursor_summary_unreadable",
-            path=dbf,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return LiveCursorSummary(available=False, unavailable_reason="live_cursor_summary_unreadable")
-
-    now = datetime.now(UTC)
-    failing_files: list[LiveCursorFileState] = []
-    retry_due_file_count = 0
-    for row in retry_rows:
-        if _retry_due(row[0], now=now):
-            retry_due_file_count += 1
-    # ``retry_rows`` is already scoped to non-excluded failing rows, so this
-    # is "failed, non-excluded, not yet due" -- excluded rows are neither
-    # retry-due nor in backoff, they are permanently parked.
-    in_backoff_file_count = max(0, len(retry_rows) - retry_due_file_count)
-    for row in rows:
-        failure_count = _row_int(row[1])
-        excluded = bool(row[3])
-        retry_due = (not excluded) and failure_count > 0 and _retry_due(row[2], now=now)
-        excluded_age_s = _optional_iso_age_s(_optional_str(row[4]), now=now) if excluded else None
-        failing_files.append(
-            LiveCursorFileState(
-                source_path=str(row[0]),
-                failure_count=failure_count,
-                next_retry_at=row[2],
-                excluded=excluded,
-                retry_due=retry_due,
-                excluded_age_s=excluded_age_s,
-            )
-        )
-    excluded_oldest_age_s = (
-        _optional_iso_age_s(_optional_str(oldest_excluded_row[0]), now=now) if oldest_excluded_row is not None else None
-    )
-
-    return LiveCursorSummary(
-        tracked_file_count=tracked_file_count,
-        failed_file_count=failed_file_count,
-        excluded_file_count=excluded_file_count,
-        excluded_oldest_age_s=excluded_oldest_age_s,
-        retry_due_file_count=retry_due_file_count,
-        in_backoff_file_count=in_backoff_file_count,
-        sampled_file_count=len(failing_files),
-        omitted_file_count=max(0, attention_file_count - len(failing_files)),
-        failing_files=failing_files,
+    result = _archive_live_cursor_summary_info(archive_root() / "ops.db")
+    return (
+        result
+        if result is not None
+        else LiveCursorSummary(available=False, unavailable_reason="ops_cursor_unavailable")
     )
 
 
@@ -1318,7 +1219,7 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
     if not ops_db.exists():
         return None
     try:
-        conn = open_readonly_connection(ops_db, validate_schema=False)
+        conn = open_readonly_connection(ops_db)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
@@ -1329,8 +1230,6 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
             if not {"failure_count", "next_retry_at", "excluded"}.issubset(columns):
                 return None
             tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
-            if tracked_file_count == 0:
-                return None
             failed_file_count = int(
                 conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0").fetchone()[0]
             )
@@ -1365,7 +1264,7 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError, SchemaRefusalError):
         return None
 
     now = datetime.now(UTC)
@@ -1403,171 +1302,11 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
 
 
 def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
-    """Return recent durable live-ingest attempt snapshots."""
-    # _active_status_db_path() always names "index.db", so the old
-    # sibling_index_db(dbf, require_exists=False) call was provably an
-    # identity operation on dbf itself.
-    dbf = _active_status_db_path()
-    ops_summary = _archive_live_ingest_attempt_summary_info(archive_root() / "ops.db")
-    index_db: Path | None = dbf
-    if ((index_db is not None and index_db.exists()) or not dbf.exists()) and ops_summary is not None:
-        return ops_summary
-    if not dbf.exists():
-        # No index tier and no ops ledger: the writer evidence was never read,
-        # which is not the same as a measured "nothing running" (polylogue-g88v4).
-        return (
-            ops_summary
-            if ops_summary is not None
-            else LiveIngestAttemptSummary(
-                available=False,
-                unavailable_reason="no live_ingest_attempt evidence available to read",
-            )
-        )
-    try:
-        conn = open_readonly_connection(dbf, validate_schema=False)
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_ingest_attempt'"
-            ).fetchone()
-            if has_table is None:
-                return LiveIngestAttemptSummary()
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(live_ingest_attempt)")}
-            cgroup_path_expr = "cgroup_path" if "cgroup_path" in columns else "NULL"
-            cgroup_current_expr = "cgroup_memory_current_mb" if "cgroup_memory_current_mb" in columns else "NULL"
-            cgroup_peak_expr = "cgroup_memory_peak_mb" if "cgroup_memory_peak_mb" in columns else "NULL"
-            cgroup_swap_expr = "cgroup_memory_swap_current_mb" if "cgroup_memory_swap_current_mb" in columns else "NULL"
-            cgroup_anon_expr = "cgroup_memory_anon_mb" if "cgroup_memory_anon_mb" in columns else "NULL"
-            cgroup_file_expr = "cgroup_memory_file_mb" if "cgroup_memory_file_mb" in columns else "NULL"
-            cgroup_inactive_expr = (
-                "cgroup_memory_inactive_file_mb" if "cgroup_memory_inactive_file_mb" in columns else "NULL"
-            )
-            worker_in_flight_expr = "worker_in_flight_count" if "worker_in_flight_count" in columns else "NULL"
-            worker_completed_expr = "worker_completed_count" if "worker_completed_count" in columns else "NULL"
-            worker_total_expr = "worker_total_count" if "worker_total_count" in columns else "NULL"
-            stale_cursor_write_expr = "stale_cursor_write_count" if "stale_cursor_write_count" in columns else "0"
-            rows = conn.execute(
-                f"""
-                SELECT
-                    attempt_id,
-                    started_at,
-                    updated_at,
-                    completed_at,
-                    status,
-                    phase,
-                    queued_file_count,
-                    needed_file_count,
-                    succeeded_file_count,
-                    failed_file_count,
-                    input_bytes,
-                    source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes,
-                    parse_time_s,
-                    convergence_time_s,
-                    current_source,
-                    current_path,
-                    error,
-                    rss_current_mb,
-                    rss_peak_self_mb,
-                    rss_peak_children_mb,
-                    {cgroup_path_expr},
-                    {cgroup_current_expr},
-                    {cgroup_peak_expr},
-                    {cgroup_swap_expr},
-                    {cgroup_anon_expr},
-                    {cgroup_file_expr},
-                    {cgroup_inactive_expr},
-                    {worker_in_flight_expr},
-                    {worker_completed_expr},
-                    {worker_total_expr},
-                    {stale_cursor_write_expr}
-                FROM live_ingest_attempt
-                ORDER BY updated_at DESC, started_at DESC
-                LIMIT 5
-                """
-            ).fetchall()
-            stage_events = latest_stage_events(
-                conn,
-                [_required_str(row[0]) for row in rows],
-            )
-            running_rows = conn.execute(
-                """
-                SELECT updated_at, started_at, completed_at
-                FROM live_ingest_attempt
-                WHERE status = 'running'
-                """
-            ).fetchall()
-            slow_threshold_s = compute_slow_threshold_s(conn)
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        emit(
-            "daemon.status.query_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="live_ingest_attempts_unreadable",
-            path=dbf,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return LiveIngestAttemptSummary(
-            available=False,
-            unavailable_reason=f"live_ingest_attempt table unreadable: {exc}",
-        )
-
-    now = datetime.now(UTC)
-    recent_attempts = [
-        _live_ingest_attempt_state_from_row(
-            row,
-            now=now,
-            stage_event=stage_events.get(_required_str(row[0])),
-            slow_threshold_s=slow_threshold_s,
-        )
-        for row in rows
-    ]
-    stale_running_count = 0
-    slow_running_count = 0
-    stuck_running_count = 0
-    for running_row in running_rows:
-        updated_at = _required_str(running_row[0])
-        age_s = _attempt_updated_age_s(updated_at, now=now)
-        if age_s is not None and age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S:
-            stale_running_count += 1
-            stuck_running_count += 1
-            continue
-        # ``total_time_s`` for a running attempt approximates as wall-clock
-        # elapsed since ``started_at`` (the per-attempt rollup that the
-        # operator already sees in ``recent``). The rollup only needs
-        # slow/stuck counts; the full workload bundle stays on the
-        # per-attempt path.
-        started_at = _required_str(running_row[1])
-        ended_at = _optional_str(running_row[2]) or updated_at
-        try:
-            started = datetime.fromisoformat(started_at)
-            ended = datetime.fromisoformat(ended_at)
-        except ValueError:
-            continue
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=UTC)
-        if ended.tzinfo is None:
-            ended = ended.replace(tzinfo=UTC)
-        total_time_s = max(0.0, (ended.astimezone(UTC) - started.astimezone(UTC)).total_seconds())
-        classification = classify_attempt_progress(
-            status="running",
-            updated_age_s=age_s,
-            total_time_s=total_time_s,
-            slow_threshold_s=slow_threshold_s,
-        )
-        if classification == "slow":
-            slow_running_count += 1
-        elif classification == "stuck":
-            stuck_running_count += 1
-    return LiveIngestAttemptSummary(
-        running_count=len(running_rows),
-        stale_running_count=stale_running_count,
-        slow_running_count=slow_running_count,
-        stuck_running_count=stuck_running_count,
-        slow_threshold_s=slow_threshold_s,
-        recent=recent_attempts,
+    result = _archive_live_ingest_attempt_summary_info(archive_root() / "ops.db")
+    return (
+        result
+        if result is not None
+        else LiveIngestAttemptSummary(available=False, unavailable_reason="ops_attempts_unavailable")
     )
 
 
@@ -1576,15 +1315,12 @@ def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttempt
     if not ops_db.exists():
         return None
     try:
-        conn = open_readonly_connection(ops_db, validate_schema=False)
+        conn = open_readonly_connection(ops_db)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_attempts'"
             ).fetchone()
             if has_table is None:
-                return None
-            attempt_count = int(conn.execute("SELECT COUNT(*) FROM ingest_attempts").fetchone()[0])
-            if attempt_count == 0:
                 return None
             rows = conn.execute(
                 """
@@ -1613,13 +1349,11 @@ def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttempt
                 WHERE status = 'running'
                 """
             ).fetchall()
-            slow_threshold_s = _archive_compute_slow_threshold_s(conn)
+            slow_threshold_s = compute_slow_threshold_s(conn)
         finally:
             conn.close()
-    except sqlite3.Error as exc:
-        # ``None`` here means "ops has nothing to say" and lets the caller fall
-        # through to the index tier.  An unreadable ops tier is a different
-        # fact: report it as unmeasured rather than as an absence of writers.
+    except (sqlite3.Error, OSError, SchemaRefusalError) as exc:
+        # A failed canonical query is unmeasured, never an absence of writers.
         return LiveIngestAttemptSummary(
             available=False,
             unavailable_reason=f"ops ingest_attempts unreadable: {exc}",
@@ -1666,29 +1400,6 @@ def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttempt
         slow_threshold_s=slow_threshold_s,
         recent=recent_attempts,
     )
-
-
-def _archive_compute_slow_threshold_s(conn: sqlite3.Connection) -> float | None:
-    rows = conn.execute(
-        """
-        SELECT started_at_ms, finished_at_ms
-        FROM ingest_attempts
-        WHERE status = 'completed'
-          AND started_at_ms IS NOT NULL
-          AND finished_at_ms IS NOT NULL
-        """
-    ).fetchall()
-    samples: list[float] = []
-    for row in rows:
-        started_ms = _row_int(row[0])
-        finished_ms = _row_int(row[1])
-        duration = max(0.0, (finished_ms - started_ms) / 1000.0)
-        if duration > 0.0:
-            samples.append(duration)
-    if len(samples) < SLOW_MIN_SAMPLES:
-        return None
-    samples.sort()
-    return percentile(samples, SLOW_P95_QUANTILE)
 
 
 def _archive_latest_stage_payloads(
@@ -1859,73 +1570,6 @@ def _stage_timings_from_payload(value: object) -> dict[str, float]:
     if not isinstance(parsed, dict):
         return {}
     return {str(key): float(item) for key, item in parsed.items() if isinstance(item, int | float)}
-
-
-def _live_ingest_attempt_state_from_row(
-    row: sqlite3.Row | tuple[object, ...],
-    *,
-    now: datetime,
-    stage_event: LiveIngestStageEventInfo | None = None,
-    slow_threshold_s: float | None = None,
-) -> LiveIngestAttemptState:
-    updated_at = _required_str(row[2])
-    updated_age_s = _attempt_updated_age_s(updated_at, now=now)
-    status_value = _required_str(row[4])
-    stale = (
-        status_value == "running" and updated_age_s is not None and updated_age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
-    )
-    workload = workload_fields(row, stage_event=stage_event)
-    progress_classification = classify_attempt_progress(
-        status=status_value,
-        updated_age_s=updated_age_s,
-        total_time_s=_safe_float(workload["total_time_s"]),
-        slow_threshold_s=slow_threshold_s,
-    )
-    return LiveIngestAttemptState(
-        attempt_id=_required_str(row[0]),
-        started_at=_required_str(row[1]),
-        updated_at=updated_at,
-        completed_at=_optional_str(row[3]),
-        status=_required_str(row[4]),
-        phase=_required_str(row[5]),
-        queued_file_count=_row_int(row[6]),
-        needed_file_count=_row_int(row[7]),
-        succeeded_file_count=_row_int(row[8]),
-        failed_file_count=_row_int(row[9]),
-        input_bytes=_row_int(row[10]),
-        source_payload_read_bytes=_row_int(row[11]),
-        cursor_fingerprint_read_bytes=_row_int(row[12]),
-        total_read_bytes=_safe_int(workload["total_read_bytes"]),
-        read_amplification=_safe_float(workload["read_amplification"]),
-        files_per_second=_safe_float(workload["files_per_second"]),
-        source_mb_per_second=_safe_float(workload["source_mb_per_second"]),
-        archive_write_bytes_delta=_safe_int(workload["archive_write_bytes_delta"]),
-        parse_time_s=_row_float(row[13]) or 0.0,
-        convergence_time_s=_row_float(row[14]) or 0.0,
-        total_time_s=_safe_float(workload["total_time_s"]),
-        stage_timings_s=workload["stage_timings_s"] if isinstance(workload["stage_timings_s"], dict) else {},
-        current_source=_optional_str(row[15]),
-        current_path=_optional_str(row[16]),
-        error=_optional_str(row[17]),
-        rss_current_mb=_row_float(row[18]),
-        rss_peak_self_mb=_row_float(row[19]),
-        rss_peak_children_mb=_row_float(row[20]),
-        cgroup_path=_optional_str(row[21]),
-        cgroup_memory_current_mb=_row_float(row[22]),
-        cgroup_memory_peak_mb=_row_float(row[23]),
-        cgroup_memory_swap_current_mb=_row_float(row[24]),
-        cgroup_memory_anon_mb=_row_float(row[25]) if len(row) > 25 else None,
-        cgroup_memory_file_mb=_row_float(row[26]) if len(row) > 26 else None,
-        cgroup_memory_inactive_file_mb=_row_float(row[27]) if len(row) > 27 else None,
-        worker_in_flight_count=_row_int(row[28]) if len(row) > 28 else None,
-        worker_completed_count=_row_int(row[29]) if len(row) > 29 else None,
-        worker_total_count=_row_int(row[30]) if len(row) > 30 else None,
-        stale_cursor_write_count=_row_int(row[31]) if len(row) > 31 else 0,
-        updated_age_s=updated_age_s,
-        stale=stale,
-        progress_classification=progress_classification,
-        slow_threshold_s=slow_threshold_s,
-    )
 
 
 def _attempt_updated_age_s(updated_at: str, *, now: datetime) -> float | None:
