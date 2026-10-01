@@ -169,6 +169,8 @@ class SqliteVecRuntimeMixin:
         archive_root: Path | None
         _admitted_db_identity: tuple[int, int] | None
         _snapshot_connection: sqlite3.Connection | None
+        _snapshot_index_path: Path
+        _snapshot_index_identity: tuple[int, int]
 
     def _assert_lifecycle_binding(self) -> None:
         if self._snapshot_connection is not None:
@@ -260,12 +262,22 @@ class SqliteVecRuntimeMixin:
     def _get_read_connection(self, *, index_path: Path | None = None) -> sqlite3.Connection:
         """Read retained vectors without acquiring a writable tier handle."""
         if self._snapshot_connection is not None:
+            if index_path is not None:
+                selected = index_path.resolve(strict=True)
+                stat = selected.stat()
+                if selected != self._snapshot_index_path or (stat.st_dev, stat.st_ino) != self._snapshot_index_identity:
+                    raise SqliteVecError("operation vector snapshot does not match the requested archive index")
             return self._snapshot_connection
         self._assert_lifecycle_binding()
         assert self.archive_root is not None
+        selected = index_path if index_path is not None else resolve_active_index_path(self.archive_root)
+        try:
+            selected.resolve(strict=True).relative_to(self.archive_root.resolve(strict=True))
+        except ValueError as exc:
+            raise SqliteVecError("selected index is outside the provider's trusted archive root") from exc
         return open_vector_read_snapshot(
             embeddings_path=self.db_path,
-            index_path=index_path if index_path is not None else resolve_active_index_path(self.archive_root),
+            index_path=selected,
             recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
         )
 

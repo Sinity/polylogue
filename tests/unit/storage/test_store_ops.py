@@ -1638,7 +1638,7 @@ class _VectorSpy:
         del origin
         self.upsert_calls.append((session_id, messages))
 
-    def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
         raise AssertionError("this fixture does not perform retained-session reads")
 
 

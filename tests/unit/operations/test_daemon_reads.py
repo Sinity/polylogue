@@ -196,6 +196,10 @@ def test_vector_snapshot_requirement_uses_the_canonical_cli_lowering() -> None:
     assert requires_vector_snapshot("cli.query", {"params": {"query": ("semantic words",), "semantic": True}})
     assert requires_vector_snapshot("cli.query", {"params": {"query": ("hello",), "retrieval_lane": "hybrid"}})
     assert not requires_vector_snapshot("facets", {"params": {"query": "near:hello"}})
+    assert not requires_vector_snapshot(
+        "cli.query", {"params": {"query": ("hello",), "retrieval_lane": "hybrid"}}, acquisition_enabled=False
+    )
+    assert requires_vector_snapshot("cli.query", {"params": {"query": ("near:id:seed",)}}, acquisition_enabled=False)
 
 
 def test_vector_binding_uses_only_explicit_resolved_config_values() -> None:

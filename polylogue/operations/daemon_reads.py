@@ -383,7 +383,7 @@ def operation_deadline_s(name: str, payload: Mapping[str, object]) -> float:
     return spec.deadline_s
 
 
-def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
+def requires_vector_snapshot(name: str, payload: Mapping[str, object], *, acquisition_enabled: bool = True) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
     if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
@@ -396,7 +396,9 @@ def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
         # Like ``read_is_archive_scan``: an invalid request is refused by
         # execution with its typed error, never by this pre-dispatch check.
         return False
-    return bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid")
+    return bool(
+        spec.similar_session_id or (acquisition_enabled and (spec.similar_text or spec.retrieval_lane == "hybrid"))
+    )
 
 
 def _params(payload: Mapping[str, object]) -> dict[str, object]:

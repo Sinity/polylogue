@@ -68,10 +68,19 @@ def mock_provider(tmp_path: Path) -> MutableSqliteVecProvider:
     return provider
 
 
-def test_operation_snapshot_provider_never_closes_or_writes_its_supplied_handle() -> None:
+def test_operation_snapshot_provider_never_closes_or_writes_its_supplied_handle(tmp_path: Path) -> None:
     """Mutation: make snapshot reads open/close their own connection and this fails."""
 
-    connection = sqlite3.connect(":memory:")
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(tmp_path, [])
+    connection = open_vector_read_snapshot(
+        embeddings_path=tmp_path / "embeddings.db",
+        index_path=tmp_path / "index.db",
+        recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+    )
     provider = SqliteVecProvider.from_vector_read_snapshot(
         voyage_key="test-voyage-key",
         connection=connection,
@@ -80,10 +89,10 @@ def test_operation_snapshot_provider_never_closes_or_writes_its_supplied_handle(
 
     assert provider._get_connection() is connection
     provider._release_connection(connection)
-    assert connection.execute("SELECT 1").fetchone() == (1,)
+    assert tuple(connection.execute("SELECT 1").fetchone()) == (1,)
     with pytest.raises(SqliteVecError, match="read-only"):
         provider.upsert("session", [])
-    assert connection.execute("SELECT 1").fetchone() == (1,)
+    assert tuple(connection.execute("SELECT 1").fetchone()) == (1,)
     connection.close()
 
 

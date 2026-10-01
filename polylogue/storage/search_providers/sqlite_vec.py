@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,11 +39,19 @@ class SqliteVecProvider(
     ) -> None:
         if snapshot_connection is not None:
             # This provider is an operation-scoped reader. The archive owner
-            # opened and pinned the handle; this class must neither resolve a
-            # path nor close/reopen that authority.
+            # opened and pinned the handle; record its attached index identity
+            # for validation without closing or reopening that authority.
             self.db_path = Path("embeddings.db")
             self.archive_root = None
             self._snapshot_connection = snapshot_connection
+            self._snapshot_thread_id = threading.get_ident()
+            attached = snapshot_connection.execute("PRAGMA database_list").fetchall()
+            index = next((row[2] for row in attached if row[1] == "archive_index"), None)
+            if not index:
+                raise SqliteVecError("operation vector snapshot has no selected archive index")
+            self._snapshot_index_path = Path(index).resolve(strict=True)
+            stat = self._snapshot_index_path.stat()
+            self._snapshot_index_identity = (stat.st_dev, stat.st_ino)
             self.voyage_key = voyage_key
             self.model = model
             self.dimension = dimension
@@ -58,7 +68,7 @@ class SqliteVecProvider(
         self._tables_ensured: bool = False
         self._snapshot_connection: sqlite3.Connection | None = None
 
-    def read_session_similarity(
+    async def read_session_similarity(
         self,
         session_id: str,
         *,
@@ -69,8 +79,25 @@ class SqliteVecProvider(
         """Count and rank retained vectors in one operation-owned snapshot.
 
         The caller selects the same backend generation used to hydrate hits.
-        The handle is acquired, queried and closed on this worker thread.
+        Owned handles are acquired, queried and closed in one worker. Supplied
+        handles and their projection stay on the creating thread.
         """
+        if self._snapshot_connection is not None:
+            if threading.get_ident() != self._snapshot_thread_id:
+                raise SqliteVecError("operation vector snapshot must be read on its creating thread")
+            return self._read_session_similarity(session_id, index_path=index_path, project=project, limit=limit)
+        return await asyncio.to_thread(
+            self._read_session_similarity, session_id, index_path=index_path, project=project, limit=limit
+        )
+
+    def _read_session_similarity(
+        self,
+        session_id: str,
+        *,
+        index_path: Path,
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        limit: int,
+    ) -> dict[str, object]:
         with self._lifecycle_admission():
             connection = self._get_read_connection(index_path=index_path)
             try:

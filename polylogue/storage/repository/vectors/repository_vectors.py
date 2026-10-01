@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -106,8 +107,7 @@ class RepositoryVectorMixin:
         if vector_provider is None:
             raise VectorRuntimeUnavailableError("No local vector runtime is available")
 
-        return await asyncio.to_thread(
-            vector_provider.read_session_similarity,
+        return await vector_provider.read_session_similarity(
             session_id,
             index_path=self._backend.db_path,
             limit=limit,
@@ -135,57 +135,59 @@ class RepositoryVectorMixin:
 
         message_ids = [message_id for message_id, _ in results]
         placeholders = ",".join("?" * len(message_ids))
-        rows = connection.execute(
-            f"SELECT message_id, session_id FROM archive_index.messages WHERE message_id IN ({placeholders})",
-            message_ids,
-        ).fetchall()
-        message_to_session = {str(row["message_id"]): str(row["session_id"]) for row in rows}
-        # A hit whose message id resolves to no row is not "no match" -- it means the
-        # embeddings tier references messages the index does not have, so the ranking
-        # is being computed over a broken join. Count it and report it, rather than
-        # letting it disappear into an ordinary empty result set.
-        unresolved_hits = sum(1 for message_id, _ in results if message_id not in message_to_session)
-        aggregates: dict[str, tuple[float, set[str]]] = {}
-        for message_id, distance in results:
-            candidate_id = message_to_session.get(message_id)
-            if candidate_id is None or candidate_id == session_id:
-                continue
-            best_distance, matched_messages = aggregates.setdefault(candidate_id, (float("inf"), set()))
-            matched_messages.add(message_id)
-            aggregates[candidate_id] = (min(best_distance, distance), matched_messages)
-
-        ranked = sorted(aggregates.items(), key=lambda item: (item[1][0], item[0]))[:limit]
-        ranked_ids = [candidate_id for candidate_id, _ in ranked]
-        sessions_by_id: dict[str, sqlite3.Row] = {}
-        if ranked_ids:
-            placeholders = ",".join("?" * len(ranked_ids))
-            rows = connection.execute(
-                f"SELECT session_id, title, origin FROM archive_index.sessions WHERE session_id IN ({placeholders})",
-                ranked_ids,
+        with closing(connection.cursor()) as cursor:
+            cursor.row_factory = sqlite3.Row
+            rows = cursor.execute(
+                f"SELECT message_id, session_id FROM archive_index.messages WHERE message_id IN ({placeholders})",
+                message_ids,
             ).fetchall()
-            sessions_by_id = {str(row["session_id"]): row for row in rows}
+            message_to_session = {str(row["message_id"]): str(row["session_id"]) for row in rows}
+            # A hit whose message id resolves to no row is not "no match" -- it means the
+            # embeddings tier references messages the index does not have, so the ranking
+            # is being computed over a broken join. Count it and report it, rather than
+            # letting it disappear into an ordinary empty result set.
+            unresolved_hits = sum(1 for message_id, _ in results if message_id not in message_to_session)
+            aggregates: dict[str, tuple[float, set[str]]] = {}
+            for message_id, distance in results:
+                candidate_id = message_to_session.get(message_id)
+                if candidate_id is None or candidate_id == session_id:
+                    continue
+                best_distance, matched_messages = aggregates.setdefault(candidate_id, (float("inf"), set()))
+                matched_messages.add(message_id)
+                aggregates[candidate_id] = (min(best_distance, distance), matched_messages)
 
-        hits: list[dict[str, object]] = []
-        for candidate_id, (distance, matched_messages) in ranked:
-            candidate = sessions_by_id.get(candidate_id)
-            if candidate is None:
-                continue
-            score = max(0.0, min(1.0, 1.0 - (distance * distance) / 2.0))
-            hits.append(
-                {
-                    "session_id": candidate_id,
-                    "score": score,
-                    "distance": distance,
-                    "matched_message_count": len(matched_messages),
-                    "title": candidate["title"],
-                    "origin": str(Origin.from_string(source_name_to_origin(candidate["origin"]))),
-                }
-            )
-        return {
-            "source_embedded_messages": source_embedded_messages,
-            "results": hits,
-            "unresolved_message_hits": unresolved_hits,
-        }
+            ranked = sorted(aggregates.items(), key=lambda item: (item[1][0], item[0]))[:limit]
+            ranked_ids = [candidate_id for candidate_id, _ in ranked]
+            sessions_by_id: dict[str, sqlite3.Row] = {}
+            if ranked_ids:
+                placeholders = ",".join("?" * len(ranked_ids))
+                rows = cursor.execute(
+                    f"SELECT session_id, title, origin FROM archive_index.sessions WHERE session_id IN ({placeholders})",
+                    ranked_ids,
+                ).fetchall()
+                sessions_by_id = {str(row["session_id"]): row for row in rows}
+
+            hits: list[dict[str, object]] = []
+            for candidate_id, (distance, matched_messages) in ranked:
+                candidate = sessions_by_id.get(candidate_id)
+                if candidate is None:
+                    continue
+                score = max(0.0, min(1.0, 1.0 - (distance * distance) / 2.0))
+                hits.append(
+                    {
+                        "session_id": candidate_id,
+                        "score": score,
+                        "distance": distance,
+                        "matched_message_count": len(matched_messages),
+                        "title": candidate["title"],
+                        "origin": str(Origin.from_string(source_name_to_origin(candidate["origin"]))),
+                    }
+                )
+            return {
+                "source_embedded_messages": source_embedded_messages,
+                "results": hits,
+                "unresolved_message_hits": unresolved_hits,
+            }
 
     async def _get_message_session_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
         if not message_ids:

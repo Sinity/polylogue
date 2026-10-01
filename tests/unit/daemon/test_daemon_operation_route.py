@@ -1996,3 +1996,51 @@ def test_shutdown_waits_for_a_cancelled_staged_operation_to_finish_its_cleanup(
             release.set()
             releaser.cancel()
             caller.join(timeout=10)
+
+
+@pytest.mark.parametrize("lane", ["semantic", "hybrid"])
+@pytest.mark.parametrize("vector_fault", ["missing", "unreadable", "runtime_unavailable"])
+def test_keyless_text_read_skips_vector_snapshot_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane: str, vector_fault: str
+) -> None:
+    """Text acquisition is disabled before any retained-vector handle is admitted."""
+    from unittest.mock import MagicMock
+
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, VectorReadBinding
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecUnavailableError
+    from tests.infra.vector_archive import seed_vector_archive
+
+    faults = {
+        "missing": FileNotFoundError("synthetic missing vector tier"),
+        "unreadable": sqlite3.DatabaseError("synthetic unreadable vector tier"),
+        "runtime_unavailable": SqliteVecUnavailableError("synthetic unavailable vector runtime"),
+    }
+    admit = MagicMock(side_effect=faults[vector_fault])
+    acquire = MagicMock(side_effect=AssertionError("keyless text cannot acquire vectors"))
+    monkeypatch.setattr("polylogue.storage.search_providers.sqlite_vec_runtime.open_vector_read_snapshot", admit)
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", acquire)
+
+    def seed(root: Path) -> None:
+        seed_vector_archive(root, [("seed", "m1", "Synthetic needle prose.", [1.0] + [0.0] * 1023)])
+
+    with running_daemon_operations(
+        tmp_path / "archive",
+        seed_archive=seed,
+        read_dependencies=DaemonReadDependencies(vector_binding=VectorReadBinding(None, "voyage-4", 1024)),
+    ) as stack:
+        envelope = stack.client.operation(
+            "cli.query",
+            {"params": {"query": ("needle",), "retrieval_lane": lane}},
+            archive_root=str(stack.archive_root),
+        )
+    assert envelope is not None
+    if lane == "semantic":
+        assert envelope["error"]["code"] == "EmbeddingRetrievalNotReadyError", envelope
+    else:
+        result = envelope["result"]
+        assert result["outcome"]["state"] == "degraded", envelope
+        assert result["unavailable_lanes"] == ["vector"], envelope
+        assert result["failed_lanes"] == [], envelope
+    admit.assert_not_called()
+    acquire.assert_not_called()

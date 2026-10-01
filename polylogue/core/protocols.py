@@ -101,7 +101,7 @@ class VectorProvider(Protocol):
         """
         ...
 
-    def read_session_similarity(
+    async def read_session_similarity(
         self,
         session_id: str,
         *,
@@ -111,7 +111,9 @@ class VectorProvider(Protocol):
     ) -> dict[str, object]:
         """Count, rank and project retained hits on one selected index snapshot.
 
-        Invoke ``project`` on the same thread and SQLite handle used for counting
+        The provider owns dispatch: acquire owned handles in one worker, and use
+        externally owned handles on their creating thread. Invoke ``project``
+        on the same thread and SQLite handle used for counting
         and ranking, with ``archive_index`` bound to ``index_path``. Release any
         provider-owned handle on every exit; leave externally owned handles open.
         This operation never acquires embeddings.

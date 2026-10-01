@@ -134,3 +134,148 @@ async def test_supplied_public_vector_provider_projects_retained_similarity(tmp_
     assert result["source_embedded_messages"] == 1
     assert [hit["session_id"] for hit in cast(list[dict[str, object]], result["results"])] == ["codex-session:near"]
     acquisition.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supplied_snapshot", [False, True])
+async def test_supplied_vector_provider_refuses_a_different_archive_index(
+    tmp_path: Path, supplied_snapshot: bool
+) -> None:
+    """An archive-A provider cannot attach its hits to archive-B metadata."""
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecError, SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
+
+    root_a, root_b = tmp_path / "a", tmp_path / "b"
+    for root in (root_a, root_b):
+        seed_vector_archive(root, [("seed", "m1", "Synthetic selected archive prose.", [1.0] + [0.0] * 1023)])
+    connection = None
+    if supplied_snapshot:
+        connection = open_vector_read_snapshot(
+            embeddings_path=root_a / "embeddings.db",
+            index_path=root_a / "index.db",
+            recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+        )
+        provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
+    else:
+        provider = SqliteVecProvider(None, db_path=root_a / "embeddings.db", archive_root=root_a, model="voyage-4")
+    try:
+        with patch.object(provider, "_get_embeddings", side_effect=AssertionError("no acquisition")) as acquisition:
+            async with Polylogue(archive_root=root_b, db_path=root_b / "index.db") as archive:
+                with pytest.raises(SqliteVecError):
+                    await archive.search_similar_sessions("codex-session:seed", vector_provider=provider)
+            acquisition.assert_not_called()
+        if connection is not None:
+            assert connection.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+@pytest.mark.asyncio
+async def test_supplied_thread_affine_snapshot_remains_owned_by_its_creator(tmp_path: Path) -> None:
+    """Moving this public API call to a worker violates SQLite thread affinity."""
+    import threading
+
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(
+        tmp_path,
+        [
+            ("seed", "m1", "Synthetic retained seed.", [1.0] + [0.0] * 1023),
+            ("near", "m1", "Synthetic retained neighbor.", [0.99, 0.141] + [0.0] * 1022),
+        ],
+    )
+    connection = open_vector_read_snapshot(
+        embeddings_path=tmp_path / "embeddings.db",
+        index_path=tmp_path / "index.db",
+        recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+    )
+    creator = threading.get_ident()
+    provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
+    try:
+        with patch.object(provider, "_get_embeddings", side_effect=AssertionError("no acquisition")) as acquisition:
+            async with Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db") as archive:
+                result = await archive.search_similar_sessions("codex-session:seed", vector_provider=provider)
+            assert result["source_embedded_messages"] == 1
+            assert [hit["session_id"] for hit in cast(list[dict[str, object]], result["results"])] == [
+                "codex-session:near"
+            ]
+            assert threading.get_ident() == creator
+            assert connection.execute("SELECT 1").fetchone()[0] == 1
+            acquisition.assert_not_called()
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_public_provider_projection_owns_rows_without_changing_connection(tmp_path: Path) -> None:
+    """A public provider can project over SQLite's ordinary tuple connection."""
+    import sqlite3
+    from collections.abc import Callable
+    from contextlib import closing
+
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from tests.infra.vector_archive import seed_vector_archive
+
+    identities = seed_vector_archive(
+        tmp_path,
+        [
+            ("seed", "m1", "Synthetic external provider seed.", [1.0] + [0.0] * 1023),
+            ("near", "m1", "Synthetic external provider neighbor.", [0.99, 0.141] + [0.0] * 1022),
+        ],
+    )
+
+    class TupleProvider(SqliteVecProvider):
+        async def read_session_similarity(
+            self,
+            session_id: str,
+            *,
+            index_path: Path,
+            limit: int = 10,
+            project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        ) -> dict[str, object]:
+            with closing(sqlite3.connect(":memory:")) as connection:
+                connection.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
+                assert connection.row_factory is None
+                result = project(connection, 1, [(identities[("near", "m1")][1], 0.1)])
+                assert connection.row_factory is None
+                assert connection.execute("SELECT 1").fetchone() == (1,)
+                return result
+
+    provider = TupleProvider(None, archive_root=tmp_path, db_path=tmp_path / "embeddings.db", model="voyage-4")
+    async with Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db") as archive:
+        result = await archive.search_similar_sessions("codex-session:seed", vector_provider=provider)
+    assert [hit["session_id"] for hit in cast(list[dict[str, object]], result["results"])] == ["codex-session:near"]
+
+
+@pytest.mark.asyncio
+async def test_supplied_snapshot_refuses_index_identity_replaced_before_api_read(tmp_path: Path) -> None:
+    """An already held conventional index cannot hydrate through its replacement."""
+    import shutil
+
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecError, SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(tmp_path, [("seed", "m1", "Synthetic pinned index prose.", [1.0] + [0.0] * 1023)])
+    connection = open_vector_read_snapshot(
+        embeddings_path=tmp_path / "embeddings.db",
+        index_path=tmp_path / "index.db",
+        recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+    )
+    provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
+    try:
+        (tmp_path / "index.db").rename(tmp_path / "held-index.db")
+        shutil.copyfile(tmp_path / "held-index.db", tmp_path / "index.db")
+        async with Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db") as archive:
+            with pytest.raises(SqliteVecError):
+                await archive.search_similar_sessions("codex-session:seed", vector_provider=provider)
+        assert connection.execute("SELECT COUNT(*) FROM archive_index.sessions").fetchone()[0] == 1
+    finally:
+        connection.close()

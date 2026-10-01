@@ -28,6 +28,7 @@ from polylogue.daemon.socket_path import ensure_private_socket_dir
 from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient
+from polylogue.operations.daemon_reads import DaemonReadDependencies
 from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -118,6 +119,7 @@ def running_daemon_operations(
     compute_queue_units: int = 4,
     socket_path: Path | None = None,
     session_derivation: bool = False,
+    read_dependencies: DaemonReadDependencies | None = None,
 ) -> Iterator[DaemonOperationStack]:
     """Start one real machine operation stack rooted at ``archive_root``.
 
@@ -177,6 +179,7 @@ def running_daemon_operations(
         execution_kernel=kernel,
         owner_loop=bridge.owner_loop,
         session_maintenance=session_maintenance,
+        read_dependencies=read_dependencies,
     )
     server = DaemonAPIUnixHTTPServer(
         socket_path,
