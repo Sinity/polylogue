@@ -181,7 +181,7 @@ async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
     import asyncio
 
     from polylogue.daemon.embedding_owner import compose_embedding_convergence
-    from polylogue.daemon.executors import BoundedComputeAdapter
+    from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
     from polylogue.storage.archive_identity import demo_owned_session_ids
     from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
@@ -198,7 +198,7 @@ async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
 
     root = tmp_path / "archive"
     await seed_demo_archive(root, force=True)
-    cfg = embedding_config()
+    cfg = embedding_config(sinex_mode="off")
     recipe = EmbeddingRecipe.current(model=cfg.embedding_model, dimensions=cfg.embedding_dimension)
     monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda **kwargs: cfg)
     provider = _Documents("voyage-4")
@@ -271,18 +271,24 @@ async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
     from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 
     client_type = httpx.Client
+    query_requests: list[httpx.Request] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        query_requests.append(request)
+        return httpx.Response(200, json={"data": [{"embedding": [0.1] * 1024}]})
+
     monkeypatch.setattr(
         httpx,
         "Client",
-        lambda **kwargs: client_type(
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(200, json={"data": [{"embedding": [0.1] * 1024}]})
-            ),
-            **kwargs,
-        ),
+        lambda **kwargs: client_type(transport=httpx.MockTransport(serve), **kwargs),
     )
     search = SqliteVecProvider("synthetic-key", db_path=root / "embeddings.db", archive_root=root, model="voyage-4")
-    assert search.query("Does a synthetic fixture belong to the hosted retrieval space?", limit=10) == []
+    from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+
+    with pytest.raises(EmbeddingRetrievalNotReadyError) as unavailable:
+        search.query("Does a synthetic fixture belong to the hosted retrieval space?", limit=10)
+    assert unavailable.value.readiness_status == "empty"
+    assert query_requests == []
     assert provider.calls == []
 
     demo_ids = demo_owned_session_ids(root)

@@ -449,3 +449,110 @@ def test_unreadable_demo_ownership_keeps_acquisition_retryable(tmp_path: Path, m
     with closing(sqlite3.connect(root / "index.db")) as conn:
         with pytest.raises(PermissionError):
             select_pending_archive_session_window(conn, status_table="")
+
+
+@pytest.mark.parametrize("mode", ["computed", "provider_error", "policy_refusal", "source_read_error"])
+def test_derivation_releases_actual_read_handles_before_provider_and_on_every_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Removing explicit reader closure leaves captured physical handles usable."""
+    import json
+
+    from polylogue.storage.archive_identity import DEMO_OWNERSHIP_MANIFEST_FILENAME
+    from polylogue.storage.embeddings import derivation
+    from polylogue.storage.embeddings.materialization import EmbeddingAcquisitionExcludedError
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    root = tmp_path / "archive"
+    sid, ids = _session(root)
+    handles: list[sqlite3.Connection] = []
+    cursors: list[sqlite3.Cursor] = []
+    original = derivation.open_readonly_connection
+
+    def capture(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn = original(*args, **kwargs)
+        execute = conn.execute
+
+        def track(*args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            cursor = execute(*args, **kwargs)
+            cursors.append(cursor)
+            return cursor
+
+        monkeypatch.setattr(conn, "execute", track)
+        handles.append(conn)
+        return conn
+
+    def assert_closed() -> None:
+        assert handles
+        for conn in handles:
+            with pytest.raises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
+        for cursor in cursors:
+            with pytest.raises(sqlite3.ProgrammingError):
+                cursor.fetchone()
+
+    class Provider(_Documents):
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            assert_closed()
+            if mode == "provider_error":
+                raise RuntimeError("synthetic acquisition failure")
+            return super()._get_embeddings(texts, input_type)
+
+    monkeypatch.setattr(derivation, "open_readonly_connection", capture)
+    provider = Provider("voyage-4")
+    adapter = EmbeddingDerivationAdapter(root / "index.db", provider)
+    frame = SimpleNamespace(
+        source_revision=f"index-generation:{root / 'index.db'}",
+        scope=None,
+        recipe_version=lambda domain: adapter.recipe_version,
+    )
+    keys = [f"message:{mid}" for mid in ids]
+    adapter.required_page(frame, cursor=None, limit=10)
+    assert_closed()
+    adapter.excess_page(frame, cursor=None, limit=10)
+    assert_closed()
+    adapter.inspect(frame, keys)
+    assert_closed()
+    assert adapter.barrier_sessions(frame, keys) == dict.fromkeys(keys, sid)
+    assert_closed()
+    current = derivation._current_input(
+        root / "index.db",
+        ids[0],
+        provider_recipe := EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+        None,
+        frame.source_revision,
+    )
+    assert current is not None
+    assert_closed()
+    with write_lease("test.physical-reader-reservation", archive_root=root):
+        reserved = derivation.reserve_embedding_message(
+            root / "index.db", root / "embeddings.db", ids[0], provider_recipe, frame.source_revision
+        )
+    assert reserved is not None
+    assert_closed()
+    if mode == "policy_refusal":
+        (root / DEMO_OWNERSHIP_MANIFEST_FILENAME).write_text(
+            json.dumps({"demo_only": True, "demo_session_ids": [sid], "demo_raw_ids": [], "demo_assertion_ids": []})
+        )
+        expected_error: type[Exception] = EmbeddingAcquisitionExcludedError
+    elif mode == "source_read_error":
+
+        def read_failure(*args: Any, **kwargs: Any) -> None:
+            raise sqlite3.OperationalError("synthetic source read failure")
+
+        monkeypatch.setattr(derivation, "_message_input", read_failure)
+        with pytest.raises(sqlite3.OperationalError):
+            adapter.inspect(frame, keys)
+        assert_closed()
+        expected_error = sqlite3.OperationalError
+    else:
+        expected_error = RuntimeError
+    with write_lease("test.physical-reader-computation", archive_root=root):
+        if mode == "computed":
+            replacement = adapter.compute(frame, keys[0])
+            assert replacement.vector is not None
+        else:
+            with pytest.raises(expected_error):
+                adapter.compute(frame, keys[0])
+    assert_closed()
+    assert provider.calls == ([(_TEXT,)] if mode == "computed" else [])

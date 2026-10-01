@@ -205,13 +205,15 @@ class EmbeddingAcquisitionExcludedError(RuntimeError):
 
 def embedding_acquisition_allowed(conn: sqlite3.Connection, session_id: str) -> bool:
     """Apply acquisition policy without certifying or deleting stored outputs."""
-    index_path = next((str(row[2]) for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
+    with contextlib.closing(conn.execute("PRAGMA database_list")) as cursor:
+        index_path = next((str(row[2]) for row in cursor if row[1] == "main"), "")
     return not index_path or session_id not in demo_owned_session_ids(archive_root_for_index_path(Path(index_path)))
 
 
 def embedding_acquisition_predicate(conn: sqlite3.Connection, alias: str) -> str:
     """Pin the completed demo membership once for this SQL work selection."""
-    index_path = next((str(row[2]) for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
+    with contextlib.closing(conn.execute("PRAGMA database_list")) as cursor:
+        index_path = next((str(row[2]) for row in cursor if row[1] == "main"), "")
     excluded = demo_owned_session_ids(archive_root_for_index_path(Path(index_path))) if index_path else frozenset()
     conn.create_function("polylogue_embedding_acquisition_allowed", 1, lambda sid: int(sid not in excluded))
     return f"polylogue_embedding_acquisition_allowed({alias}.session_id)"
@@ -993,14 +995,17 @@ def _present_vector_addresses(
     for start in range(0, len(wanted), chunk):
         window = wanted[start : start + chunk]
         placeholders = ",".join("?" for _ in window)
-        rows = conn.execute(
-            f"""SELECT em.vector_derivation_hash, em.model, em.dimension, em.recipe_hash, em.output_contract_hash,
+        with contextlib.closing(
+            conn.execute(
+                f"""SELECT em.vector_derivation_hash, em.model, em.dimension, em.recipe_hash, em.output_contract_hash,
                        v.vector_derivation_hash IS NOT NULL
                 FROM message_embeddings_meta AS em
                 LEFT JOIN message_embeddings AS v ON v.vector_derivation_hash = lower(hex(em.vector_derivation_hash))
                 WHERE em.vector_derivation_hash IN ({placeholders})""",
-            window,
-        ).fetchall()
+                window,
+            )
+        ) as cursor:
+            rows = cursor.fetchall()
         for address, model, dimension, recipe_hash, output_hash, vector_present in rows:
             producer = recipe.proven_stored_producer(
                 model=str(model), dimension=int(dimension), recipe_hash=bytes(recipe_hash)

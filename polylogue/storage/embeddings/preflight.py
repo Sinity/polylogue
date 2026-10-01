@@ -79,9 +79,10 @@ def read_embedding_work_counts(
 ) -> tuple[int, int, int, int | None]:
     """Return total sessions, compute-pending sessions/messages and binding debt.
 
-    Pending = no ``embedding_status`` row, or ``needs_reindex = 1``.
-    Reading happens against a sync read connection so the command works even
-    when the daemon is not running.
+    Archive computation counts only eligible selected occurrences lacking a
+    proven output; binding debt counts free publication work separately.
+    Generic databases retain their status-row selection. The read contacts
+    no provider and works while the daemon is stopped.
     """
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
