@@ -34,20 +34,12 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.session_suppression import (
-    reset_suppression_caches,
     suppression_refusal_scope,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
 from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
-
-
-@pytest.fixture(autouse=True)
-def _drop_pooled_user_handles() -> object:
-    reset_suppression_caches()
-    yield
-    reset_suppression_caches()
 
 
 def _parsed(native_id: str) -> ParsedSession:

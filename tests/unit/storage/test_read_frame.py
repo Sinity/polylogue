@@ -41,6 +41,10 @@ from polylogue.storage.sqlite.connection_profile import (
 @pytest.fixture
 def index_db(tmp_path: Path) -> Path:
     db = tmp_path / "index.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(db, ArchiveTier.INDEX)
     conn = sqlite3.connect(db)
     try:
         conn.execute("PRAGMA journal_mode=WAL")

@@ -57,3 +57,24 @@ class BackupCursorFault:
         self.cursor.allow_cleanup.clear()
         if self.fail_copy:
             raise OSError("synthetic failure after physical SQLite backup")
+
+
+class ConstructorStatementCursor(ControlledCursor):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        super().__init__(connection)
+        self.execute("SELECT 1 UNION ALL SELECT 2")
+        assert next(self)[0] == 1
+        raise ValueError("synthetic failure after native cursor construction SQL")
+
+
+class BeforeNativeInitCursor(sqlite3.Cursor):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        raise ValueError("synthetic failure before native cursor initialization")
+
+
+class InvalidReturnCursor(sqlite3.Cursor):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        super().__init__(connection)
+        self.execute("SELECT 1 UNION ALL SELECT 2")
+        next(self)
+        return 17  # type: ignore[return-value]  # Deliberate violation of Python's constructor contract.

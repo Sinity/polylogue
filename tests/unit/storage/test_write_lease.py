@@ -316,19 +316,10 @@ def test_writable_archive_store_releases_open_custody_and_gates_each_mutation(tm
 
 def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(tmp_path: Path) -> None:
     """An early handle-close failure cannot leave an index transaction live."""
+    from polylogue.storage.io_phase_metrics import connect_measured
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    class FailingVectorHandle:
-        in_transaction = True
-        failed_close = False
-
-        def rollback(self) -> None:
-            self.in_transaction = False
-
-        def close(self) -> None:
-            if not self.failed_close:
-                self.failed_close = True
-                raise OSError("synthetic vector-handle close failure")
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
 
     root = tmp_path / "archive"
     root.mkdir()
@@ -338,22 +329,29 @@ def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(
     archive._enter_mutation_lease()
     archive._conn.execute("BEGIN IMMEDIATE")
     archive._conn.execute("CREATE TABLE close_probe (value INTEGER)")
-    archive.operation_vector_connection = FailingVectorHandle()  # type: ignore[assignment]
-
-    with pytest.raises(ArchiveStoreSettlementError) as failure:
+    vector = SettlementHandle(connect_measured(":memory:"))
+    vector.connection.execute("BEGIN")
+    archive.operation_vector_connection = vector  # type: ignore[assignment]
+    try:
+        with pytest.raises(ArchiveStoreSettlementError) as failure:
+            archive.close()
+        assert failure.value.store is archive
+        assert isinstance(failure.value.failure, NativeConnectionSettlementError)
+        assert isinstance(failure.value.failure.failure, OSError)
+        assert current_write_lease() is not None
+        vector.allow_cleanup.set()
         archive.close()
-
-    assert failure.value.store is archive
-    assert isinstance(failure.value.failure, OSError)
-    assert current_write_lease() is not None
-    archive.close()
-    assert current_write_lease() is None
-    with write_lease("test.archive.after-close-failure", archive_root=root):
-        with sqlite3.connect(root / "index.db") as conn:
-            assert (
-                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='close_probe'").fetchone() is None
-            )
-    archive.close()
+        assert current_write_lease() is None
+        with write_lease("test.archive.after-close-failure", archive_root=root):
+            with closing(connect_measured(root / "index.db")) as conn:
+                assert (
+                    conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='close_probe'").fetchone()
+                    is None
+                )
+        archive.close()
+    finally:
+        vector.allow_cleanup.set()
+        archive.close()
 
 
 @pytest.mark.uses_real_clock("a competing physical writer waits for actual SQLite settlement")
@@ -1619,7 +1617,9 @@ def test_persistent_store_refuses_replaced_archive_directory_before_sql(tmp_path
                 acquired_at_ms=1,
             )
         assert current_write_lease() is None
-        assert tuple(root.iterdir()) == (root / ".archive-write-custody.lock",)
+        from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
+
+        assert tuple(root.iterdir()) == (root / ARCHIVE_WRITE_CUSTODY_LOCK_NAME,)
     finally:
         replacement = tmp_path / "replacement"
         root.rename(replacement)

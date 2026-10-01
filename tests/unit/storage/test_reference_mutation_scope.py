@@ -161,3 +161,105 @@ def test_active_seal_refuses_an_archive_shadow_index(tmp_path: Path) -> None:
             connection.execute("CREATE TABLE shadow(value INTEGER)")
         with pytest.raises(ReferenceSealError):
             PreparedIndexMutation(shadow, archive_root=tmp_path)
+
+
+def test_active_suppression_uses_the_batch_user_observer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.storage.sqlite.archive_tiers import session_suppression
+
+    def unexpected_reader(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a sealed batch must borrow its existing User observer")
+
+    with write_lease("test.suppression-observer", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            monkeypatch.setattr(session_suppression, "readonly_connection_context", unexpected_reader)
+            with archive.index_mutation_scope() as scope:
+                assert scope is not None
+                first = scope.suppression_reader()
+                for number in range(3):
+                    assert scope.suppression_reader() is first
+                    write_index_session(archive, reference_session(f"suppression-{number}"))
+
+
+@pytest.mark.parametrize("terminal", ["commit", "rollback", "close"])
+def test_inactive_suppression_reader_retains_exact_scope_until_creator_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite import reference_seal
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        NativeSQLCustodyOwner,
+        retained_native_sql_owners_for_lifetime,
+    )
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    opened: list[NativeSQLCustodyOwner] = []
+    cursors: list[ControlledCursor] = []
+    original = reference_seal._open_readonly_owner
+
+    def open_reader(path: Path, **kwargs: object) -> NativeSQLCustodyOwner:
+        owner = original(path, **kwargs)  # type: ignore[arg-type]
+        opened.append(owner)
+        cursor = owner.require_connection().cursor(factory=ControlledCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        next(cursor)
+        cursor.allow_cleanup.clear()
+        cursors.append(cursor)
+        return owner
+
+    with write_lease("test.inactive-suppression-owner", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="suppression-test")
+        destination = reference_seal.IndexMutationDestination.owned_inactive(generation)
+        with closing(connect_measured(generation.index_path)) as connection:
+            monkeypatch.setattr(reference_seal, "_open_readonly_owner", open_reader)
+            with pytest.raises(NativeConnectionSettlementError):
+                with destination.mutation_scope(connection) as scope:
+                    assert scope.suppression_reader() is scope.suppression_reader()
+                    assert len(opened) == 1
+                    import threading
+
+                    failures: list[BaseException] = []
+
+                    def foreign_close() -> None:
+                        try:
+                            scope.close()
+                        except BaseException as error:
+                            failures.append(error)
+
+                    foreign = threading.Thread(target=foreign_close)
+                    foreign.start()
+                    foreign.join()
+                    assert len(failures) == 1 and isinstance(failures[0], ReferenceSealError)
+                    assert scope._active and cursors[0].close_attempts == 0
+                    getattr(scope, terminal)()
+            assert not scope._active
+            assert not connection.in_transaction
+            assert cursors[0].close_attempts == 1
+            assert retained_native_sql_owners_for_lifetime(scope) == tuple(opened)
+            assert opened[0].custody is not None
+            cursors[0].allow_cleanup.set()
+            scope.close()
+            assert cursors[0].close_attempts == 2
+            assert retained_native_sql_owners_for_lifetime(scope) == ()
+            assert opened[0].connection is None
+            assert opened[0].custody is None
+
+
+def test_missing_canonical_user_cannot_disable_suppression(tmp_path: Path) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.archive_tiers.session_suppression import session_write_is_suppressed
+    from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+    with write_lease("test.suppression-required-user", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="missing-user-test")
+        destination = IndexMutationDestination.owned_inactive(generation)
+        (tmp_path / "user.db").unlink()
+        with closing(connect_measured(generation.index_path)) as connection:
+            with pytest.raises(ReferenceSealError):
+                with destination.mutation_scope(connection):
+                    session_write_is_suppressed(connection, "codex-session:missing-user")

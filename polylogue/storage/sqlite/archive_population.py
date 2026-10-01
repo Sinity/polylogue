@@ -27,6 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DurableChangeTrainState
+from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
 
 _HISTORY = Path(".maintenance-state/durable-change-trains")
 _PROVENANCE = Path(".archive-population-provenance")
@@ -137,7 +138,7 @@ def _populate_authenticated_archive(
     }
     # These exact files belong to the held destination offline/physical owner,
     # including callers that reserved the fence before copying the recipe.
-    replaced.update({"daemon.pid", ".archive-ownership.lock"})
+    replaced.update({"daemon.pid", ".archive-ownership.lock", ARCHIVE_WRITE_CUSTODY_LOCK_NAME})
     with ExitStack() as stack:
         sources: dict[ArchiveTier, sqlite3.Connection] = {}
         evidence: dict[ArchiveTier, tuple[str, str]] = {}

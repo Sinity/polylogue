@@ -153,6 +153,10 @@ def _transaction_phase(sql: str) -> Phase | None:
 
 
 class _MeasuredCursor(sqlite3.Cursor):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        super().__init__(connection)
+        cast(_MeasuredConnection, connection)._register_cursor(self)
+
     def close(self) -> None:
         super().close()
         cursors = getattr(self.connection, "_native_cursors", {})
@@ -185,7 +189,51 @@ class _MeasuredConnection(sqlite3.Connection):
     def cursor(self, factory: Callable[[sqlite3.Connection], _CursorT]) -> _CursorT: ...
 
     def cursor(self, factory: Callable[[sqlite3.Connection], sqlite3.Cursor] | None = None) -> sqlite3.Cursor:
-        cursor = super().cursor(_MeasuredCursor if factory is None else factory)
+        selected = _MeasuredCursor if factory is None else factory
+        if (
+            isinstance(selected, type)
+            and type(selected) is type
+            and issubclass(selected, sqlite3.Cursor)
+            and selected.__new__ is sqlite3.Cursor.__new__
+        ):
+            # Preserve the exact plain subclass and its ordinary class-call
+            # behavior, registering before its initializer can issue SQL.
+            constructor: Any = selected
+
+            def construct(connection: sqlite3.Connection) -> sqlite3.Cursor:
+                cursor = cast(sqlite3.Cursor, constructor.__new__(constructor, connection))
+                self._register_cursor(cursor)
+                # Bind the actual initializer descriptor as the class call
+                # does, including native, static and class method shapes.
+                try:
+                    descriptor: Any = next(
+                        base.__dict__["__init__"] for base in constructor.__mro__ if "__init__" in base.__dict__
+                    )
+                    initializer = (
+                        descriptor.__get__(cursor, constructor) if hasattr(descriptor, "__get__") else descriptor
+                    )
+                    returned = initializer(connection)
+                    if returned is not None:
+                        raise TypeError(f"__init__() should return None, not '{type(returned).__name__}'")
+                except BaseException:
+                    # A failing initializer that never called native __init__
+                    # created no statement or handle. Do not retain a fiction.
+                    if sqlite3.Cursor.connection.__get__(cursor) is None:
+                        self._native_cursors.pop(id(cursor), None)
+                    raise
+                return cursor
+
+            # Keep SQLite's native closed-handle and thread checks ahead of
+            # factory invocation, as in the original Connection.cursor call.
+            return super().cursor(construct)
+        # Arbitrary callbacks/metaclasses retain their invocation semantics.
+        # A cursor never exposed by a raising callback cannot be captured;
+        # constructor physical proof covers our owned/plain-class factories.
+        cursor = super().cursor(selected)
+        self._register_cursor(cursor)
+        return cursor
+
+    def _register_cursor(self, cursor: sqlite3.Cursor) -> None:
         cursors = getattr(self, "_native_cursors", None)
         if cursors is None:
             self._native_cursors: dict[int, weakref.ReferenceType[sqlite3.Cursor]] = {}
@@ -200,7 +248,6 @@ class _MeasuredConnection(sqlite3.Connection):
         # Custom cursor equality/hash methods cannot merge two physical
         # statements. Identity keys also support unhashable custom cursors.
         self._native_cursors[cursor_id] = weakref.ref(cursor, discard)
-        return cursor
 
     def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
         # The stdlib shortcuts bypass the Python cursor factory. Create the

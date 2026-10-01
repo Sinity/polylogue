@@ -13,6 +13,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
@@ -40,7 +41,14 @@ from polylogue.storage.block_anchor import (
     resolve_block_anchor,
 )
 from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection, open_scratch_connection
+from polylogue.storage.sqlite.connection_profile import (
+    NativeConnectionSettlementError,
+    NativeSQLCustodyOwner,
+    _open_readonly_owner,
+    open_readonly_connection,
+    open_scratch_connection,
+)
+from polylogue.storage.sqlite.write_lease import current_sql_custody
 
 _LIVE_SEALS_LOCK = threading.RLock()
 _LIVE_SEALS: dict[int, PreparedIndexMutation] = {}
@@ -1220,13 +1228,15 @@ class IndexMutationDestination:
 @contextmanager
 def _owned_index_transaction(scope: IndexMutationScope) -> Iterator[IndexMutationScope]:
     token = _ACTIVE_MUTATION_SCOPE.set(scope)
+    failure: BaseException | None = None
     try:
         _check_reference_cancellation()
         scope.conn.execute("BEGIN IMMEDIATE")
         yield scope
-        if not scope._committed:
+        if scope._active and not scope._committed:
             scope.commit()
     except BaseException as primary:
+        failure = primary
         try:
             if scope.conn.in_transaction:
                 scope.conn.set_progress_handler(None, 0)
@@ -1235,8 +1245,17 @@ def _owned_index_transaction(scope: IndexMutationScope) -> Iterator[IndexMutatio
             primary.add_note(f"Index transaction rollback also failed: {rollback_error}")
         raise
     finally:
-        scope.close()
-        _ACTIVE_MUTATION_SCOPE.reset(token)
+        try:
+            # commit/rollback already made their single cleanup attempt. An
+            # unsuccessful attempt stays retained for an explicit owner retry.
+            if scope._active:
+                scope.close()
+        except BaseException as cleanup_error:
+            if failure is None:
+                raise
+            raise BaseExceptionGroup("Index mutation and scope cleanup failed", [failure, cleanup_error]) from failure
+        finally:
+            _ACTIVE_MUTATION_SCOPE.reset(token)
 
 
 @dataclass(slots=True)
@@ -1251,10 +1270,53 @@ class IndexMutationScope:
     owner_task: object | None = field(default_factory=_current_task)
     _active: bool = True
     _committed: bool = False
+    _user_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if (self.seal is None) == (self.destination is None):
             raise ReferenceSealError("Index transaction requires exactly one declared destination authority")
+
+    def suppression_reader(self) -> sqlite3.Connection | None:
+        """Borrow the declared User observer for this exact commit window."""
+        self.require_new_work(self.conn)
+        if self.seal is not None:
+            return self.seal.observer("user")
+        destination = self.destination
+        if destination is None:
+            raise ReferenceSealError("Index scope has no declared destination")
+        destination.validate()
+        if destination.kind != "owned_inactive":
+            return None
+        generation = destination.generation
+        if generation is None:
+            raise ReferenceSealError("inactive Index lacks its archive owner")
+        path = Path(generation.archive_root) / "user.db"
+        if not path.is_file():
+            raise ReferenceSealError("declared archive is missing its required durable User tier")
+        if self._user_owner is None:
+            # The same scope owns one reader, with actual creator custody and
+            # scope lifetime retained before factory setup SQL can fail.
+            try:
+                self._user_owner = _open_readonly_owner(path, validate_schema=False, lifetime_dependencies=(self,))
+            except NativeConnectionSettlementError as failure:
+                # Construction already attempted close. Retain its exact owner
+                # for explicit retry, without re-closing it during unwinding.
+                self._user_owner = failure.owner
+                self._active = False
+                raise
+        owner = self._user_owner
+        custody = current_sql_custody()
+        if custody is not owner.custody:
+            raise ReferenceSealError("suppression reader belongs to another admitted writer")
+        if custody is not None:
+            custody.assert_namespace()
+        return owner.require_connection()
+
+    def _close_suppression_reader(self) -> None:
+        owner = self._user_owner
+        if owner is not None:
+            owner.close()
+            self._user_owner = None
 
     def note_session_namespace_change(self) -> None:
         self.require_connection(self.conn)
@@ -1318,15 +1380,27 @@ class IndexMutationScope:
         self.conn.commit()
         self._committed = True
         self._active = False
+        self._close_suppression_reader()
 
     def rollback(self) -> None:
         self.require_connection(self.conn)
         self.conn.set_progress_handler(None, 0)
         self.conn.rollback()
         self._active = False
+        self._close_suppression_reader()
 
     def close(self) -> None:
+        if os.getpid() != self.owner_pid or threading.current_thread() is not self.owner_thread:
+            raise ReferenceSealError("Index scope cleanup belongs to another process or thread")
+        if _current_task() is not self.owner_task and (
+            not isinstance(self.owner_task, asyncio.Task) or not self.owner_task.done()
+        ):
+            raise ReferenceSealError("Index scope cleanup belongs to another task")
+        if self._active and self.conn.in_transaction:
+            self.conn.set_progress_handler(None, 0)
+            self.conn.rollback()
         self._active = False
+        self._close_suppression_reader()
 
 
 def current_index_mutation_scope() -> IndexMutationScope | None:

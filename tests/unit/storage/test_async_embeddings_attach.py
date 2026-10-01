@@ -386,7 +386,8 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
 
     async def exercise() -> None:
         backend = async_sqlite.SQLiteBackend(tmp_path / "index.db")
-        backend.db_path.unlink()
+        # Construction admits the path without creating a SQLite file.
+        assert not backend.db_path.exists()
         with pytest.raises(sqlite3.OperationalError):
             _ = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
         assert len(connections) == 1

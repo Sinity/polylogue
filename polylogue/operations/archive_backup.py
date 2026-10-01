@@ -1486,7 +1486,14 @@ def restore_verified_backup(*, backup_dir: Path, destination: Path) -> dict[str,
         with reserve_population_destination(destination, source_manifest_id=source_manifest_id) as admission:
             destination = admission.root
             entries = {path.name for path in destination.iterdir()}
-            if entries != {POPULATION_PENDING, "daemon.pid", ".archive-ownership.lock"}:
+            from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
+
+            if entries != {
+                POPULATION_PENDING,
+                "daemon.pid",
+                ".archive-ownership.lock",
+                ARCHIVE_WRITE_CUSTODY_LOCK_NAME,
+            }:
                 raise ArchiveRestoreRefusalError("restore_destination_reservation_conflict")
             shutil.copytree(backup_dir, destination, dirs_exist_ok=True)
             proof = populate_authenticated_archive(
