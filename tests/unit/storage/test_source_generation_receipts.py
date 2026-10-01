@@ -5,12 +5,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.operations.daemon_ingest import _spool_source_receipt
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.source_generation_receipts import (
     SourceGenerationBlocker,
-    source_generation_receipt,
     source_generation_receipt_page,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -24,6 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     record_source_item_raw_member,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.source_builders import observe_source_generation_receipt
 
 
 def _connections() -> tuple[sqlite3.Connection, sqlite3.Connection, str]:
@@ -119,7 +121,7 @@ def test_receipt_requires_exact_source43_member_parser_application_head_and_sess
     """An ANY application or a parsed_at marker must not stand in for current evidence."""
     source, index, _item_id = _connections()
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -134,7 +136,7 @@ def test_receipt_requires_exact_source43_member_parser_application_head_and_sess
     assert logical.session_ids == ("codex-session:session-1",)
 
     index.execute("UPDATE raw_revision_applications SET accepted_raw_id = 'other-raw' WHERE raw_id = 'raw-1'")
-    stale = source_generation_receipt(
+    stale = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
     assert SourceGenerationBlocker.APPLICATION_STALE in stale.items[0].raws[0].logicals[0].blockers
@@ -149,7 +151,7 @@ def test_receipt_rejects_incomplete_enumeration_despite_current_raw_witnesses() 
         (item_id,),
     )
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -165,7 +167,7 @@ def test_receipt_reports_retired_source_member_by_coordinate_not_invented_raw_id
     source, index, _item_id = _connections()
     source.execute("DELETE FROM raw_sessions WHERE raw_id = 'raw-1'")
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -190,7 +192,7 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
         """
     )
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -200,7 +202,7 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
     assert raw.logicals[0].complete is True
 
     source.execute("UPDATE raw_membership_census SET member_count = 1 WHERE raw_id = 'raw-1'")
-    mismatch = source_generation_receipt(
+    mismatch = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
     assert mismatch.items[0].raws[0].parser_complete is False
@@ -243,7 +245,7 @@ def test_receipt_preserves_an_applied_prefix_that_leads_to_the_current_head() ->
         decided_at_ms=3,
     )
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -259,7 +261,7 @@ def test_receipt_rejects_ambiguous_application_that_mimics_the_current_head() ->
     index.execute("UPDATE raw_revision_applications SET decision = 'ambiguous' WHERE raw_id = 'raw-1'")
     source.execute("UPDATE raw_session_memberships SET decision = 'ambiguous' WHERE raw_id = 'raw-1'")
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -290,7 +292,7 @@ def test_receipt_rejects_old_same_raw_receipt_after_reparse_changes_current_head
         decided_at_ms=3,
     )
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -317,7 +319,7 @@ def test_the_retired_candidate_membership_relation_is_neither_created_nor_read()
     * restoring the ``CREATE TABLE`` to ``INDEX_DDL`` turns the first
       assertion red;
     * restoring the reader's query without the table makes
-      ``source_generation_receipt`` raise ``no such table`` instead of
+      the actual paged receipt owner raise ``no such table`` instead of
       returning a complete receipt, turning the second half red;
     * reintroducing the reported field as an always-empty stand-in turns the
       last assertion red.
@@ -328,7 +330,7 @@ def test_the_retired_candidate_membership_relation_is_neither_created_nor_read()
     assert "candidate_source_membership" not in declared
     assert "idx_candidate_source_membership_pending" not in declared
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -367,18 +369,10 @@ def test_receipt_pages_large_denominator_and_reduces_raw_ids_globally(tmp_path: 
             raw_id="shared-raw",
             raw_blob_hash=b"r" * 32,
         )
-    receipt = source_generation_receipt(
-        source, index, source_generation_id="large", active_generation="index-generation:synthetic"
-    )
-    assert len(receipt.items) == 10_241
-    assert receipt.unresolved_raw_ids == ("shared-raw",)
-    assert receipt.confirmed_raw_ids == ()
-    assert receipt.items[0].logical_coordinate == coordinates[0]
-    assert receipt.items[-1].logical_coordinate == coordinates[-1]
     cursor = None
     page_count = 0
     while True:
-        page = source_generation_receipt_page(source, index, source_generation_id="large", after=cursor)
+        page = source_generation_receipt_page(source, source_generation_id="large", after=cursor)
         if not page.items:
             break
         assert len(page.items) <= 256
@@ -395,3 +389,76 @@ def test_receipt_pages_large_denominator_and_reduces_raw_ids_globally(tmp_path: 
             assert check.execute("SELECT COUNT(*) FROM items").fetchone() == (10_241,)
     finally:
         spool.close()
+
+
+def test_receipt_spools_nested_members_from_the_callers_uncommitted_source_snapshot(tmp_path: Path) -> None:
+    from polylogue.operations.ingest_inputs import spool_connection
+
+    source, index, item_id = _connections()
+    source.execute(
+        "UPDATE source_items SET enumerated_record_count=NULL, enumeration_digest=NULL, enumerated_at_ms=NULL, "
+        "enumerated_member_count=NULL, enumeration_member_digest=NULL WHERE source_item_id=?",
+        (item_id,),
+    )
+    for ordinal in range(513):
+        raw_id = f"nested:{ordinal:04d}"
+        source.execute(
+            "INSERT INTO raw_sessions(raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES (?, 'codex-session', '/synthetic/nested', ?, 1, 1)",
+            (raw_id, b"n" * 32),
+        )
+        record_source_item_raw_member(
+            source,
+            source_generation_id="source-43",
+            source_item_id=item_id,
+            record_coordinate=f"record:nested:{ordinal:04d}",
+            raw_id=raw_id,
+            raw_blob_hash=b"n" * 32,
+        )
+    complete_source_item_enumeration(
+        source,
+        source_generation_id="source-43",
+        source_item_id=item_id,
+        enumeration_fingerprint="b" * 64,
+        record_coordinates=(
+            str(row[0])
+            for row in source.execute(
+                "SELECT record_coordinate FROM source_item_raw_members WHERE source_item_id=?", (item_id,)
+            )
+        ),
+        enumerated_at_ms=2,
+    )
+    assert source.in_transaction
+    spool = _spool_source_receipt(source, index, "source-43", tmp_path / "nested.sqlite")
+    try:
+        assert source.in_transaction
+        assert spool.enumeration_complete
+        assert spool.unresolved_raw_count == 513
+        assert spool.confirmed_raw_count == 1
+        with spool_connection(spool.path, read_only=True) as observed:
+            assert observed.execute("SELECT raw_count, unresolved_count FROM items").fetchone() == (514, 513)
+            assert observed.execute("SELECT COUNT(*) FROM item_raws").fetchone() == (514,)
+    finally:
+        spool.close()
+        source.rollback()
+
+
+def test_receipt_cancellation_preserves_source_snapshot_and_settles_private_spool(tmp_path: Path) -> None:
+    from polylogue.operations.ingest_inputs import unlink_spool
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    source, index, _item_id = _connections()
+    path = tmp_path / "cancelled-receipt.sqlite"
+    calls = 0
+
+    def stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise InterruptedError("synthetic receipt cancellation")
+
+    with pytest.raises(InterruptedError):
+        _spool_source_receipt(source, index, "source-43", path, check_stop=stop)
+    assert not retained_native_sql_owners_for_lifetime(path)
+    assert source.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (1,)
+    unlink_spool(path)

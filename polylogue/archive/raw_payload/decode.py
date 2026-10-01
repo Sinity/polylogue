@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Literal, TypeAlias, cast
+from typing import IO, BinaryIO, Literal, TypeAlias, cast
 
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
     ArtifactKind,
     classify_artifact,
-    classify_record_candidacy,
+    classify_artifact_records,
+    classify_artifact_stream,
 )
 from polylogue.archive.artifact_taxonomy.support import record_candidacy_projection
-from polylogue.archive.raw_payload.streams import raw_byte_stream, raw_line_stream
+from polylogue.archive.raw_payload.streams import raw_byte_stream, raw_line_stream, rewindable_byte_stream
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
 from polylogue.core.json import (
@@ -83,11 +85,12 @@ class RawPayloadEnvelope:
 
 @dataclass(frozen=True)
 class JSONLSessionArtifactScan:
-    """Complete candidacy evidence; full-record schema support remains unmeasured."""
+    """Complete taxonomy evidence; full-record schema support remains unmeasured."""
 
     artifact: ArtifactClassification | None
     malformed_records: int = 0
     valid_records: int = 0
+    proved_non_session: bool = False
 
 
 JSONL_RECORD_INSPECTION_BYTES = 64 * 1024
@@ -279,9 +282,44 @@ def scan_jsonl_session_artifact(
         nonlocal malformed_records
         malformed_records += 1
 
-    with raw_byte_stream(raw) as stream:
+    callback_failure: BaseException | None = None
+
+    def checkpoint() -> None:
+        nonlocal callback_failure
+        if check_stop is not None:
+            try:
+                check_stop()
+            except BaseException as exc:
+                callback_failure = exc
+                raise
+
+    with (
+        raw_byte_stream(raw, check_stop=checkpoint) as byte_stream,
+        rewindable_byte_stream(byte_stream, check_stop=checkpoint) as stream,
+    ):
+        import ijson
+
+        position = stream.tell()
+        try:
+            complete = classify_artifact_stream(
+                cast(BinaryIO, stream),
+                provider=provider,
+                source_path=source_path,
+                wire_format="jsonl",
+                check_stop=checkpoint,
+            )
+        except (ijson.JSONError, UnicodeError, JSONDecodeError):
+            if callback_failure is not None:
+                raise callback_failure from None
+            stream.seek(position)
+        else:
+            return JSONLSessionArtifactScan(
+                artifact=complete.classification,
+                valid_records=complete.record_count,
+                proved_non_session=complete.proved_non_session,
+            )
         records = iter_projected_jsonl_records(
-            stream, record_candidacy_projection(), check_stop=check_stop, on_decode_failure=failed
+            stream, record_candidacy_projection(), check_stop=checkpoint, on_decode_failure=failed
         )
 
         def observed_records() -> Iterator[JSONValue]:
@@ -291,12 +329,25 @@ def scan_jsonl_session_artifact(
                 if not jsonl_dict_only or isinstance(record, dict):
                     yield cast(JSONValue, record)
 
-        artifact = classify_record_candidacy(
-            observed_records(),
-            provider=provider,
-            source_path=source_path,
+        with closing(records):
+            observed = classify_artifact_records(
+                observed_records(),
+                provider=provider,
+                source_path=source_path,
+                check_stop=checkpoint,
+            )
+    artifact = observed.classification
+    proved_non_session = observed.proved_non_session and not malformed_records
+    if observed.proved_non_session and malformed_records:
+        artifact = ArtifactClassification(
+            provider, ArtifactKind.UNKNOWN, False, False, 0, "malformed records prevent non-session proof"
         )
-    return JSONLSessionArtifactScan(artifact=artifact, malformed_records=malformed_records, valid_records=valid_records)
+    return JSONLSessionArtifactScan(
+        artifact=artifact,
+        malformed_records=malformed_records,
+        valid_records=valid_records,
+        proved_non_session=proved_non_session,
+    )
 
 
 def jsonl_session_artifact(
@@ -308,13 +359,14 @@ def jsonl_session_artifact(
     check_stop: Callable[[], None] | None = None,
 ) -> ArtifactClassification | None:
     """Return complete stream candidacy without transferring input ownership."""
-    return scan_jsonl_session_artifact(
+    artifact = scan_jsonl_session_artifact(
         raw,
         provider=provider,
         jsonl_dict_only=jsonl_dict_only,
         source_path=source_path,
         check_stop=check_stop,
     ).artifact
+    return artifact if artifact is not None and artifact.parse_as_session else None
 
 
 def sample_jsonl_payload(

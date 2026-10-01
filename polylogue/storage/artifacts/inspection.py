@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 from contextlib import suppress
 from dataclasses import replace
@@ -13,10 +12,10 @@ from pathlib import Path
 import ijson
 
 from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
     ArtifactKind,
-    classify_artifact,
     classify_artifact_path,
-    classify_record_candidacy,
+    classify_artifact_stream,
 )
 from polylogue.archive.raw_payload import (
     JSONValue,
@@ -196,8 +195,6 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
     # durable observation describes the exact acquired bytes.
     if _is_hermes_state_db_candidate(record):
         return _build_payload_envelope(blob_path, record, sqlite_immutable=True)
-    from polylogue.archive.artifact_taxonomy.support import record_candidacy_projection
-    from polylogue.sources.detection_projection import iter_projected_document_records
     from polylogue.sources.dispatch import detect_provider_from_raw_stream_evidence
 
     provider = Provider.from_string(_normalize_payload_provider_hint(record) or record.source_name or "")
@@ -205,19 +202,18 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
     with blob_path.open("rb") as handle:
         provider, _detail = detect_provider_from_raw_stream_evidence(handle, record.source_path, provider)
         handle.seek(0)
-        encoding = json.detect_encoding(handle.read(4))
-        handle.seek(0)
         try:
-            artifact = classify_record_candidacy(
-                iter_projected_document_records(handle, record_candidacy_projection(), encoding=encoding),
+            artifact = classify_artifact_stream(
+                handle,
                 provider=provider,
                 source_path=record.source_path,
-            )
+                wire_format="json",
+            ).classification
             wire_format = "json"
         except (ijson.JSONError, UnicodeError):
             handle.seek(0)
             scan = scan_jsonl_session_artifact(handle, provider=provider, source_path=record.source_path)
-            if scan.artifact is None and scan.malformed_records:
+            if scan.malformed_records and (scan.artifact is None or not scan.artifact.parse_as_session):
                 raise ValueError("retained artifact has no complete decodable session evidence") from None
             artifact = scan.artifact
             wire_format = "jsonl"
@@ -229,10 +225,8 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
     ):
         return _build_payload_envelope(prefix, record)
     if artifact is None:
-        artifact = classify_artifact_path(record.source_path, provider=provider) or classify_artifact(
-            [],
-            provider=provider,
-            source_path=record.source_path,
+        artifact = ArtifactClassification(
+            provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete retained artifact evidence"
         )
     diagnostic_payload: JSONValue = []
     if wire_format == "jsonl":

@@ -40,20 +40,43 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     SourceItemAdmission,
     source_item_id,
 )
+from polylogue.storage.sqlite.connection_profile import (
+    NativeConnectionSettlementError,
+    _close_failed_native_construction,
+    open_scratch_connection,
+    readonly_connection_context,
+    retained_native_sql_owners_for_lifetime,
+)
 
 
 @contextmanager
-def spool_connection(path: Path | str, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
-    """Open one private spool database for one transaction, then close it.
+def spool_connection(path: Path, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
+    """Own one private spool transaction and its exact artifact through settlement."""
+    if read_only:
+        with readonly_connection_context(path, validate_schema=False, lifetime_dependencies=(path,)) as conn:
+            conn.execute("PRAGMA temp_store=FILE").close()
+            yield conn
+        return
+    owner = open_scratch_connection(path, lifetime_dependencies=(path,))
+    try:
+        conn = owner.require_connection()
+        conn.execute("PRAGMA journal_mode=DELETE").close()
+        conn.execute("PRAGMA temp_store=FILE").close()
+        with conn:
+            yield conn
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
-    ``sqlite3.Connection``'s own context manager commits or rolls back but
-    never closes, so a bare ``with sqlite3.connect(...)`` keeps the file
-    handle until garbage collection. Spools are private scratch owned by one
-    pass (docs/sqlite-connection-policy.md), not archive tiers.
-    """
-    target = f"file:{path}?mode=ro" if read_only else str(path)
-    with closing(sqlite3.connect(target, uri=read_only)) as conn, conn:
-        yield conn
+
+def unlink_spool(path: Path) -> None:
+    """Remove only an operation's private artifact after its native owners retire."""
+    retained = retained_native_sql_owners_for_lifetime(path)
+    if retained:
+        raise NativeConnectionSettlementError(retained[0], RuntimeError("private spool remains under native custody"))
+    path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +161,7 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
                 raise ValueError("ingest input contains no physical files")
         return spool
     except BaseException:
-        spool.unlink(missing_ok=True)
+        unlink_spool(spool)
         raise
 
 
@@ -207,7 +230,7 @@ def preflight_ingest_input(
             )
         return result, declaration
     finally:
-        spool.unlink(missing_ok=True)
+        unlink_spool(spool)
 
 
 def retain_input_page(

@@ -37,6 +37,7 @@ from polylogue.operations.ingest_inputs import (
     enumerate_ingest_input,
     retain_input_page,
     spool_connection,
+    unlink_spool,
 )
 from polylogue.operations.insight_acceptance import SessionInsightPartReceipt
 from polylogue.operations.machine_lifecycle import machine_request_state
@@ -50,13 +51,13 @@ from polylogue.operations.machine_receipts import (
     IngestInputPageHistoricalReceipt,
     IngestInputRawMemberHistorical,
     IngestInputRawPageHistoricalReceipt,
+    IngestInputRawPagesDigest,
     IngestInsightPageHistoricalReceipt,
     IngestRefusalPageHistoricalReceipt,
     IngestRefusalPagesDigest,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
     InsightTargetHistoricalReceipt,
-    ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
     ingest_terminal_outcome,
     ingest_unconverged_error,
@@ -91,7 +92,7 @@ from polylogue.storage.ingest_governance import (
     publish_raw_census,
 )
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
-from polylogue.storage.source_generation_receipts import source_generation_receipt_page
+from polylogue.storage.source_generation_receipts import iter_source_item_raw_receipts, source_generation_receipt_page
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.raw_admission import execute_source_item_admission
 from polylogue.storage.sqlite.archive_tiers.source_items import (
@@ -215,7 +216,7 @@ class SourceReceiptSpool:
     unresolved_raw_count: int
 
     def close(self) -> None:
-        self.path.unlink(missing_ok=True)
+        unlink_spool(self.path)
 
     def pending_raw_page(self, after: str | None = None) -> tuple[str, ...]:
         with spool_connection(self.path, read_only=True) as conn:
@@ -244,6 +245,8 @@ def _spool_source_receipt(
     index_conn: sqlite3.Connection,
     generation_id: str,
     path: Path,
+    *,
+    check_stop: Callable[[], None] | None = None,
 ) -> SourceReceiptSpool:
     """Project all witnesses under one pinned pair without an unbounded result."""
     generation = source_conn.execute(
@@ -259,7 +262,9 @@ def _spool_source_receipt(
     with spool_connection(path) as spool:
         spool.executescript(
             "CREATE TABLE items(ordinal INTEGER PRIMARY KEY, source_item_id TEXT NOT NULL, coordinate TEXT NOT NULL, "
-            "raws_json TEXT NOT NULL, retired_count INTEGER NOT NULL);"
+            "raw_count INTEGER NOT NULL, unresolved_count INTEGER NOT NULL, retired_count INTEGER NOT NULL);"
+            "CREATE TABLE item_raws(source_item_id TEXT NOT NULL, raw_id TEXT NOT NULL, complete INTEGER NOT NULL, "
+            "PRIMARY KEY(source_item_id, raw_id)) WITHOUT ROWID;"
             "CREATE UNIQUE INDEX items_source_id ON items(source_item_id);"
             "CREATE TABLE raws(raw_id TEXT PRIMARY KEY, complete INTEGER NOT NULL, parser_complete INTEGER NOT NULL) WITHOUT ROWID;"
             "CREATE TABLE logicals(logical_key TEXT PRIMARY KEY, expected_session_id TEXT NOT NULL, complete INTEGER NOT NULL) WITHOUT ROWID;"
@@ -269,41 +274,59 @@ def _spool_source_receipt(
         )
         while True:
             page = source_generation_receipt_page(
-                source_conn, index_conn, source_generation_id=generation_id, after=cursor
+                source_conn, source_generation_id=generation_id, after=cursor, check_stop=check_stop
             )
             if not page.items:
                 break
-            retired_by_item: dict[str, int] = {}
-            for retired in page.retired_coordinates:
-                retired_by_item[retired.source_item_id] = retired_by_item.get(retired.source_item_id, 0) + 1
             for item in page.items:
-                raw_status = [(raw.raw_id, raw.complete) for raw in item.raws]
+                if check_stop is not None:
+                    check_stop()
+                enumeration_complete &= item.enumeration_complete
+                complete &= item.source_complete
+                raw_count = unresolved_count = 0
+                with closing(
+                    iter_source_item_raw_receipts(
+                        source_conn,
+                        index_conn,
+                        source_generation_id=generation_id,
+                        source_item_id=item.source_item_id,
+                        check_stop=check_stop,
+                    )
+                ) as raw_receipts:
+                    for raw in raw_receipts:
+                        raw_count += 1
+                        unresolved_count += not raw.complete
+                        complete &= raw.complete
+                        spool.execute(
+                            "INSERT INTO item_raws VALUES (?, ?, ?)",
+                            (item.source_item_id, raw.raw_id, int(raw.complete)),
+                        )
+                        spool.execute(
+                            "INSERT INTO raws VALUES (?, ?, ?) ON CONFLICT(raw_id) DO UPDATE SET "
+                            "complete=MIN(complete, excluded.complete), "
+                            "parser_complete=MIN(parser_complete, excluded.parser_complete)",
+                            (raw.raw_id, int(raw.complete), int(raw.parser_complete)),
+                        )
+                        for logical in raw.logicals:
+                            if check_stop is not None:
+                                check_stop()
+                            spool.execute(
+                                "INSERT INTO logicals VALUES (?, ?, ?) ON CONFLICT(logical_key) DO UPDATE SET "
+                                "complete=MIN(complete, excluded.complete)",
+                                (logical.logical_source_key, logical.expected_session_id, int(logical.complete)),
+                            )
                 spool.execute(
-                    "INSERT INTO items VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         observed_count,
                         item.source_item_id,
                         item.logical_coordinate,
-                        json.dumps(raw_status, separators=(",", ":")),
-                        retired_by_item.get(item.source_item_id, 0),
+                        raw_count,
+                        unresolved_count,
+                        item.retired_count,
                     ),
                 )
                 observed_count += 1
-                enumeration_complete &= item.enumeration_complete
-                complete &= item.complete
-                for raw in item.raws:
-                    spool.execute(
-                        "INSERT INTO raws VALUES (?, ?, ?) ON CONFLICT(raw_id) DO UPDATE SET "
-                        "complete=MIN(complete, excluded.complete), "
-                        "parser_complete=MIN(parser_complete, excluded.parser_complete)",
-                        (raw.raw_id, int(raw.complete), int(raw.parser_complete)),
-                    )
-                    for logical in raw.logicals:
-                        spool.execute(
-                            "INSERT INTO logicals VALUES (?, ?, ?) ON CONFLICT(logical_key) DO UPDATE SET "
-                            "complete=MIN(complete, excluded.complete)",
-                            (logical.logical_source_key, logical.expected_session_id, int(logical.complete)),
-                        )
             cursor = page.next_cursor
         enumeration_complete &= observed_count == item_count
         complete &= enumeration_complete
@@ -657,7 +680,7 @@ class IngestExecution:
                 await self.abort_prepared(generation_id)
                 raise
             finally:
-                await self.runtime.compute_phase(lambda: spool.unlink(missing_ok=True))
+                await self.runtime.compute_phase(lambda: unlink_spool(spool))
 
             def accept_prepared() -> dict[str, object]:
                 self.check_stop()
@@ -909,12 +932,13 @@ class IngestExecution:
                 index_connection,
                 generation_id,
                 path,
+                check_stop=self.check_stop,
             )
 
         try:
             return await self.read(read_receipt)
         except BaseException:
-            path.unlink(missing_ok=True)
+            unlink_spool(path)
             raise
 
     async def materialize(self, generation_id: str) -> SourceReceiptSpool:
@@ -1111,7 +1135,7 @@ class IngestExecution:
                 inputs: list[IngestInputHistoricalReceipt] = []
                 for item in source_page:
                     row = observed.execute(
-                        "SELECT coordinate, raws_json, retired_count FROM items WHERE source_item_id=?",
+                        "SELECT coordinate, raw_count, unresolved_count, retired_count FROM items WHERE source_item_id=?",
                         (item.source_item_id,),
                     ).fetchone()
                     if row is None:
@@ -1127,20 +1151,33 @@ class IngestExecution:
                         continue
                     if str(row[0]) != item.coordinate:
                         raise ValueError("terminal source item coordinate changed")
-                    raw_status = json.loads(str(row[1]))
-                    raw_ids = sorted({str(raw_id) for raw_id, _complete in raw_status})
-                    unresolved = sorted({str(raw_id) for raw_id, complete in raw_status if not complete})
-                    retired_count = int(row[2])
+                    raw_count, unresolved_count, retired_count = map(int, row[1:])
                     page_metadata = observed.execute(
                         "SELECT page_ref, page_count, raw_count, unresolved_count, digest "
                         "FROM raw_metadata WHERE source_item_id=?",
                         (item.source_item_id,),
                     ).fetchone()
+                    raw_ids: list[str] | None = None
+                    unresolved: list[str] = []
+                    if page_metadata is None:
+                        if raw_count > MAX_INLINE_RAW_IDS_PER_INPUT:
+                            raise ValueError("terminal raw attribution lacks its persisted pages")
+                        with closing(
+                            observed.execute(
+                                "SELECT raw_id, complete FROM item_raws WHERE source_item_id=? ORDER BY raw_id LIMIT ?",
+                                (item.source_item_id, MAX_INLINE_RAW_IDS_PER_INPUT),
+                            )
+                        ) as raw_cursor:
+                            raw_status = raw_cursor.fetchall()
+                        raw_ids = [str(raw_id) for raw_id, _complete in raw_status]
+                        unresolved = [str(raw_id) for raw_id, complete in raw_status if not complete]
+                        if len(raw_ids) != raw_count or len(unresolved) != unresolved_count:
+                            raise ValueError("terminal raw attribution changed")
                     inputs.append(
                         IngestInputHistoricalReceipt(
                             source_item_id=item.source_item_id,
                             logical_coordinate=item.coordinate,
-                            denominator=len(raw_ids) + retired_count,
+                            denominator=raw_count + retired_count,
                             raw_ids=None if page_metadata is not None else raw_ids,
                             unresolved_raw_ids=[] if page_metadata is not None else unresolved,
                             raw_id_pages_ref=None if page_metadata is None else page_metadata[0],
@@ -1226,38 +1263,63 @@ class IngestExecution:
         operation_id = started.operation_id
         assert operation_id is not None
         with spool_connection(receipt.path) as observed:
-            for item_id, raw_json in observed.execute("SELECT source_item_id, raws_json FROM items ORDER BY ordinal"):
-                raw_status = sorted(json.loads(str(raw_json)), key=lambda raw: raw[0])
-                if len(raw_status) <= MAX_INLINE_RAW_IDS_PER_INPUT:
+            item_cursor: tuple[int] | None = None
+            while True:
+                self.check_stop()
+                with closing(
+                    observed.execute(
+                        "SELECT ordinal, source_item_id, raw_count, unresolved_count FROM items "
+                        "WHERE ordinal>? ORDER BY ordinal LIMIT 1",
+                        (-1 if item_cursor is None else item_cursor[0],),
+                    )
+                ) as cursor:
+                    item = cursor.fetchone()
+                if item is None:
+                    break
+                ordinal, item_id, raw_count, unresolved_count = item
+                item_cursor = (int(ordinal),)
+                if raw_count <= MAX_INLINE_RAW_IDS_PER_INPUT:
                     continue
-                raw_pages = [
-                    IngestInputRawPageHistoricalReceipt(
+                raw_digest = IngestInputRawPagesDigest()
+                raw_page_count = 0
+                after_raw = ""
+                observed_raw_count = observed_unresolved = 0
+                while True:
+                    self.check_stop()
+                    with closing(
+                        observed.execute(
+                            "SELECT raw_id, complete FROM item_raws WHERE source_item_id=? AND raw_id>? "
+                            "ORDER BY raw_id LIMIT ?",
+                            (item_id, after_raw, MAX_PAGE_ITEMS),
+                        )
+                    ) as cursor:
+                        rows = cursor.fetchall()
+                    if not rows:
+                        break
+                    raw_page = IngestInputRawPageHistoricalReceipt(
                         source_item_id=str(item_id),
-                        ordinal=ordinal,
+                        ordinal=raw_page_count,
                         raws=[
                             IngestInputRawMemberHistorical(raw_id=str(raw_id), unresolved=not complete)
-                            for raw_id, complete in raw_status[offset : offset + MAX_PAGE_ITEMS]
+                            for raw_id, complete in rows
                         ],
                     )
-                    for ordinal, offset in enumerate(range(0, len(raw_status), MAX_PAGE_ITEMS))
-                ]
-                observed.execute(
-                    "INSERT INTO raw_metadata VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        item_id,
-                        operation_id,
-                        len(raw_pages),
-                        len(raw_status),
-                        sum(not complete for _raw_id, complete in raw_status),
-                        ingest_input_raw_pages_digest(raw_pages),
-                    ),
-                )
-                for raw_page in raw_pages:
+                    raw_digest.update(raw_page)
+                    observed_raw_count += len(rows)
+                    observed_unresolved += sum(not complete for _raw_id, complete in rows)
+                    after_raw = str(rows[-1][0])
+                    raw_page_count += 1
 
                     def persist_raw_page(page: IngestInputRawPageHistoricalReceipt = raw_page) -> None:
                         self.audit.append_ingest_input_raw_page(operation_id, page)
 
                     await self.runtime.write_phase("ingest.input_raw_page", persist_raw_page)
+                if (observed_raw_count, observed_unresolved) != (raw_count, unresolved_count):
+                    raise ValueError("terminal raw attribution changed")
+                observed.execute(
+                    "INSERT INTO raw_metadata VALUES (?, ?, ?, ?, ?, ?)",
+                    (item_id, operation_id, raw_page_count, raw_count, unresolved_count, raw_digest.hexdigest()),
+                )
         with spool_connection(self.state_path, read_only=True) as state:
             counts = state.execute("SELECT COUNT(*), COALESCE(SUM(message_count), 0) FROM changed_sessions").fetchone()
             self.changed_session_count, self.changed_message_count = int(counts[0]), int(counts[1])
@@ -1727,7 +1789,7 @@ async def redrive_accepted_ingests(
             await execution.settle_failed(f"{type(exc).__name__}: {exc}")
         finally:
             await asyncio.to_thread(execution.publisher.discard_pending)
-            execution.state_path.unlink(missing_ok=True)
+            unlink_spool(execution.state_path)
 
 
 async def drive_accepted_generation(
@@ -1888,4 +1950,4 @@ async def execute_ingest_operation(
         raise
     finally:
         await asyncio.to_thread(execution.publisher.discard_pending)
-        execution.state_path.unlink(missing_ok=True)
+        unlink_spool(execution.state_path)
