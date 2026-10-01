@@ -681,6 +681,88 @@ class PreparedJsonl:
     publication_publisher: ArchiveBlobPublisher | None = None
 
     @classmethod
+    def from_sessions(
+        cls,
+        sessions: Iterable[ParsedSession],
+        *,
+        blob_hash: str,
+        artifact_directory: Path,
+        publication_publisher: ArchiveBlobPublisher,
+    ) -> PreparedJsonl:
+        """Seal already-admitted parser output on the canonical paged carrier.
+
+        The caller owns the private directory through physical preparation
+        completion, including failures. No parser or alternate attachment
+        representation is introduced at this boundary.
+        """
+        from polylogue.core.compute import capture_compute_bridge
+        from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+        from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+        sessions_path = artifact_directory / f"sessions-{uuid.uuid4().hex}.db"
+        shard_path = artifact_directory / f"shard-{uuid.uuid4().hex}.db"
+        store: SqliteMessageStore | None = None
+        builder: SessionShardBuilder | None = None
+
+        provisional = cls(blob_hash, sessions_path, shard_path, attempt_directory=artifact_directory)
+        try:
+            with capture_compute_bridge()(), retain_native_sql_lifetimes(artifact_directory):
+                try:
+                    store = SqliteMessageStore(sessions_path)
+                    builder = SessionShardBuilder(shard_path)
+
+                    def lowered_sessions() -> Iterator[ParsedSession]:
+                        assert builder is not None
+                        for session in sessions:
+                            check_compute_cancelled()
+                            append_session_to_shard(builder, session)
+                            yield session
+
+                    _write_artifact(
+                        store,
+                        blob_hash,
+                        lowered_sessions(),
+                        enrichment_digest=None,
+                        enrichment_index_path=None,
+                    )
+                    _prepare_attachment_publications(store, publication_publisher, artifact_directory)
+                    builder.seal()
+                    builder = None
+                    store.close()
+                    store = None
+                    return cls.seal(
+                        blob_hash,
+                        sessions_path,
+                        shard_path,
+                        positive_evidence_filtered=True,
+                        attempt_directory=artifact_directory,
+                        publication_publisher=publication_publisher,
+                    )
+                except BaseException as primary:
+                    failures: list[BaseException] = [primary]
+                    for close in (
+                        builder.abandon
+                        if builder is not None
+                        and not any(owner.close_required for owner in native_sql_children(builder))
+                        else None,
+                        store.close if store is not None and not store._sql_owner.close_required else None,
+                    ):
+                        if close is not None:
+                            try:
+                                close()
+                            except BaseException as cleanup:
+                                failures.append(cleanup)
+                    if len(failures) > 1:
+                        raise BaseExceptionGroup("canonical session preparation cleanup failed", failures) from None
+                    raise
+        except BaseException as primary:
+            try:
+                provisional.discard()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("canonical carrier and cleanup failed", [primary, cleanup]) from None
+            raise
+
+    @classmethod
     def seal(
         cls,
         blob_hash: str,

@@ -10,11 +10,11 @@ describes its current source and index state.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
@@ -42,12 +42,14 @@ from polylogue.pipeline.ids import (
 )
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_descriptor,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, prepare_session_rows
+
+if TYPE_CHECKING:
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
 ParseRetainedRaw = Callable[[Any, str], Sequence[ParsedSession] | None]
 
@@ -126,15 +128,6 @@ class AppendFrontierBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedAttachmentBlob:
-    """Attachment bytes staged by compute but not published until writer admission."""
-
-    position: int
-    prepared_blob: PreparedBlob | None
-    precomputed_blob: tuple[str, int] | None
-
-
-@dataclass(frozen=True, slots=True)
 class PreparedRawCensus:
     """One raw's complete normalized parser census, without terminal state."""
 
@@ -166,7 +159,7 @@ class PreparedIngestCohort:
     projections_by_raw_id: dict[str, SessionRevisionProjection]
     classification: MembershipClassification | None
     prepared_rows_by_raw_id: dict[str, PreparedRows]
-    prepared_attachment_blobs: tuple[PreparedAttachmentBlob, ...]
+    prepared_artifact: PreparedJsonl | None
     affected_session_ids: tuple[str, ...]
     acquired_at_ms: int
     source_generation_id: str | None = None
@@ -553,22 +546,6 @@ def _session_for_key(
     return matches[0]
 
 
-def _prepare_attachment_blobs(reader_archive: Any, session: ParsedSession) -> tuple[PreparedAttachmentBlob, ...]:
-    """Stage inline attachment bytes without publishing or acquiring a write lease."""
-    blob_store = BlobStore(reader_archive.archive_root / "blob")
-    return tuple(
-        PreparedAttachmentBlob(
-            position=position,
-            prepared_blob=(
-                None if attachment.inline_bytes is None else blob_store.prepare_from_bytes(attachment.inline_bytes)
-            ),
-            precomputed_blob=attachment.precomputed_blob,
-        )
-        for position, attachment in enumerate(session.attachments)
-        if attachment.inline_bytes is not None or attachment.precomputed_blob is not None
-    )
-
-
 def prepare_ingest_cohort(
     reader_archive: Any,
     *,
@@ -619,7 +596,7 @@ def prepare_ingest_cohort(
             projections_by_raw_id={},
             classification=None,
             prepared_rows_by_raw_id={},
-            prepared_attachment_blobs=(),
+            prepared_artifact=None,
             affected_session_ids=tuple(
                 sorted(
                     {
@@ -636,50 +613,88 @@ def prepare_ingest_cohort(
     projections_by_raw_id: dict[str, SessionRevisionProjection] = {}
     revisions: list[MembershipRevision] = []
     bindings: list[RawDescriptorBinding] = []
-    for raw_id in selector:
-        session = _session_for_key(reader_archive, raw_id, logical_source_key, parse_retained_raw)
-        projection = session_revision_projection(session)
-        session = _with_projected_content_hash(session, projection)
-        parsed_by_raw_id[raw_id] = session
-        projections_by_raw_id[raw_id] = projection
-        revisions.append(_membership_revision(reader_archive, raw_id, session, projection))
-        bindings.append(_raw_binding(reader_archive, raw_id, logical_source_key=logical_source_key))
-    classification = (
-        classify_membership_revisions(revisions, existing_accepted_raw_id=head.accepted_raw_id) if revisions else None
-    )
-    prepared_rows: dict[str, PreparedRows] = {}
-    attachment_blobs: tuple[PreparedAttachmentBlob, ...] = ()
-    if classification is not None and classification.accepted_raw_ids:
-        accepted_raw_id = classification.accepted_raw_ids[-1]
-        accepted_session = parsed_by_raw_id[accepted_raw_id]
-        prepared_rows[accepted_raw_id] = prepare_session_rows(accepted_session)
-        attachment_blobs = _prepare_attachment_blobs(reader_archive, accepted_session)
-    return PreparedIngestCohort(
-        logical_source_key=logical_source_key,
-        blob_root=str(reader_archive.archive_root / "blob"),
-        request_owned_complete_raw_ids=request_owned,
-        source_generation_id=source_generation_id,
-        selector_raw_ids=selector,
-        member_bindings=tuple(bindings),
-        existing_head=head,
-        append_frontier=append_frontier,
-        convertible_full_raw_ids=(),
-        retirement_censuses=(),
-        parsed_by_raw_id=parsed_by_raw_id,
-        projections_by_raw_id=projections_by_raw_id,
-        classification=classification,
-        prepared_rows_by_raw_id=prepared_rows,
-        prepared_attachment_blobs=attachment_blobs,
-        affected_session_ids=tuple(
-            sorted(
-                {
-                    str(make_session_id(session.source_name, session.provider_session_id))
-                    for session in parsed_by_raw_id.values()
-                }
+    prepared_artifact = None
+    try:
+        for raw_id in selector:
+            session = _session_for_key(reader_archive, raw_id, logical_source_key, parse_retained_raw)
+            projection = session_revision_projection(session)
+            session = _with_projected_content_hash(session, projection)
+            parsed_by_raw_id[raw_id] = session
+            projections_by_raw_id[raw_id] = projection
+            revisions.append(_membership_revision(reader_archive, raw_id, session, projection))
+            bindings.append(_raw_binding(reader_archive, raw_id, logical_source_key=logical_source_key))
+        classification = (
+            classify_membership_revisions(revisions, existing_accepted_raw_id=head.accepted_raw_id)
+            if revisions
+            else None
+        )
+        prepared_rows: dict[str, PreparedRows] = {}
+        if classification is not None and classification.accepted_raw_ids:
+            accepted_raw_id = classification.accepted_raw_ids[-1]
+            accepted_session = parsed_by_raw_id[accepted_raw_id]
+            prepared_rows[accepted_raw_id] = prepare_session_rows(accepted_session)
+            import tempfile
+
+            from polylogue.sources.prepared_jsonl import PreparedJsonl
+            from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+            publisher = ArchiveBlobPublisher(
+                reader_archive.archive_root / "source.db", reader_archive.archive_root / "blob"
             )
-        ),
-        acquired_at_ms=acquired_at_ms,
-    )
+            directory = Path(tempfile.mkdtemp(prefix="cohort-", dir=publisher._prepared_staging_directory(None)))
+            binding = next(binding for binding in bindings if binding.raw_id == accepted_raw_id)
+            prepared_artifact = PreparedJsonl.from_sessions(
+                (accepted_session,),
+                blob_hash=binding.blob_hash,
+                artifact_directory=directory,
+                publication_publisher=publisher,
+            )
+            parsed_by_raw_id[accepted_raw_id] = prepared_artifact.session_by_id(
+                str(make_session_id(accepted_session.source_name, accepted_session.provider_session_id))
+            )
+        return PreparedIngestCohort(
+            logical_source_key=logical_source_key,
+            blob_root=str(reader_archive.archive_root / "blob"),
+            request_owned_complete_raw_ids=request_owned,
+            source_generation_id=source_generation_id,
+            selector_raw_ids=selector,
+            member_bindings=tuple(bindings),
+            existing_head=head,
+            append_frontier=append_frontier,
+            convertible_full_raw_ids=(),
+            retirement_censuses=(),
+            parsed_by_raw_id=parsed_by_raw_id,
+            projections_by_raw_id=projections_by_raw_id,
+            classification=classification,
+            prepared_rows_by_raw_id=prepared_rows,
+            prepared_artifact=prepared_artifact,
+            affected_session_ids=tuple(
+                sorted(
+                    {
+                        str(make_session_id(session.source_name, session.provider_session_id))
+                        for session in parsed_by_raw_id.values()
+                    }
+                )
+            ),
+            acquired_at_ms=acquired_at_ms,
+        )
+    except BaseException as primary:
+        failures: list[BaseException] = [primary]
+        for projection in projections_by_raw_id.values():
+            try:
+                projection.close()
+            except BaseException as cleanup:
+                failures.append(cleanup)
+        if prepared_artifact is not None:
+            try:
+                prepared_artifact.discard()
+            except BaseException as cleanup:
+                failures.append(cleanup)
+        if len(failures) > 1:
+            from builtins import BaseExceptionGroup
+
+            raise BaseExceptionGroup("membership preparation and cleanup failed", failures) from None
+        raise
 
 
 def _cohort_still_current(writer_archive: Any, prepared: PreparedIngestCohort) -> str | None:
@@ -774,60 +789,47 @@ def _retirement_order(writer_archive: Any, raw_ids: Sequence[str]) -> tuple[str,
 
 
 def discard_prepared_ingest_cohort(prepared: PreparedIngestCohort) -> None:
-    """Discard staged attachment bytes after cancellation or a deferred publish."""
-    blob_store = BlobStore(Path(prepared.blob_root))
-    for attachment in prepared.prepared_attachment_blobs:
-        if attachment.prepared_blob is not None:
-            blob_store.discard_prepared(attachment.prepared_blob)
+    """Retire the canonical artifact after physical preparation/publication drains."""
+    failures: list[BaseException] = []
+    for projection in prepared.projections_by_raw_id.values():
+        try:
+            projection.close()
+        except BaseException as failure:
+            failures.append(failure)
+    if prepared.prepared_artifact is not None:
+        try:
+            prepared.prepared_artifact.discard()
+        except BaseException as failure:
+            failures.append(failure)
+    if failures:
+        from builtins import BaseExceptionGroup
+
+        raise BaseExceptionGroup("membership preparation cleanup failed", failures)
 
 
 def _writer_preacquired_attachments(
     writer_archive: Any,
     prepared: PreparedIngestCohort,
-) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
-    """Queue compute-staged and compute-published blobs; only the writer reserves them."""
+) -> tuple[Mapping[object, tuple[bytes | None, int, str]], Callable[[], Iterable[ArchiveSourceBlobRef]]]:
+    """Publish the same sealed claims before opening the cohort Source transaction."""
     if prepared.classification is None or not prepared.classification.accepted_raw_ids:
-        return {}, ()
+        return {}, lambda: ()
+    artifact = prepared.prepared_artifact
+    if artifact is None:
+        raise RuntimeError("membership publication requires its canonical prepared artifact")
     if str(writer_archive.archive_root / "blob") != prepared.blob_root:
         raise RuntimeError("prepared attachment blob root does not match the writer archive")
-    publisher = writer_archive._blob_publisher
-    if publisher is None:
-        raise RuntimeError("membership publication requires a writable blob publisher")
-    accepted_raw_id = prepared.classification.accepted_raw_ids[-1]
-    accepted_session = prepared.parsed_by_raw_id[accepted_raw_id]
-    binding = next(binding for binding in prepared.member_bindings if binding.raw_id == accepted_raw_id)
-    from polylogue.storage.blob_publication import refuse_excised_attachment_blobs
-    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
-
     source_conn = writer_archive._ensure_source_conn()
-    attachments: dict[Any, tuple[bytes | None, int, str]] = {}
-    refs: list[ArchiveSourceBlobRef] = []
-    for item in prepared.prepared_attachment_blobs:
-        attachment = accepted_session.attachments[item.position]
-        if item.prepared_blob is not None:
-            hash_hex, size = publisher.queue_prepared(item.prepared_blob)
-        elif item.precomputed_blob is not None:
-            # Already published by compute, so GC-eligible until referenced:
-            # reserve it, and the publisher's flush proves it is still present.
-            hash_hex, size = publisher.adopt_published(*item.precomputed_blob)
-        else:
-            raise RuntimeError("prepared attachment has neither staged nor precomputed bytes")
-        attachments[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
-        if is_blob_hash_excised(source_conn, bytes.fromhex(hash_hex)):
-            # The flush refuses these bytes and discards the staged file; the
-            # attachment is recorded unavailable below, with no blob reference.
-            continue
-        refs.append(
-            ArchiveSourceBlobRef(
-                blob_hash=bytes.fromhex(hash_hex),
-                ref_type="attachment",
-                source_path=binding.source_path,
-                size_bytes=size,
-                acquired_at_ms=prepared.acquired_at_ms,
-                publication_receipt_id=publisher.receipt_id(hash_hex),
-            )
-        )
-    return refuse_excised_attachment_blobs(attachments, source_conn=source_conn), tuple(refs)
+    if source_conn.in_transaction:
+        raise RuntimeError("prepared attachment publication requires no pending Source transaction")
+    artifact.publish_blobs()
+    accepted_raw_id = prepared.classification.accepted_raw_ids[-1]
+    binding = next(binding for binding in prepared.member_bindings if binding.raw_id == accepted_raw_id)
+    return artifact.attachment_blobs(source_connection=source_conn), lambda: artifact.iter_attachment_refs(
+        source_path=binding.source_path,
+        acquired_at_ms=prepared.acquired_at_ms,
+        source_connection=source_conn,
+    )
 
 
 def publish_ingest_cohort(
@@ -906,7 +908,6 @@ __all__ = [
     "CohortPublication",
     "ParseRetainedRaw",
     "PreparedIngestCohort",
-    "PreparedAttachmentBlob",
     "PreparedRawCensus",
     "RawCensusBinding",
     "RawCensusStatus",
