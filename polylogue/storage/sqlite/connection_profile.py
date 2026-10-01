@@ -1128,6 +1128,12 @@ def _connect_archive_writer(
             if os.getpid() != creator_pid or threading.current_thread() is not creator_thread:
                 return sqlite3.SQLITE_DENY
             if action == sqlite3.SQLITE_TRANSACTION and first == "ROLLBACK":
+                # Cleanup stays available after failure, but cannot mint a
+                # successful receipt for a transaction it has rolled back.
+                custody = current_sql_custody()
+                permit = None if custody is None else custody.known_source_authority
+                if permit is not None:
+                    permit.authorize_source_sql(connection, action, first, second, schema, trigger)
                 return sqlite3.SQLITE_OK
             try:
                 current_metadata = source_path.stat()
@@ -1162,7 +1168,6 @@ def _connect_archive_writer(
             custody = current_sql_custody()
             if custody is None or custody.known_source_authority is not source_permit:
                 raise UnleasedWriteError("Source connection does not own its current known mutation")
-            source_permit.bind_source_connection(connection)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
@@ -1190,6 +1195,10 @@ def open_source_tier_write_connection(
     try:
         for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
             conn.execute(statement)
+        if source_permit is not None:
+            # temp_store profile setup can discard TEMP objects. Bind exact
+            # row guards only after every connection-local setting is final.
+            source_permit.bind_source_connection(conn)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
@@ -2185,6 +2194,8 @@ def open_isolated_write_connection(
     try:
         for statement in write_connection_pragma_statements(profile):
             conn.execute(statement)
+        if source_permit is not None:
+            source_permit.bind_source_connection(conn)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise

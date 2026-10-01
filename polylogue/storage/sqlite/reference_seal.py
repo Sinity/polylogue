@@ -141,6 +141,7 @@ class KnownSourceMutationPermit:
     _guard_setup: bool = field(default=False, init=False, compare=False, repr=False)
     _effects: int = field(default=0, init=False, compare=False, repr=False)
     _commit_allowed: bool = field(default=False, init=False, compare=False, repr=False)
+    _commit_attempted: bool = field(default=False, init=False, compare=False, repr=False)
     _failure: BaseException | None = field(default=None, init=False, compare=False, repr=False)
 
     @contextmanager
@@ -169,6 +170,11 @@ class KnownSourceMutationPermit:
         try:
             yield owner.require_connection()
         except BaseException as primary:
+            if self._failure is not None and self._failure is not primary:
+                # SQLite wraps exceptions from the exact-row callback. Keep
+                # the actual authority/cancellation fault at the product seam.
+                _close_failed_native_construction(owner, self._failure)
+                raise self._failure from primary
             _close_failed_native_construction(owner, primary)
             raise
         else:
@@ -229,13 +235,32 @@ class KnownSourceMutationPermit:
         if action in reads:
             return True
         if action == sqlite3.SQLITE_PRAGMA:
-            return second is None or first in {"busy_timeout", "foreign_keys", "cache_size", "mmap_size", "synchronous"}
+            if second is None:
+                return True
+            if first == "temp_store":
+                return self._connection is None
+            return first in {
+                "busy_timeout",
+                "foreign_keys",
+                "cache_size",
+                "mmap_size",
+                "synchronous",
+                "wal_autocheckpoint",
+            }
         if connection is not self._connection:
             return False
         if self._guard_setup and schema == "temp":
             return True
         if action == sqlite3.SQLITE_TRANSACTION:
-            return first == "BEGIN" or (first == "COMMIT" and self._commit_allowed)
+            if first == "ROLLBACK":
+                object.__setattr__(self, "_commit_attempted", False)
+                return True
+            if first == "COMMIT" and self._commit_allowed:
+                object.__setattr__(self, "_commit_attempted", True)
+                return True
+            return first == "BEGIN" and not self._commit_attempted
+        if self._commit_attempted:
+            return False
         if action == sqlite3.SQLITE_INSERT:
             return schema == "main" and first == self._table
         if action == sqlite3.SQLITE_UPDATE:
@@ -1113,6 +1138,7 @@ class PreparedIndexMutation:
             or permit._connection is None
             or permit._connection.in_transaction
             or not permit._commit_allowed
+            or not permit._commit_attempted
             or permit._failure is not None
         ):
             raise ReferenceSealError("Source receipt requires its actual completed dedicated transaction")
@@ -1172,6 +1198,8 @@ class PreparedIndexMutation:
         version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
         if receipt._effect_count == 0 and version_before != receipt._prior_data_version:
             raise ReferenceSealStaleError("a no-op Source transaction cannot absorb another mutation")
+        if receipt._effect_count and version_before == receipt._prior_data_version:
+            raise ReferenceSealStaleError("Source effects did not reach an actual committed transaction")
         columns_sql = ", ".join(receipt._columns)
         for expected in receipt._rows:
             expected_values, row_key = expected[:-1], expected[-1]
