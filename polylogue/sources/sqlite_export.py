@@ -356,6 +356,8 @@ def _raise_worker_error(payload: bytes) -> None:
 
 def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | None = None) -> dict[str, Any]:
     """Exchange only the declared source operations with one drained fresh process."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
+
     operation = request["operation"]
     with tempfile.TemporaryDirectory(prefix=".polylogue-sqlite-reader.") as scratch:
         request["scratch"] = scratch
@@ -376,6 +378,7 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
             result: dict[str, Any] = {}
             got_result = False
             while True:
+                check_compute_cancelled()
                 kind, size = _FRAME_HEADER.unpack(_read_exact(process.stdout, _FRAME_HEADER.size))
                 if kind == b"D":
                     if (
