@@ -10,16 +10,21 @@ import sqlite3
 import uuid
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
-from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, cast, overload
 
 import ijson
 
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
+    ArtifactKind,
+    ArtifactStreamClassification,
+    classify_artifact_stream,
+)
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import BlockType, Provider
@@ -43,7 +48,6 @@ from polylogue.sources.decoder_json import (
     drive_chunked_prompt_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
-    grok_taxonomy_witness,
     hermes_snapshot_envelope,
     iter_container_member_files,
     iter_grok_export_events,
@@ -126,7 +130,7 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 
-_ARTIFACT_VERSION = 5
+_ARTIFACT_VERSION = 6
 
 
 class _SourceChangedDuringPreparationError(ValueError):
@@ -360,19 +364,6 @@ def _atif_subagents(conn: sqlite3.Connection) -> Iterator[hermes_spans.AtifSubag
             step_count,
             partial(_atif_subagent_steps, conn, ordinal),
         )
-
-
-def _atif_subagent_witness(conn: sqlite3.Connection) -> list[JSONValue]:
-    """The first 64 subagent entries, each with at most its first 64 steps."""
-    witness: list[JSONValue] = []
-    for ordinal, fields_json, step_count in conn.execute(
-        "SELECT ordinal, fields_json, step_count FROM atif_subagent ORDER BY ordinal LIMIT 64"
-    ):
-        fields = json.loads(fields_json)
-        if step_count is not None:
-            fields["steps"] = list(islice(_atif_subagent_steps(conn, ordinal), 64))
-        witness.append(fields)
-    return witness
 
 
 def _otlp_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], str] | None:
@@ -614,12 +605,6 @@ def _stream_claude_ai_object(
     evidence_store.close()
     attachment_rows.close()
     return session
-
-
-def _classify_grok_witness(source: Path, classify: Callable[[JSONValue], bool]) -> bool:
-    with source.open("rb") as handle:
-        witness = grok_taxonomy_witness(handle)
-    return classify(witness)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1138,6 +1123,31 @@ class PreparedJsonl:
             material for *_coordinate, material in self.iter_codex_state_material() if material is not None
         )
 
+    def stream_classification(self) -> ArtifactStreamClassification | None:
+        """Read the complete original-input proof from this sealed artifact."""
+        if self.sessions_path is None:
+            return None
+        self.verify_files(full=False)
+        with _prepared_reader(self.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT provider, kind, parse_as_session, schema_eligible, priority, reason, "
+                "proved_non_session, record_count FROM prepared_classification"
+            ).fetchone()
+        if row is None:
+            return None
+        return ArtifactStreamClassification(
+            ArtifactClassification(
+                provider=Provider.from_string(row[0]),
+                kind=ArtifactKind(row[1]),
+                parse_as_session=bool(row[2]),
+                schema_eligible=bool(row[3]),
+                default_priority=int(row[4]),
+                reason=str(row[5]),
+            ),
+            proved_non_session=bool(row[6]),
+            record_count=int(row[7]),
+        )
+
     def session_sequence(self) -> PreparedSessionSequence:
         """Expose a sealed cohort without retaining its parsed sessions in Python."""
         if self.sessions_path is None:
@@ -1521,6 +1531,11 @@ def _create_artifact_tables(conn: sqlite3.Connection) -> None:
         "attachment_ordinal INTEGER NOT NULL, claim_json TEXT NOT NULL, "
         "PRIMARY KEY(session_ordinal, attachment_ordinal)) WITHOUT ROWID"
     )
+    conn.execute(
+        "CREATE TABLE prepared_classification (provider TEXT NOT NULL, kind TEXT NOT NULL, "
+        "parse_as_session INTEGER NOT NULL, schema_eligible INTEGER NOT NULL, priority INTEGER NOT NULL, "
+        "reason TEXT NOT NULL, proved_non_session INTEGER NOT NULL, record_count INTEGER NOT NULL)"
+    )
     conn.execute("CREATE TABLE prepared_codex_state (kind TEXT NOT NULL)")
     conn.execute("CREATE TABLE prepared_codex_thread (ordinal INTEGER PRIMARY KEY, metadata_json TEXT NOT NULL)")
     conn.execute("CREATE TABLE prepared_codex_spawn (ordinal INTEGER PRIMARY KEY, metadata_json TEXT NOT NULL)")
@@ -1812,18 +1827,6 @@ def prepare_jsonl_blob(
     prepare_session: Callable[[ParsedSession], ParsedSession] | None = None,
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
-    prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
-    classify_grok_export: Callable[[JSONValue], bool] | None = None,
-    classify_generic_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
-    classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_claude_ai_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_drive_chunked_object: Callable[[dict[str, JSONValue]], bool] | None = None,
-    classify_hermes_atif_object: Callable[[dict[str, JSONValue]], bool] | None = None,
-    classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_otel_object: Callable[[dict[str, JSONValue]], bool] | None = None,
-    classify_bundle_members: Callable[[Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
     source_sha256: str | None = None,
     strict_jsonl_records: bool = False,
@@ -1879,11 +1882,28 @@ def prepare_jsonl_blob(
                 )
         store = SqliteMessageStore(sessions_path)
         before_hash = source_sha256 if source_sha256 is not None else file_digest(source)
+        from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
+
+        with source.open("rb") as classification_source, ExitStack() as classification_lifetime:
+            classification_input = (
+                classification_lifetime.enter_context(
+                    jsonl_parse_input_of_handle(classification_source, check_stop=check_compute_cancelled)
+                )
+                if is_stream
+                else classification_source
+            )
+            taxonomy = classify_artifact_stream(
+                classification_input,
+                provider=provider,
+                source_path=source_path,
+                wire_format="jsonl" if is_stream else "json",
+                check_stop=check_compute_cancelled,
+            )
+        input_admitted = not taxonomy.proved_non_session
         record_container: str | None = None
         stream_prefix: str | None = None
         bundle_count = 0
         bundle_browser_captures = True
-        bundle_witnesses: list[JSONValue] = []
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
         design_envelope: dict[str, JSONValue] | None = None
@@ -1912,13 +1932,7 @@ def prepare_jsonl_blob(
             else:
                 for table in _CHATGPT_PARSER_SCRATCH_TABLES:
                     store.conn.execute(f"DROP TABLE IF EXISTS {table}")
-        if (
-            not is_stream
-            and provider is Provider.GEMINI_CLI
-            and (prepare_sessions is None or classify_gemini_object is not None)
-            and (prepare_records is None or classify_gemini_object is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.GEMINI_CLI and Path(source_path).name.lower().endswith(".json"):
             store.conn.execute(
                 "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
             )
@@ -1945,13 +1959,7 @@ def prepare_jsonl_blob(
                     gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
-        if (
-            not is_stream
-            and provider is Provider.HERMES
-            and (prepare_sessions is None or classify_hermes_object is not None)
-            and (prepare_records is None or classify_hermes_object is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.HERMES and Path(source_path).name.lower().endswith(".json"):
             with source.open("rb") as handle:
                 hermes_envelope = hermes_snapshot_envelope(handle)
             if hermes_envelope is not None and (
@@ -1960,13 +1968,7 @@ def prepare_jsonl_blob(
                 or hermes_spans.looks_like_atif_payload(hermes_envelope)
             ):
                 hermes_envelope = None
-        if (
-            not is_stream
-            and provider is Provider.GROK
-            and (prepare_sessions is None or classify_grok_export is not None)
-            and (prepare_records is None or classify_grok_export is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.GROK and Path(source_path).name.lower().endswith(".json"):
             store.conn.execute(
                 "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
             )
@@ -1985,7 +1987,6 @@ def prepare_jsonl_blob(
             not is_stream
             and provider in BUNDLE_PROVIDERS
             and prepare_sessions is None
-            and (prepare_records is None or classify_bundle_members is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
             with source.open("rb") as handle:
@@ -1995,15 +1996,13 @@ def prepare_jsonl_blob(
                 def observe_bundle_member(index: int, shape: JSONValue, witness: JSONValue | None) -> None:
                     nonlocal bundle_browser_captures
                     bundle_browser_captures = bundle_browser_captures and browser_capture.looks_like(shape)
-                    if witness is not None:
-                        bundle_witnesses.append(witness)
 
                 with source.open("rb") as handle:
                     scanned = scan_container_members(
                         handle,
                         record_container,
                         shape_keys=_BROWSER_CAPTURE_SHAPE_KEYS,
-                        witnesses=64 if classify_bundle_members is not None else 0,
+                        witnesses=0,
                         on_member=observe_bundle_member,
                     )
                 if scanned is not None:
@@ -2012,8 +2011,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}
-            and (prepare_sessions is None or classify_generic_object is not None)
-            and (prepare_records is None or classify_generic_object is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
             with source.open("rb") as handle:
@@ -2024,8 +2021,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider is Provider.CLAUDE_DESIGN
-            and (prepare_sessions is None or classify_claude_design_object is not None)
-            and (prepare_records is None or classify_claude_design_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and record_container is None
         ):
@@ -2034,8 +2029,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider is Provider.CLAUDE_AI
-            and (prepare_sessions is None or classify_claude_ai_object is not None)
-            and (prepare_records is None or classify_claude_ai_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and record_container is None
         ):
@@ -2046,8 +2039,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI}
-            and (prepare_sessions is None or classify_drive_chunked_object is not None)
-            and (prepare_records is None or classify_drive_chunked_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and generic_envelope is None
         ):
@@ -2056,8 +2047,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider is Provider.HERMES
-            and (prepare_sessions is None or classify_hermes_atif_object is not None)
-            and (prepare_records is None or classify_hermes_atif_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and hermes_envelope is None
         ):
@@ -2067,13 +2056,7 @@ def prepare_jsonl_blob(
                 with source.open("rb") as handle:
                     if not _spill_atif_subagents(handle, store.conn):
                         atif = None
-        if (
-            not is_stream
-            and provider is Provider.OTEL_GENAI
-            and (prepare_sessions is None or classify_otel_object is not None)
-            and (prepare_records is None or classify_otel_object is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.OTEL_GENAI and Path(source_path).name.lower().endswith(".json"):
             with source.open("rb") as handle:
                 otlp = _otlp_envelope(handle)
             if otlp is not None:
@@ -2084,13 +2067,7 @@ def prepare_jsonl_blob(
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            sample = tuple(
-                json.loads(row[0])
-                for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal LIMIT 64")
-            )
-            gemini_admitted = (
-                classify_gemini_object(gemini_envelope, sample) if classify_gemini_object is not None else True
-            )
+            gemini_admitted = input_admitted
             gemini_session = None
             if gemini_admitted:
                 gemini_records = (
@@ -2158,9 +2135,7 @@ def prepare_jsonl_blob(
             assert chatgpt_mapping is not None
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            chatgpt_admitted = (
-                classify_chatgpt_object(chatgpt_envelope) if classify_chatgpt_object is not None else True
-            )
+            chatgpt_admitted = input_admitted
             # The parser reads the mapping node by node from scratch, and
             # keeps its normalized messages, attachments and events there.
             session: ParsedSession | None = (
@@ -2252,19 +2227,7 @@ def prepare_jsonl_blob(
         elif hermes_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            hermes_admitted = True
-            if classify_hermes_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                hermes_admitted = classify_hermes_object(hermes_envelope, sample)
+            hermes_admitted = input_admitted
             session = None
             if hermes_admitted:
                 with source.open("rb") as handle:
@@ -2308,19 +2271,7 @@ def prepare_jsonl_blob(
         elif generic_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            generic_admitted = True
-            if classify_generic_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                generic_admitted = classify_generic_object(generic_envelope, sample)
+            generic_admitted = input_admitted
             session = None
             if generic_admitted:
                 with source.open("rb") as handle:
@@ -2362,19 +2313,7 @@ def prepare_jsonl_blob(
         elif design_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            design_admitted = True
-            if classify_claude_design_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                design_admitted = classify_claude_design_object(design_envelope, sample)
+            design_admitted = input_admitted
             session = None
             if design_admitted:
                 with source.open("rb") as handle:
@@ -2417,23 +2356,7 @@ def prepare_jsonl_blob(
         elif claude_ai_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            claude_ai_admitted = True
-            if classify_claude_ai_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "chat_messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                witness = dict(claude_ai_envelope)
-                for key in claude_ai_arrays:
-                    with source.open("rb") as handle:
-                        witness[key] = list(islice(iter_root_array_items(handle, key), 64))
-                claude_ai_admitted = classify_claude_ai_object(witness, sample)
+            claude_ai_admitted = input_admitted
             # The collecting route parses this document as a one-item bundle,
             # so its fallback identity carries that suffix.
             session = (
@@ -2488,16 +2411,7 @@ def prepare_jsonl_blob(
                         check_compute_cancelled()
                         yield normalize_ijson_stdlib_numbers(item)
 
-            drive_admitted = True
-            if classify_drive_chunked_object is not None:
-                chunk_sample: list[JSONValue] = [cast(JSONValue, item) for item in islice(drive_chunks(), 64)]
-                witness = {key: value for key, value in drive_envelope.items() if not key.startswith("__")}
-                if chunk_prefix == "chunks":
-                    witness["chunks"] = chunk_sample
-                else:
-                    prompt = witness.get("chunkedPrompt")
-                    witness["chunkedPrompt"] = {**(prompt if isinstance(prompt, dict) else {}), "chunks": chunk_sample}
-                drive_admitted = classify_drive_chunked_object(witness)
+            drive_admitted = input_admitted
             session = None
             if drive_admitted:
                 session = drive.parse_chunked_prompt_stream(
@@ -2557,12 +2471,7 @@ def prepare_jsonl_blob(
                         check_compute_cancelled()
                         yield cast(JSONValue, normalize_ijson_stdlib_numbers(item))
 
-            atif_admitted = True
-            if classify_hermes_atif_object is not None:
-                atif_witness: dict[str, JSONValue] = {**atif_envelope, "steps": list(islice(atif_steps(), 64))}
-                if atif_has_subagents:
-                    atif_witness["subagent_trajectories"] = _atif_subagent_witness(store.conn)
-                atif_admitted = classify_hermes_atif_object(atif_witness)
+            atif_admitted = input_admitted
             atif_sessions: list[ParsedSession] = []
             if atif_admitted:
                 # The dispatch route proves the whole document against the
@@ -2646,9 +2555,7 @@ def prepare_jsonl_blob(
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
             # Taxonomy decides a declared OTLP path by its rule and root
             # markers, so the witness carries the root fields, not the spans.
-            otel_admitted = otel_index.normalizable and (
-                classify_otel_object is None or classify_otel_object({**otel_envelope, otel_root_key: []})
-            )
+            otel_admitted = input_admitted and otel_index.normalizable
             session_count = 0
             for session in (
                 otel_index.sessions(new_messages=store.new_sink, new_events=store.new_event_sink)
@@ -2693,9 +2600,7 @@ def prepare_jsonl_blob(
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            grok_admitted = (
-                _classify_grok_witness(source, classify_grok_export) if classify_grok_export is not None else True
-            )
+            grok_admitted = input_admitted
             grok_member_conn = store.conn
 
             def include_grok_member(index: int) -> bool:
@@ -2782,7 +2687,7 @@ def prepare_jsonl_blob(
         elif stream_prefix is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            bundle_admitted = classify_bundle_members(bundle_witnesses) if classify_bundle_members is not None else True
+            bundle_admitted = input_admitted
             drift = BundleCandidateDrift()
             session_count = 0
             member_count = 0
@@ -2861,8 +2766,8 @@ def prepare_jsonl_blob(
                     Path(source_path).name,
                     fail_on_decode_error=strict_jsonl_records or provider is Provider.UNKNOWN,
                 )
-                if prepare_records is not None:
-                    records = prepare_records(records)
+                if not input_admitted:
+                    records = iter(())
                 if is_stream:
                     sessions = parse_stream_payload(
                         provider,
@@ -2904,6 +2809,20 @@ def prepare_jsonl_blob(
                 enrichment_digest=enrichment_digest,
                 enrichment_index_path=enrichment_index_path,
             )
+        classification = taxonomy.classification
+        store.conn.execute(
+            "INSERT INTO prepared_classification VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                classification.provider.value,
+                classification.kind.value,
+                int(classification.parse_as_session),
+                int(classification.schema_eligible),
+                classification.default_priority,
+                classification.reason,
+                int(taxonomy.proved_non_session),
+                taxonomy.record_count,
+            ),
+        )
         if publication_publisher is not None:
             _prepare_attachment_publications(store, publication_publisher, artifact_directory)
             _prepare_sidecar_publications(store, publication_publisher, artifact_directory)

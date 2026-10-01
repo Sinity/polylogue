@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -49,6 +49,100 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.source_builders import ChatGPTExportBuilder
+
+
+@pytest.mark.parametrize("late_conversation", [False, True])
+def test_prepared_stream_classification_uses_records_after_old_sample(tmp_path: Path, late_conversation: bool) -> None:
+    source = tmp_path / "session.jsonl"
+    payload = (json.dumps({"type": "file-history-snapshot"}) + "\n") * 65
+    if late_conversation:
+        payload += (
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "message",
+                    "sessionId": "session",
+                    "message": {"role": "user", "content": "hello"},
+                }
+            )
+            + "\n"
+        )
+    source.write_text(payload, encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_CODE.value,
+        "session",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None
+        proof = artifact.stream_classification()
+        assert proof is not None
+        assert proof.proved_non_session is not late_conversation
+        sessions = list(artifact.iter_sessions())
+        assert len(sessions) == int(late_conversation)
+        if sessions:
+            assert [message.text for message in sessions[0].messages] == ["hello"]
+    finally:
+        artifact.discard()
+
+
+@pytest.mark.parametrize("terminated", [False, True])
+def test_prepared_classification_obeys_parser_tail_boundary(tmp_path: Path, terminated: bool) -> None:
+    source = tmp_path / "session.jsonl"
+    payload = (json.dumps({"type": "file-history-snapshot"}) + "\n") * 65
+    source.write_text(payload + '{"broken":' + ("\n" if terminated else ""), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_CODE.value,
+        "session",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        if terminated:
+            assert artifact.error is not None
+            assert artifact.sessions_path is None
+        else:
+            assert artifact.error is None
+            proof = artifact.stream_classification()
+            assert proof is not None and proof.proved_non_session
+            assert proof.record_count == 65
+            assert list(artifact.iter_sessions()) == []
+    finally:
+        artifact.discard()
+
+
+def test_prepared_beads_refusal_keeps_explicit_proof_with_unknown_kind(tmp_path: Path) -> None:
+    from polylogue.archive.artifact_taxonomy import ArtifactKind
+
+    source = tmp_path / "interactions.jsonl"
+    source.write_text(
+        json.dumps(
+            {"id": "interaction", "kind": "field_change", "created_at": "synthetic", "issue_id": "task", "extra": {}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.UNKNOWN.value,
+        "interaction",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None
+        proof = artifact.stream_classification()
+        assert proof is not None and proof.proved_non_session
+        assert proof.classification.kind is ArtifactKind.UNKNOWN
+        assert list(artifact.iter_sessions()) == []
+    finally:
+        artifact.discard()
 
 
 def _prepared_artifact(tmp_path: Path) -> tuple[PreparedJsonl, MessageOwnerCoordinate]:
@@ -459,11 +553,10 @@ def test_claude_design_object_stream_matches_direct_parser_and_shard(
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        classify_claude_design_object=lambda envelope, sample: envelope["project"] is None and len(sample) == 64,
     )
     assert artifact.error is None
     assert artifact.positive_evidence_filtered
-    assert first_written_after == 65
+    assert first_written_after == 1
     [actual] = artifact.iter_sessions()
     assert isinstance(actual.messages, SqliteMessageSink)
     assert isinstance(actual.session_events, SqliteSessionEventSink)
@@ -745,8 +838,6 @@ def test_hermes_snapshot_retained_callbacks_discard_corrupt_suffix(tmp_path: Pat
         is_stream=False,
         shard_directory=str(directory),
         prepare_sessions=lambda sessions: sessions,
-        prepare_records=lambda records: records,
-        classify_hermes_object=lambda _envelope, _messages: True,
     )
     assert artifact.error is not None
     assert artifact.sessions_path is None
@@ -767,12 +858,6 @@ def test_hermes_snapshot_retained_callbacks_keep_stream_route(tmp_path: Path, mo
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
-    witnesses: list[tuple[dict[str, JSONValue], list[JSONValue]]] = []
-
-    def classify(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-        witnesses.append((envelope, list(messages)))
-        return True
-
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -781,11 +866,12 @@ def test_hermes_snapshot_retained_callbacks_keep_stream_route(tmp_path: Path, mo
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
         prepare_sessions=lambda sessions: sessions,
-        prepare_records=lambda records: records,
-        classify_hermes_object=classify,
     )
     assert artifact.error is None
-    assert witnesses == [({"session_id": "retained-hermes", "platform": "linux"}, record["messages"])]
+    proof = artifact.stream_classification()
+    assert proof is not None and not proof.proved_non_session
+    assert proof.classification.provider is Provider.HERMES
+    assert proof.record_count == 1
     assert [session.title for session in artifact.iter_sessions()] == ["retained-hermes"]
     artifact.discard()
 
@@ -1482,7 +1568,7 @@ def test_gemini_cli_turnless_stub_accepts_sidecar_resolver(tmp_path: Path) -> No
     session.unit_accounting.assert_conserved()
 
 
-def test_gemini_cli_object_honors_direct_record_transform(tmp_path: Path) -> None:
+def test_gemini_cli_complete_object_preserves_its_declared_messages(tmp_path: Path) -> None:
     source = tmp_path / "session.json"
     source.write_text(
         json.dumps({"sessionId": "process-1", "kind": "chat", "messages": [{"type": "user", "content": "Hi"}]}),
@@ -1495,10 +1581,11 @@ def test_gemini_cli_object_honors_direct_record_transform(tmp_path: Path) -> Non
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        prepare_records=lambda _records: iter(()),
     )
     assert artifact.error is None
-    assert list(artifact.iter_sessions()) == []
+    [session] = artifact.iter_sessions()
+    assert session.provider_session_id == "process-1"
+    assert [message.text for message in session.messages] == ["Hi"]
     artifact.discard()
 
 
@@ -1552,12 +1639,10 @@ def test_generic_retained_callbacks_keep_bounded_message_preparation(
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        prepare_records=lambda records: records,
         prepare_sessions=finalize,
-        classify_generic_object=lambda _envelope, messages: bool(messages),
     )
     assert artifact.error is None
-    assert first_written_after == 65
+    assert first_written_after == 1
     assert finalized == ["retained-generic"]
     [actual] = artifact.iter_sessions()
     assert (actual.provider_session_id, actual.content_hash) == (
@@ -2186,7 +2271,6 @@ def test_whole_json_preparation_transforms_and_indexes_each_session_without_iter
         "fallback",
         is_stream=False,
         shard_directory=str(tmp_path / "prepared"),
-        prepare_records=lambda items: items,
         prepare_session=transform,
     )
     assert artifact.error is None

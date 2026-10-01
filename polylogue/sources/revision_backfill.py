@@ -21,14 +21,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial, wraps
 from io import BytesIO
-from itertools import chain, islice
 from pathlib import Path
 from typing import Any, BinaryIO, Final, Literal, cast
 
 import ijson
 
 from polylogue import logging as _polylogue_logging
-from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
+from polylogue.archive.artifact_taxonomy import ArtifactStreamClassification, classify_artifact_stream
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -87,7 +86,6 @@ from polylogue.sources.live.batch_support import (
     jsonl_parse_prefix_size,
     jsonl_parse_prefix_size_of_handle,
 )
-from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import (
@@ -747,12 +745,6 @@ def prepare_retained_jsonl_artifact(
                 and provider in BUNDLE_PROVIDERS
                 and Path(source_path).name.lower().endswith(".json")
             )
-            stream_grok = (
-                provider is Provider.GROK
-                and not is_stream_record_provider(source_path, provider)
-                and Path(source_path).name.lower().endswith(".json")
-                and get_assembly_spec(provider) is None
-            )
 
             # Bundle providers have source-scoped assembly evidence. Codex's
             # title enrichment needs the cohort's session IDs and is not a
@@ -797,67 +789,6 @@ def prepare_retained_jsonl_artifact(
                 assert sidecar_data_loaded
                 return spec.enrich_session(normalized, sidecar_data_cache)
 
-            def classify_records(records: Iterable[JSONValue]) -> Iterable[JSONValue]:
-                source = iter(records)
-                sample = tuple(islice(source, 64))
-                if _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None:
-                    return iter(())
-                return chain(sample, source)
-
-            def classify_bundle_members(witnesses: Sequence[JSONValue]) -> bool:
-                # The member scan keeps the first 64 members, each container
-                # field cut to 64 entries, as the bounded record sample.
-                return _declared_non_session_artifact_classification(provider, source_path, sample=witnesses) is None
-
-            def classify_grok_export(witness: JSONValue) -> bool:
-                # The root fields, with containers cut to their first 64
-                # entries, are the bounded record sample.
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_generic_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_hermes_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                taxonomy_witness = envelope.get("__taxonomy_witness")
-                witness: JSONValue = {
-                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
-                    **(taxonomy_witness if isinstance(taxonomy_witness, dict) else {}),
-                    "messages": list(messages),
-                }
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_claude_design_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_claude_ai_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {
-                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
-                    "chat_messages": list(messages),
-                }
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_drive_chunked_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_hermes_atif_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_otel_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
-                mapping = envelope["mapping"]
-                assert isinstance(mapping, Mapping)
-                sample_mapping = dict(islice(mapping.items(), 64))
-                witness = {**envelope, "mapping": sample_mapping}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_gemini_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
             parse_prefix_size: int | None = None
             if is_jsonl_source_path(source_path):
                 with blob_path.open("rb") as tail_handle:
@@ -882,18 +813,6 @@ def prepare_retained_jsonl_artifact(
                 ),
                 prepare_session=prepare_bundle_session if prepare_per_session else None,
                 prepare_sessions=None if prepare_per_session else finalize,
-                prepare_records=classify_records,
-                classify_grok_export=classify_grok_export if stream_grok else None,
-                classify_generic_object=classify_generic_object,
-                classify_hermes_object=classify_hermes_object,
-                classify_claude_design_object=classify_claude_design_object,
-                classify_claude_ai_object=classify_claude_ai_object,
-                classify_drive_chunked_object=classify_drive_chunked_object,
-                classify_hermes_atif_object=classify_hermes_atif_object,
-                classify_chatgpt_object=classify_chatgpt_object,
-                classify_gemini_object=classify_gemini_object,
-                classify_otel_object=classify_otel_object,
-                classify_bundle_members=classify_bundle_members,
                 # The publisher recomputes this digest from the retained
                 # evidence for every artifact, so a pass that enriched nothing
                 # (no assembly spec, or no admitted session) must bind the
@@ -1391,6 +1310,7 @@ def _census_historical_revision_evidence(
                     provider=provider,
                     source_path=_source_path,
                     source_index=source_index,
+                    stream_classification=artifact.stream_classification(),
                     manage_transaction=False,
                 )
                 if provider is not Provider.UNKNOWN:
@@ -3531,80 +3451,6 @@ def _prepared_shard_path(prepared_inputs: Mapping[str, PreparedRetainedInput], r
     return artifact.shard_path
 
 
-def _declared_non_session_artifact_classification(
-    provider: Provider,
-    source_path: str,
-    *,
-    sample: Sequence[object] = (),
-) -> ArtifactClassification | None:
-    """Classify a declared non-session raw revision before session admission.
-
-    polylogue-b508: retained raw revisions include OriginSpec-declared fact
-    artifacts (``agent-*.meta.json`` sidecars, ``workflows/*.json`` run
-    snapshots, ``subagents/workflows/*/journal.jsonl``, ``adopt.json``
-    manifests) admitted as raw authority by ``sources/live/batch.py`` even
-    though their ``parse_policy`` is ``"fact"``, never ``"session"`` --
-    intentional, so the retained bytes stay durable raw evidence. The live
-    daemon's ingest path (``ingest_worker.py``/``batch.py``) already consults
-    this same OriginSpec rule before parsing and refuses to session-parse
-    these; this replay engine is a SEPARATE parse chokepoint that did not,
-    and would silently recreate exactly the ``<agent>.meta`` phantom sessions
-    that fix is meant to eliminate on every future rebuild. A positive JSONL
-    session proof is the one deliberate exception, matching the live route:
-    a source-only outage may retain bytes before it can inspect a path that
-    normally carries fact evidence, and recovery must not make that filename
-    permanently override later decoded session authority.
-
-    polylogue-9ykn: a path-declared rule is only half of the live path's
-    gate. ``pipeline/services/ingest_worker.py`` also runs every sampled
-    JSONL payload through ``archive.artifact_taxonomy.classify_artifact`` --
-    the richer, CONTENT-based classifier that catches a non-conversational
-    record sitting under a watched Claude Code directory with no matching
-    path rule at all (e.g. a third-party analysis index such as
-    ``conversation_relationships.jsonl`` that happens to satisfy the loose
-    per-record shape check). Without the same content check here, replay
-    (this module) would silently resurrect exactly the phantom sessions the live gate
-    now refuses, on every future rebuild -- the two "single chokepoints"
-    disagreeing is the location-as-identity defect recurring at a second
-    layer. ``sample`` -- the first up to 64 decoded records, mirroring the
-    live path's own sample bound (``ingest_worker.py``'s
-    ``_sample_jsonl_payload_with_detail(..., max_samples=64)``) -- is
-    classified only when no path rule already decided the question; an
-    empty ``sample`` (the default) preserves the original path-only
-    behavior exactly, so every existing caller is unaffected until it opts
-    in.
-    """
-    from polylogue.archive.artifact_taxonomy import classify_artifact
-
-    rule = artifact_rule_for_path(provider, source_path)
-    if rule is not None and rule.parse_policy != "session" and not sample:
-        classification = classify_artifact([], provider=provider, source_path=source_path)
-        if not classification.parse_as_session:
-            return classification
-    if not sample:
-        return None
-    from polylogue.core.json import JSONValue
-
-    # ``sample`` records come from ``_iter_json_stream`` (this module's own
-    # decode path, typed ``JsonValue`` -- ``core/query_identity.py``'s
-    # structurally-equivalent but nominally distinct alias) rather than
-    # ``classify_artifact``'s own ``core.json.JSONValue``; both describe the
-    # same decoded-JSON shape ijson/json.loads ever produce, so the cast is
-    # a type-identity bridge, not a real behavior narrowing.
-    classification = classify_artifact(cast(list[JSONValue], list(sample)), provider=provider, source_path=source_path)
-    # ``UNKNOWN`` means the taxonomy cannot decide, not that the payload is
-    # a proved sidecar.  Codex append deltas intentionally omit the
-    # session_meta header and become materializable only after the live
-    # revision layer supplies its recorded native-id hint.  Treating that
-    # undecided partial stream as an artifact skips revision binding and
-    # silently loses its append frontier.  Keep the raw evidence on the
-    # normal parser path, which either uses the hint or records a typed parse
-    # failure; only a positive non-session cohort may bypass session parsing.
-    if classification.kind is ArtifactKind.UNKNOWN:
-        return None
-    return classification if not classification.parse_as_session else None
-
-
 LEGACY_PAGE_IMAGE_CENSUS_DETAIL = (
     "retained legacy SQLite page image; no current parser reads this material and it is "
     "not a logical export, so it produces no session"
@@ -3685,20 +3531,15 @@ def _persist_terminal_non_session_artifact(
     provider: Provider,
     source_path: str,
     source_index: int,
+    stream_classification: ArtifactStreamClassification | None,
     manage_transaction: bool,
 ) -> bool:
-    """Record replay-confirmed source-only artifact authority once.
-
-    Replay reaches this function only after the real parser has consumed the
-    complete stream and produced no conversational session. The terminal
-    receipt therefore follows that one authoritative parse result instead of
-    reclassifying the raw through a second, weaker JSONL shape scan.
-    """
-    if provider is Provider.UNKNOWN:
+    """Persist the complete classification bound to the sealed retained input."""
+    if stream_classification is None or not stream_classification.proved_non_session:
         return False
-    classification = _declared_non_session_artifact_classification(provider, source_path)
-    if classification is None:
-        return False
+    classification = stream_classification.classification
+    if classification.provider is not provider:
+        raise RetainedPreparationRetryableError("prepared artifact classification provider changed")
     origin = origin_from_provider(provider)
     observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
     upsert_raw_artifact(
@@ -3731,16 +3572,6 @@ def _persist_terminal_non_session_artifact(
     return True
 
 
-def _is_declared_non_session_artifact(
-    provider: Provider,
-    source_path: str,
-    *,
-    sample: Sequence[object] = (),
-) -> bool:
-    """Return whether this raw revision must not be session-parsed on replay."""
-    return _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None
-
-
 def _parse_one(
     provider: Provider,
     payload: bytes,
@@ -3751,12 +3582,6 @@ def _parse_one(
     archive_root: Path | None = None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
-    # polylogue-9ykn: replay must apply the same positive-conversational-
-    # evidence gate the live ingest paths apply, on top of the path/shape
-    # gate above (``_is_declared_non_session_artifact``, polylogue-6mpy) --
-    # a source can pass that gate (its shape IS a recognized Claude Code
-    # JSONL file with no path rule) yet still parse to zero real messages
-    # (e.g. a file containing only file-history-snapshot records).
     return require_positive_conversational_evidence(
         _parse_one_raw(
             provider,
@@ -3868,19 +3693,27 @@ def _parse_one_raw(
         # non-session evidence instead: no session, no abort, and a receipt
         # that still names what the material was.
         return []
-    rule = artifact_rule_for_path(provider, source_path)
-    declared_path_session_evidence = False
-    if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):
-        from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+    from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
 
-        declared_path_session_evidence = jsonl_session_artifact(payload, provider=provider) is not None
+    with BytesIO(payload) as input_handle, ExitStack() as input_lifetime:
+        input_is_jsonl = is_jsonl_source_path(source_path)
+        classified_input = (
+            input_lifetime.enter_context(jsonl_parse_input_of_handle(input_handle, check_stop=check_compute_cancelled))
+            if input_is_jsonl
+            else input_handle
+        )
+        classification = classify_artifact_stream(
+            classified_input,
+            provider=provider,
+            source_path=source_path,
+            wire_format="jsonl" if input_is_jsonl else "json",
+            check_stop=check_compute_cancelled,
+        )
+    if classification.proved_non_session:
+        return []
     sidecar_resolver = _retained_sidecar_resolver(archive_root)
     if is_stream_record_provider(source_path, str(provider)):
         records = _retained_jsonl_records(payload, source_name, source_path)
-        if not declared_path_session_evidence and _is_declared_non_session_artifact(
-            provider, source_path, sample=records[:64]
-        ):
-            return []
         return parse_stream_payload(
             provider,
             records,
@@ -3890,10 +3723,6 @@ def _parse_one_raw(
             sidecar_resolver=sidecar_resolver,
         )
     records = _retained_jsonl_records(payload, source_name, source_path)
-    if not declared_path_session_evidence and _is_declared_non_session_artifact(
-        provider, source_path, sample=records[:64]
-    ):
-        return []
     return parse_payload(
         provider,
         records,
