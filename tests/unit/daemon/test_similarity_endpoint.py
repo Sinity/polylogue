@@ -477,7 +477,7 @@ class TestSimilarEndpoint:
         assert payload["reason"] is None
 
     def test_unresolvable_embedding_hits_report_inconsistent_not_ready(
-        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Neighbors that match no indexed message are a broken join, not "nothing similar".
 
@@ -490,22 +490,23 @@ class TestSimilarEndpoint:
         _enable_embeddings(monkeypatch)
         seed_session_id, _embeddings_db, _mapping = _seed_ready_similarity_archive()
 
-        from polylogue.storage import search_providers
         from polylogue.storage.embeddings.identity import EmbeddingRecipe
         from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
 
-        # Pin the vector projection before the index replacement, so a stale
-        # operation snapshot still returns neighbors that the new index lacks.
-        with sqlite3.connect(_index_db()) as conn:
-            conn.execute("PRAGMA journal_mode = WAL")
-        snapshot = open_vector_read_snapshot(
-            embeddings_path=_embeddings_db,
-            index_path=_index_db(),
-            recipe=EmbeddingRecipe.current(model="voyage-4-lite", dimensions=EMBEDDING_DIMENSION),
-        )
-        request.addfinalizer(snapshot.close)
-        provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=snapshot)
-        monkeypatch.setattr(search_providers, "create_vector_provider", lambda *args, **kwargs: provider)
+        pinned_index = archive_root() / "pinned-index.db"
+        with sqlite3.connect(_index_db()) as current, sqlite3.connect(pinned_index) as pinned:
+            current.backup(pinned)
+
+        def pinned_connection(self: SqliteVecProvider) -> sqlite3.Connection:
+            return open_vector_read_snapshot(
+                embeddings_path=_embeddings_db,
+                index_path=pinned_index,
+                recipe=EmbeddingRecipe.current(model="voyage-4-lite", dimensions=EMBEDDING_DIMENSION),
+            )
+
+        # The vector reader retains a former projection while the ranking join
+        # addresses the replacement index. Both reads use the production SQL.
+        monkeypatch.setattr(SqliteVecProvider, "_get_read_connection", pinned_connection)
         # Break the join the way a reindex would: keep the vectors, drop the rows
         # they point at.
         with sqlite3.connect(archive_root() / "index.db") as conn:

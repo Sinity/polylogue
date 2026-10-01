@@ -45,13 +45,12 @@ from pathlib import Path
 from typing import Final, cast
 
 from polylogue.config import load_polylogue_config
-from polylogue.core.errors import DatabaseError
+from polylogue.core.errors import VectorReadUnavailableError
 from polylogue.core.sqlite_introspection import table_exists
-from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
 from polylogue.daemon.status import open_readonly_connection
+from polylogue.operations.vector_reads import read_retained_vectors
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecUnavailableError
 
 # Hard server-side cap on requested result count. A pathological client
 # asking for ``limit=10**6`` still receives at most this many rows.
@@ -129,19 +128,13 @@ def _build_archive_similar_payload(
             envelope["limit"] = bounded_limit
             return envelope
 
-        try:
+        def read() -> dict[str, object]:
             embeddings_db = archive_root_path / "embeddings.db"
             if not embeddings_db.exists():
-                envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
-                envelope["session_id"] = session_id
-                envelope["limit"] = bounded_limit
-                return envelope
+                raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
             with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
                 if not table_exists(conn, "message_embeddings"):
-                    envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
-                    envelope["session_id"] = session_id
-                    envelope["limit"] = bounded_limit
-                    return envelope
+                    raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
 
             from polylogue import Polylogue
             from polylogue.api.sync.bridge import run_coroutine_sync
@@ -153,22 +146,12 @@ def _build_archive_similar_payload(
                         limit=bounded_limit,
                     )
 
-            query_result = run_coroutine_sync(query())
-        except (DatabaseError, ValueError, sqlite3.Error, OSError) as exc:
-            # "not_embedded" is a measured negative content fact. Only a
-            # condition that actually proves absence may be reported as one:
-            # retryable contention and unreadable storage are typed
-            # unavailable, because the question was never answered.
-            cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
-            if is_transient_sqlite_lock(exc) or is_transient_sqlite_lock(cause):
-                status, reason = "unavailable", "sqlite_contention"
-            elif is_corrupt_sqlite_database(exc) or is_corrupt_sqlite_database(cause):
-                status, reason = "unavailable", "embeddings_db_unreadable"
-            elif isinstance(exc, SqliteVecUnavailableError):
-                status, reason = "unavailable", "sqlite_vec_not_loaded"
-            else:
-                status, reason = "unavailable", "embedding_read_failed"
-            envelope = _empty_envelope(status, reason=reason)
+            return run_coroutine_sync(query())
+
+        try:
+            query_result = read_retained_vectors(read)
+        except VectorReadUnavailableError as exc:
+            envelope = _empty_envelope("unavailable", reason=exc.reason)
             envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope

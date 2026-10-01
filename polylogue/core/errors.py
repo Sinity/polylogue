@@ -45,6 +45,18 @@ class DatabaseError(PolylogueError):
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
+class VectorReadUnavailableError(DatabaseError):
+    """Retained vector evidence could not answer a read, with its typed reason."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        self.reason = reason
+        super().__init__(message)
+
+
+class VectorRuntimeUnavailableError(DatabaseError):
+    """The local vector extension could not be loaded."""
+
+
 FIRST_RUN_INDEX_GUIDANCE = (
     "no archive exists at this root yet: run `polylogue init` to detect sources, then `polylogued run` "
     "to build the archive (`polylogue import PATH` adds an export while it runs); to read an existing "
@@ -240,4 +252,6 @@ __all__ = [
     "SchemaSkew",
     "SchemaSkewError",
     "UnsupportedInsightFilterError",
+    "VectorReadUnavailableError",
+    "VectorRuntimeUnavailableError",
 ]
