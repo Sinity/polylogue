@@ -29,6 +29,7 @@ _WRITE_TARGET = re.compile(
     rf"({_QUALIFIED_IDENTIFIER})(?=\s|\(|;|$)"
 )
 _QUOTED_TOKEN = re.compile(r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]""")
+_SQL_TOKEN_OR_COMMENT = re.compile(rf"{_QUOTED_TOKEN.pattern}|/\*[\s\S]*?(?:\*/|$)|--[^\r\n]*")
 _BOUND_VALUE = r"(?:\?|\d+|(?:new|old)\.\w+)"
 _BOUND_VALUES = rf"{_BOUND_VALUE}(?:\s*,\s*{_BOUND_VALUE})*"
 
@@ -69,7 +70,11 @@ def _database_name(database: object) -> str:
 
 
 def _normalize_sql(sql: str) -> str:
-    return _SQL_SPACE.sub(" ", sql).strip().lower()
+    # SQLite treats genuine comments as whitespace, including between header
+    # keywords and qualified target slots. Quoted tokens own their contents:
+    # comment-looking bytes there must not eat a later operation or predicate.
+    uncommented = _SQL_TOKEN_OR_COMMENT.sub(lambda token: " " if token[0].startswith(("/*", "--")) else token[0], sql)
+    return _SQL_SPACE.sub(" ", uncommented).strip().lower()
 
 
 def _mentions_derived_surface(sql: str) -> bool:

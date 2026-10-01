@@ -30,7 +30,26 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from tests.infra.growth_budgets import GrowthObservation
-from tests.infra.sqlite_work_counter import sqlite_work_counter
+from tests.infra.sqlite_work_counter import mutating_statements, sqlite_work_counter
+
+_COMMENTED_REFRESHES = {
+    "leading-block": '/* refresh */ UPDATE main."action_pairs" SET tool_name=tool_name',
+    "leading-line": "-- refresh\nUPDATE action_pairs SET tool_name=tool_name",
+    "update-target": 'UPDATE /* refresh */ main."action_pairs" SET tool_name=tool_name',
+    "update-qualified": 'UPDATE main /* refresh */ . /* refresh */ "action_pairs" SET tool_name=tool_name',
+    "update-conflict": "UPDATE /* refresh */ OR /* refresh */ IGNORE /* refresh */ action_pairs SET tool_name=tool_name",
+    "delete-from": "DELETE /* refresh */ FROM action_pairs",
+    "delete-target": "DELETE FROM /* refresh */ action_pairs",
+    "insert-into": "INSERT /* refresh */ INTO messages_fts(messages_fts) VALUES('delete-all')",
+    "insert-target": "INSERT INTO /* refresh */ messages_fts(messages_fts) VALUES('delete-all')",
+    "insert-conflict": "INSERT /* refresh */ OR /* refresh */ REPLACE /* refresh */ INTO /* refresh */ messages_fts(messages_fts) VALUES('delete-all')",
+    "replace-into": "REPLACE /* refresh */ INTO /* refresh */ messages_fts(rowid, text) SELECT rowid, search_text FROM blocks WHERE search_text != ''",
+    "drop-table": "DROP /* refresh */ TABLE action_pairs",
+    "drop-target": "DROP TABLE /* refresh */ main.action_pairs",
+    "fts-control": "INSERT INTO messages_fts /* refresh */ (messages_fts) /* refresh */ VALUES('delete-all')",
+    "cte": "WITH /* refresh */ all_rows AS (SELECT rowid, search_text FROM blocks WHERE search_text != '') /* refresh */ INSERT /* refresh */ OR REPLACE INTO messages_fts(rowid, text) SELECT rowid, search_text FROM all_rows",
+    "quoted-literal": "UPDATE action_pairs SET tool_name='/* keep */ -- keep ''quoted'' UPDATE action_pairs'",
+}
 
 
 def _run(
@@ -211,6 +230,7 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
         "qualified-main",
         "qualified-temp",
         "mixed-case",
+        *[f"comment-{name}" for name in _COMMENTED_REFRESHES],
     ],
 )
 def test_incremental_law_rejects_once_per_pass_archive_refresh(
@@ -232,7 +252,29 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             count = archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0]
             assert count == 9
-            if mutation.startswith("quoted-"):
+            if mutation.startswith("comment-"):
+                name = mutation.removeprefix("comment-")
+                changes = archive._conn.total_changes
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                archive._conn.execute(_COMMENTED_REFRESHES[name])
+                if name.startswith("drop-"):
+                    assert (
+                        archive._conn.execute(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE name='action_pairs'"
+                        ).fetchone()[0]
+                        == 0
+                    )
+                else:
+                    assert archive._conn.total_changes > changes
+                    if name.startswith("delete-"):
+                        assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+                    elif name.startswith("insert-") or name == "fts-control":
+                        assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+                    elif name == "quoted-literal":
+                        assert [
+                            row[0] for row in archive._conn.execute("SELECT DISTINCT tool_name FROM action_pairs")
+                        ] == ["/* keep */ -- keep 'quoted' UPDATE action_pairs"]
+            elif mutation.startswith("quoted-"):
                 _, operation, quote = mutation.split("-")
                 opening, closing = {
                     "double": ('"', '"'),
@@ -425,6 +467,76 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
     assert observation.metric("archive_wide_derived_statements") > 0
     with pytest.raises(AssertionError):
         _assert_component_shape([observation])
+
+
+def test_commented_scoped_writes_preserve_scope_and_quoted_evidence(tmp_path: Path) -> None:
+    """Removing quote-aware comment handling miscounts these real writes."""
+    root = tmp_path / "commented-scopes"
+    _seed_raw_archive(root, 2, prefix="comments")
+    _materialize_all(root, 2)
+    with sqlite_work_counter(step_interval=1) as counter:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            session_id = archive._conn.execute("SELECT session_id FROM action_pairs LIMIT 1").fetchone()[0]
+            archive._conn.execute("CREATE TEMP TABLE \"action_pairs/* keep */ -- keep\" AS SELECT 'before' AS value")
+            value = "/* keep */ -- keep 'quoted'"
+            changes = archive._conn.total_changes
+            assert (
+                archive._conn.execute(
+                    "/* scope */ UPDATE /* scope */ action_pairs SET tool_name=? WHERE /* scope */ session_id = ?",
+                    (value, session_id),
+                ).rowcount
+                > 0
+            )
+            assert archive._conn.total_changes > changes
+            assert (
+                archive._conn.execute(
+                    "SELECT tool_name FROM action_pairs WHERE session_id = ?", (session_id,)
+                ).fetchone()[0]
+                == value
+            )
+            changes = archive._conn.total_changes
+            assert (
+                archive._conn.execute(
+                    "DELETE /* scope */ FROM action_pairs WHERE session_id = ?", (session_id,)
+                ).rowcount
+                == 1
+            )
+            assert archive._conn.total_changes > changes
+            rowid = archive._conn.execute("SELECT MAX(rowid) FROM messages_fts").fetchone()[0] + 1
+            changes = archive._conn.total_changes
+            archive._conn.execute("INSERT /* scope */ INTO messages_fts(rowid, text) VALUES(?, ?)", (rowid, value))
+            assert archive._conn.total_changes > changes
+            assert (
+                archive._conn.execute("SELECT COUNT(*) FROM messages_fts WHERE rowid = ?", (rowid,)).fetchone()[0] == 1
+            )
+            sql = (
+                insert_session_rows_sql(1)
+                .replace("WITH", "WITH /* scope */", 1)
+                .replace("INSERT OR REPLACE INTO", "INSERT /* scope */ OR REPLACE /* scope */ INTO /* scope */", 1)
+            )
+            changes = archive._conn.total_changes
+            archive._conn.execute(sql, (session_id,))
+            assert archive._conn.total_changes > changes
+            for opening, closing in (('"', '"'), ("[", "]"), ("`", "`"), ("'", "'")):
+                table = f"{opening}action_pairs/* keep */ -- keep{closing}"
+                assert archive._conn.execute(f"UPDATE {table} SET value='after'").rowcount == 1
+            assert archive._conn.execute('SELECT value FROM "action_pairs/* keep */ -- keep"').fetchone()[0] == "after"
+            assert counter.metric("archive_wide_derived_statements") == 0
+            assert counter.metric("derived_vm_steps") > 0
+            archive.commit()
+    with mutating_statements() as recorded:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            changes = archive._conn.total_changes
+            assert (
+                archive._conn.execute(
+                    "-- refresh\nUPDATE /* refresh */ action_pairs SET tool_name='/* keep */ -- keep'"
+                ).rowcount
+                == 1
+            )
+            assert archive._conn.total_changes > changes
+            archive.commit()
+    assert len(recorded) == 1
+    assert recorded[0] == ("index", "update action_pairs set tool_name='/* keep */ -- keep'")
 
 
 @pytest.mark.timeout(0)
