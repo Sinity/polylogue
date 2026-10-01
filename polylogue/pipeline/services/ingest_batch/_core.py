@@ -3098,6 +3098,7 @@ def _prepare_ingest_unit_sync(
     reference_seal: PreparedIndexMutation,
 ) -> _PreparedIngestUnit | None:
     """Finish one parser result and Drive comparison with all readers closed."""
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
     from polylogue.storage.sqlite.queries.mappers import _row_to_raw_session
     from polylogue.storage.sqlite.write_lease import current_write_lease
 
@@ -3154,7 +3155,9 @@ def _prepare_ingest_unit_sync(
             # This private scratch relation lets the existing Drive
             # governance code calculate its exact updates without an archive writer.
             # Only the revision column delta survives; no SQL or connection escapes.
-            with closing(sqlite3.connect(":memory:")) as scratch:
+            with scratch_connection_context(prefix="ingest-drive-cohort-", filename="cohort.db") as scratch:
+                scratch.execute("PRAGMA journal_mode = DELETE")
+                scratch.execute("PRAGMA temp_store = FILE")
                 for snapshot in snapshots:
                     columns = ",".join(_quote_identifier(column) for column in snapshot.columns)
                     scratch.execute(f"CREATE TABLE {snapshot.table} ({columns})")
@@ -3658,6 +3661,8 @@ async def process_ingest_batch(
                 result,
                 progress_callback,
                 force_write=force_write,
+                ingest_result_chunk_size=ingest_result_chunk_size,
+                suspend_fts_triggers=suspend_fts_triggers,
                 fresh_build=fresh_build,
             )
         return last_observation
