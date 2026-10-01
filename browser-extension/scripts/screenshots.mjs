@@ -111,11 +111,22 @@ async function main() {
           deviceScaleFactor: 2,
         });
         const page = await context.newPage();
-        const pageErrors = [];
+        const loadErrors = [];
         const scriptFailure = new Promise((_, reject) => {
-          page.on("pageerror", (error) => {
-            pageErrors.push(error);
+          const fail = (error) => {
+            loadErrors.push(error);
             reject(error);
+          };
+          page.on("pageerror", fail);
+          page.on("requestfailed", (request) => {
+            if (request.resourceType() === "script") {
+              fail(new Error(`popup_script_load_failed: ${request.url()}: ${request.failure()?.errorText || "unknown"}`));
+            }
+          });
+          page.on("response", (response) => {
+            if (response.request().resourceType() === "script" && response.status() >= 400) {
+              fail(new Error(`popup_script_load_failed: ${response.url()}: HTTP ${response.status()}`));
+            }
           });
         });
         // Inject a minimal chrome.* stub before any popup script runs.
@@ -161,7 +172,7 @@ async function main() {
         ]);
         const outFile = join(args.out, `popup-${state.name}-${size.name}.png`);
         await page.screenshot({ path: outFile, fullPage: false });
-        if (pageErrors.length) throw pageErrors[0];
+        if (loadErrors.length) throw loadErrors[0];
         process.stdout.write(`captured ${outFile}\n`);
         await context.close();
       }
