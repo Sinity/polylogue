@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from decimal import Decimal
+from json import JSONDecodeError
 from typing import BinaryIO, Literal, Protocol
 
 import ijson
@@ -357,7 +358,7 @@ def project_detection_input(
             try:
                 payload = _document_projection(reader, rule, stream_predicate)
                 return ("sequence" if isinstance(payload, list) else "record"), payload
-            except (ijson.JSONError, StopIteration) as exc:
+            except (ijson.JSONError, JSONDecodeError, StopIteration) as exc:
                 if source.callback_failure is not None:
                     raise source.callback_failure from None
                 syntax_error = exc
@@ -384,7 +385,7 @@ def project_detection_input(
                 observed = _ObservedLine(line)
                 try:
                     item = _document_projection(observed, rule, None)
-                except (StopIteration, ijson.JSONError):
+                except (StopIteration, ijson.JSONError, JSONDecodeError):
                     if source.callback_failure is not None:
                         raise source.callback_failure from None
                     observed.drain()
@@ -430,7 +431,7 @@ def iter_projected_jsonl_records(
         try:
             try:
                 value = _document_projection(reader, rule, None)
-            except (StopIteration, ijson.JSONError, UnicodeError) as exc:
+            except (StopIteration, ijson.JSONError, JSONDecodeError, UnicodeError) as exc:
                 if source.callback_failure is not None:
                     raise source.callback_failure from None
                 if observed.callback_failure is not None:
@@ -484,7 +485,7 @@ def iter_projected_document_records(
                 raise ijson.JSONError("trailing JSON candidacy value")
         except StopIteration as exc:
             raise ijson.JSONError("incomplete JSON candidacy document") from exc
-        except (UnicodeError, ijson.JSONError):
+        except (UnicodeError, ijson.JSONError, JSONDecodeError):
             if source.callback_failure is not None:
                 raise source.callback_failure from None
             raise

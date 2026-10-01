@@ -1374,12 +1374,29 @@ def _probe_source_generation_census(census: Callable[..., object]) -> str:
     return "census reported the probe generation as pending and unsealable"
 
 
+@contextmanager
+def _runtime_probe_directory(*, prefix: str) -> Iterator[Path]:
+    """Retain the original probe tree until every physical SQL owner retires."""
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    scratch = tempfile.TemporaryDirectory(prefix=prefix)
+    with retain_native_sql_lifetimes(scratch):
+        try:
+            yield Path(scratch.name)
+        finally:
+            if not retained_native_sql_owners_for_lifetime(scratch):
+                scratch.cleanup()
+            # Otherwise original Native custody retains this exact directory;
+            # final creator retirement releases its original cleanup finalizer.
+
+
 def _probe_material_admission(admit: Callable[..., object]) -> str:
     """Exercise prepared claim admission against the canonical source schema."""
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.materials import prepare_material
 
-    with tempfile.TemporaryDirectory(prefix="material-consumer-probe-") as directory:
+    with _runtime_probe_directory(prefix="material-consumer-probe-") as directory:
         root = Path(directory)
         prepared = prepare_material(
             blob_store=ArchiveBlobPublisher(root / "source.db", root / "blob"),
@@ -1407,7 +1424,7 @@ def _probe_material_read(get: Callable[..., object]) -> str:
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.materials import admit_material, prepare_material
 
-    with tempfile.TemporaryDirectory(prefix="material-consumer-probe-") as directory:
+    with _runtime_probe_directory(prefix="material-consumer-probe-") as directory:
         root = Path(directory)
         prepared = prepare_material(
             blob_store=ArchiveBlobPublisher(root / "source.db", root / "blob"),
@@ -1585,7 +1602,12 @@ def _runtime_probe_user_file_connection() -> Iterator[sqlite3.Connection]:
     from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
     with scratch_connection_context(prefix="polylogue-user-cursor-probe-", filename="user.db") as connection:
-        initialize_runtime_tier_probe(connection, ArchiveTier.USER)
+        cursor = connection.execute("PRAGMA database_list")
+        try:
+            probe_path = next(Path(str(row[2])) for row in cursor if row[1] == "main")
+        finally:
+            cursor.close()
+        initialize_runtime_tier_probe(connection, ArchiveTier.USER, probe_path=probe_path)
         yield connection
 
 
@@ -1705,9 +1727,8 @@ def _seed_probe_raw_row(
     polylogue-1fijp: this is the only ``INSERT INTO raw_sessions`` left in the
     tree outside ``source_write.py``'s writer primitives, and a census should
     be able to tell at a glance that it is NOT an acquisition path. Every
-    caller is a ``_probe_*`` function operating on a
-    ``tempfile.TemporaryDirectory`` archive deleted before the function
-    returns; nothing here ever touches a real archive.
+    caller is a ``_probe_*`` function operating on an isolated canonical
+    probe or archive; nothing here ever touches a live operator archive.
 
     These rows also cannot go through
     :func:`~polylogue.storage.sqlite.archive_tiers.raw_admission.admit_raw_observation`,
@@ -1769,7 +1790,7 @@ def _probe_zip_container_coordinate_write(writer: Callable[..., object]) -> str:
             acquired_at="2026-01-01T00:00:00+00:00",
         )
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-coordinate-") as directory:
+    with _runtime_probe_directory(prefix="polylogue-durable-train-coordinate-") as directory:
         root = Path(directory) / "archive"
         initialize_active_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -1835,7 +1856,7 @@ def _probe_revision_provider_resolution(descriptor: Callable[..., object]) -> st
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-revision-") as directory:
+    with _runtime_probe_directory(prefix="polylogue-durable-train-revision-") as directory:
         root = Path(directory) / "archive"
         initialize_active_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -1871,24 +1892,20 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
     """
     from polylogue.core.enums import Origin, Provider
     from polylogue.core.sources import provider_from_origin
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-hydration-") as directory:
-        source_path = Path(directory) / "source.db"
-        with sqlite_connection(source_path) as connection:
-            connection.row_factory = sqlite3.Row
-            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=source_path)
-            _seed_probe_raw_row(
-                connection,
-                raw_id="durable-change-train-hydration-raw",
-                source_path="/durable-change-train/hydration-probe.jsonl",
-                blob_hash=b"\0" * 32,
-                detected_provider="codex",
-            )
-            row = connection.execute(
-                "SELECT * FROM raw_sessions WHERE raw_id = ?",
-                ("durable-change-train-hydration-raw",),
-            ).fetchone()
+    with _runtime_probe_source_connection() as connection:
+        connection.row_factory = sqlite3.Row
+        _seed_probe_raw_row(
+            connection,
+            raw_id="durable-change-train-hydration-raw",
+            source_path="/durable-change-train/hydration-probe.jsonl",
+            blob_hash=b"\0" * 32,
+            detected_provider="codex",
+        )
+        row = connection.execute(
+            "SELECT * FROM raw_sessions WHERE raw_id = ?",
+            ("durable-change-train-hydration-raw",),
+        ).fetchone()
         if row is None:
             raise DurableChangeTrainError("raw record hydration probe could not read back its seeded row")
         record = mapper(row)
@@ -1911,15 +1928,17 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
 def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
     """Exercise the source-tier failure lifecycle reader against the canonical source schema."""
     del archive_root
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-failure-") as directory:
-        source_path = Path(directory) / "source.db"
-        with sqlite_connection(source_path) as connection:
-            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
-
-            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=source_path)
-        snapshot = reader(source_path, sample_limit=1)
+    # The numbered train authenticates this exact schema, which may precede
+    # the runtime floor. Ordinary file admission must still reject that skew.
+    with _runtime_probe_source_connection() as connection:
+        connection.execute("PRAGMA query_only = ON")
+        with connection:
+            connection.execute("BEGIN")
+            snapshot = reader(None, sample_limit=1, _connection=connection)
     if not getattr(snapshot, "available", False):
-        raise DurableChangeTrainError("raw failure lifecycle probe could not read source.db")
+        raise DurableChangeTrainError(
+            f"raw failure lifecycle probe could not read its snapshot: {getattr(snapshot, 'reason', None)}"
+        )
     return f"read raw failure lifecycle state={getattr(snapshot, 'state', 'unknown')}"
 
 

@@ -410,10 +410,13 @@ def _zip_with_member(path: Path, name: str, payload: bytes) -> None:
 
 def test_zip_json_probe_consumes_complete_positive_member(tmp_path: Path) -> None:
     fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json"
-    payload = json.loads(fixture.read_bytes())
-    payload["padding"] = "x" * (2 * 1024 * 1024)
     archive_path = tmp_path / "compressed.zip"
-    _zip_with_member(archive_path, "assets/conversations.json", json.dumps(payload).encode())
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("assets/conversations.json", "w") as member:
+            member.write(b'{"padding":"')
+            for _ in range(64):
+                member.write(b"x" * (1024 * 1024))
+            member.write(b'",' + fixture.read_bytes().lstrip()[1:])
     with zipfile.ZipFile(archive_path) as archive:
         info = archive.infolist()[0]
         assert info.file_size / info.compress_size > 1000
@@ -567,23 +570,21 @@ def test_nonseekable_taxonomy_failed_native_close_retains_replay_artifact(
     import sqlite3
 
     from polylogue.storage.sqlite import connection_profile
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
     class BinaryPipe(io.BytesIO):
         def seekable(self) -> bool:
             return False
 
     actual_connect = sqlite3.connect
-    fail_close = [True]
-
-    class FailingClose(sqlite3.Connection):
-        def close(self) -> None:
-            if fail_close[0]:
-                raise sqlite3.OperationalError("synthetic replay close failure")
-            super().close()
 
     def connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
         if str(database).endswith("bytes.db"):
-            kwargs["factory"] = FailingClose
+            kwargs["factory"] = ControlledConnection
+            connection = actual_connect(database, *args, **kwargs)
+            assert isinstance(connection, ControlledConnection)
+            connection.close_failure = sqlite3.OperationalError("synthetic replay close failure")
+            return connection
         return actual_connect(database, *args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", connect)
@@ -603,8 +604,12 @@ def test_nonseekable_taxonomy_failed_native_close_retains_replay_artifact(
     assert Path(directory.name).is_dir()
     if cancelled:
         assert refused.value.__cause__ is cancellation
-    fail_close[0] = False
+    connection = owner.connection
+    assert isinstance(connection, ControlledConnection)
+    assert connection.close_attempts == 1
+    connection.close_failure = None
     owner.close()
+    assert connection.close_attempts == 2
     assert not Path(directory.name).exists()
 
 
@@ -650,7 +655,9 @@ def test_complete_jsonl_projection_rejects_raw_nul_without_losing_earlier_record
     assert len(failures) == 1
 
 
-@pytest.mark.parametrize("error", [UnicodeError("stop"), OSError("stop"), ValueError("stop")])
+@pytest.mark.parametrize(
+    "error", [UnicodeError("stop"), OSError("stop"), ValueError("stop"), json.JSONDecodeError("stop", "", 0)]
+)
 def test_complete_jsonl_projection_preserves_stop_callback_failure(error: Exception) -> None:
     from polylogue.sources.detection_projection import DetectorProjection, iter_projected_jsonl_records
 
@@ -674,3 +681,23 @@ def test_complete_jsonl_projection_preserves_stop_callback_failure(error: Except
         )
     assert raised.value is error
     assert failures == []
+
+
+@pytest.mark.parametrize("document", [False, True])
+def test_complete_detection_projection_refuses_raw_nul_in_document_or_jsonl(document: bool) -> None:
+    import ijson
+
+    from polylogue.sources.detection_projection import (
+        DetectorProjection,
+        iter_projected_document_records,
+        project_detection_input,
+    )
+
+    handle = io.BytesIO(b'{"id":"bad\x00value"}\n')
+    rule = DetectorProjection(fields={"id": DetectorProjection()})
+    with pytest.raises((ijson.JSONError, json.JSONDecodeError)):
+        if document:
+            list(iter_projected_document_records(handle, rule))
+        else:
+            project_detection_input(handle, rule)
+    assert not handle.closed

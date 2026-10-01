@@ -66,7 +66,11 @@ def _reservation(conn: sqlite3.Connection, receipt_id: str, blob_hash: bytes) ->
     )
 
 
-def test_cold_archive_initialization_preserves_source_item_and_policy_models() -> None:
+@pytest.mark.parametrize(
+    "first_import",
+    ["polylogue.security.excision_policy", "polylogue.storage.runtime", "polylogue.storage.sqlite.archive_tiers"],
+)
+def test_cold_archive_initialization_preserves_source_item_and_policy_models(first_import: str) -> None:
     """Cold archive loading must support raw admission and canonical policy identity."""
     result = subprocess.run(
         [
@@ -74,6 +78,7 @@ def test_cold_archive_initialization_preserves_source_item_and_policy_models() -
             "-c",
             "\n".join(
                 (
+                    f"import {first_import}",
                     "from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER",
                     "from polylogue.storage.runtime import RawSessionRecord",
                     "from polylogue.storage.sqlite.archive_tiers.source_items import SourceItemAdmission",

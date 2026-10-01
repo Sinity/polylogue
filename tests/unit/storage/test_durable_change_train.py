@@ -3136,7 +3136,9 @@ def test_runtime_consumer_probe_keeps_native_owner_until_creator_retry(
         assert connection.close_attempts == 1
         if probe_kind == "user-file":
             assert directory is not None and (directory / "user.db").is_file()
-        assert owner.require_connection() is connection
+        assert owner.connection is connection
+        with pytest.raises(RuntimeError, match="terminal cleanup"):
+            owner.require_connection()
     finally:
         connection.close_failure = None
         owner.close()
@@ -3174,9 +3176,87 @@ def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
     assert actual is not None
     try:
         assert actual.close_attempts == 1
-        assert failed.value.owner.require_connection() is actual
+        assert failed.value.owner.connection is actual
+        with pytest.raises(RuntimeError, match="terminal cleanup"):
+            failed.value.owner.require_connection()
     finally:
         actual.close_failure = None
         failed.value.owner.close()
         canonical.cache_clear()
     assert actual.close_attempts == 2
+
+
+def test_raw_failure_probe_uses_authenticated_train_snapshot_without_admitting_file_skew(tmp_path: Path) -> None:
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        RuntimeTierProbeAuthority,
+        initialize_runtime_tier_probe,
+        runtime_tier_probe_authority,
+    )
+    from polylogue.storage.sqlite.managed_connection import sqlite_connection
+
+    inventory = durable_change_train_module._canonical_schema_inventory(ArchiveTier.SOURCE, 3)
+    path = tmp_path / "source.db"
+    authority = RuntimeTierProbeAuthority(ArchiveTier.SOURCE, 3, inventory.sha256)
+    observed_versions: list[int] = []
+
+    def reader(source_path: Path | None, *, sample_limit: int, _connection: sqlite3.Connection) -> object:
+        assert source_path is None
+        assert _connection.in_transaction
+        assert _connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        observed_versions.append(int(_connection.execute("PRAGMA user_version").fetchone()[0]))
+        snapshot = read_raw_failure_lifecycle(source_path, sample_limit=sample_limit, _connection=_connection)
+        assert snapshot.healthy
+        return snapshot
+
+    with runtime_tier_probe_authority(authority):
+        with sqlite_connection(path) as connection:
+            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=path)
+        durable_change_train_module._probe_raw_failure_lifecycle(reader, tmp_path)
+    assert observed_versions == [3]
+    ordinary = read_raw_failure_lifecycle(path)
+    assert not ordinary.available
+    assert ordinary.state == "unavailable"
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_runtime_probe_directory_survives_native_close_until_creator_retry(
+    monkeypatch: pytest.MonkeyPatch, cancelled: bool
+) -> None:
+    from polylogue.storage.sqlite import connection_profile, managed_connection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+
+    monkeypatch.setattr(managed_connection, "connect_measured", connect)
+    directory: Path | None = None
+    cancellation = InterruptedError("synthetic probe cancellation")
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as failed:
+        with durable_change_train_module._runtime_probe_directory(prefix="polylogue-train-lifetime-test-") as scratch:
+            directory = scratch
+            with managed_connection.sqlite_connection(scratch / "probe.db") as connection:
+                assert isinstance(connection, ControlledConnection)
+                connection.execute("CREATE TABLE proof(value TEXT)")
+                connection.close_failure = OSError("synthetic probe close remains unsettled")
+                if cancelled:
+                    raise cancellation
+    import gc
+
+    owner = failed.value.owner
+    actual = owner.connection
+    assert isinstance(actual, ControlledConnection)
+    if cancelled:
+        assert failed.value.__cause__ is cancellation
+    actual.close_failure = None
+    del failed
+    cancellation.__traceback__ = None
+    gc.collect()
+    try:
+        assert directory is not None and (directory / "probe.db").is_file()
+        assert actual.close_attempts == 1
+    finally:
+        owner.close()
+    assert actual.close_attempts == 2
+    gc.collect()
+    assert directory is not None and not directory.exists()
