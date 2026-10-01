@@ -22,7 +22,7 @@ import threading
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -362,33 +362,25 @@ def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled
     """Failed rollback and close keep the live writer behind its physical gate."""
     import threading
 
-    from polylogue.storage.sqlite import connection_profile
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
 
     root = tmp_path / "archive"
     root.mkdir()
     with write_lease("test.archive.open", archive_root=root):
         initialize_active_archive_root(root)
-        connect = connection_profile.connect_measured
-
-        def controlled(database: object, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-            if str(database) == str(root / "index.db"):
-                return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)  # type: ignore[arg-type]
-            return connect(database, *args, **kwargs)  # type: ignore[arg-type]
-
-        monkeypatch.setattr(connection_profile, "connect_measured", controlled)
+        control_archive_connections(monkeypatch, root / "index.db")
         archive = ArchiveStore(root, initialize=False, read_only=False)
-    archive._enter_mutation_lease()
-    archive._conn.execute("BEGIN IMMEDIATE")
-    archive._conn.execute("CREATE TABLE unsettled_probe (value INTEGER)")
     connection = archive._conn
-    assert isinstance(connection, ControlledConnection)
-    connection.rollback_failure = OSError("synthetic rollback failure")
-    connection.close_failure = OSError("synthetic close failure")
-
     contender: threading.Thread | None = None
     try:
+        assert isinstance(connection, ControlledConnection)
+        archive._enter_mutation_lease()
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("CREATE TABLE unsettled_probe (value INTEGER)")
+        connection.rollback_failure = OSError("synthetic rollback failure")
+        connection.close_failure = OSError("synthetic close failure")
+
         with pytest.raises(ArchiveStoreSettlementError) as failure:
             archive.close()
 
@@ -421,8 +413,9 @@ def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled
                 is None
             )
     finally:
-        connection.rollback_failure = None
-        connection.close_failure = None
+        if isinstance(connection, ControlledConnection):
+            connection.rollback_failure = None
+            connection.close_failure = None
         archive.close()
         if contender is not None:
             contender.join(timeout=2)

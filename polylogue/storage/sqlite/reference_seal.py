@@ -492,6 +492,7 @@ class PreparedIndexMutation:
         self._pending_source_permit: KnownSourceMutationPermit | None = None
         self._pending_source_receipt: KnownSourceMutationReceipt | None = None
         self._closed = False
+        self._cleanup_requested = False
         self._session_namespace_noted = False
         self._scratch_directory: tempfile.TemporaryDirectory[str] | None = None
         self._owned_scratch_connection: sqlite3.Connection | None = None
@@ -529,8 +530,10 @@ class PreparedIndexMutation:
                     raise ReferenceSealStaleError(f"the {name}.db file changed while opening its observer")
             self._read_resolved_references()
         except BaseException as exc:
-            with suppress(BaseException):
+            try:
                 self.close()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup("Reference preparation and cleanup failed", [exc, cleanup_error]) from exc
             if compute_cancel_requested():
                 raise asyncio.CancelledError("durable-reference preparation cancelled") from exc
             raise
@@ -1061,6 +1064,8 @@ class PreparedIndexMutation:
 
     def _require_new_work(self) -> None:
         self._require_live_owner()
+        if self._cleanup_requested:
+            raise ReferenceSealError("reference seal requires original-owner terminal cleanup")
         _check_reference_cancellation()
 
     def _require_live_owner(self) -> None:
@@ -1082,19 +1087,23 @@ class PreparedIndexMutation:
             or self.index_task is not _current_task()
         ):
             raise ReferenceSealError("reference-seal cleanup must run in its preparing execution unit")
-        first_error: BaseException | None = None
+        from polylogue.storage.sqlite.connection_profile import request_native_sql_parent_cleanup
+
+        self._cleanup_requested = True
+        request_native_sql_parent_cleanup(self)
+        failures: list[BaseException] = []
+        attempted_connections: set[int] = set()
 
         def settle(action: Callable[[], object]) -> bool:
-            nonlocal first_error
             try:
                 action()
                 return True
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+                failures.append(exc)
                 return False
 
         for name, observer in tuple(self._observers.items()):
+            attempted_connections.add(id(observer))
             if settle(partial(self._close_native_connection, observer)):
                 self._observers.pop(name, None)
         for name, leaf in tuple(self._observer_leaves.items()):
@@ -1102,6 +1111,7 @@ class PreparedIndexMutation:
                 self._observer_leaves.pop(name, None)
         if self._owned_scratch_connection is not None:
             scratch = self._owned_scratch_connection
+            attempted_connections.add(id(scratch))
             if settle(lambda: self._close_native_connection(scratch)):
                 self._owned_scratch_connection = None
         if self._owned_scratch_connection is None and self._scratch_directory is not None:
@@ -1111,7 +1121,7 @@ class PreparedIndexMutation:
         from polylogue.storage.sqlite.connection_profile import native_sql_children, retire_native_sql_parent
 
         for owner in native_sql_children(self):
-            if not owner._settled:
+            if not owner._settled and owner._connection_identity not in attempted_connections:
                 settle(owner.close)
         self._closed = (
             not self._observers
@@ -1124,8 +1134,10 @@ class PreparedIndexMutation:
             retire_native_sql_parent(self)
             with _LIVE_SEALS_LOCK:
                 _LIVE_SEALS.pop(id(self), None)
-        if first_error is not None:
-            raise first_error
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Reference-seal cleanup failed", failures)
 
     def __enter__(self) -> PreparedIndexMutation:
         return self
@@ -1136,7 +1148,7 @@ class PreparedIndexMutation:
         except BaseException as close_error:
             if exc is None:
                 raise
-            exc.add_note(f"reference-seal cleanup also failed: {close_error}")
+            raise BaseExceptionGroup("Reference mutation and seal cleanup failed", [exc, close_error]) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1264,6 +1276,8 @@ class IndexMutationScope:
     _active: bool = True
     _committed: bool = False
     _cleanup_started: bool = False
+    _archive_cleanup_started: bool = False
+    _archive_cleanup_failed: bool = False
     _rollback_required: bool = True
     _user_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
 
@@ -1388,7 +1402,7 @@ class IndexMutationScope:
 
     @property
     def settled(self) -> bool:
-        return not self._rollback_required and self._user_owner is None
+        return not self._rollback_required and self._user_owner is None and not self._archive_cleanup_failed
 
     def rollback(self) -> None:
         self.close()
@@ -1410,13 +1424,18 @@ class IndexMutationScope:
         if failures:
             raise BaseExceptionGroup("Index rollback failed", failures)
 
-    def close(self) -> None:
+    def require_cleanup_connection(self, conn: sqlite3.Connection) -> None:
+        if conn is not self.conn:
+            raise ReferenceSealError("Index scope cleanup requires its exact connection")
         if os.getpid() != self.owner_pid or threading.current_thread() is not self.owner_thread:
             raise ReferenceSealError("Index scope cleanup belongs to another process or thread")
         if _current_task() is not self.owner_task and (
             not isinstance(self.owner_task, asyncio.Task) or not self.owner_task.done()
         ):
             raise ReferenceSealError("Index scope cleanup belongs to another task")
+
+    def close(self) -> None:
+        self.require_cleanup_connection(self.conn)
         self._active = False
         self._cleanup_started = True
         failures: list[BaseException] = []

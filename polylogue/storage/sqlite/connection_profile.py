@@ -120,14 +120,26 @@ def retained_native_settlement_owners_on_current_thread(
     if preserved_native_owners is None:
         return physical
     preserved_ids = {id(owner) for owner in preserved_native_owners}
+    terminal_parents = {
+        id(owner._terminal_parent)
+        for owner in physical
+        if owner._terminal_parent is not None
+        and (owner._parent_cleanup_requested or (id(owner) in preserved_ids and owner.close_required))
+    }
     protected_parents = {
         id(owner._terminal_parent)
         for owner in physical
-        if id(owner) in preserved_ids and owner._terminal_parent is not None
+        if id(owner) in preserved_ids
+        and owner._terminal_parent is not None
+        and id(owner._terminal_parent) not in terminal_parents
     }
     result: dict[int, SQLCustodyOwner] = {}
     for owner in physical:
-        if id(owner) in preserved_ids:
+        if id(owner) in preserved_ids and not (
+            owner.close_required
+            or owner._parent_cleanup_requested
+            or (owner._terminal_parent is not None and id(owner._terminal_parent) in terminal_parents)
+        ):
             continue
         parent = owner._terminal_parent
         if parent is not None and id(parent) in protected_parents:
@@ -157,6 +169,12 @@ def retained_native_sql_owners_for_lifetime(dependency: object) -> tuple[NativeS
 
 def native_sql_children(parent: SQLCustodyOwner) -> tuple[NativeSQLCustodyOwner, ...]:
     return tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner._terminal_parent is parent)
+
+
+def request_native_sql_parent_cleanup(parent: SQLCustodyOwner) -> None:
+    """Keep all existing siblings selected once their parent begins retirement."""
+    for owner in native_sql_children(parent):
+        owner._parent_cleanup_requested = True
 
 
 def close_parent_native_connection(parent: SQLCustodyOwner, connection: sqlite3.Connection) -> None:
@@ -194,6 +212,7 @@ class NativeSQLCustodyOwner:
         lifetime_dependencies: tuple[object, ...] = (),
     ) -> None:
         self.close_required = False
+        self._parent_cleanup_requested = False
         self._settled = False
         self._terminal_parent = terminal_parent
         self.scratch_directory = scratch_directory

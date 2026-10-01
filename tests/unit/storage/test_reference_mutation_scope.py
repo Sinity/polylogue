@@ -345,19 +345,13 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
     from typing import Any
 
     from polylogue.storage.index_generation import IndexGenerationStore
-    from polylogue.storage.sqlite import connection_profile, reference_seal
+    from polylogue.storage.sqlite import reference_seal
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
-    from tests.infra.sqlite_cursor_settlement import ControlledConnection, ControlledCursor
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, ControlledCursor, control_archive_connections
 
-    original_connect = connection_profile.connect_measured
     original_reader = reference_seal._open_readonly_owner
     cursors: list[ControlledCursor] = []
-
-    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        if str(database) == str(generation.index_path):
-            return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
-        return original_connect(database, *args, **kwargs)
 
     def reader(path: Path, **kwargs: Any) -> NativeSQLCustodyOwner:
         owner = original_reader(path, **kwargs)
@@ -372,13 +366,13 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
     with write_lease("test.archive-scope-retirement", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="scope-retirement")
-        monkeypatch.setattr(connection_profile, "connect_measured", connect)
+        control_archive_connections(monkeypatch, generation.index_path)
         monkeypatch.setattr(reference_seal, "_open_readonly_owner", reader)
         archive = generation.open_writer()
         connection = archive._conn
-        assert isinstance(connection, ControlledConnection)
         failure = OSError("synthetic actual writer rollback failure")
         try:
+            assert isinstance(connection, ControlledConnection)
             with pytest.raises(BaseExceptionGroup):
                 with archive.index_mutation_scope() as scope:
                     scope.suppression_reader()
@@ -387,6 +381,14 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
                     raise ValueError("synthetic mutation failure")
             assert archive._pending_index_mutation_scope is scope
             assert archive._has_pending_write_sql()
+            assert connection.rollback_attempts == 1
+            assert cursors[0].close_attempts == 1
+            with pytest.raises(ArchiveStoreSettlementError):
+                archive.commit()
+            with pytest.raises(ArchiveStoreSettlementError):
+                archive.write_raw_payload(
+                    provider=Provider.CODEX, source_path="refused-new-work", acquired_at_ms=0, payload=b"new"
+                )
             assert connection.rollback_attempts == 1
             assert cursors[0].close_attempts == 1
             with pytest.raises((OSError, BaseExceptionGroup, ArchiveStoreSettlementError)):
@@ -402,7 +404,264 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
             assert connection.rollback_attempts == 3
             assert cursors[0].close_attempts == (3 if user_failure else 1)
         finally:
-            connection.rollback_failure = None
+            if isinstance(connection, ControlledConnection):
+                connection.rollback_failure = None
             for cursor in cursors:
                 cursor.allow_cleanup.set()
             archive.close()
+
+
+def test_foreign_active_scope_cannot_be_settled_by_another_archive(tmp_path: Path) -> None:
+    with write_lease("test.exact-scope-cleanup", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        first = ArchiveStore.open_existing(tmp_path, read_only=False)
+        second = ArchiveStore.open_existing(tmp_path, read_only=False)
+        try:
+            with first.index_mutation_scope() as scope:
+                first._conn.execute("CREATE TABLE exact_scope_owner(value INTEGER)")
+                with pytest.raises(ReferenceSealError):
+                    second.rollback()
+                assert scope._active and first._conn.in_transaction
+                assert first._pending_index_mutation_scope is scope
+            assert first._conn.execute("SELECT COUNT(*) FROM exact_scope_owner").fetchone()[0] == 0
+        finally:
+            first.close()
+            second.close()
+
+
+@pytest.mark.parametrize("tier", ["source", "user", "vector"])
+def test_explicit_archive_rollback_failure_is_not_repeated_by_scope_unwind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str
+) -> None:
+    import errno
+
+    from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
+
+    with write_lease("test.archive-tier-rollback", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        control_archive_connections(monkeypatch, tmp_path / "index.db", tmp_path / "source.db", tmp_path / "user.db")
+        archive = ArchiveStore.open_existing(tmp_path, read_only=False)
+        child = None
+        try:
+            index = archive._conn
+            assert isinstance(index, ControlledConnection)
+            if tier == "source":
+                child = archive.source_connection
+            elif tier == "user":
+                child = archive._open_user_write_connection()
+            else:
+                child = sqlite3.connect(":memory:", factory=ControlledConnection)
+                archive.operation_vector_connection = child
+            assert isinstance(child, ControlledConnection)
+            child.execute("BEGIN")
+            fault = OSError(errno.EIO, "synthetic actual tier rollback failure")
+            with pytest.raises(OSError) as caught:
+                with archive.index_mutation_scope() as scope:
+                    index.execute("CREATE TABLE discarded_tier_batch(value INTEGER)")
+                    child.rollback_failure = fault
+                    archive.rollback()
+            assert caught.value is fault
+            assert child.rollback_attempts == 1 and index.rollback_attempts == 1
+            assert child.in_transaction and archive._pending_index_mutation_scope is scope
+            assert storage_fault_kind(caught.value) is StorageFaultKind.IO
+            with pytest.raises(ArchiveStoreSettlementError):
+                archive.commit()
+            assert child.rollback_attempts == 1
+            child.rollback_failure = None
+            archive.rollback()
+            assert child.rollback_attempts == 2 and index.rollback_attempts == 1
+            assert not child.in_transaction and archive._pending_index_mutation_scope is None
+        finally:
+            if isinstance(child, ControlledConnection):
+                child.rollback_failure = None
+            archive.close()
+
+
+@pytest.mark.parametrize("targets", [("user",), ("user", "scratch")])
+def test_active_seal_attempts_each_native_child_once_and_keeps_typed_failures(
+    tmp_path: Path, targets: tuple[str, ...]
+) -> None:
+    import errno
+
+    from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
+    from polylogue.storage.sqlite.connection_profile import (
+        native_sql_children,
+        retained_native_settlement_owners_on_current_thread,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.seal-terminal-attempts", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+        entry = tuple(native_sql_children(seal))
+        assert retained_native_settlement_owners_on_current_thread(entry) == ()
+        cursors = []
+        faults = []
+        directory = Path(seal._scratch_directory.name)
+        try:
+            for name in targets:
+                connection = seal._scratch if name == "scratch" else seal.observer(name)
+                cursor = connection.cursor(factory=ControlledCursor)
+                cursor.execute("SELECT 1 UNION ALL SELECT 2")
+                next(cursor)
+                fault = OSError(errno.EIO, f"synthetic {name} cursor settlement failure")
+                cursor.cleanup_failure = fault
+                cursor.allow_cleanup.clear()
+                cursors.append(cursor)
+                faults.append(fault)
+            primary = ValueError("synthetic mutation failure")
+            with pytest.raises(BaseExceptionGroup) as caught:
+                with seal:
+                    raise primary
+            assert caught.value.exceptions[0] is primary
+            assert storage_fault_kind(caught.value) is StorageFaultKind.IO
+            cleanup = caught.value.exceptions[1]
+            failures = cleanup.exceptions if isinstance(cleanup, BaseExceptionGroup) else (cleanup,)
+            assert tuple(failure.failure for failure in failures) == tuple(faults)
+            assert [cursor.close_attempts for cursor in cursors] == [1] * len(targets)
+            assert not seal._closed
+            with pytest.raises(ReferenceSealError):
+                seal.observer("user")
+            with pytest.raises(ReferenceSealError):
+                seal.validate_observers_current()
+            assert directory.exists() == ("scratch" in targets)
+            # Even entry owners whose own close was never attempted select the
+            # complete terminal parent after the first sibling fails.
+            assert retained_native_settlement_owners_on_current_thread(entry) == (seal,)
+            children = native_sql_children(seal)
+            assert children and all(owner._parent_cleanup_requested for owner in children)
+            for cursor in cursors:
+                cursor.allow_cleanup.set()
+            seal.close()
+            assert [cursor.close_attempts for cursor in cursors] == [2] * len(targets)
+            assert seal._closed and not directory.exists() and not native_sql_children(seal)
+            assert retained_native_settlement_owners_on_current_thread(entry) == ()
+        finally:
+            for cursor in cursors:
+                cursor.allow_cleanup.set()
+            seal.close()
+
+
+def test_archive_exit_keeps_mutation_and_native_cleanup_objects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.connection_profile import native_sql_children
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
+
+    with write_lease("test.archive-exit-fault", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        control_archive_connections(monkeypatch, tmp_path / "index.db")
+        archive = ArchiveStore.open_existing(tmp_path, read_only=False)
+        connection = archive._conn
+        try:
+            assert isinstance(connection, ControlledConnection)
+            primary = ValueError("synthetic mutation failure")
+            fault = OSError(errno.EIO, "synthetic actual connection close failure")
+            connection.close_failure = fault
+            with pytest.raises(BaseExceptionGroup) as caught:
+                with archive:
+                    raise primary
+            assert caught.value.exceptions[0] is primary
+            cleanup = caught.value.exceptions[1]
+            assert isinstance(cleanup, ArchiveStoreSettlementError) and cleanup.store is archive
+            assert storage_fault_kind(caught.value) is StorageFaultKind.IO
+            assert connection.close_attempts == 1 and native_sql_children(archive)
+            connection.close_failure = None
+            archive.close()
+            assert connection.close_attempts == 2 and not native_sql_children(archive)
+        finally:
+            if isinstance(connection, ControlledConnection):
+                connection.close_failure = None
+            archive.close()
+
+
+def test_archive_construction_failure_exposes_unsettled_store_and_original_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+    from typing import Any
+
+    from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
+
+    with write_lease("test.archive-constructor-fault", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        control_archive_connections(monkeypatch, tmp_path / "index.db")
+        primary = ValueError("synthetic initialization failure")
+        fault = OSError(errno.EIO, "synthetic initialization cleanup failure")
+        original = ArchiveStore._initialize_store
+        stores = []
+
+        def initialize(store: ArchiveStore, *args: Any, **kwargs: Any) -> None:
+            original(store, *args, **kwargs)
+            stores.append(store)
+            assert isinstance(store._conn, ControlledConnection)
+            store._conn.close_failure = fault
+            raise primary
+
+        monkeypatch.setattr(ArchiveStore, "_initialize_store", initialize)
+        try:
+            with pytest.raises(BaseExceptionGroup) as caught:
+                ArchiveStore.open_existing(tmp_path, read_only=False)
+            assert caught.value.exceptions[0] is primary
+            cleanup = caught.value.exceptions[1]
+            assert isinstance(cleanup, ArchiveStoreSettlementError) and cleanup.store is stores[0]
+            assert cleanup.failure.failure is fault
+            assert storage_fault_kind(caught.value) is StorageFaultKind.IO
+            assert stores[0]._conn.close_attempts == 1
+        finally:
+            for store in stores:
+                if isinstance(store._owned_index_connection, ControlledConnection):
+                    store._owned_index_connection.close_failure = None
+                store.close()
+
+
+def test_seal_construction_failure_retains_primary_and_unsettled_native_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.seal-constructor-fault", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        primary = ValueError("synthetic reference preparation failure")
+        fault = OSError(errno.EIO, "synthetic observer cleanup failure")
+        original = PreparedIndexMutation._read_resolved_references
+        seals = []
+        cursors = []
+
+        def read_references(seal: PreparedIndexMutation) -> None:
+            original(seal)
+            seals.append(seal)
+            cursor = seal.observer("user").cursor(factory=ControlledCursor)
+            cursors.append(cursor)
+            cursor.execute("SELECT 1 UNION ALL SELECT 2")
+            next(cursor)
+            cursor.cleanup_failure = fault
+            cursor.allow_cleanup.clear()
+            raise primary
+
+        monkeypatch.setattr(PreparedIndexMutation, "_read_resolved_references", read_references)
+        try:
+            with pytest.raises(BaseExceptionGroup) as caught:
+                PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+            assert caught.value.exceptions[0] is primary
+            assert caught.value.exceptions[1].failure is fault
+            assert storage_fault_kind(caught.value) is StorageFaultKind.IO
+            assert cursors[0].close_attempts == 1 and not seals[0]._closed
+        finally:
+            for cursor in cursors:
+                cursor.allow_cleanup.set()
+            for seal in seals:
+                seal.close()
