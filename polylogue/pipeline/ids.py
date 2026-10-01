@@ -472,7 +472,7 @@ class _DiskRevisionStore:
 
             assert self._native_owner is not None
             cast(NativeOwner, self._native_owner).scratch_directory = self._scratch
-            _close_failed_native_construction(self._native_owner, primary)
+            _close_failed_native_construction(cast(NativeOwner, self._native_owner), primary)
             self.close()
             raise
 

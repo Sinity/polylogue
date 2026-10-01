@@ -47,7 +47,7 @@ def test_logical_reconstruction_failure_settles_or_retains_its_actual_creator(
         native = actual_connect(*args, **kwargs)
         target = (phase == "reader" and "mode=ro" in str(args[0])) or (phase != "reader" and "mode=rwc" in str(args[0]))
         if not target:
-            return native
+            return cast(sqlite3.Connection, native)
         handle = ConstructionHandle(native)
         files.append(Path(native.execute("PRAGMA database_list").fetchone()[2]))
         if not failed_close:
@@ -55,7 +55,7 @@ def test_logical_reconstruction_failure_settles_or_retains_its_actual_creator(
         targets.append(handle)
         return cast(sqlite3.Connection, handle)
 
-    monkeypatch.setattr(sqlite_export.sqlite3, "connect", connect)
+    monkeypatch.setattr(sqlite3, "connect", connect)
     if failed_close:
         with pytest.raises(NativeConnectionSettlementError) as failure:
             with sqlite_export.logical_source_context(export) as reader:

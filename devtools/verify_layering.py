@@ -23,6 +23,7 @@ import json
 import re
 import sys
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -716,7 +717,10 @@ def _mutation_tiers(tree: ast.AST) -> frozenset[str]:
     values = _string_assignments(tree)
     table_tiers = _archive_table_tiers()
     tiers: set[str] = set()
-    for node in walk_module(tree):
+    nodes = (
+        _function_scope_nodes(tree) if isinstance(tree, ast.FunctionDef | ast.AsyncFunctionDef) else walk_module(tree)
+    )
+    for node in nodes:
         if not isinstance(node, ast.Call):
             continue
         sql = _mutation_sql(node, values=values)
@@ -777,7 +781,30 @@ def _writer_module_files(repo_root: Path, policy: WriterModulePolicy) -> dict[st
 
 
 def _function_definitions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    return {node.name: node for node in walk_module(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+    """Keep lexical function and class names distinct throughout the call graph."""
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                visit(child, (*scope, child.name))
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                qualified = (*scope, child.name)
+                functions[".".join(qualified)] = child
+                visit(child, qualified)
+            else:
+                visit(child, scope)
+
+    visit(tree, ())
+    return functions
+
+
+def _function_scope_nodes(function: ast.AST) -> Iterator[ast.AST]:
+    """Walk executable statements in one function without borrowing another body."""
+    yield function
+    for child in ast.iter_child_nodes(function):
+        if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            yield from _function_scope_nodes(child)
 
 
 def _imported_writer_modules(tree: ast.Module) -> dict[str, str]:
@@ -823,15 +850,93 @@ def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
     )
 
 
-def _called_function_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+def _called_function_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    qualified: str,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    classes: set[str],
+) -> set[str]:
+    """Resolve lexical helpers and methods only on their declared receiver type.
+
+    A set's ``add`` cannot authorize the unrelated ``Writer.add``. Constructor
+    assignments, annotated receivers, and ``self`` retain actual class methods
+    in the graph, while nested helpers resolve in their enclosing function.
+    """
+    lexical = [qualified]
+    parent = qualified.rpartition(".")[0]
+    while parent:
+        if parent in functions:
+            lexical.append(parent)
+        parent = parent.rpartition(".")[0]
+
+    def resolve(name: str) -> str:
+        for scope in lexical:
+            candidate = f"{scope}.{name}"
+            if candidate in functions or candidate in classes:
+                return candidate
+        return name
+
+    def annotation_types(annotation: ast.AST | None) -> set[str]:
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                annotation = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return set()
+        return (
+            {
+                resolved
+                for node in ast.walk(annotation)
+                if isinstance(node, ast.Name) and (resolved := resolve(node.id)) in classes
+            }
+            if annotation is not None
+            else set()
+        )
+
+    bindings: dict[str, set[str]] = {}
+    for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs):
+        bindings[argument.arg] = annotation_types(argument.annotation)
+    enclosing = qualified.rpartition(".")[0]
+    if enclosing in classes and function.args.args:
+        bindings[function.args.args[0].arg] = {enclosing}
+
+    def value_types(value: ast.AST) -> set[str]:
+        if isinstance(value, ast.Name) and (named_class := resolve(value.id)) in classes:
+            return {named_class}
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            target = resolve(value.func.id)
+            if target in classes:
+                return {target}
+            called = functions.get(target)
+            if called is not None:
+                return annotation_types(called.returns)
+        return bindings.get(ast.unparse(value), set())
+
+    nodes = tuple(_function_scope_nodes(function))
+    # Flow-insensitive union is conservative when separate branches construct
+    # different owned writers; an unrelated receiver never borrows a method.
+    for node in nodes:
+        if isinstance(node, ast.Assign):
+            types = value_types(node.value)
+            for target in node.targets:
+                bindings.setdefault(ast.unparse(target), set()).update(types)
+        elif isinstance(node, ast.AnnAssign):
+            types = annotation_types(node.annotation)
+            if node.value is not None:
+                types.update(value_types(node.value))
+            bindings.setdefault(ast.unparse(node.target), set()).update(types)
+
     names: set[str] = set()
-    for node in ast.walk(function):
+    for node in nodes:
         if not isinstance(node, ast.Call):
             continue
         if isinstance(node.func, ast.Name):
-            names.add(node.func.id)
+            names.add(resolve(node.func.id))
         elif isinstance(node.func, ast.Attribute):
-            names.add(node.func.attr)
+            for receiver in value_types(node.func.value):
+                target = f"{receiver}.{node.func.attr}"
+                if target in functions:
+                    names.add(target)
     return names
 
 
@@ -848,6 +953,9 @@ def _entrypoint_tiers(
     functions = functions or _function_definitions(tree)
     imported_modules = imported_modules or _imported_writer_modules(tree)
     direct_tiers = direct_tiers or {name: _mutation_tiers(function) for name, function in functions.items()}
+    classes = {
+        name.rpartition(".")[0] for name in functions if "." in name and name.rpartition(".")[0] not in functions
+    }
     pending = [entrypoint]
     visited: set[str] = set()
     tiers: set[str] = set()
@@ -863,7 +971,7 @@ def _entrypoint_tiers(
                 tiers.update(surface.tier for surface in spec.surfaces)
             continue
         tiers.update(direct_tiers[name])
-        for called_name in _called_function_names(function):
+        for called_name in _called_function_names(function, qualified=name, functions=functions, classes=classes):
             if called_name in functions or called_name in imported_modules:
                 pending.append(called_name)
     return frozenset(tiers)
@@ -1149,7 +1257,8 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
         observed_entrypoints = {
             name
             for name in functions
-            if not name.startswith("_")
+            if "." not in name
+            and not name.startswith("_")
             and _entrypoint_tiers(
                 tree,
                 name,

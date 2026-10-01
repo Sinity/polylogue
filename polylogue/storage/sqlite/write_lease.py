@@ -1240,7 +1240,7 @@ def write_lease(
         yield lease
     except BaseException:
         # Elapsed hold telemetry cannot change the operation's own outcome.
-        if lease.over_budget:
+        if lease.over_budget and lease.max_hold_seconds is not None:
             emit(
                 "storage.write_lease.hold_exceeded",
                 level=WARNING,
@@ -1262,7 +1262,7 @@ def write_lease(
     else:
         _restore_active_lease(token, lease)
         lease.retire()
-        if lease.over_budget:
+        if lease.over_budget and lease.max_hold_seconds is not None:
             emit(
                 "storage.write_lease.hold_exceeded",
                 level=WARNING,

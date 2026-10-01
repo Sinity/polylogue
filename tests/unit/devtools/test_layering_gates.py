@@ -1021,3 +1021,58 @@ def test_daemon_collection_and_stage_adapters_have_no_substrate_exemptions() -> 
         )
     baseline = verify_layering._load_baseline(root / "docs/plans/layering-surface-baseline.json")
     assert not any(file in adapters for _, file, _ in baseline)
+
+
+def test_production_writer_inventory_resolves_nested_and_class_method_names_in_their_actual_scope(
+    tmp_path: Path,
+) -> None:
+    writer_root = _copy_production_writer_surface(tmp_path)
+    writer = writer_root / "write.py"
+    writer.write_text(
+        writer.read_text(encoding="utf-8")
+        + """
+class CollisionWriter:
+    def add(self, conn):
+        self.flush(conn)
+    def flush(self, conn):
+        conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+
+class CollisionReader:
+    def flush(self):
+        return "neutral"
+
+def read_collision():
+    visited = set()
+    def depth():
+        visited.add("neutral")
+        return 1
+    def flush():
+        return depth()
+    reader = CollisionReader()
+    reader.flush()
+    return flush()
+
+def nested_collision_writer(conn):
+    def flush():
+        CollisionWriter().add(conn)
+    flush()
+
+def typed_collision_writer(conn, writer: CollisionWriter):
+    writer.add(conn)
+""",
+        encoding="utf-8",
+    )
+    violations = verify_layering._collect_writer_module_violations(tmp_path, _production_writer_policy())
+    mismatch = next(
+        item
+        for item in violations
+        if item["file"] == "polylogue/storage/sqlite/archive_tiers/write.py"
+        and item["rule"] == "writer_module_entrypoint_inventory_mismatch"
+    )
+    observed_names = mismatch["observed"]
+    expected_names = mismatch["expected"]
+    assert isinstance(observed_names, list) and isinstance(expected_names, list)
+    observed = set(observed_names)
+    assert observed == set(expected_names) | {"nested_collision_writer", "typed_collision_writer"}
+    assert "read_collision" not in observed
+    assert not any("." in name for name in observed)

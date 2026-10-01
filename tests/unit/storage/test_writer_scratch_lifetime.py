@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
@@ -68,7 +69,7 @@ def test_prepared_scratch_iterator_can_move_and_be_abandoned_after_a_closed_page
         abandoned = iter(rows)
         next(abandoned)
         assert retained_native_sql_owners_for_lifetime(artifact) == ()
-        consumer.submit(abandoned.close).result()
+        consumer.submit(cast(Generator[Any, None, None], abandoned).close).result()
         consumer.submit(artifact.close).result()
     assert not Path(artifact._scratch.name).exists()
 
@@ -85,7 +86,7 @@ def test_failed_readonly_page_close_retains_artifact_until_original_owner_retrie
             handle = SettlementHandle(connection)
             handles.append(handle)
             return cast(sqlite3.Connection, handle)
-        return connection
+        return cast(sqlite3.Connection, connection)
 
     monkeypatch.setattr(sqlite3, "connect", fail_reader_close)
     rows = artifact.rows("merged_message") if isinstance(artifact, write._UnionScratch) else artifact
@@ -237,7 +238,7 @@ def test_artifact_constructor_ddl_failure_settles_or_exposes_its_actual_owner(
     monkeypatch.setattr(sqlite3, "connect", constructor_connection)
     scratch = tempfile.TemporaryDirectory(dir=tmp_path)
     directory = Path(scratch.name)
-    constructors = {
+    constructors: dict[str, Callable[[], object]] = {
         "prefix": lambda: write._DiskSourceMessageIds(directory),
         "signatures": lambda: write._DiskSignatureSequence(directory),
         "union": lambda: write._UnionScratch(directory),
@@ -296,7 +297,7 @@ def test_population_and_sealing_failure_settles_or_exposes_the_actual_scratch_ow
 
     monkeypatch.setattr(sqlite3, "connect", connect)
 
-    def broken_messages():
+    def broken_messages() -> Iterator[ParsedMessage]:
         yield ParsedMessage(provider_message_id="one", role=Role.USER, text="neutral")
         raise LookupError("synthetic population refusal")
 
@@ -401,5 +402,5 @@ def test_file_edit_iteration_transfers_closed_pages_and_settles_abandoned_artifa
         abandoned = write._iter_file_edit_rows("session", messages, content_identities=identities)
         assert next(abandoned)[3] == "neutral.py"
         assert retained_native_sql_owners_on_current_thread() == ()
-        consumer.submit(abandoned.close).result()
+        consumer.submit(cast(Generator[Any, None, None], abandoned).close).result()
     assert list(tmp_path.glob("polylogue-prefix-refs-*")) == []
