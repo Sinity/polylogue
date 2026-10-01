@@ -76,7 +76,10 @@ class ComposedSessionProfiles:
             if binding != frame_binding:
                 positions.clear()
                 frame_binding = binding
-            advanced = any(positions.get(domain) != cursor for domain, cursor in passed.cursor.positions.items())
+            advanced = any(
+                positions.get(domain) != cursor or (cursor.swept and not passed.pending)
+                for domain, cursor in passed.cursor.positions.items()
+            )
             for domain, cursor in passed.cursor.positions.items():
                 if cursor.swept and not passed.pending:
                     # This obligation was discharged. A predecessor completing
@@ -87,8 +90,8 @@ class ComposedSessionProfiles:
                     positions[domain] = cursor
             if not advanced:
                 # Counts can change while the same pending cursor is retried.
-                # Only walking a new part of the declared domains keeps this
-                # backlog invocation productive; no key-count cap is involved.
+                # Walking a new cursor or discharging an owed domain keeps
+                # this invocation productive; no key-count cap is involved.
                 break
         return report
 
