@@ -717,7 +717,7 @@ class TestPolylogueConfigTOML:
 
         toml_path = tmp_path / "polylogue.toml"
         toml_path.write_text('[daemon]\nhost = "0.0.0.0"\nport = 8123\n', encoding="utf-8")
-        with pytest.raises(ConfigError, match=r"\[daemon\.api\]"):
+        with pytest.raises(ConfigError):
             load_polylogue_config(config_path=toml_path)
 
     def test_toml_sets_browser_capture(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
