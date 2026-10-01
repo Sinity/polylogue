@@ -20,8 +20,8 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.operations import archive_backup
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
+from polylogue.storage import backup_package as archive_backup
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -127,6 +127,11 @@ def _seed(root: Path, case: _Case) -> tuple[str, str, str]:
                 case.offsets[1] if case.offsets else None,
             ),
         )
+        conn.execute(
+            """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+               SELECT blob_hash, raw_id, 'raw_payload', source_path, blob_size, acquired_at_ms
+               FROM raw_sessions ORDER BY rowid"""
+        )
         if case.zip_member:
             record_raw_container_coordinate(
                 conn,
@@ -197,6 +202,57 @@ def test_both_routes_refuse_a_source_that_no_longer_holds_the_bytes(tmp_path: Pa
 
     assert proofs == [] and [row["blob_hash"] for row in unproven] == [blob_hash]
     assert restored is False and reason is not None
+
+
+def test_windowless_append_uses_receipt_order_despite_inverted_clocks(tmp_path: Path) -> None:
+    """A later full receipt and clock rollback cannot redefine the prior window."""
+    bootstrap_archive_root(tmp_path)
+    path = tmp_path / "rollout.jsonl"
+    path.write_bytes(_EARLIER + _RECORD)
+    source_path = str(path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+
+        def observe(payload: bytes, clock: int) -> str:
+            return archive.write_raw_payload(
+                provider=Provider.CODEX, payload=payload, source_path=source_path, acquired_at_ms=clock
+            )
+
+        predecessor = observe(_EARLIER, 9000)
+        later = observe(_LATER, 8000)
+        assert observe(_EARLIER, 1000) == predecessor
+        raw_id = observe(_RECORD, 500)
+        archive.source_connection.execute("UPDATE raw_sessions SET source_index = -1 WHERE raw_id = ?", (raw_id,))
+        assert observe(_LATER, 0) == later
+        archive.commit()
+    blob_hash = hashlib.sha256(_RECORD).hexdigest()
+    proofs, unproven = _backup_proof(tmp_path, blob_hash)
+    assert [proof["kind"] for proof in proofs] == ["historical_append_segment_sha256"], unproven
+    assert _raw_restoration(tmp_path, raw_id, blob_hash, source_path) == (True, None)
+
+
+def test_relocated_legacy_zip_has_one_backup_and_restoration_decision(tmp_path: Path) -> None:
+    raw_id, blob_hash, source_path = _seed(tmp_path, _CASES["zip_member"])
+    original = Path(source_path.rsplit(":", 1)[0])
+    relocated = tmp_path / "inbox" / original.name
+    relocated.parent.mkdir()
+    original.replace(relocated)
+    recorded_path = f"/absent/archive/inbox/{original.name}:conversation.json"
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_container_coordinates WHERE raw_id = ?", (raw_id,))
+        conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = ?", (recorded_path, raw_id))
+    proofs, unproven = _backup_proof(tmp_path, blob_hash)
+    assert [proof["kind"] for proof in proofs] == ["zip_reacquired_payload"], unproven
+    assert _raw_restoration(tmp_path, raw_id, blob_hash, recorded_path) == (True, None)
+
+
+def test_windowless_append_without_a_receipt_cannot_infer_a_predecessor(tmp_path: Path) -> None:
+    raw_id, blob_hash, source_path = _seed(tmp_path, _CASES["legacy_append"])
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'", (raw_id,))
+    proofs, unproven = _backup_proof(tmp_path, blob_hash)
+    assert proofs == []
+    assert [row["blob_hash"] for row in unproven] == [blob_hash]
+    assert _raw_restoration(tmp_path, raw_id, blob_hash, source_path) == (False, "no_source_window")
 
 
 def _chatgpt_conversation(name: str) -> dict[str, object]:

@@ -110,7 +110,8 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
             payload.parsed_session = artifact.session_by_id(payload.session_id)
             index = seal.observer("index")
             index.row_factory = sqlite3.Row
-            _prepare_ingest_payloads(index, kwargs.get("source_conn") or seal.observer("source"), (payload,))
+            kwargs.setdefault("source_conn", seal.observer("source"))
+            _prepare_ingest_payloads(index, kwargs["source_conn"], (payload,))
             seal.validate_observers_current()
             with write_lease("test.fixture.ingest", archive_root=root):
                 artifact.publish_blobs(reference_seal=seal)

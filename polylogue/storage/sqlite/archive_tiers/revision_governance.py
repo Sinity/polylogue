@@ -107,6 +107,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 
+from .source_items import SourceItemAdmission
+
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedSession
 
@@ -135,9 +137,12 @@ from polylogue.archive.session_revision_membership import MembershipClassificati
 from polylogue.core.codex_append import strip_codex_legacy_append_header
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+    MissingProfileIdentityError,
     RawFailureEvidenceKind,
+    RetainedZipMembershipUnprovedError,
     raw_failure_classification_reason,
 )
 from polylogue.core.sources import origin_from_provider, provider_from_origin
@@ -757,6 +762,8 @@ def write_raw_and_parsed(
     *,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -773,6 +780,8 @@ def write_raw_and_parsed(
         session,
         payload=payload,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         acquired_at_ms=acquired_at_ms,
         file_mtime_ms=file_mtime_ms,
         source_index=source_index,
@@ -793,6 +802,12 @@ def write_raw_payload(
     capture_mode: Provider | None = None,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -838,6 +853,29 @@ def write_raw_payload(
         raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
         blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
     store._blob_publisher.flush()
+    if captured_zip_coordinate is not None:
+        if not post_parse or revision is not None:
+            raise ValueError("captured ZIP payload requires post-parse admission")
+        return write_raw_blob_ref(
+            store,
+            provider=provider,
+            capture_mode=capture_mode,
+            post_parse=True,
+            blob_hash_hex=hashlib.sha256(payload).hexdigest(),
+            blob_size=len(payload),
+            source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
+            acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
+            source_index=source_index,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
     if post_parse:
         if revision is not None:
             raise ValueError("post-parse raw admission cannot receive a revision envelope")
@@ -850,6 +888,8 @@ def write_raw_payload(
             # explicitly.
             capture_mode=observed_capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -873,6 +913,8 @@ def write_raw_payload(
             origin=origin_from_provider(provider),
             capture_mode=observed_capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -891,6 +933,8 @@ def write_raw_payload(
         origin=origin_from_provider(provider),
         capture_mode=observed_capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
@@ -912,6 +956,12 @@ def write_raw_blob_ref(
     blob_hash_hex: str,
     blob_size: int,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -940,6 +990,12 @@ def write_raw_blob_ref(
             origin=origin_from_provider(provider),
             capture_mode=observed_capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             source_index=source_index,
             blob_hash=bytes.fromhex(blob_hash_hex),
             blob_size=blob_size,
@@ -952,11 +1008,15 @@ def write_raw_blob_ref(
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse blob admission arm: {admission.arm!r}")
         return admission.raw_id
+    if captured_zip_coordinate is not None:
+        raise ValueError("captured ZIP intake requires ordinary typed admission")
     return write_source_raw_session_blob_ref(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
         capture_mode=observed_capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
@@ -976,6 +1036,12 @@ def admit_raw_artifact_payload(
     provider: Provider,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     classification: ArtifactClassification,
@@ -1002,12 +1068,34 @@ def admit_raw_artifact_payload(
         raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
         blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
     store._blob_publisher.flush()
+    if captured_zip_coordinate is not None:
+        return admit_raw_artifact_blob_ref(
+            store,
+            provider=provider,
+            classification=classification,
+            blob_hash_hex=hashlib.sha256(payload).hexdigest(),
+            blob_size=len(payload),
+            source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
+            acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
+            source_index=source_index,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
     origin = origin_from_provider(provider)
     result = admit_raw_observation(
         store._ensure_source_conn(),
         origin=origin,
         capture_mode=provider,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
@@ -1032,6 +1120,12 @@ def admit_raw_artifact_blob_ref(
     blob_hash_hex: str,
     blob_size: int,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     classification: ArtifactClassification,
@@ -1048,6 +1142,12 @@ def admit_raw_artifact_blob_ref(
         origin=origin_from_provider(provider),
         capture_mode=provider,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
+        captured_zip_coordinate=captured_zip_coordinate,
+        source_item=source_item,
+        addressing_mode=addressing_mode,
+        content_identity=content_identity,
         source_index=source_index,
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
@@ -4273,7 +4373,28 @@ def mark_raw_parse_failed(
     """Persist a bounded parse/index failure for retained raw evidence."""
     conn = store._ensure_source_conn()
     with conn:
-        if isinstance(error, RawCASFrontierError):
+        if isinstance(error, (MissingProfileIdentityError, RetainedZipMembershipUnprovedError)):
+            row = conn.execute(
+                "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+            if row is not None:
+                _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
+                record_raw_failure_evidence(
+                    store,
+                    raw_id,
+                    provider=provider,
+                    source_path=str(row[0] or raw_id),
+                    source_index=int(row[1] or 0),
+                    acquired_at_ms=int(row[2] or 0),
+                    kind=(
+                        RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED
+                        if isinstance(error, RetainedZipMembershipUnprovedError)
+                        else RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY
+                    ),
+                    manage_transaction=False,
+                )
+        elif isinstance(error, RawCASFrontierError):
             row = conn.execute(
                 "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
                 (raw_id,),
@@ -4620,6 +4741,8 @@ def write_raw_and_parsed_result(
     *,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -4670,6 +4793,8 @@ def write_raw_and_parsed_result(
         origin=origin_from_provider(session.source_name),
         capture_mode=session.source_name,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
@@ -4778,6 +4903,8 @@ def admit_raw_and_parsed_result(
     *,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     acquired_at_ms: int,
     logical_source_key: str,
     file_mtime_ms: int | None = None,
@@ -4853,6 +4980,8 @@ def admit_raw_and_parsed_result(
             origin=origin_from_provider(session.source_name),
             capture_mode=session.source_name,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -4877,6 +5006,8 @@ def admit_raw_and_parsed_result(
             origin=origin_from_provider(session.source_name),
             capture_mode=session.source_name,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,

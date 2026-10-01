@@ -206,11 +206,8 @@ def _ensure_wire_claude_ai(
 ) -> None:
     # A realistic claude.ai ``chat_messages`` entry is a compact turn: a sender
     # plus text. ``_generate_from_schema`` instead fills every optional field
-    # (``content`` blocks, ``attachments``, ``files``), bloating each message so
-    # the conversation's discriminating ``chat_messages`` key falls outside the
-    # 8 KB acquisition detection prefix (``_DETECTION_PREFIX_SIZE``) and the
-    # bundle mis-detects → zero sessions imported. Reset the message to the
-    # realistic minimal shape, preserving a schema-generated uuid/created_at.
+    # (``content`` blocks, ``attachments``, ``files``). Keep the source fixture
+    # in its ordinary turn shape, preserving a schema-generated uuid/created_at.
     uuid_val = data.get("uuid") or str(uuid.UUID(int=rng.getrandbits(128), version=4))
     text = data.get("text")
     if not isinstance(text, str) or not text:

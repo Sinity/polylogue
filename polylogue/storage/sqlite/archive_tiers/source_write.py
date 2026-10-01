@@ -12,12 +12,16 @@ from collections.abc import Callable, Iterable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Literal, cast, get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import (
+    CapturedZipMemberCoordinate,
+    MemberAddressingMode,
+    captured_zip_coordinate_receipt,
+    read_captured_zip_coordinate_receipt,
+)
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     terminal_carrier_overwrite_predicate,
@@ -323,12 +327,15 @@ def record_raw_container_coordinate(
     split_index: int,
     addressing_mode: MemberAddressingMode | str | None,
     content_identity: str | None = None,
+    captured_coordinate: CapturedZipMemberCoordinate | None = None,
     manage_transaction: bool = True,
 ) -> None:
     """Persist one content-independent container coordinate for a raw row.
 
-    The coordinate is a hint for reacquisition; ``addressing_mode`` is the
-    part that carries meaning on its own, because ``split_index`` 0 is both
+    Historical ordinal-only evidence is a reacquisition hint. New captured
+    coordinates retain the exact opened physical container and declared member
+    namespace; their receipt cannot be inferred or replaced later.
+    ``addressing_mode`` distinguishes readings because ``split_index`` 0 is both
     the first element of a split member and the only slot a whole-member
     document can occupy. ``None`` re-asserts a coordinate without claiming a
     reading, which is what a caller that did not acquire the member knows.
@@ -350,14 +357,21 @@ def record_raw_container_coordinate(
         if addressing_mode is not None
         else None
     )
+    receipt = None if captured_coordinate is None else captured_zip_coordinate_receipt(captured_coordinate)
+    if captured_coordinate is not None and (
+        captured_coordinate.entry_ordinal != entry_ordinal
+        or captured_coordinate.split_index != split_index
+        or captured_coordinate.addressing_mode.value != mode
+    ):
+        raise ValueError("captured ZIP receipt differs from its durable address")
     with conn if manage_transaction else nullcontext():
         conn.execute(
             """
             INSERT OR IGNORE INTO raw_container_coordinates (
-                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity, captured_coordinate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity),
+            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity, receipt),
         )
         if mode is not None:
             # A row written before the mode existed carries the same
@@ -372,7 +386,7 @@ def record_raw_container_coordinate(
             )
         stored = conn.execute(
             """
-            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
+            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity, captured_coordinate
             FROM raw_container_coordinates
             WHERE raw_id = ?
             """,
@@ -382,6 +396,8 @@ def record_raw_container_coordinate(
         expected = (coordinate_format, entry_ordinal, split_index)
         if stored_tuple is None or stored_tuple[:3] != expected:
             raise ValueError(f"raw container coordinate changed for {raw_id}")
+        if receipt is not None and stored_tuple[5] != receipt:
+            raise ValueError(f"captured ZIP coordinate changed or missing for {raw_id}")
         if mode is not None and stored_tuple[3] != mode:
             raise ValueError(f"raw container addressing mode changed for {raw_id}")
         if content_identity is not None and stored_tuple[4] not in {None, content_identity}:
@@ -412,6 +428,22 @@ def record_raw_container_coordinate(
             """,
             (mode, content_identity, raw_id),
         )
+
+
+def read_raw_captured_zip_coordinate(conn: sqlite3.Connection, raw_id: str) -> CapturedZipMemberCoordinate | None:
+    """Read immutable acquired member evidence without reopening its namespace."""
+    row = conn.execute(
+        "SELECT captured_coordinate FROM raw_container_coordinates WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row[0] is None:
+        from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+        raise RetainedZipMembershipUnprovedError("retained ZIP input lacks its captured namespace/member receipt")
+    if not isinstance(row[0], str):
+        raise ValueError("captured ZIP coordinate receipt must be text")
+    return read_captured_zip_coordinate_receipt(row[0])
 
 
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:
@@ -511,6 +543,9 @@ def _assert_existing_raw_identity(
     origin: str,
     native_id: str | None,
     source_path: str,
+    canonical_source_path: str | None,
+    captured_profile_key: str | None,
+    new_profile_receipt: bool = False,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -522,7 +557,7 @@ def _assert_existing_raw_identity(
                logical_source_key, revision_kind, source_revision,
                predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                append_start_offset, append_end_offset, acquisition_generation,
-               revision_authority
+               revision_authority, canonical_source_path
         FROM raw_sessions WHERE raw_id = ?
         """,
         (raw_id,),
@@ -537,7 +572,10 @@ def _assert_existing_raw_identity(
     # as evidence made those routes mutually exclusive over identical bytes. A
     # refinement away from ``unknown-export`` is admitted; two confident but
     # different origins remain a genuine contradiction.
-    if values[1:6] != (native_id, source_path, source_index, blob_hash, blob_size):
+    if (
+        values[1:6] != (native_id, source_path, source_index, blob_hash, blob_size)
+        or values[-1] != canonical_source_path
+    ):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
     stored_origin = values[0]
     unknown_origin = Origin.UNKNOWN_EXPORT.value
@@ -545,8 +583,44 @@ def _assert_existing_raw_identity(
         raise ValueError(
             f"raw id is already bound to a conflicting origin: {raw_id} (stored={stored_origin!r}, incoming={origin!r})"
         )
-    if revision is not None and values[6:] != _revision_values(revision):
+    if revision is not None and values[6:-1] != _revision_values(revision):
         raise ValueError(f"raw id is already bound to a different revision envelope: {raw_id}")
+    record_raw_profile_identity(
+        conn, raw_id=raw_id, profile_key=captured_profile_key, allow_new_receipt=new_profile_receipt
+    )
+
+
+def require_profile_identity_key(value: str) -> str:
+    """Validate the existing Hermes profile qualifier at its durable boundary."""
+    if len(value) != 12 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("profile identity must be a 12-character lowercase hexadecimal qualifier")
+    return value
+
+
+def record_raw_profile_identity(
+    conn: sqlite3.Connection, *, raw_id: str, profile_key: str | None, allow_new_receipt: bool = False
+) -> None:
+    """Retain acquisition's qualifier without changing an existing raw receipt."""
+    if profile_key is None:
+        return
+    profile_key = require_profile_identity_key(profile_key)
+    existing = conn.execute(
+        "SELECT profile_key FROM raw_profile_identity_receipts WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    if existing is not None and existing[0] != profile_key:
+        raise ValueError(f"raw id is already bound to a different profile identity: {raw_id}")
+    if existing is None and not allow_new_receipt:
+        raise ValueError(f"retained raw is missing its original profile identity receipt: {raw_id}")
+    conn.execute(
+        "INSERT INTO raw_profile_identity_receipts(raw_id, profile_key) VALUES (?, ?) ON CONFLICT(raw_id) DO NOTHING",
+        (raw_id, profile_key),
+    )
+
+
+def read_raw_profile_identity(conn: sqlite3.Connection, raw_id: str) -> str | None:
+    """Read only the retained receipt; absence never permits path discovery."""
+    row = conn.execute("SELECT profile_key FROM raw_profile_identity_receipts WHERE raw_id = ?", (raw_id,)).fetchone()
+    return None if row is None else require_profile_identity_key(row[0])
 
 
 def _backfill_raw_file_mtime(conn: sqlite3.Connection, *, raw_id: str, file_mtime_ms: int | None) -> None:
@@ -691,6 +765,8 @@ def write_source_raw_session(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     source_index: int,
     payload: bytes,
     acquired_at_ms: int,
@@ -740,7 +816,7 @@ def write_source_raw_session(
     )
 
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        raw_insert = conn.execute(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
@@ -758,7 +834,7 @@ def write_source_raw_session(
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
-                str(Path(source_path).resolve()),
+                canonical_source_path,
                 source_index,
                 blob_hash,
                 blob_size,
@@ -797,6 +873,9 @@ def write_source_raw_session(
             origin=origin_value,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            new_profile_receipt=raw_insert.rowcount == 1,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=blob_size,
@@ -1081,6 +1160,8 @@ def write_source_raw_session_blob_ref(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
@@ -1117,7 +1198,7 @@ def write_source_raw_session_blob_ref(
         native_id,
     )
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        raw_insert = conn.execute(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
@@ -1133,7 +1214,7 @@ def write_source_raw_session_blob_ref(
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
-                str(Path(source_path).resolve()),
+                canonical_source_path,
                 source_index,
                 blob_hash,
                 blob_size,
@@ -1160,6 +1241,9 @@ def write_source_raw_session_blob_ref(
             origin=origin_value,
             native_id=native_id,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            new_profile_receipt=raw_insert.rowcount == 1,
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=blob_size,

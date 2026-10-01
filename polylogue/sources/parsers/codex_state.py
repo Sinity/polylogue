@@ -292,6 +292,11 @@ def classify_codex_sqlite_path(path: Path, *, immutable: bool = False) -> CodexS
         tables = frozenset(logical_source_shape(path, immutable=immutable))
     except (sqlite3.Error, OSError, LogicalExportError, ValueError):
         return "unknown"
+    return classify_codex_sqlite_tables(tables)
+
+
+def classify_codex_sqlite_tables(tables: frozenset[str]) -> CodexSqliteKind:
+    """Use the same declared table signatures for live and bound acquisition."""
     for kind, required in _KIND_REQUIRED_TABLES:
         if required and set(required).issubset(tables):
             return kind

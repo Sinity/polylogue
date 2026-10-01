@@ -1,10 +1,7 @@
-"""A stage a narrowed pass never ran is owed work, not converged work.
+"""A narrowed pass leaves unrun stages deferred.
 
-polylogue-zbzxs / polylogue-tjtua: ``converge_batch(whole_archive=False)`` used
-to record archive-wide stages as ``SKIPPED``, which counts as converged, which
-left ``convergence_debt_from_state`` with nothing to report -- and an empty
-failed-stage set makes ``clear_convergence_debt_except`` degenerate into
-"delete every debt row for this subject".
+Only exact evaluated subject/stage completion may settle existing debt;
+absence from a failure projection carries no settlement authority.
 """
 
 from __future__ import annotations

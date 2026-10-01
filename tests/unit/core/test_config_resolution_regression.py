@@ -279,7 +279,7 @@ class TestDirectEnvBypassCallersRouteThroughResolver:
 
     Reverted-mutation witness (backup): restore
     ``env_tmpdir = os.environ.get("POLYLOGUE_BACKUP_VERIFY_TMPDIR")`` in
-    ``polylogue/operations/archive_backup.py::_backup_verification_scratch_parent`` --
+    ``polylogue/storage/backup_package.py::_backup_verification_scratch_parent`` --
     the test then fails because no environment variable is set (TOML-only
     configuration) and the scratch parent falls back to ``/realm/tmp``
     instead of the configured directory.
@@ -291,7 +291,7 @@ class TestDirectEnvBypassCallersRouteThroughResolver:
         tmp_path: Path,
         workspace_env: dict[str, Path],
     ) -> None:
-        from polylogue.operations.archive_backup import _backup_verification_scratch_parent
+        from polylogue.storage.backup_package import _backup_verification_scratch_parent
 
         _disable_site(monkeypatch)
         monkeypatch.delenv("POLYLOGUE_BACKUP_VERIFY_TMPDIR", raising=False)

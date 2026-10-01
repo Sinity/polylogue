@@ -30,6 +30,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKind, TitleSource
 from polylogue.logging import get_logger
+from polylogue.sources.detection_projection import DetectorProjection
 
 from ..base import (
     AdmissionLedger,
@@ -1088,3 +1089,27 @@ __all__ = [
     "parse_design",
     "parse_memories",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Fold all chat messages while preserving the root predicates' field types."""
+    message = DetectorProjection(
+        fields=dict.fromkeys((*_CLAUDE_AI_MESSAGE_ROLE_KEYS, *_CLAUDE_AI_MESSAGE_CONTENT_KEYS))
+    )
+    scalar = DetectorProjection()
+    return DetectorProjection(
+        fields={
+            "chat_messages": DetectorProjection(
+                item=message, array_fold="any", array_predicate=_chat_message_node_shape_is_plausible
+            ),
+            "messages": scalar,
+            "project": None,
+            "account_uuid": scalar,
+            "conversations_memory": None,
+            "project_memories": None,
+            "uuid": scalar,
+            "docs": scalar,
+            "prompt_template": None,
+            "is_starter_project": None,
+        }
+    )

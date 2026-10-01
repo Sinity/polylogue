@@ -3,8 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.operations.archive_backup import _all_archive_tiers, _profile_archive_tiers
 from polylogue.storage.archive_identity import ArchiveIdentity
+from polylogue.storage.backup_package import _all_archive_tiers, _profile_archive_tiers
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

@@ -164,3 +164,68 @@ def test_native_missing_message_id_does_not_pair_tools_by_ordinal(bundle: dict[s
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert session.messages[0].provider_message_id == ""
     assert all(block.tool_id is None for block in session.messages[0].blocks)
+
+
+@pytest.mark.parametrize("wrapped_responses", [False, True])
+@pytest.mark.parametrize("nested_conversation", [False, True])
+def test_native_detection_and_ordinary_dispatch_preserve_endpoint_bundle(
+    bundle: dict[str, Any],
+    wrapped_responses: bool,
+    nested_conversation: bool,
+) -> None:
+    from io import BytesIO
+
+    from polylogue.core.enums import Provider
+    from polylogue.sources.dispatch import (
+        detect_provider_evidence,
+        detect_provider_from_stream_evidence,
+        parse_payload,
+    )
+
+    payload = deepcopy(bundle)
+    if wrapped_responses and isinstance(payload["responses"], list):
+        payload["responses"] = {"responses": payload["responses"]}
+    elif not wrapped_responses and isinstance(payload["responses"], dict):
+        payload["responses"] = payload["responses"]["responses"]
+    conversation = payload["conversation"]
+    if isinstance(conversation.get("conversation"), dict):
+        conversation = conversation["conversation"]
+    payload["conversation"] = {"conversation": conversation} if nested_conversation else conversation
+    # Both account-export and native shape evidence exist. The narrower native
+    # contract must decide dispatch before export lowering drops these turns.
+    payload["conversations"] = [{"conversation": {"title": "account"}, "responses": []}]
+    expected = detect_provider_evidence(payload)
+    assert expected == (Provider.GROK, "grok.looks_like_native_bundle")
+    handle = BytesIO(json.dumps(payload).encode())
+    assert detect_provider_from_stream_evidence(handle) == expected
+    assert handle.tell() == 0
+    parsed = parse_payload(Provider.GROK, payload, "fallback")
+    assert len(parsed) == 1
+    assert session_revision_projection(parsed[0]) == session_revision_projection(
+        grok.parse_conversation(payload, "fallback")
+    )
+
+
+def test_native_bundle_prepared_generic_route_matches_ordinary_parser(
+    tmp_path: Path,
+    bundle: dict[str, Any],
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+
+    source = tmp_path / "native.json"
+    source.write_text(json.dumps(bundle), encoding="utf-8")
+    prepared = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert prepared.error is None
+    sessions = list(prepared.iter_sessions())
+    assert len(sessions) == 1
+    assert session_revision_projection(sessions[0]) == session_revision_projection(
+        grok.parse_conversation(bundle, "fallback")
+    )

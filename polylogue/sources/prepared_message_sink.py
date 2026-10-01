@@ -1082,6 +1082,35 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
         )
         self._count += 1
 
+    @contextmanager
+    def original_items_for_rewrite(self) -> Iterator[Iterator[ParsedAttachment]]:
+        """Keep exact original carrier rows while an expansion overwrites slots."""
+        if self._writer is None:
+            raise TypeError("sealed prepared attachments cannot be rewritten")
+        conn = self._writer
+        table = "attachment_rewrite_" + uuid.uuid4().hex
+        cursor = None
+        try:
+            conn.execute(
+                f"CREATE TEMP TABLE {table} AS SELECT attachment_ordinal, attachment_json "
+                "FROM prepared_attachment WHERE session_ordinal = ? ORDER BY attachment_ordinal",
+                (self.session_ordinal,),
+            )
+            cursor = conn.execute(
+                f"SELECT attachment_ordinal, attachment_json FROM {table} ORDER BY attachment_ordinal"
+            )
+
+            def items() -> Iterator[ParsedAttachment]:
+                while page := cursor.fetchmany(256):
+                    for ordinal, encoded in page:
+                        yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
+
+            yield items()
+        finally:
+            if cursor is not None:
+                cursor.close()
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+
     def __iter__(self) -> Iterator[ParsedAttachment]:
         if self._writer is not None:
             rows = self._writer.execute(

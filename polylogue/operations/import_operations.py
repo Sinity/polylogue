@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -62,18 +63,29 @@ class ImportRequest(SurfacePayloadModel):
         return json_document(self.model_dump(mode="json"))
 
 
-def import_source_admissibility(path: Path) -> ImportPreflightResult:
-    """Classify a staged import source before anything claims to schedule it.
+@dataclass(frozen=True, slots=True)
+class ImportSourceAdmission:
+    """Complete preflight and its authenticated original declaration."""
 
-    The classifier itself lives in ``polylogue.sources``; surfaces reach it
-    through this operation-layer entry point because a surface does not import
-    the source substrate directly (``devtools gate layering``). The returned
-    :class:`~polylogue.sources.import_preflight.ImportPreflightResult` carries
-    ``admissible``, ``error_code`` and ``summary()``.
-    """
-    from polylogue.sources.import_preflight import preflight_import_source
-
-    return preflight_import_source(path)
+    preflight: ImportPreflightResult
+    request: ImportRequest
 
 
-__all__ = ["ImportRequest", "import_source_admissibility"]
+def prepare_import_source_admission(path: Path) -> ImportSourceAdmission:
+    """Classify the captured denominator and carry its declaration into submission."""
+    from polylogue.operations.ingest_inputs import preflight_ingest_input
+
+    result, declaration = preflight_ingest_input(path, check_stop=lambda: None)
+    source_path = result.source_path
+    source_name = Path(source_path).name if declaration is None else str(declaration["source_name"])
+    return ImportSourceAdmission(
+        result,
+        ImportRequest(
+            source_path=source_path,
+            source_name=source_name,
+            staged_path=str(path),
+        ),
+    )
+
+
+__all__ = ["ImportRequest", "ImportSourceAdmission", "prepare_import_source_admission"]

@@ -17,8 +17,9 @@ from polylogue.operations.daemon_protocol import validate_operation_result
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, FrozenSourceManifest
+from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.source_builders import prepared_ingest_manifest
 
 
 def _accepted_ingest_state(tmp_path: Path) -> dict[str, object]:
@@ -28,10 +29,12 @@ def _accepted_ingest_state(tmp_path: Path) -> dict[str, object]:
     publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = FrozenSourceManifest(
+    manifest = prepared_ingest_manifest(
+        tmp_path,
         "source-generation:await-contract",
         "d" * 64,
         (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, publication_id),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:test", principal.actor_ref, "f" * 64, "ingest")

@@ -264,6 +264,7 @@ def _setup_source_walk(
         include_file_mtime=include_mtime,
         known_mtimes=known_mtimes,
         known_cursors=known_cursors,
+        source_name=source.name,
     )
     sidecar_data = _empty_sidecar_data()
     if discover_sidecars:

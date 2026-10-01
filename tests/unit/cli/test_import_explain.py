@@ -7,13 +7,9 @@ import zipfile
 from pathlib import Path
 
 from click.testing import CliRunner
-from pytest import MonkeyPatch
 
-from polylogue.archive import zip_admission as zip_admission_module
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
-from polylogue.sources import import_explain as import_explain_module
-from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.import_explain import explain_import_path
 
 
@@ -167,129 +163,21 @@ def test_import_explain_zip_recovers_path_classified_json_record_array(tmp_path:
     )
 
 
-def test_import_explain_zip_rejects_oversized_member_before_read(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    archive = tmp_path / "oversized.zip"
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("big.json", b"{}")
-    monkeypatch.setattr(import_explain_module, "MAX_UNCOMPRESSED_SIZE", 1)
-    monkeypatch.setattr(zip_admission_module, "MAX_UNCOMPRESSED_SIZE", 1)
-
+def test_import_explain_zip_preserves_complete_mixed_provider_members(tmp_path: Path) -> None:
+    archive = tmp_path / "mixed.zip"
+    fixtures = Path(__file__).parents[2] / "fixtures" / "origin-capability"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        chatgpt = json.loads((fixtures / "chatgpt-export.json").read_bytes())
+        if isinstance(chatgpt, list):
+            chatgpt[0]["padding"] = "x" * (2 * 1024 * 1024)
+        else:
+            chatgpt["padding"] = "x" * (2 * 1024 * 1024)
+        output.writestr("conversations.json", json.dumps(chatgpt))
+        output.writestr("minority/claude.json", (fixtures / "claude-ai-export.json").read_bytes())
     payload = explain_import_path(archive)
-
-    assert payload.produced.sessions == 0
-    assert payload.skipped
-    skipped_path = payload.skipped[0].source_path
-    assert skipped_path is not None
-    assert skipped_path.endswith("oversized.zip:big.json")
-    assert "file size" in payload.skipped[0].reason
-
-
-def test_import_explain_zip_rejects_aggregate_over_cap_before_read(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    """A zip whose entries are each individually under the per-entry cap but
-    whose running total would exceed MAX_AGGREGATE_UNCOMPRESSED_SIZE must be
-    reported by the --explain preview the same way a real ``import`` run
-    rejects it (polylogue-it3u): before this fix, the preview only checked
-    the old per-entry ratio/size limits and would wrongly claim every entry
-    here "will import".
-    """
-    archive = tmp_path / "aggregate.zip"
-    entry_bytes = b'{"a": 1}'
-    entry_names = [f"entry_{i}.json" for i in range(3)]
-    with zipfile.ZipFile(archive, "w") as zf:
-        for name in entry_names:
-            zf.writestr(name, entry_bytes)
-    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
-
-    payload = explain_import_path(archive)
-
-    aggregate_skips = [row for row in payload.skipped if "aggregate uncompressed size" in row.reason]
-    assert [row.source_path for row in aggregate_skips] == [
-        f"{archive}:entry_1.json",
-        f"{archive}:entry_2.json",
-    ]
-
-    # Cross-check against the real decode-path validator over the exact same
-    # entries: the preview's accepted/rejected split must match it exactly.
-    with zipfile.ZipFile(archive) as zf:
-        validator = ZipEntryValidator("chatgpt", cursor_state=None, zip_path=archive)
-        accepted_names = {info.filename for info in validator.filter_entries(zf.infolist())}
-    assert accepted_names == {"entry_0.json"}
-    rejected_by_preview = {row.source_path.split(":", 1)[1] for row in aggregate_skips if row.source_path is not None}
-    assert rejected_by_preview == set(entry_names) - accepted_names
-
-
-def test_import_explain_zip_aggregate_admission_precedes_path_session_decode(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    """Aggregate admission rejects a later session-shaped member before decode.
-
-    The tiny cap stands in for the production 64 GiB aggregate ceiling. The
-    central-directory sizes are enough to exercise admission, so this test
-    does not allocate a hostile payload.
-    """
-    archive = tmp_path / "workflow.zip"
-    first_bytes = b"{}"
-    later_session_bytes = json.dumps(
-        [
-            {
-                "sessionId": "later-session",
-                "type": "user",
-                "uuid": "later-user",
-                "message": {"role": "user", "content": "later"},
-            }
-        ]
-    ).encode()
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("safe.json", first_bytes)
-        zf.writestr("workflows/later.json", later_session_bytes)
-    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(first_bytes))
-
-    decoded_members: list[str] = []
-
-    def fail_if_later_member_decoded(
-        _archive: zipfile.ZipFile,
-        info: zipfile.ZipInfo,
-        *,
-        provider: Provider,
-    ) -> object:
-        del provider
-        decoded_members.append(info.filename)
-        raise AssertionError(f"aggregate admission must reject {info.filename} before decode")
-
-    monkeypatch.setattr(import_explain_module, "zip_entry_session_artifact", fail_if_later_member_decoded)
-
-    payload = explain_import_path(archive, source_name="claude-code")
-
-    assert decoded_members == []
-    assert payload.produced.sessions == 0
-    aggregate_skips = [row for row in payload.skipped if "aggregate uncompressed size" in row.reason]
-    assert [row.source_path for row in aggregate_skips] == [f"{archive}:workflows/later.json"]
-
-
-def test_import_explain_zip_allows_archive_comfortably_under_aggregate_cap(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    """Multiple small entries whose sum stays well under the aggregate cap
-    are all reported importable -- no regression for legitimate multi-file
-    exports."""
-    archive = tmp_path / "normal.zip"
-    entry_bytes = b'{"a": 1}'
-    with zipfile.ZipFile(archive, "w") as zf:
-        for i in range(3):
-            zf.writestr(f"entry_{i}.json", entry_bytes)
-    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes) * 10)
-
-    payload = explain_import_path(archive)
-
-    assert not any("aggregate uncompressed size" in row.reason for row in payload.skipped)
+    assert payload.produced.sessions >= 2
+    assert {ref.split(":", 2)[1] for ref in payload.produced.session_refs} >= {"chatgpt", "claude-ai"}
+    assert not payload.skipped
 
 
 def test_import_explain_names_the_container_origin_of_a_claude_ai_export_zip(tmp_path: Path) -> None:

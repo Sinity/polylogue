@@ -52,7 +52,7 @@ from polylogue.schemas.source_recipe import (
     has_collapsed_names,
     relevant_normalization_paths,
 )
-from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
+from polylogue.sources.decoder_zip import ZipEntryValidator, open_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
 from polylogue.sources.origin_specs import (
     DatabaseMemberBinding,
@@ -1589,7 +1589,7 @@ def _collect_zip_candidate(
             members = validator.filter_entries(observable, allowed_suffixes=(".json", ".jsonl", ".ndjson"))
             for member_index, member in enumerate(sorted(members, key=lambda item: item.filename)):
                 member_path = Path(member.filename)
-                with open_bounded_zip_entry(archive, member) as member_handle:
+                with open_zip_entry(archive, member) as member_handle:
                     digest_builder = hashlib.sha256()
                     for chunk in iter(lambda: member_handle.read(1024 * 1024), b""):
                         digest_builder.update(chunk)
@@ -1608,7 +1608,7 @@ def _collect_zip_candidate(
                 )
                 try:
                     if member_path.suffix.lower() in {".jsonl", ".ndjson"}:
-                        with open_bounded_zip_entry(archive, member) as handle:
+                        with open_zip_entry(archive, member) as handle:
                             rows, member_records, versions, unrecognized = _collect_payload_evidence(
                                 member_candidate,
                                 member_revision,
@@ -1624,7 +1624,7 @@ def _collect_zip_candidate(
                             member_candidate,
                             member_revision,
                             _iter_document_payloads(
-                                partial(open_bounded_zip_entry, archive, member),
+                                partial(open_zip_entry, archive, member),
                                 member.filename,
                                 byte_count=member.file_size,
                             ),
@@ -1634,7 +1634,7 @@ def _collect_zip_candidate(
                             spool_path=spool_path,
                             spool_partition=str(member_index),
                         )
-                except (SourceInferenceError, ZipBombError, OSError) as exc:
+                except (SourceInferenceError, OSError) as exc:
                     return _CollectedCandidate(
                         candidate, revision, SourceTerminal("decode_failed", byte_count, reason=str(exc))
                     )
@@ -1643,7 +1643,7 @@ def _collect_zip_candidate(
                 record_count += member_records
                 producer_versions.update(versions)
                 producer_version_unrecognized = producer_version_unrecognized or unrecognized
-    except (OSError, ZipBombError, zipfile.BadZipFile):
+    except (OSError, zipfile.BadZipFile):
         return _CollectedCandidate(candidate, revision, SourceTerminal("decode_failed", reason="invalid_zip"))
     if not contributions and (spool_path is None or not _spool_has_contributions(spool_path)):
         if non_applicable_members and not observable:

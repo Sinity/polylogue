@@ -293,7 +293,12 @@ def test_two_empty_members_of_one_profile_keep_distinct_identities(tmp_path: Pat
 
     revision = sqlite_logical_revision(state)
     assert sqlite_logical_revision(verification) == revision, "sanity: both members are logically empty"
-    assert hermes_profile_raw_id(state, 0, revision) != hermes_profile_raw_id(verification, 0, revision)
+    from polylogue.sources.parsers.hermes_identity import profile_key
+
+    key = profile_key(profile)
+    assert hermes_profile_raw_id(
+        state, 0, revision, identity_path=state, profile_identity=key
+    ) != hermes_profile_raw_id(verification, 0, revision, identity_path=verification, profile_identity=key)
 
 
 def test_retained_blob_yields_the_same_content_term_as_live_acquisition(tmp_path: Path) -> None:
@@ -568,7 +573,7 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
     writer.execute("PRAGMA wal_autocheckpoint=0")
     store = _blob_store(tmp_path)
 
-    original_export = sqlite_export.write_logical_export
+    original_export = sqlite_export._write_logical_export_bound
     committed = False
 
     def export_then_commit(handle_source: Path, handle: Any, **kwargs: Any) -> None:
@@ -582,7 +587,7 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
         # ``snapshot_sqlite_to_blob`` resolves the writer through the
         # sqlite_snapshot module, so patching its imported symbol exercises
         # the actual acquisition route rather than a test-only wrapper.
-        monkeypatch.setattr(sqlite_snapshot, "write_logical_export", export_then_commit)
+        monkeypatch.setattr(sqlite_snapshot, "_write_logical_export_bound", export_then_commit)
         snapshot = snapshot_sqlite_to_blob(source, store)
 
         assert committed

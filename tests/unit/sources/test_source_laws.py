@@ -77,7 +77,7 @@ from polylogue.sources.providers.claude_code import (
     ClaudeCodeToolUse,
     ClaudeCodeUsage,
 )
-from polylogue.sources.source_acquisition import _iter_entry_payloads, iter_source_raw_data
+from polylogue.sources.source_acquisition import _iter_entry_payloads, iter_source_acquisition_records
 from polylogue.sources.source_acquisition_components import SplitPayloadBuffer
 from polylogue.sources.source_parsing import (
     iter_source_sessions,
@@ -86,7 +86,7 @@ from polylogue.sources.source_parsing import (
 from polylogue.sources.source_walk import _has_supported_extension, _is_supported_source_path
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
-from tests.infra.source_builders import GenericSessionBuilder, make_claude_chat_message
+from tests.infra.source_builders import GenericSessionBuilder, acquired_payloads, make_claude_chat_message
 from tests.infra.strategies import (
     json_array_bytes_strategy,
     json_document_strategy,
@@ -519,7 +519,7 @@ def test_iter_source_sessions_accepts_grouped_json_extensions(case: tuple[str, b
 
 
 def test_parse_payload_depth_guard_contract() -> None:
-    assert parse_payload(Provider.CHATGPT.value, {}, "test", _depth=11) == []
+    assert parse_payload(Provider.CHATGPT.value, {}, "test") == []
 
 
 def test_source_iteration_preserves_claude_attachment_metadata_contract(tmp_path: Path) -> None:
@@ -1298,7 +1298,7 @@ def test_iter_source_sessions_skips_agent_meta_sidecars(tmp_path: Path) -> None:
     (source_dir / "agent-a123.meta.json").write_text('{"agentType":"general-purpose"}', encoding="utf-8")
 
     sessions = list(iter_source_sessions(Source(name="claude-code", path=source_dir)))
-    raw_items = list(iter_source_raw_data(Source(name="claude-code", path=source_dir)))
+    raw_items = list(acquired_payloads(iter_source_acquisition_records(Source(name="claude-code", path=source_dir))))
 
     assert sessions == []
     assert len(raw_items) == 1
@@ -1496,7 +1496,6 @@ def test_session_emitter_resolves_schema_for_payloads(monkeypatch: pytest.Monkey
         provider: object,
         payload: object,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: object | None = None,
         source_path: str | None = None,
@@ -2414,7 +2413,7 @@ def test_download_drive_files_contract() -> None:
         assert result.failed_files == [{"file_id": "two", "name": "bad.jsonl", "error": "boom"}]
 
 
-def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_reads_plain_and_zip_sources_contract(tmp_path: Path) -> None:
     """Raw source iteration keeps whole-file capture for plain files and grouped ZIP entries."""
     plain_path = tmp_path / "chatgpt-export.json"
     plain_path.write_text('{"mapping": {}, "id": "chatgpt-1"}', encoding="utf-8")
@@ -2426,8 +2425,8 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
             b'{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}\n',
         )
 
-    plain_items = list(iter_source_raw_data(Source(name="chatgpt", path=plain_path)))
-    zip_items = list(iter_source_raw_data(Source(name="claude-code", path=archive_path)))
+    plain_items = list(acquired_payloads(iter_source_acquisition_records(Source(name="chatgpt", path=plain_path))))
+    zip_items = list(acquired_payloads(iter_source_acquisition_records(Source(name="claude-code", path=archive_path))))
 
     assert len(plain_items) == 1
     assert plain_items[0].source_path == str(plain_path)
@@ -2443,7 +2442,7 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert zip_items[0].file_mtime is not None
 
 
-def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
+def test_iter_source_acquisition_records_streams_grouped_zip_entries_into_blob_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2460,7 +2459,7 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
 
     monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
 
-    items = list(iter_source_raw_data(Source(name="claude-code", path=archive_path)))
+    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="claude-code", path=archive_path))))
 
     assert len(items) == 1
     assert items[0].blob_hash is not None
@@ -2516,7 +2515,7 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
         ),
     ],
 )
-def test_iter_source_raw_data_splits_multi_session_zip_entries_for_non_grouped_providers(
+def test_iter_source_acquisition_records_splits_multi_session_zip_entries_for_non_grouped_providers(
     tmp_path: Path,
     entry_name: str,
     payload_bytes: bytes,
@@ -2530,7 +2529,7 @@ def test_iter_source_raw_data_splits_multi_session_zip_entries_for_non_grouped_p
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr(f"nested/{entry_name}", payload_bytes)
 
-    items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
+    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="inbox", path=archive_path))))
 
     expected_path = f"{archive_path}:nested/{entry_name}"
     assert [item.source_path for item in items] == [expected_path, expected_path]
@@ -2543,7 +2542,7 @@ def test_iter_source_raw_data_splits_multi_session_zip_entries_for_non_grouped_p
     ] == expected_ids
 
 
-def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entries(
+def test_iter_source_acquisition_records_avoids_whole_blob_provider_detection_for_zip_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2571,23 +2570,15 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
             ).encode("utf-8"),
         )
 
-    from polylogue.sources import source_acquisition_components as components
-    from polylogue.sources.dispatch import detect_provider_from_raw_bytes_evidence as real_detect
-
-    def _prefix_only(payload: bytes, *args: Any, **kwargs: Any) -> Any:
-        # The inbox provider sniff reads a bounded prefix of each member; a
-        # whole member's bytes here would be the whole-blob detection this
-        # law forbids.
-        if len(payload) > components._DETECTION_PREFIX_SIZE:
-            raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
-        return real_detect(payload, *args, **kwargs)
+    def forbid_whole_blob_detection(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("ZIP evidence must use the complete streaming detector")
 
     monkeypatch.setattr(
-        "polylogue.sources.source_acquisition_components.detect_provider_from_raw_bytes_evidence",
-        _prefix_only,
+        "polylogue.sources.dispatch.detect_provider_from_raw_bytes_evidence",
+        forbid_whole_blob_detection,
     )
 
-    items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
+    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="inbox", path=archive_path))))
 
     assert len(items) == 2
 
@@ -2600,7 +2591,7 @@ def test_jsonl_prefix_provider_detection_ignores_truncated_tail() -> None:
     )
     prefix = full[:150]
 
-    provider = dispatch_module._detect_provider_from_raw_bytes(
+    provider, _evidence = dispatch_module.detect_provider_from_raw_bytes_evidence(
         prefix,
         "session.jsonl",
         Provider.UNKNOWN,
@@ -2622,9 +2613,9 @@ def test_jsonl_provider_detection_samples_stream_without_whole_document_parse(
     def _fail_whole_document_decode(_raw_bytes: bytes) -> None:
         raise AssertionError("JSONL provider detection should not decode the whole payload as one JSON document")
 
-    monkeypatch.setattr(dispatch_module, "_decode_json_bytes", _fail_whole_document_decode)
+    monkeypatch.setattr("polylogue.sources.decoders._decode_json_bytes", _fail_whole_document_decode)
 
-    provider = dispatch_module._detect_provider_from_raw_bytes(
+    provider, _evidence = dispatch_module.detect_provider_from_raw_bytes_evidence(
         payload,
         "session.jsonl",
         Provider.UNKNOWN,
@@ -2633,7 +2624,7 @@ def test_jsonl_provider_detection_samples_stream_without_whole_document_parse(
     assert provider is Provider.CLAUDE_CODE
 
 
-def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_reports_split_payload_observations(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr(
@@ -2661,9 +2652,11 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     observations: list[JSONDocument] = []
 
     items = list(
-        iter_source_raw_data(
-            Source(name="inbox", path=archive_path),
-            observation_callback=observations.append,
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="inbox", path=archive_path),
+                observation_callback=observations.append,
+            )
         )
     )
 
@@ -2705,7 +2698,7 @@ def test_split_payload_buffer_waits_until_zip_entry_is_multi_session() -> None:
     assert buffer.pending_index == 3
 
 
-def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
+def test_iter_source_acquisition_records_streams_preserved_zip_entries_into_blob_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2730,7 +2723,7 @@ def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
 
     monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
 
-    items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path)))
+    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="chatgpt", path=archive_path))))
 
     assert len(items) == 1
     assert items[0].blob_hash is not None
@@ -2868,7 +2861,7 @@ _CHATGPT_EXPORT_MEMBER: JSONDocument = {
 }
 
 
-def test_iter_source_raw_data_classifies_mixed_members_of_an_inbox_export(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_classifies_mixed_members_of_an_inbox_export(tmp_path: Path) -> None:
     """The import inbox has no single owning origin, so each member classifies.
 
     Anti-vacuity: binding the inbox to one origin refuses the Gemini member.
@@ -2881,7 +2874,7 @@ def test_iter_source_raw_data_classifies_mixed_members_of_an_inbox_export(tmp_pa
             b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}}',
         )
 
-    items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
+    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="inbox", path=archive_path))))
 
     assert [item.source_path for item in items] == [
         f"{archive_path}:nested/chatgpt-export.json",
@@ -2890,7 +2883,7 @@ def test_iter_source_raw_data_classifies_mixed_members_of_an_inbox_export(tmp_pa
     assert [item.provider_hint for item in items] == [Provider.CHATGPT, Provider.GEMINI]
 
 
-def test_iter_source_raw_data_refuses_foreign_members_at_a_bound_location(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_refuses_foreign_members_at_a_bound_location(tmp_path: Path) -> None:
     """A location bound to one origin does not admit another origin's member.
 
     Only the import inbox classifies mixed exports. The same archive under a
@@ -2911,42 +2904,52 @@ def test_iter_source_raw_data_refuses_foreign_members_at_a_bound_location(tmp_pa
         zf.writestr("nested/chatgpt-export.json", json.dumps(_CHATGPT_EXPORT_MEMBER).encode("utf-8"))
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path), cursor_state=cursor_state))
+    items = list(
+        acquired_payloads(
+            iter_source_acquisition_records(Source(name="chatgpt", path=archive_path), cursor_state=cursor_state)
+        )
+    )
 
     assert [item.provider_hint for item in items] == [Provider.CHATGPT]
     assert cursor_state["failed_count"] == 1
     assert "foreign_origin_content" in str(cursor_state["failed_files"])
 
 
-def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_skips_known_mtimes_without_reading_file(tmp_path: Path) -> None:
     skipped = tmp_path / "cached.json"
     fresh = tmp_path / "fresh.json"
     skipped.write_text('{"id":"cached"}', encoding="utf-8")
     fresh.write_text('{"id":"fresh"}', encoding="utf-8")
 
     items = list(
-        iter_source_raw_data(
-            Source(name="chatgpt", path=tmp_path),
-            known_mtimes={str(skipped): str(_get_file_mtime(skipped))},
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="chatgpt", path=tmp_path),
+                known_mtimes={str(skipped): str(_get_file_mtime(skipped))},
+            )
         )
     )
 
     assert [item.source_path for item in items] == [str(fresh)]
 
 
-def test_iter_source_raw_data_skips_zero_byte_plain_files_and_tracks_failure(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_skips_zero_byte_plain_files_and_tracks_failure(tmp_path: Path) -> None:
     empty = tmp_path / "empty.jsonl"
     empty.write_bytes(b"")
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    items = list(iter_source_raw_data(Source(name="codex", path=empty), cursor_state=cursor_state))
+    items = list(
+        acquired_payloads(iter_source_acquisition_records(Source(name="codex", path=empty), cursor_state=cursor_state))
+    )
 
     assert items == []
     assert cursor_state["failed_count"] == 1
     assert cursor_state["failed_files"] == [{"path": str(empty), "error": "empty file"}]
 
 
-def test_iter_source_raw_data_summarizes_zero_byte_plain_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_iter_source_acquisition_records_summarizes_zero_byte_plain_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     first = tmp_path / "first.jsonl"
     second = tmp_path / "second.jsonl"
     first.write_bytes(b"")
@@ -2966,7 +2969,7 @@ def test_iter_source_raw_data_summarizes_zero_byte_plain_files(tmp_path: Path, m
         lambda message, *args: debugs.append(message % args if args else message),
     )
 
-    items = list(iter_source_raw_data(Source(name="codex", path=tmp_path)))
+    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="codex", path=tmp_path))))
 
     assert items == []
     assert warnings == ["Skipped 2 empty artifacts from source 'codex'. Run with --verbose for details."]
@@ -2976,20 +2979,26 @@ def test_iter_source_raw_data_summarizes_zero_byte_plain_files(tmp_path: Path, m
     ]
 
 
-def test_iter_source_raw_data_skips_zero_byte_zip_entries_and_tracks_failure(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_skips_zero_byte_zip_entries_and_tracks_failure(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/empty.jsonl", b"")
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    items = list(iter_source_raw_data(Source(name="codex", path=archive_path), cursor_state=cursor_state))
+    items = list(
+        acquired_payloads(
+            iter_source_acquisition_records(Source(name="codex", path=archive_path), cursor_state=cursor_state)
+        )
+    )
 
     assert items == []
     assert cursor_state["failed_count"] == 1
     assert cursor_state["failed_files"] == [{"path": f"{archive_path}:nested/empty.jsonl", "error": "empty file"}]
 
 
-def test_iter_source_raw_data_summarizes_zero_byte_zip_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_iter_source_acquisition_records_summarizes_zero_byte_zip_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/empty-a.jsonl", b"")
@@ -3009,7 +3018,7 @@ def test_iter_source_raw_data_summarizes_zero_byte_zip_entries(tmp_path: Path, m
         lambda message, *args: debugs.append(message % args if args else message),
     )
 
-    items = list(iter_source_raw_data(Source(name="codex", path=archive_path)))
+    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="codex", path=archive_path))))
 
     assert items == []
     assert warnings == ["Skipped 2 empty artifacts from source 'codex'. Run with --verbose for details."]
@@ -3019,7 +3028,7 @@ def test_iter_source_raw_data_summarizes_zero_byte_zip_entries(tmp_path: Path, m
     ]
 
 
-def test_iter_source_raw_data_tracks_read_failures_without_stopping(
+def test_iter_source_acquisition_records_tracks_read_failures_without_stopping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     good = tmp_path / "good.json"
@@ -3044,7 +3053,11 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(
     monkeypatch.setattr(BlobStore, "write_from_fileobj", flaky_write)
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    items = list(iter_source_raw_data(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state))
+    items = list(
+        acquired_payloads(
+            iter_source_acquisition_records(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state)
+        )
+    )
 
     assert [item.source_path for item in items] == [str(good)]
     assert cursor_state["failed_count"] == 1

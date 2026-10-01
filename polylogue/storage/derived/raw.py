@@ -57,10 +57,10 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
 )
 from polylogue.storage.source_blob_restoration import (
-    is_legacy_append_without_window,
-    is_recorded_container_member,
+    read_prior_full_source_receipts,
     read_raw_source_evidence,
     retained_blob_source_candidates,
+    retained_source_location,
     stage_exact_blob,
     stage_exact_source_window_blob,
 )
@@ -832,7 +832,16 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
                             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
-                            artifact_key = (provider, blob_hash, path, kind, native_id, fallback_timestamp)
+                            profile_identity = archive.raw_profile_identity(raw_id)
+                            artifact_key = (
+                                provider,
+                                blob_hash,
+                                path,
+                                kind,
+                                native_id,
+                                fallback_timestamp,
+                                profile_identity,
+                            )
                             artifact = prepared_artifacts.get(artifact_key)
                             if artifact is None:
                                 try:
@@ -911,6 +920,9 @@ class RawObservationDerivation:
                                 verified_blob_stat=after,
                                 parser_error=artifact.error,
                                 parser_decode_failure=artifact.decode_failure,
+                                missing_profile_identity=artifact.missing_profile_identity,
+                                retained_zip_membership_unproved=artifact.retained_zip_membership_unproved,
+                                captured_profile_key=profile_identity,
                                 prepared_artifact=artifact if artifact.error is None else None,
                             )
                         if needs_source_census and not planned_accepted_raw_ids:
@@ -1169,20 +1181,11 @@ class RawObservationDerivation:
         row = read_raw_source_evidence(conn, raw_id)
         if row is None:
             raise KeyError(raw_id)
-        prior_full_observations: list[tuple[int, int]] = []
-        if is_legacy_append_without_window(row):
-            prior_full_observations = [
-                (int(acquired_at_ms), int(size))
-                for acquired_at_ms, size in conn.execute(
-                    "SELECT acquired_at_ms, blob_size FROM raw_sessions "
-                    "WHERE source_path = ? AND source_index = 0 AND revision_kind IN ('full', 'unknown') "
-                    "AND acquired_at_ms IS NOT NULL AND blob_size IS NOT NULL",
-                    (source_path,),
-                )
-            ]
+        prior_full_observations = read_prior_full_source_receipts(conn, row)
+        source_path, container_member = retained_source_location(row, self.archive_root)
         candidates = retained_blob_source_candidates(
             row,
-            container_member=is_recorded_container_member(row),
+            container_member=container_member,
             prior_full_observations=prior_full_observations,
         )
         if not candidates:
@@ -1198,7 +1201,7 @@ class RawObservationDerivation:
                     stop=compute_cancel_requested,
                 )
             else:
-                from polylogue.operations.zip_acquisition_replay import zip_reacquired_unit
+                from polylogue.storage.source_zip_replay import zip_reacquired_unit
 
                 # The resolved unit streams from its member again: a preserved
                 # member can be gigabytes, so its bytes are never held whole.

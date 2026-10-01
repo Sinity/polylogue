@@ -1487,7 +1487,10 @@ def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
             session_states, _session_timings = converger.converge_sessions(session_ids)
             if subject_independent and paths:
                 representative = path_states.get(paths[0])
-                if representative is not None and bool(getattr(representative, "converged", False)):
+                from polylogue.sources.live.convergence_debt import stage_state_value
+
+                measured_stages = getattr(representative, "stages", None)
+                if isinstance(measured_stages, dict) and stage_state_value(measured_stages.get(stage_name)) == "done":
                     converged_whole_archive[stage_name] = run_started_ms
                 path_states = (
                     {Path(debt.subject_id): representative for debt in stage_debt if debt.subject_type == "source_path"}
@@ -1515,7 +1518,7 @@ def _record_convergence_debt_retries(
     converged_whole_archive: Mapping[str, int] | None = None,
 ) -> int:
     """Update the ops debt ledger for one drained pass. The only write here."""
-    from polylogue.sources.live.convergence_debt import is_deferred_stage_state
+    from polylogue.sources.live.convergence_debt import is_deferred_stage_state, stage_state_value
 
     retried = 0
     # Stages settled here by one archive-wide clear. Their rows are owned by
@@ -1564,7 +1567,14 @@ def _record_convergence_debt_retries(
             )
             continue
         retried += 1
-        if bool(getattr(state, "converged", False)):
+        stages_map = getattr(state, "stages", None)
+        stages_map = stages_map if isinstance(stages_map, dict) else {}
+        settled = (
+            bool(stages_map) and all(stage_state_value(value) == "done" for value in stages_map.values())
+            if debt.stage == "convergence"
+            else stage_state_value(stages_map.get(debt.stage)) == "done"
+        )
+        if settled:
             cursor.clear_convergence_debt(
                 stage=debt.stage,
                 subject_type=debt.subject_type,
@@ -1574,8 +1584,6 @@ def _record_convergence_debt_retries(
 
         last_error = getattr(state, "last_error", None)
         retry_error = last_error if isinstance(last_error, str) and last_error else "retry did not converge"
-        stages_map = getattr(state, "stages", None)
-        stages_map = stages_map if isinstance(stages_map, dict) else {}
         if debt.stage != "convergence":
             cursor.record_convergence_debt(
                 stage=debt.stage,
@@ -1590,13 +1598,13 @@ def _record_convergence_debt_retries(
         # Generic rows predate stage-scoped retry identity. Preserve the old
         # migration behavior by replacing only that generic row with the exact
         # stages that remain pending; other stage rows for the subject survive.
-        failed_stages = _failed_convergence_stage_names(stages_map) or ("convergence",)
+        pending_stages = _pending_convergence_stage_names(stages_map) or ("convergence",)
         cursor.clear_convergence_debt(
             stage=debt.stage,
             subject_type=debt.subject_type,
             subject_id=debt.subject_id,
         )
-        for stage in failed_stages:
+        for stage in pending_stages:
             cursor.record_convergence_debt(
                 stage=stage,
                 subject_type=debt.subject_type,
@@ -1621,15 +1629,15 @@ def _debt_retry_due(debt: object, *, now: datetime) -> bool:
     return retry_at <= now
 
 
-def _failed_convergence_stage_names(stages: object) -> tuple[str, ...]:
+def _pending_convergence_stage_names(stages: object) -> tuple[str, ...]:
     if not isinstance(stages, dict):
         return ()
-    failed: list[str] = []
+    pending: list[str] = []
     for stage_name, stage_state in stages.items():
         state_value = getattr(stage_state, "value", stage_state)
-        if state_value not in {"done", "skipped"}:
-            failed.append(str(stage_name))
-    return tuple(failed)
+        if state_value != "done":
+            pending.append(str(stage_name))
+    return tuple(pending)
 
 
 async def _periodic_health_check(*, sources: tuple[WatchSource, ...] | None = None) -> None:

@@ -31,6 +31,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 from polylogue.core.timestamps import iso_from_epoch_ms
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
@@ -83,9 +84,10 @@ _TRAJECTORY_SUPPORTED_STEP_TYPES = frozenset(
 )
 
 
-def trajectory_raw_id(source_path: Path | str, logical_revision: str) -> str:
+def trajectory_raw_id(source_path: Path | str, logical_revision: str, *, identity_path: Path | None = None) -> str:
     """Stable raw identity for one Antigravity trajectory-store revision."""
-    identity = f"antigravity-trajectory\0{Path(source_path).expanduser().resolve()}\0{logical_revision}"
+    coordinate = identity_path if identity_path is not None else Path(source_path).expanduser().resolve()
+    identity = f"antigravity-trajectory\0{coordinate}\0{logical_revision}"
     return hashlib.sha256(identity.encode("utf-8", errors="surrogateescape")).hexdigest()
 
 
@@ -844,6 +846,216 @@ def _unused_row_id(candidate: str, native_ids: set[str]) -> str:
     return identity
 
 
+def _trajectory_steps(
+    connection: sqlite3.Connection,
+    step_columns: Collection[str],
+    trajectory_id: str | None,
+    cascade_id: str | None,
+    meta_count: int,
+) -> Iterator[sqlite3.Row]:
+    """Select native step rows without changing SQLite affinity or collation."""
+    predicates: list[str] = []
+    values: list[object] = []
+    for column, value in (("trajectory_id", trajectory_id), ("cascade_id", cascade_id)):
+        if column in step_columns and value is not None:
+            predicates.append(f"{column} = ?")
+            values.append(value)
+    has_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    if predicates:
+        cursor = connection.execute("SELECT * FROM steps WHERE " + " OR ".join(predicates) + " ORDER BY idx", values)
+        try:
+            first = cursor.fetchone()
+            if first is not None:
+                yield first
+                yield from cursor
+                return
+        finally:
+            cursor.close()
+
+    if meta_count == 1 and (not has_identity or not _any_step_carries_a_key(connection, step_columns)):
+        cursor = connection.execute("SELECT * FROM steps ORDER BY idx")
+        try:
+            yield from cursor
+        finally:
+            cursor.close()
+
+
+def _inspect_trajectory_connection(
+    connection: sqlite3.Connection,
+    grouping: sqlite3.Connection,
+    path: Path,
+    *,
+    preflight: bool,
+) -> tuple[dict[str, object], int, bool]:
+    """Count parser evidence, keeping identity reservations in private storage."""
+    from polylogue.sources.dispatch import message_carries_authored_content
+    from polylogue.sources.sqlite_export import LogicalExportError
+
+    if not _trajectory_schema_matches(connection):
+        raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
+    meta_columns = _sqlite_columns(connection, "trajectory_meta")
+    step_columns = _sqlite_columns(connection, "steps")
+    summary_columns = _sqlite_columns(connection, "conversation_summaries")
+    grouping.execute("CREATE TABLE trajectory_native_ids (identity TEXT COLLATE BINARY PRIMARY KEY) WITHOUT ROWID")
+    grouping.execute(
+        "CREATE TABLE trajectory_summaries (ordinal INTEGER PRIMARY KEY, identity TEXT COLLATE BINARY UNIQUE, "
+        "matched INTEGER NOT NULL DEFAULT 0)"
+    )
+
+    def reserve(identity: str) -> None:
+        grouping.execute("INSERT OR IGNORE INTO trajectory_native_ids VALUES (?)", (identity,))
+
+    def reserved(identity: str) -> bool:
+        return (
+            grouping.execute("SELECT 1 FROM trajectory_native_ids WHERE identity = ?", (identity,)).fetchone()
+            is not None
+        )
+
+    if summary_columns:
+        for row in connection.execute("SELECT * FROM conversation_summaries"):
+            key = next(
+                (
+                    row[column]
+                    for column in ("cascade_id", "trajectory_id")
+                    if column in summary_columns and row[column] not in (None, "")
+                ),
+                None,
+            )
+            if key is not None:
+                identity = str(key)
+                grouping.execute("INSERT OR IGNORE INTO trajectory_summaries (identity) VALUES (?)", (identity,))
+                reserve(identity)
+    meta_count = 0
+    anonymous = 0
+    for meta in connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid"):
+        meta_count += 1
+        identities = [
+            str(meta[column])
+            for column in ("trajectory_id", "cascade_id")
+            if column in meta_columns and meta[column] not in (None, "")
+        ]
+        anonymous += not identities
+        for identity in identities:
+            reserve(identity)
+    if anonymous > 1:
+        raise LogicalExportError(
+            f"Antigravity SQLite holds {anonymous} trajectories with no trajectory or cascade id; "
+            "no stable identity tells them apart"
+        )
+    fallback_id = path.stem
+    effective_meta_count = meta_count or 1
+    has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    unattributed = (
+        not has_step_identity
+        and effective_meta_count > 1
+        and bool(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
+    )
+    produced: dict[str, object] = {
+        "sessions": 0,
+        "messages": 0,
+        "blocks": 0,
+        "actions": 0,
+        "raw_records": 0,
+        "session_refs": [],
+    }
+    sessions = messages = blocks = actions = admitted = 0
+    references: list[str] = []
+    degraded = False
+    meta_rows = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid") if meta_count else iter((None,))
+    for meta in meta_rows:
+        trajectory_id = (
+            str(meta["trajectory_id"]) if meta is not None and meta["trajectory_id"] not in (None, "") else None
+        )
+        cascade_id = str(meta["cascade_id"]) if meta is not None and meta["cascade_id"] not in (None, "") else None
+        row_fallback = fallback_id
+        if trajectory_id is None and cascade_id is None and reserved(row_fallback):
+            row_fallback = f"{fallback_id}:trajectory"
+            attempt = 0
+            while reserved(row_fallback):
+                attempt += 1
+                row_fallback = f"{fallback_id}:trajectory~{attempt}"
+        native_id = trajectory_id or cascade_id or row_fallback
+        own_messages = 0
+        positive = False
+        unsupported = False
+        call_count = 0
+        sole_call: tuple[str, str, bool] | None = None
+        for ordinal, row in enumerate(
+            _trajectory_steps(connection, step_columns, trajectory_id, cascade_id, effective_meta_count)
+        ):
+            row_columns = row.keys()
+            row_map = {str(key): row[key] for key in row_columns}
+            payload = _normalized_step_payload(row_map)
+            previous_count, previous_call = call_count, sole_call
+            call_count, sole_call = 0, None
+            answerable_call = (
+                (previous_call[0], previous_call[1])
+                if previous_count == 1 and previous_call is not None and previous_call[2]
+                else None
+            )
+            try:
+                step_ordinal = int(row_map.get("idx", ordinal))
+            except (TypeError, ValueError):
+                step_ordinal = ordinal
+            step_type = str(row_map.get("step_type") or "").strip().lower()
+            step_format = str(row_map.get("step_format") or "").strip().lower()
+            if payload is None or not _trajectory_step_supported(step_type, step_format):
+                unsupported = True
+                continue
+            try:
+                message = _trajectory_message(
+                    row=row_map,
+                    payload=payload,
+                    position=own_messages,
+                    step_ordinal=step_ordinal,
+                    step_type=step_type,
+                    step_format=step_format,
+                    answerable_call=answerable_call,
+                )
+            except ValidationError:
+                unsupported = True
+                continue
+            if message is None:
+                unsupported = True
+                continue
+            own_messages += 1
+            blocks += len(message.blocks)
+            actions += sum(block.type is BlockType.TOOL_USE for block in message.blocks)
+            positive |= message_carries_authored_content(message)
+            call = message.blocks[0] if message.blocks and message.blocks[0].type is BlockType.TOOL_USE else None
+            if call is not None and call.tool_id is not None:
+                call_count = previous_count + 1
+                if call_count == 1:
+                    sole_call = (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)
+        for summary_key in (cascade_id, trajectory_id):
+            if summary_key is not None:
+                cursor = grouping.execute(
+                    "UPDATE trajectory_summaries SET matched = 1 WHERE identity = ?", (summary_key,)
+                )
+                if cursor.rowcount:
+                    break
+        sessions += 1
+        messages += own_messages
+        if not preflight:
+            references.append(f"session:{Provider.ANTIGRAVITY.value}:{native_id}")
+        admitted += positive if preflight else 0
+        degraded |= unsupported or unattributed or (preflight and not positive)
+    for row in grouping.execute("SELECT identity FROM trajectory_summaries WHERE matched = 0 ORDER BY ordinal"):
+        sessions += 1
+        if not preflight:
+            references.append(f"session:{Provider.ANTIGRAVITY.value}:{row[0]}")
+        degraded = True
+    produced.update(
+        sessions=sessions,
+        messages=messages,
+        blocks=blocks,
+        actions=actions,
+        raw_records=sessions,
+        session_refs=references,
+    )
+    return produced, admitted, degraded
+
+
 def parse_trajectory_db(
     path: Path,
     fallback_id: str | None = None,
@@ -858,425 +1070,397 @@ def parse_trajectory_db(
     typed admission outcomes, so the writer can never report full coverage
     for a partially understood trajectory.
     """
-    from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context
+    from polylogue.sources.sqlite_export import logical_source_context
 
     with logical_source_context(path, immutable=immutable) as connection:
-        connection.row_factory = sqlite3.Row
-        if not _trajectory_schema_matches(connection):
-            raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
-        meta_columns = _sqlite_columns(connection, "trajectory_meta")
-        step_columns = _sqlite_columns(connection, "steps")
-        summary_columns = _sqlite_columns(connection, "conversation_summaries")
-        parent_columns = _sqlite_columns(connection, "parent_references")
-        summaries: dict[str, sqlite3.Row] = {}
-        if summary_columns:
-            for row in connection.execute("SELECT * FROM conversation_summaries"):
-                key = next(
-                    (
-                        row[column]
-                        for column in ("cascade_id", "trajectory_id")
-                        if column in summary_columns and row[column] not in (None, "")
-                    ),
-                    None,
-                )
-                if key is not None:
-                    summaries[str(key)] = row
-        parent_refs: dict[str, list[dict[str, object]]] = {}
-        if parent_columns:
-            for row in connection.execute("SELECT * FROM parent_references"):
-                child = (
-                    row["cascade_id"]
-                    if "cascade_id" in parent_columns
-                    else row["trajectory_id"]
-                    if "trajectory_id" in parent_columns
-                    else None
-                )
-                if child is not None:
-                    parent_refs.setdefault(str(child), []).append(
-                        _event_payload_row({str(key): value for key, value in zip(row.keys(), row, strict=True)})
-                    )
-        meta_rows = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid").fetchall()
-        anonymous = [
-            meta
-            for meta in meta_rows
-            if not any(
-                column in meta_columns and meta[column] not in (None, "") for column in ("trajectory_id", "cascade_id")
-            )
-        ]
-        if len(anonymous) > 1:
-            # Nothing stable tells several unidentified trajectories apart: a
-            # row's position or rowid changes with deletions and VACUUM, and
-            # a derived id would then move one trajectory onto another's
-            # archive identity. The export is refused rather than guessed.
-            raise LogicalExportError(
-                f"Antigravity SQLite holds {len(anonymous)} trajectories with no trajectory or cascade id; "
-                "no stable identity tells them apart"
-            )
-        if not meta_rows:
-            # A structurally valid empty export still gets an attributable
-            # outcome when the caller supplied a path-derived identity.
-            if not fallback_id:
-                return
-            meta_rows = [None]
-        known_native_ids = {
-            str(value)
-            for meta in meta_rows
-            if meta is not None
-            for value in (meta["trajectory_id"], meta["cascade_id"])
-            if value not in (None, "")
-        }
-        # An alias may have multiple claimants; retain that ambiguity rather
-        # than allowing the last meta row to choose a parent.
-        alias_claimants: dict[str, set[str]] = {}
-        for meta in meta_rows:
-            if meta is None:
-                continue
-            canonical = meta["trajectory_id"] or meta["cascade_id"]
-            if canonical in (None, ""):
-                continue
-            for alias in (meta["trajectory_id"], meta["cascade_id"]):
-                if alias not in (None, ""):
-                    alias_claimants.setdefault(str(alias), set()).add(str(canonical))
-        # A summary with no owning meta row is later yielded as its own
-        # session keyed by its summary_key (the unmatched-summary branch
-        # below), so that key occupies this parser's session-ID namespace
-        # too -- reserve it here or a row-fallback id minted for an
-        # anonymous meta row can collide with it and two logical sessions
-        # (one materialized, one unmatched-summary) land under one identity.
-        known_native_ids |= set(summaries)
-        matched_summary_keys: set[str] = set()
-        has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
-        for meta_index, meta in enumerate(meta_rows):
-            trajectory_id = (
-                str(meta["trajectory_id"])
-                if meta is not None and "trajectory_id" in meta_columns and meta["trajectory_id"] not in (None, "")
-                else None
-            )
-            cascade_id = (
-                str(meta["cascade_id"])
-                if meta is not None and "cascade_id" in meta_columns and meta["cascade_id"] not in (None, "")
-                else None
-            )
-            # The one unidentified row takes the path-derived fallback, unless
-            # a native id or an unmatched summary already names it.
-            row_fallback_id = fallback_id
-            if fallback_id and trajectory_id is None and cascade_id is None and fallback_id in known_native_ids:
-                row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory", known_native_ids)
-            native_id = trajectory_id or cascade_id or row_fallback_id
-            if not native_id:
-                continue
-            if has_step_identity:
-                predicates: list[str] = []
-                values: list[object] = []
-                if "trajectory_id" in step_columns and trajectory_id is not None:
-                    predicates.append("trajectory_id = ?")
-                    values.append(trajectory_id)
-                if "cascade_id" in step_columns and cascade_id is not None:
-                    predicates.append("cascade_id = ?")
-                    values.append(cascade_id)
-                steps = (
-                    connection.execute(
-                        "SELECT * FROM steps WHERE " + " OR ".join(predicates) + " ORDER BY idx",
-                        values,
-                    ).fetchall()
-                    if predicates
-                    else []
-                )
-                if not steps and len(meta_rows) == 1 and not _any_step_carries_a_key(connection, step_columns):
-                    # A legacy single-trajectory export can declare the key
-                    # columns and still leave every cell NULL. The keyed query
-                    # then returns nothing and the safe single-meta fallback
-                    # below is unreachable, so the parser emitted an empty
-                    # session whose own accounting denominator was 0 -- every
-                    # real step silently absent from messages AND from
-                    # admission. Attribute them to the sole trajectory only
-                    # when no step row carries any key at all.
-                    steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
-            elif len(meta_rows) == 1:
-                # Older exports have one trajectory_meta row and no key on
-                # steps. That shape is safe only for the single trajectory.
-                steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
-            else:
-                # Multiple native trajectories with unkeyed steps cannot be
-                # separated honestly. Retain the denominator as explicit
-                # source evidence instead of merging it into every session.
-                steps = []
-            messages: list[ParsedMessage] = []
-            outcomes: list[AdmissionOutcome] = []
-            events: list[ParsedSessionEvent] = []
-            # Tool calls since the last non-call step, as (tool_id, tool_name,
-            # id_less). An ID-less result answers the run only when the run is
-            # exactly one ID-less call: with several calls in flight, or any
-            # other step in between, nothing says which call it reports.
-            call_run: list[tuple[str, str, bool]] = []
-            if not has_step_identity and len(meta_rows) > 1:
-                unassigned_count = int(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
-                if unassigned_count:
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_unattributed_steps",
-                            payload={"step_count": unassigned_count, "meta_count": len(meta_rows)},
-                        )
-                    )
-            for ordinal, row in enumerate(steps):
-                row_columns = row.keys()
-                row_map = {str(key): row[key] for key in row_columns}
-                payload = _normalized_step_payload(row_map)
-                # Every step, materialized or refused, ends the current run;
-                # only a materialized call starts or extends the next one.
-                previous_run = call_run
-                call_run = []
-                answerable_call = (
-                    (previous_run[0][0], previous_run[0][1]) if len(previous_run) == 1 and previous_run[0][2] else None
-                )
-                idx = row_map.get("idx", ordinal)
-                try:
-                    step_ordinal = int(idx)
-                except (TypeError, ValueError):
-                    step_ordinal = ordinal
-                step_type = str(row_map.get("step_type") or "").strip().lower()
-                step_format = str(row_map.get("step_format") or "").strip().lower()
-                key = f"step:{step_ordinal}"
-                if payload is None:
-                    outcomes.append(
-                        AdmissionOutcome(
-                            unit=AdmissionUnit.PART,
-                            ordinal=ordinal,
-                            key=key,
-                            disposition=AdmissionDisposition.TYPED_REFUSAL,
-                            reason=AdmissionRefusalReason.MALFORMED,
-                        )
-                    )
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_unsupported_step",
-                            payload={
-                                "idx": step_ordinal,
-                                "step_type": step_type,
-                                "step_format": step_format,
-                                "reason": "malformed_payload",
-                            },
-                        )
-                    )
-                    continue
-                if not _trajectory_step_supported(step_type, step_format):
-                    outcomes.append(
-                        AdmissionOutcome(
-                            unit=AdmissionUnit.PART,
-                            ordinal=ordinal,
-                            key=key,
-                            disposition=AdmissionDisposition.TYPED_UNKNOWN,
-                            reason=AdmissionUnknownReason.UNSUPPORTED_SHAPE,
-                        )
-                    )
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_unsupported_step",
-                            timestamp=_step_timestamp(row_map, payload),
-                            payload={
-                                "idx": step_ordinal,
-                                "step_type": step_type,
-                                "step_format": step_format,
-                                "reason": "unsupported_step_format_or_type",
-                                "payload": payload,
-                            },
-                        )
-                    )
-                    continue
-                try:
-                    message = _trajectory_message(
-                        row=row_map,
-                        payload=payload,
-                        position=len(messages),
-                        step_ordinal=step_ordinal,
-                        step_type=step_type,
-                        step_format=step_format,
-                        answerable_call=answerable_call,
-                    )
-                except ValidationError:
-                    # A malformed known step must not discard valid siblings.
-                    outcomes.append(
-                        AdmissionOutcome(
-                            unit=AdmissionUnit.PART,
-                            ordinal=ordinal,
-                            key=key,
-                            disposition=AdmissionDisposition.TYPED_REFUSAL,
-                            reason=AdmissionRefusalReason.MALFORMED,
-                        )
-                    )
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_unsupported_step",
-                            payload={
-                                "idx": step_ordinal,
-                                "step_type": step_type,
-                                "step_format": step_format,
-                                "reason": "invalid_typed_step",
-                            },
-                        )
-                    )
-                    continue
-                if message is None:
-                    outcomes.append(
-                        AdmissionOutcome(
-                            unit=AdmissionUnit.PART,
-                            ordinal=ordinal,
-                            key=key,
-                            disposition=AdmissionDisposition.TYPED_UNKNOWN,
-                            reason=AdmissionUnknownReason.UNSUPPORTED_SHAPE,
-                        )
-                    )
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_unsupported_step",
-                            timestamp=_step_timestamp(row_map, payload),
-                            payload={
-                                "idx": step_ordinal,
-                                "step_type": step_type,
-                                "step_format": step_format,
-                                "payload": payload,
-                            },
-                        )
-                    )
-                    continue
-                messages.append(message)
-                call = message.blocks[0] if message.blocks and message.blocks[0].type is BlockType.TOOL_USE else None
-                if call is not None and call.tool_id is not None:
-                    call_run = [*previous_run, (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)]
-                outcomes.append(
-                    AdmissionOutcome(
-                        unit=AdmissionUnit.PART, ordinal=ordinal, key=key, disposition=AdmissionDisposition.MATERIALIZED
-                    )
-                )
-            summary_key = next(
-                (value for value in (cascade_id, trajectory_id) if value is not None and value in summaries),
-                None,
-            )
-            summary = summaries.get(summary_key or "")
-            title = None
-            updated_at = None
-            if summary is not None:
-                matched_summary_keys.add(summary_key or "")
-                for key in ("title", "name", "summary"):
-                    if key in summary_columns and summary[key]:
-                        title = str(summary[key])
-                        break
-                for key in ("last_modified_time", "updated_at", "updatedAt", "modified_at"):
-                    if key in summary_columns and summary[key] is not None:
-                        updated_at = str(summary[key])
-                        break
-                events.append(
-                    ParsedSessionEvent(
-                        event_type="antigravity_conversation_summary",
-                        timestamp=updated_at,
-                        payload=_event_payload_row({str(key): summary[key] for key in tuple(summary.keys())}),
-                    )
-                )
-            matching_parent_refs = list(parent_refs.get(cascade_id or "", ()))
-            if trajectory_id and trajectory_id != cascade_id:
-                matching_parent_refs.extend(parent_refs.get(trajectory_id, ()))
-            parent_ids = {
-                claimant
-                for reference in matching_parent_refs
-                for resolved in (_parent_reference_id(reference),)
-                if resolved is not None
-                for claimant in alias_claimants.get(resolved, {resolved})
-            }
-            # Two references naming different parents are an ambiguity, not a
-            # choice: asserting whichever row the unordered SELECT returned
-            # first persisted an arbitrary durable topology edge and could
-            # extract the child against the wrong parent's prefix.
-            parent_id = next(iter(parent_ids)) if len(parent_ids) == 1 else None
-            parent_ambiguous = len(parent_ids) > 1
-            if matching_parent_refs:
-                events.append(
-                    ParsedSessionEvent(
-                        event_type="antigravity_parent_reference",
-                        payload={
-                            "references": matching_parent_refs,
-                            "parent_provider_id": parent_id,
-                            "parent_provider_ids": sorted(parent_ids),
-                            "parent_observed": parent_id in known_native_ids if parent_id else False,
-                        },
-                    )
-                )
-                if parent_ambiguous:
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_ambiguous_parent_reference",
-                            payload={"parent_provider_ids": sorted(parent_ids)},
-                        )
-                    )
-                if parent_id is not None and parent_id not in known_native_ids:
-                    events.append(
-                        ParsedSessionEvent(
-                            event_type="antigravity_unmatched_parent_reference",
-                            payload={"parent_provider_id": parent_id},
-                        )
-                    )
-            accounting = ParseAccounting(expected={AdmissionUnit.PART: len(steps)}, outcomes=outcomes)
-            accounting.assert_conserved()
-            if not messages:
-                events.append(
-                    ParsedSessionEvent(
-                        event_type="antigravity_trajectory_empty",
-                        payload={"step_count": len(steps), "meta_index": meta_index},
-                    )
-                )
-            ingest_flags = []
-            if any(outcome.disposition is not AdmissionDisposition.MATERIALIZED for outcome in outcomes):
-                ingest_flags.append("degraded:unsupported-trajectory-steps")
-            if any(event.event_type == "antigravity_unattributed_steps" for event in events):
-                ingest_flags.append("degraded:unattributed-trajectory-steps")
-            yield_session = ParsedSession(
-                source_name=Provider.ANTIGRAVITY,
-                provider_session_id=native_id,
-                provider_session_aliases=[
-                    value for value in (trajectory_id, cascade_id) if value and value != native_id
-                ],
-                title=title,
-                title_source=TitleSource.ORIGIN if title else None,
-                updated_at=updated_at,
-                messages=messages,
-                session_events=events,
-                unit_accounting=accounting,
-                active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
-                parent_session_provider_id=parent_id,
-            )
-            yield_session = yield_session.model_copy(update={"ingest_flags": ingest_flags})
-            yield yield_session
-        for summary_key, summary in summaries.items():
-            if summary_key in matched_summary_keys:
-                continue
-            # A summary without a trajectory_meta row is still source metadata.
-            # Keep it attributable under its native key without fabricating a
-            # join to an unrelated session or discarding the row.
-            summary_payload = _event_payload_row({str(key): summary[key] for key in tuple(summary.keys())})
-            summary_time = next(
+        yield from _parse_trajectory_connection(connection, path, fallback_id)
+
+
+def _parse_trajectory_connection(
+    connection: sqlite3.Connection, path: Path, fallback_id: str | None = None
+) -> Iterator[ParsedSession]:
+    """Parse on the caller-owned read transaction without reopening its source."""
+    from polylogue.sources.sqlite_export import LogicalExportError
+
+    connection.row_factory = sqlite3.Row
+    if not _trajectory_schema_matches(connection):
+        raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
+    meta_columns = _sqlite_columns(connection, "trajectory_meta")
+    step_columns = _sqlite_columns(connection, "steps")
+    summary_columns = _sqlite_columns(connection, "conversation_summaries")
+    parent_columns = _sqlite_columns(connection, "parent_references")
+    summaries: dict[str, sqlite3.Row] = {}
+    if summary_columns:
+        for row in connection.execute("SELECT * FROM conversation_summaries"):
+            key = next(
                 (
-                    str(summary[column])
-                    for column in ("last_modified_time", "updated_at", "updatedAt", "modified_at")
-                    if column in summary_columns and summary[column] is not None
+                    row[column]
+                    for column in ("cascade_id", "trajectory_id")
+                    if column in summary_columns and row[column] not in (None, "")
                 ),
                 None,
             )
-            yield ParsedSession(
-                source_name=Provider.ANTIGRAVITY,
-                provider_session_id=summary_key,
-                title=None,
-                title_source=None,
-                updated_at=summary_time,
-                messages=[],
-                session_events=[
-                    ParsedSessionEvent(
-                        event_type="antigravity_unmatched_summary",
-                        timestamp=summary_time,
-                        payload=summary_payload,
-                    )
-                ],
-                unit_accounting=ParseAccounting(expected={}, outcomes=[]),
-                ingest_flags=["degraded:unmatched-trajectory-summary"],
+            if key is not None:
+                summaries[str(key)] = row
+    parent_refs: dict[str, list[dict[str, object]]] = {}
+    if parent_columns:
+        for row in connection.execute("SELECT * FROM parent_references"):
+            child = (
+                row["cascade_id"]
+                if "cascade_id" in parent_columns
+                else row["trajectory_id"]
+                if "trajectory_id" in parent_columns
+                else None
             )
+            if child is not None:
+                parent_refs.setdefault(str(child), []).append(
+                    _event_payload_row({str(key): value for key, value in zip(row.keys(), row, strict=True)})
+                )
+    meta_rows = connection.execute("SELECT * FROM trajectory_meta ORDER BY rowid").fetchall()
+    anonymous = [
+        meta
+        for meta in meta_rows
+        if not any(
+            column in meta_columns and meta[column] not in (None, "") for column in ("trajectory_id", "cascade_id")
+        )
+    ]
+    if len(anonymous) > 1:
+        # Nothing stable tells several unidentified trajectories apart: a
+        # row's position or rowid changes with deletions and VACUUM, and
+        # a derived id would then move one trajectory onto another's
+        # archive identity. The export is refused rather than guessed.
+        raise LogicalExportError(
+            f"Antigravity SQLite holds {len(anonymous)} trajectories with no trajectory or cascade id; "
+            "no stable identity tells them apart"
+        )
+    if not meta_rows:
+        # A structurally valid empty export still gets an attributable
+        # outcome when the caller supplied a path-derived identity.
+        if not fallback_id:
+            return
+        meta_rows = [None]
+    known_native_ids = {
+        str(value)
+        for meta in meta_rows
+        if meta is not None
+        for value in (meta["trajectory_id"], meta["cascade_id"])
+        if value not in (None, "")
+    }
+    # An alias may have multiple claimants; retain that ambiguity rather
+    # than allowing the last meta row to choose a parent.
+    alias_claimants: dict[str, set[str]] = {}
+    for meta in meta_rows:
+        if meta is None:
+            continue
+        canonical = meta["trajectory_id"] or meta["cascade_id"]
+        if canonical in (None, ""):
+            continue
+        for alias in (meta["trajectory_id"], meta["cascade_id"]):
+            if alias not in (None, ""):
+                alias_claimants.setdefault(str(alias), set()).add(str(canonical))
+    # A summary with no owning meta row is later yielded as its own
+    # session keyed by its summary_key (the unmatched-summary branch
+    # below), so that key occupies this parser's session-ID namespace
+    # too -- reserve it here or a row-fallback id minted for an
+    # anonymous meta row can collide with it and two logical sessions
+    # (one materialized, one unmatched-summary) land under one identity.
+    known_native_ids |= set(summaries)
+    matched_summary_keys: set[str] = set()
+    has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+    for meta_index, meta in enumerate(meta_rows):
+        trajectory_id = (
+            str(meta["trajectory_id"])
+            if meta is not None and "trajectory_id" in meta_columns and meta["trajectory_id"] not in (None, "")
+            else None
+        )
+        cascade_id = (
+            str(meta["cascade_id"])
+            if meta is not None and "cascade_id" in meta_columns and meta["cascade_id"] not in (None, "")
+            else None
+        )
+        # The one unidentified row takes the path-derived fallback, unless
+        # a native id or an unmatched summary already names it.
+        row_fallback_id = fallback_id
+        if fallback_id and trajectory_id is None and cascade_id is None and fallback_id in known_native_ids:
+            row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory", known_native_ids)
+        native_id = trajectory_id or cascade_id or row_fallback_id
+        if not native_id:
+            continue
+        steps = list(_trajectory_steps(connection, step_columns, trajectory_id, cascade_id, len(meta_rows)))
+        messages: list[ParsedMessage] = []
+        outcomes: list[AdmissionOutcome] = []
+        events: list[ParsedSessionEvent] = []
+        # Tool calls since the last non-call step, as (tool_id, tool_name,
+        # id_less). An ID-less result answers the run only when the run is
+        # exactly one ID-less call: with several calls in flight, or any
+        # other step in between, nothing says which call it reports.
+        call_run: list[tuple[str, str, bool]] = []
+        if not has_step_identity and len(meta_rows) > 1:
+            unassigned_count = int(connection.execute("SELECT COUNT(*) FROM steps").fetchone()[0])
+            if unassigned_count:
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_unattributed_steps",
+                        payload={"step_count": unassigned_count, "meta_count": len(meta_rows)},
+                    )
+                )
+        for ordinal, row in enumerate(steps):
+            row_columns = row.keys()
+            row_map = {str(key): row[key] for key in row_columns}
+            payload = _normalized_step_payload(row_map)
+            # Every step, materialized or refused, ends the current run;
+            # only a materialized call starts or extends the next one.
+            previous_run = call_run
+            call_run = []
+            answerable_call = (
+                (previous_run[0][0], previous_run[0][1]) if len(previous_run) == 1 and previous_run[0][2] else None
+            )
+            idx = row_map.get("idx", ordinal)
+            try:
+                step_ordinal = int(idx)
+            except (TypeError, ValueError):
+                step_ordinal = ordinal
+            step_type = str(row_map.get("step_type") or "").strip().lower()
+            step_format = str(row_map.get("step_format") or "").strip().lower()
+            key = f"step:{step_ordinal}"
+            if payload is None:
+                outcomes.append(
+                    AdmissionOutcome(
+                        unit=AdmissionUnit.PART,
+                        ordinal=ordinal,
+                        key=key,
+                        disposition=AdmissionDisposition.TYPED_REFUSAL,
+                        reason=AdmissionRefusalReason.MALFORMED,
+                    )
+                )
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_unsupported_step",
+                        payload={
+                            "idx": step_ordinal,
+                            "step_type": step_type,
+                            "step_format": step_format,
+                            "reason": "malformed_payload",
+                        },
+                    )
+                )
+                continue
+            if not _trajectory_step_supported(step_type, step_format):
+                outcomes.append(
+                    AdmissionOutcome(
+                        unit=AdmissionUnit.PART,
+                        ordinal=ordinal,
+                        key=key,
+                        disposition=AdmissionDisposition.TYPED_UNKNOWN,
+                        reason=AdmissionUnknownReason.UNSUPPORTED_SHAPE,
+                    )
+                )
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_unsupported_step",
+                        timestamp=_step_timestamp(row_map, payload),
+                        payload={
+                            "idx": step_ordinal,
+                            "step_type": step_type,
+                            "step_format": step_format,
+                            "reason": "unsupported_step_format_or_type",
+                            "payload": payload,
+                        },
+                    )
+                )
+                continue
+            try:
+                message = _trajectory_message(
+                    row=row_map,
+                    payload=payload,
+                    position=len(messages),
+                    step_ordinal=step_ordinal,
+                    step_type=step_type,
+                    step_format=step_format,
+                    answerable_call=answerable_call,
+                )
+            except ValidationError:
+                # A malformed known step must not discard valid siblings.
+                outcomes.append(
+                    AdmissionOutcome(
+                        unit=AdmissionUnit.PART,
+                        ordinal=ordinal,
+                        key=key,
+                        disposition=AdmissionDisposition.TYPED_REFUSAL,
+                        reason=AdmissionRefusalReason.MALFORMED,
+                    )
+                )
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_unsupported_step",
+                        payload={
+                            "idx": step_ordinal,
+                            "step_type": step_type,
+                            "step_format": step_format,
+                            "reason": "invalid_typed_step",
+                        },
+                    )
+                )
+                continue
+            if message is None:
+                outcomes.append(
+                    AdmissionOutcome(
+                        unit=AdmissionUnit.PART,
+                        ordinal=ordinal,
+                        key=key,
+                        disposition=AdmissionDisposition.TYPED_UNKNOWN,
+                        reason=AdmissionUnknownReason.UNSUPPORTED_SHAPE,
+                    )
+                )
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_unsupported_step",
+                        timestamp=_step_timestamp(row_map, payload),
+                        payload={
+                            "idx": step_ordinal,
+                            "step_type": step_type,
+                            "step_format": step_format,
+                            "payload": payload,
+                        },
+                    )
+                )
+                continue
+            messages.append(message)
+            call = message.blocks[0] if message.blocks and message.blocks[0].type is BlockType.TOOL_USE else None
+            if call is not None and call.tool_id is not None:
+                call_run = [*previous_run, (call.tool_id, call.tool_name or "", _step_tool_id(payload) is None)]
+            outcomes.append(
+                AdmissionOutcome(
+                    unit=AdmissionUnit.PART, ordinal=ordinal, key=key, disposition=AdmissionDisposition.MATERIALIZED
+                )
+            )
+        summary_key = next(
+            (value for value in (cascade_id, trajectory_id) if value is not None and value in summaries),
+            None,
+        )
+        summary = summaries.get(summary_key or "")
+        title = None
+        updated_at = None
+        if summary is not None:
+            matched_summary_keys.add(summary_key or "")
+            for key in ("title", "name", "summary"):
+                if key in summary_columns and summary[key]:
+                    title = str(summary[key])
+                    break
+            for key in ("last_modified_time", "updated_at", "updatedAt", "modified_at"):
+                if key in summary_columns and summary[key] is not None:
+                    updated_at = str(summary[key])
+                    break
+            events.append(
+                ParsedSessionEvent(
+                    event_type="antigravity_conversation_summary",
+                    timestamp=updated_at,
+                    payload=_event_payload_row({str(key): summary[key] for key in tuple(summary.keys())}),
+                )
+            )
+        matching_parent_refs = list(parent_refs.get(cascade_id or "", ()))
+        if trajectory_id and trajectory_id != cascade_id:
+            matching_parent_refs.extend(parent_refs.get(trajectory_id, ()))
+        parent_ids = {
+            claimant
+            for reference in matching_parent_refs
+            for resolved in (_parent_reference_id(reference),)
+            if resolved is not None
+            for claimant in alias_claimants.get(resolved, {resolved})
+        }
+        # Two references naming different parents are an ambiguity, not a
+        # choice: asserting whichever row the unordered SELECT returned
+        # first persisted an arbitrary durable topology edge and could
+        # extract the child against the wrong parent's prefix.
+        parent_id = next(iter(parent_ids)) if len(parent_ids) == 1 else None
+        parent_ambiguous = len(parent_ids) > 1
+        if matching_parent_refs:
+            events.append(
+                ParsedSessionEvent(
+                    event_type="antigravity_parent_reference",
+                    payload={
+                        "references": matching_parent_refs,
+                        "parent_provider_id": parent_id,
+                        "parent_provider_ids": sorted(parent_ids),
+                        "parent_observed": parent_id in known_native_ids if parent_id else False,
+                    },
+                )
+            )
+            if parent_ambiguous:
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_ambiguous_parent_reference",
+                        payload={"parent_provider_ids": sorted(parent_ids)},
+                    )
+                )
+            if parent_id is not None and parent_id not in known_native_ids:
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_unmatched_parent_reference",
+                        payload={"parent_provider_id": parent_id},
+                    )
+                )
+        accounting = ParseAccounting(expected={AdmissionUnit.PART: len(steps)}, outcomes=outcomes)
+        accounting.assert_conserved()
+        if not messages:
+            events.append(
+                ParsedSessionEvent(
+                    event_type="antigravity_trajectory_empty",
+                    payload={"step_count": len(steps), "meta_index": meta_index},
+                )
+            )
+        ingest_flags = []
+        if any(outcome.disposition is not AdmissionDisposition.MATERIALIZED for outcome in outcomes):
+            ingest_flags.append("degraded:unsupported-trajectory-steps")
+        if any(event.event_type == "antigravity_unattributed_steps" for event in events):
+            ingest_flags.append("degraded:unattributed-trajectory-steps")
+        yield_session = ParsedSession(
+            source_name=Provider.ANTIGRAVITY,
+            provider_session_id=native_id,
+            provider_session_aliases=[value for value in (trajectory_id, cascade_id) if value and value != native_id],
+            title=title,
+            title_source=TitleSource.ORIGIN if title else None,
+            updated_at=updated_at,
+            messages=messages,
+            session_events=events,
+            unit_accounting=accounting,
+            active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+            parent_session_provider_id=parent_id,
+        )
+        yield_session = yield_session.model_copy(update={"ingest_flags": ingest_flags})
+        yield yield_session
+    for summary_key, summary in summaries.items():
+        if summary_key in matched_summary_keys:
+            continue
+        # A summary without a trajectory_meta row is still source metadata.
+        # Keep it attributable under its native key without fabricating a
+        # join to an unrelated session or discarding the row.
+        summary_payload = _event_payload_row({str(key): summary[key] for key in tuple(summary.keys())})
+        summary_time = next(
+            (
+                str(summary[column])
+                for column in ("last_modified_time", "updated_at", "updatedAt", "modified_at")
+                if column in summary_columns and summary[column] is not None
+            ),
+            None,
+        )
+        yield ParsedSession(
+            source_name=Provider.ANTIGRAVITY,
+            provider_session_id=summary_key,
+            title=None,
+            title_source=None,
+            updated_at=summary_time,
+            messages=[],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="antigravity_unmatched_summary",
+                    timestamp=summary_time,
+                    payload=summary_payload,
+                )
+            ],
+            unit_accounting=ParseAccounting(expected={}, outcomes=[]),
+            ingest_flags=["degraded:unmatched-trajectory-summary"],
+        )
 
 
 class _AntigravityLanguageServerExportClient(Protocol):
@@ -1991,3 +2175,8 @@ __all__ = [
 # Public alias -- ``source_parsing.py`` needs the same disk-truth listing to
 # locate the raw ``.pb`` bytes for blob snapshotting per exported session.
 conversation_pb_paths = _conversation_pb_paths
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep only the exact markdown-export signature fields."""
+    return DetectorProjection(fields={name: DetectorProjection() for name in ("source", "cascadeId", "markdown")})

@@ -191,15 +191,38 @@ def test_an_archive_without_a_user_tier_is_not_blocked(tmp_path: Path) -> None:
     assert outcomes[0].suppression_skipped is False
 
 
-def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: Path) -> None:
+def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(
+    archive_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Receipts published before a suppression skip are still consumed with the batch.
 
     Anti-vacuity: skipping sealed claim retirement for a suppressed session
     leaves its actual reservation pinning the blob against GC.
     """
+    import polylogue.storage.blob_publication as publication
     from polylogue.pipeline.services.ingest_worker import SessionWritePayload
     from polylogue.sources.parsers.base_models import ParsedAttachment
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    consume = publication.consume_blob_publication_receipt
+    consumed: list[tuple[str, bytes]] = []
+
+    def observe_consumption(source: sqlite3.Connection, publication_id: str, digest: bytes) -> None:
+        row = source.execute(
+            "SELECT publication_id,blob_hash FROM blob_publication_reservations WHERE publication_id=?",
+            (publication_id,),
+        ).fetchone()
+        assert row is not None and tuple(row) == (publication_id, digest)
+        assert (
+            publication.ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+            .blob_path(digest.hex())
+            .read_bytes()
+            == b"abc"
+        )
+        consumed.append((publication_id, digest))
+        consume(source, publication_id, digest)
+
+    monkeypatch.setattr(publication, "consume_blob_publication_receipt", observe_consumption)
 
     parsed = _parsed("suppressed-attachment")
     parsed = parsed.model_copy(
@@ -229,6 +252,7 @@ def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(archive_root: 
     finally:
         conn.close()
 
+    assert len(consumed) == 1
     assert changed is False
     assert counts["skipped_sessions"] == 1
     assert _session_rows(archive_root, session_id) == 0

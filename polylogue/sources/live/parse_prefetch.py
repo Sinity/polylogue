@@ -188,13 +188,14 @@ def live_parse_path_worker(
     """
     with source_snapshot(
         Path(source_path), Path(attempt_directory) if attempt_directory is not None else Path(shard_directory)
-    ) as (snapshot, snapshot_sha256):
+    ) as (snapshot, snapshot_sha256, profile):
         return _prepare_path_snapshot(
             provider_value,
             source_path,
             snapshot,
             snapshot_sha256,
             fallback_id,
+            profile_identity=profile.key,
             is_stream=is_stream,
             shard_directory=shard_directory,
             attempt_directory=attempt_directory,
@@ -209,6 +210,7 @@ def _prepare_path_snapshot(
     snapshot_sha256: str,
     fallback_id: str,
     *,
+    profile_identity: str,
     is_stream: bool,
     shard_directory: str,
     attempt_directory: str | None,
@@ -216,13 +218,13 @@ def _prepare_path_snapshot(
 ) -> LivePathPreparation:
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.live.batch_support import (
-        _detect_provider_from_path_sample,
+        _detect_provider_from_path,
         jsonl_complete_prefix_path,
         jsonl_parse_prefix_size,
     )
     from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 
-    provider = _detect_provider_from_path_sample(snapshot, Provider.from_string(provider_value))
+    provider = _detect_provider_from_path(snapshot, Provider.from_string(provider_value))
     boundary = jsonl_complete_prefix_path(snapshot) if is_jsonl_source_path(source_path) else None
     snapshot_size = snapshot.stat().st_size
     parse_prefix_size = jsonl_parse_prefix_size(boundary, snapshot_size) if boundary is not None else None
@@ -234,6 +236,7 @@ def _prepare_path_snapshot(
             provider.value,
             fallback_id,
             is_stream=is_stream,
+            profile_identity=profile_identity,
             shard_directory=shard_directory,
             attempt_directory=None if attempt_directory is None else Path(attempt_directory),
             parse_prefix_size=parse_prefix_size,
@@ -248,6 +251,7 @@ def _prepare_path_snapshot(
     with open_retained_session_enricher(
         provider,
         source_path=source_path,
+        captured_zip_coordinate=None,
         source_db_path=evidence.source_db_path,
         index_db_path=evidence.index_db_path,
         blob_root=evidence.blob_root,
@@ -265,6 +269,7 @@ def _prepare_path_snapshot(
             publication_publisher=ArchiveBlobPublisher(Path(evidence.source_db_path), Path(evidence.blob_root)),
             attempt_directory=None if attempt_directory is None else Path(attempt_directory),
             parse_prefix_size=parse_prefix_size,
+            profile_identity=profile_identity,
             prepare_session=enrich,
             # The live parse joins tool-output sidecars from the source tree
             # (as ``parse_payload`` does by default); a sealed carrier without
@@ -1386,7 +1391,9 @@ class LiveParseStage:
             cumulative_count=self.cleanup_failure_count,
         )
 
-    def pop_path(self, source_path: str, *, blob_hash: str) -> LivePathPreparation | None:
+    def pop_path(
+        self, source_path: str, *, blob_hash: str, profile_identity: str | None = None
+    ) -> LivePathPreparation | None:
         future = self._path_futures.get(source_path)
         if future is not None or source_path in self._unverified:
             # pop_path runs under writer admission. Even a finished future
@@ -1396,6 +1403,10 @@ class LiveParseStage:
         result = self._path_results.pop(source_path, None)
         if result is None:
             return None
+        if result.resolved_provider is Provider.HERMES and result.captured_profile_key != profile_identity:
+            self._discard_retained_path(source_path)
+            result.discard()
+            return LivePathPreparation(None, None, None, "captured profile changed after preparation", deferred=True)
         if result.error is not None:
             # A stable parse error carries the hash of the bytes it failed to
             # parse, so only that error can be attributed to this capture.

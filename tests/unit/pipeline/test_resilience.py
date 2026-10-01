@@ -34,6 +34,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     RawSessionData,
 )
+from polylogue.sources.retained_acquisition import SourceInputRecord
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -480,7 +481,10 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
         ]
 
         try:
-            with patch("polylogue.pipeline.services.acquisition.iter_source_raw_data", return_value=iter(raw_items)):
+            with patch(
+                "polylogue.pipeline.services.acquisition.iter_source_acquisition_records",
+                return_value=iter(SourceInputRecord('["physical-file-v1",0]', item) for item in raw_items),
+            ):
                 result = await AcquisitionService(backend=backend).acquire_sources(
                     [Source(name=source_name, path=Path("/tmp/inbox"))]
                 )
@@ -797,7 +801,6 @@ def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
         provider: str | Provider,
         payload: JSONValue,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,

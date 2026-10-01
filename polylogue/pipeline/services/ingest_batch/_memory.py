@@ -49,6 +49,10 @@ def discard_ingest_result_payload(ir: IngestRecordResult) -> None:
             else:
                 payload.prepared_write = None
     if failures:
+        # The artifact contains the files those native carriers still borrow.
+        # Keep it on this result until the physical worker's existing cleanup
+        # retry closes every carrier. Independent carrier closes above still
+        # receive their own attempt before this dependent deletion is deferred.
         raise BaseExceptionGroup("ingest preparation cleanup remains unsettled", failures)
     if ir.prepared_artifact is not None:
         ir.prepared_artifact.discard()

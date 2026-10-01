@@ -104,6 +104,20 @@ collations, order, uniqueness and complementary literal predicates in both
 rehearsal and live execution; exact row values, primary keys, foreign keys
 and integrity must survive the owned transaction. Other non-additive changes
 still require verified backup authority (`storage/sqlite/migration_runner.py`).
+Source runtime version 3 adds `raw_profile_identity_receipts`, captured-input
+identity columns in prepared manifests and accepted source items, and the
+complementary failure partition for missing profile evidence. This mixed
+table/column/index migration requires the authenticated pre-migration package,
+including on an empty fresh archive after Source002. Existing raws keep their
+IDs, byte custody and absent historical receipts; replay reports the explicit
+profile gap instead of discovering a qualifier from current source paths.
+New ingest acceptance stages physical inputs pagewise through
+`prepare_source_manifest` and carries a sealed reference into the audit plan.
+Immutable pending commands retain their original inline evidence for restart;
+the opened single-ZIP acquisition also retains its one-input manifest. Decoder
+completion compares streamed coordinates against the caller's uncommitted
+Source membership using regular indexed rows and a disk journal in a private
+Native-owned scratch database. It never changes the caller's TEMP policy.
 Writable canonical bootstrap admits installed trains before runtime version
 validation. Read-only and acquisition-only opens refuse a baseline Source
 tier without applying migrations. A crash after baseline publication resumes
@@ -112,12 +126,13 @@ the same persisted train rather than restamping the baseline as current
 `storage/sqlite/durable_change_train.py`).
 The format marker retains immutable baseline birth versions and fingerprints
 after migration. Isolated runtime consumer probes and canonical schema census
-build their empty connection through the baseline plus the actual numbered
-migration runner. File-backed probes declare their owned temporary path;
-in-memory probes consume a verified SQLite backup from an owned temporary
-file and compare exact schema, rows and version before accepting it. Populated
-or attached connections refuse. Probes never release the train
-whose consumers they are proving.
+replay the baseline and installed numbered SQL as empty schema probes, checking
+the same canonical inventory and version authority after replay. Consumer
+probes carry the authenticated post-apply candidate's schema/version and refuse
+an inventory or version mismatch. They perform no archive migration or backup
+exemption; the live train already holds its required package authority.
+File-backed probes declare their owned temporary path; populated or attached
+connections refuse. Probes never release the train whose consumers they prove.
 Released train admission checks the physical archive identity, installed and
 historical schema bindings, version, `quick_check` and `integrity_check`; it
 does not count or hash mutable rows on ordinary restart. Interrupted APPLIED

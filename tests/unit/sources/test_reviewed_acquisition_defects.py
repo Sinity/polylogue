@@ -14,6 +14,7 @@ import pytest
 
 from polylogue.core.enums import Origin
 from polylogue.sources.live.source_selection import deepest_source_for_path
+from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.origin_specs import _source_signature, origin_specs
 from polylogue.sources.sqlite_snapshot import sqlite_logical_revision
 
@@ -100,6 +101,46 @@ def test_exact_file_source_outranks_an_equal_depth_directory_source(tmp_path: Pa
     )
 
     assert deepest_source_for_path(file_path, (directory_source, exact_file_source)) is exact_file_source
+
+
+def test_declared_subtree_alias_retains_provider_namespace_and_explicit_file_priority(tmp_path: Path) -> None:
+    declared = tmp_path / "profile"
+    external = tmp_path / "external"
+    declared.mkdir()
+    external.mkdir()
+    (declared / "sessions").symlink_to(external, target_is_directory=True)
+    physical = external / "session_shared.json"
+    physical.write_text("{}")
+    offered = declared / "sessions" / physical.name
+    hermes = WatchSource(name="hermes", root=declared, suffixes=())
+    external_source = WatchSource(name="inbox", root=external)
+    assert hermes.accepts(offered)
+    assert deepest_source_for_path(offered, (external_source, hermes)) is hermes
+    explicit = WatchSource(name="inbox", root=external, exact_paths=frozenset({physical.resolve()}))
+    assert deepest_source_for_path(offered, (hermes, explicit)) is explicit
+
+
+def test_resolved_root_alias_selects_paths_without_declared_containment(tmp_path: Path) -> None:
+    physical_root = tmp_path / "physical"
+    physical_root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(physical_root, target_is_directory=True)
+    path = physical_root / "session.jsonl"
+    path.write_text("{}\n")
+    source = WatchSource(name="codex", root=alias)
+    assert deepest_source_for_path(path, (source,)) is source
+
+
+def test_lexical_containment_collapses_parent_components_before_selecting(tmp_path: Path) -> None:
+    root = tmp_path / "profile"
+    root.mkdir()
+    outside = tmp_path / "external"
+    outside.mkdir()
+    path = outside / "session.jsonl"
+    path.write_text("{}\n")
+    declared = WatchSource(name="hermes", root=root)
+    actual = WatchSource(name="codex", root=outside)
+    assert deepest_source_for_path(root / ".." / "external" / path.name, (declared, actual)) is actual
 
 
 def test_autoincrement_state_changes_the_logical_revision(tmp_path: Path) -> None:
@@ -216,7 +257,7 @@ def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_drive_acquisition_refuses_a_foreign_archive_cache(tmp_path: Path) -> None:
-    """The Drive branch bypasses ``iter_source_raw_data``'s root refusal.
+    """The Drive branch bypasses ``iter_source_acquisition_records``'s root refusal.
 
     Anti-vacuity: drop the guard from ``iter_raw_record_stream`` and the Drive
     branch accepts a foreign archive's drive cache as a capture location, so

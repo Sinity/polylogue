@@ -93,7 +93,6 @@ from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     _archive_blob_publisher_slot,
     consume_blob_publication_receipt,
-    refuse_excised_attachment_blobs,
 )
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
@@ -1484,7 +1483,9 @@ def _write_session(
     preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None
     sidecar_blob_locators: Mapping[str, Mapping[str, str]] = {}
     if payload.prepared_artifact is not None:
-        preacquired_attachment_blobs = payload.prepared_artifact.attachment_blobs(source_connection=source_conn)
+        preacquired_attachment_blobs = payload.prepared_artifact.attachment_blobs(
+            source_connection=source_conn, session_id=payload.session_id
+        )
     elif any(
         item.inline_bytes is not None or item.precomputed_blob is not None for item in session_to_write.attachments
     ):
@@ -1497,14 +1498,6 @@ def _write_session(
         locators = PreparedSidecarLocators(payload.prepared_artifact, payload.prepared_session_ordinal, source_conn)
         sidecar_blob_locators = locators
         counts.update(locators.publication_counts())
-
-    if preacquired_attachment_blobs:
-        # A flush that refused excised bytes discarded them; bytes published
-        # earlier may have been excised since. Neither may be recorded as an
-        # acquired attachment whose blob is absent.
-        preacquired_attachment_blobs = refuse_excised_attachment_blobs(
-            preacquired_attachment_blobs, publisher=blob_publisher, source_conn=source_conn
-        )
 
     prepared_write = payload.prepared_write
     if prepared_write is None:

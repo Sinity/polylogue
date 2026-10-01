@@ -1,0 +1,121 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "proof:authenticated-source-pre-migration-package",
+  "current_version": 2,
+  "declared_at_ms": 1,
+  "drop_constraints": [],
+  "failure": null,
+  "manifest_format": "polylogue.durable-change-train.v2",
+  "manifest_sha256": "2c01821bb030af1f8abbd69f04c57f8dd28cb0aa5e4acc027579e96a78daf3d2",
+  "migration": {
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/003_captured_profile_identity.sql",
+    "path": "003_captured_profile_identity.sql",
+    "requires_backup": true,
+    "slot": 3,
+    "sql_sha256": "70a86d050b00ad55c64e4dbae0dec942fa0b868156afd7e82821e1e98f2bac69",
+    "target_version": 3,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "sinnix://projects/polylogue/beads/polylogue-lssl6",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:profile-receipt-admission",
+        "proof:profile-receipt-replay",
+        "proof:missing-profile-disposition",
+        "proof:captured-input-publication",
+        "proof:captured-input-replay",
+        "proof:captured-zip-admission",
+        "proof:captured-zip-restoration"
+      ],
+      "owner_ref": "sinnix://projects/polylogue/beads/polylogue-lssl6",
+      "rider_id": "source-captured-profile-identity",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:profile-receipt-admission",
+          "consumer_id": "profile-receipt-write",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_write.py:record_raw_profile_identity",
+          "roles": [
+            "write"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:profile-receipt-replay",
+          "consumer_id": "profile-receipt-read",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_write.py:read_raw_profile_identity",
+          "roles": [
+            "read"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:missing-profile-disposition",
+          "consumer_id": "raw-failure-lifecycle",
+          "production_ref": "polylogue/storage/raw_failure_lifecycle.py:read_raw_failure_lifecycle",
+          "roles": [
+            "read"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:captured-input-publication",
+          "consumer_id": "captured-input-publication",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_items.py:publish_source_generation",
+          "roles": [
+            "write"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:captured-input-replay",
+          "consumer_id": "captured-input-replay",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_items.py:page_retained_source_inputs",
+          "roles": [
+            "read"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:captured-zip-admission",
+          "consumer_id": "captured-zip-admission",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/raw_admission.py:execute_raw_admission_plan_sync",
+          "roles": [
+            "write"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:captured-zip-restoration",
+          "consumer_id": "captured-zip-restoration",
+          "production_ref": "polylogue/storage/source_blob_restoration.py:retained_source_location",
+          "roles": [
+            "read"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:raw_profile_identity_receipts",
+        "index:idx_raw_artifacts_source_identity",
+        "index:idx_raw_artifacts_failure_identity",
+        "table:prepared_source_manifest_members",
+        "table:source_items",
+        "table:raw_container_coordinates"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "schema_replay_proof": null,
+  "slot": 3,
+  "state": "declared",
+  "target_version": 3,
+  "tier": "source",
+  "train_id": "source-captured-profile-identity-v3"
+}

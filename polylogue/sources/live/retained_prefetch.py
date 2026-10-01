@@ -48,6 +48,7 @@ class PreparedLiveRetainedRaw:
                 descriptor != self.descriptor
                 or native_id != self.native_id
                 or archive.raw_revision_file_mtime(self.raw_id) != self.fallback_timestamp
+                or archive.raw_profile_identity(self.raw_id) != self.artifact.captured_profile_key
             ):
                 return False
         except (KeyError, ValueError):
@@ -59,6 +60,7 @@ class PreparedLiveRetainedRaw:
                 self.artifact,
                 provider=self.artifact.resolved_provider or provider,
                 source_path=source_path,
+                captured_zip_coordinate=archive.raw_captured_zip_coordinate(self.raw_id),
                 sessions=self.artifact.session_sequence(),
                 parser_sidecars=True,
             )

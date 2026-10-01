@@ -15,7 +15,6 @@ absent from a fresh root that bootstrap is about to create, is left alone.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -30,37 +29,20 @@ from polylogue.operations.durable_change_train import (
 )
 
 
-def _backup_profile(tier: str) -> str:
-    # ``user_overlays`` carries user.db and audit.db without blobs; source.db
-    # travels with the blobs it references.
-    return "rebuildable_cache_exclude" if tier == "source" else "user_overlays"
-
-
 def pre_migration_backup(
     archive_root: Path, migration: PendingDurableMigration, *, archive_owner: OwnedArchiveLocation
 ) -> Path:
     """Take and scratch-verify the backup a data-changing migration requires."""
 
-    from polylogue.operations.archive_backup import backup_archive
+    from polylogue.storage.backup_package import create_pre_migration_backup
 
-    output_dir = (
-        archive_root
-        / ".maintenance-state"
-        / "pre-migration-backups"
-        / f"{migration.tier.value}-v{migration.current_version}-to-v{migration.target_version}-{int(time.time() * 1000)}"
-    )
-    result = backup_archive(
-        output_dir=output_dir,
-        verify=True,
-        profile=_backup_profile(migration.tier.value),  # type: ignore[arg-type]
-        archive_root_path=archive_root,
+    return create_pre_migration_backup(
+        archive_root,
+        tier=migration.tier.value,
+        current_version=migration.current_version,
+        target_version=migration.target_version,
         archive_owner=archive_owner,
     )
-    if not result.ok or result.output_path is None:
-        raise RuntimeError(
-            f"pre-migration backup of {migration.tier.value}.db failed; refusing to migrate: {result.error}"
-        )
-    return Path(result.output_path) / "manifest.json"
 
 
 def apply_declared_durable_migrations(

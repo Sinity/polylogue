@@ -29,6 +29,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, BinaryIO, Concatenate, Literal, NoReturn, ParamSpec, TypedDict, TypeVar, cast
 
+from .source_items import SourceItemAdmission
+
 if TYPE_CHECKING:
     from polylogue.storage.index_generation import ActiveWriterLease
     from polylogue.storage.sqlite.reference_seal import (
@@ -139,7 +141,7 @@ from polylogue.core.errors import (
 )
 from polylogue.core.json import require_json_value
 from polylogue.core.protocols import ProgressCallback
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sqlite_introspection import relation_exists as _relation_exists
@@ -282,6 +284,8 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     deterministic_raw_session_id,
     is_blob_hash_excised,
     list_hook_events,
+    read_raw_captured_zip_coordinate,
+    read_raw_profile_identity,
     record_raw_container_coordinate,
     write_source_hook_event,
     write_source_hook_event_batch,
@@ -2396,6 +2400,8 @@ class ArchiveStore:
         *,
         payload: bytes,
         source_path: str,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         source_index: int = 0,
@@ -2412,6 +2418,8 @@ class ArchiveStore:
             session,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             source_index=source_index,
@@ -2431,6 +2439,12 @@ class ArchiveStore:
         capture_mode: Provider | None = None,
         payload: bytes,
         source_path: str,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         source_index: int = 0,
@@ -2447,6 +2461,12 @@ class ArchiveStore:
             capture_mode=capture_mode,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             source_index=source_index,
@@ -2566,6 +2586,12 @@ class ArchiveStore:
         blob_hash_hex: str,
         blob_size: int,
         source_path: str,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         source_index: int = 0,
@@ -2582,6 +2608,12 @@ class ArchiveStore:
             blob_hash_hex=blob_hash_hex,
             blob_size=blob_size,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             source_index=source_index,
@@ -2601,6 +2633,7 @@ class ArchiveStore:
         split_index: int,
         addressing_mode: MemberAddressingMode | str | None,
         content_identity: str | None = None,
+        captured_coordinate: CapturedZipMemberCoordinate | None = None,
     ) -> None:
         self._require_writable("record source.db container coordinate")
         record_raw_container_coordinate(
@@ -2611,6 +2644,7 @@ class ArchiveStore:
             split_index=split_index,
             addressing_mode=addressing_mode,
             content_identity=content_identity,
+            captured_coordinate=captured_coordinate,
         )
 
     @_archive_mutator
@@ -2620,6 +2654,12 @@ class ArchiveStore:
         provider: Provider,
         payload: bytes,
         source_path: str,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         classification: ArtifactClassification,
@@ -2637,6 +2677,12 @@ class ArchiveStore:
             provider=provider,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             classification=classification,
@@ -2653,6 +2699,12 @@ class ArchiveStore:
         blob_hash_hex: str,
         blob_size: int,
         source_path: str,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+        source_item: SourceItemAdmission | None = None,
+        addressing_mode: str | None = None,
+        content_identity: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         classification: ArtifactClassification,
@@ -2668,6 +2720,12 @@ class ArchiveStore:
             blob_hash_hex=blob_hash_hex,
             blob_size=blob_size,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             classification=classification,
@@ -2850,6 +2908,14 @@ class ArchiveStore:
 
     def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
         return raw_revision_descriptor(self, raw_id)
+
+    def raw_captured_zip_coordinate(self, raw_id: str) -> CapturedZipMemberCoordinate | None:
+        """Read the exact accepted container/member receipt without filesystem discovery."""
+        return read_raw_captured_zip_coordinate(self._ensure_source_conn(), raw_id)
+
+    def raw_profile_identity(self, raw_id: str) -> str | None:
+        """Return acquisition's retained profile qualifier without filesystem lookup."""
+        return read_raw_profile_identity(self._ensure_source_conn(), raw_id)
 
     @contextmanager
     def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
@@ -3181,6 +3247,8 @@ class ArchiveStore:
         *,
         payload: bytes,
         source_path: str,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         source_index: int = 0,
@@ -3197,6 +3265,8 @@ class ArchiveStore:
             session,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             source_index=source_index,
@@ -3215,6 +3285,8 @@ class ArchiveStore:
         *,
         payload: bytes,
         source_path: str,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
         acquired_at_ms: int,
         file_mtime_ms: int | None = None,
         logical_source_key: str,
@@ -3240,6 +3312,8 @@ class ArchiveStore:
             session,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
             logical_source_key=logical_source_key,

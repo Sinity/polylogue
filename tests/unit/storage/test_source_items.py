@@ -1,13 +1,17 @@
 """Production source-tier source-item authority laws."""
 
+import asyncio
 import hashlib
 import sqlite3
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TypedDict
 
 import pytest
 
 from polylogue.core.enums import IngestOutcome
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier, initialize_runtime_tier_probe
 from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     AcquisitionDisposition,
@@ -19,6 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     begin_prepared_source_manifest,
     complete_source_item_enumeration,
     page_retained_source_inputs,
+    prepare_source_manifest,
     publish_sealed_source_manifest,
     publish_source_generation,
     record_source_item_member_disposition,
@@ -42,9 +47,12 @@ class _TransitionArgs(TypedDict):
     observed_at_ms: int
 
 
-def _source() -> sqlite3.Connection:
+def _source(*, baseline: bool = False) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
-    initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    if baseline:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    else:
+        initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE)
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -58,7 +66,7 @@ def _reservation(conn: sqlite3.Connection, receipt_id: str, blob_hash: bytes) ->
 
 def test_fresh_source_v1_contains_prepared_manifest_tables() -> None:
     """Fresh campaign bootstrap carries the new relations without a version step."""
-    conn = _source()
+    conn = _source(baseline=True)
     assert conn.execute("PRAGMA user_version").fetchone() == (1,)
     tables = {
         row[0]
@@ -126,6 +134,150 @@ def test_sealed_manifest_pages_beyond_old_total_bound() -> None:
         seen += len(page)
         cursor = (page[-1][0].coordinate, page[-1][0].source_item_id)
     assert seen == 10_241
+
+
+def test_public_manifest_preparation_streams_more_than_ten_thousand_inputs() -> None:
+    conn = _source()
+    conn.execute("BEGIN")
+    _reservation(conn, "shared", bytes.fromhex("a" * 64))
+    ref = prepare_source_manifest(
+        conn,
+        source_generation_id="public-large",
+        publisher_id="publisher",
+        enumeration_fingerprint="d" * 64,
+        source_name="codex",
+        sealed_at_ms=1,
+        inputs=(FrozenSourceInput(str(n), f"/synthetic/{n}", "a" * 64, "shared") for n in range(10_241)),
+    )
+    publish_sealed_source_manifest(conn, ref, prepared_at_ms=2)
+    assert ref.input_count == 10_241
+    assert conn.execute("SELECT COUNT(*) FROM source_items").fetchone() == (10_241,)
+
+
+def test_completion_uses_disk_rows_and_same_uncommitted_source_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.storage.sqlite.archive_tiers import source_items
+
+    conn = _source()
+    item = _frozen_item(conn)
+    conn.execute("BEGIN")
+    for number in range(4097):
+        _raw_member(conn, item, f"record:{number:05d}")
+    actual_factory = source_items.scratch_connection_context
+    observed: list[tuple[str, int, int, str]] = []
+
+    @contextmanager
+    def observe_factory(*, prefix: str, filename: str) -> Iterator[sqlite3.Connection]:
+        with actual_factory(prefix=prefix, filename=filename) as scratch:
+            try:
+                yield scratch
+            finally:
+                observed.append(
+                    (
+                        scratch.execute("PRAGMA journal_mode").fetchone()[0],
+                        scratch.execute("SELECT COUNT(*) FROM main.records").fetchone()[0],
+                        scratch.execute("SELECT COUNT(*) FROM sqlite_temp_schema").fetchone()[0],
+                        scratch.execute("PRAGMA database_list").fetchone()[2],
+                    )
+                )
+
+    monkeypatch.setattr(source_items, "scratch_connection_context", observe_factory)
+    complete_source_item_enumeration(
+        conn,
+        source_generation_id="frozen",
+        source_item_id=item,
+        enumeration_fingerprint="b" * 64,
+        record_coordinates=(f"record:{number:05d}" for number in range(4097)),
+        enumerated_at_ms=2,
+    )
+    assert observed[0][:3] == ("delete", 4097, 0)
+    assert observed[0][3]
+    assert conn.in_transaction
+    conn.rollback()
+    assert source_generation_census(conn, "frozen")["enumeration_pending"] == 1
+
+
+def test_completion_cancellation_cannot_publish_completion() -> None:
+    conn = _source()
+    item = _frozen_item(conn)
+    conn.execute("BEGIN")
+    _raw_member(conn, item, "record:0")
+
+    class CancelledError(Exception):
+        pass
+
+    calls = 0
+
+    def stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise CancelledError
+
+    with pytest.raises(CancelledError):
+        complete_source_item_enumeration(
+            conn,
+            source_generation_id="frozen",
+            source_item_id=item,
+            enumeration_fingerprint="b" * 64,
+            record_coordinates=iter(("record:0",)),
+            enumerated_at_ms=2,
+            check_stop=stop,
+        )
+    assert source_generation_census(conn, "frozen")["enumeration_pending"] == 1
+    conn.rollback()
+
+
+@pytest.mark.asyncio
+async def test_async_completion_cancellation_drains_worker_and_rolls_back() -> None:
+    import aiosqlite
+
+    from polylogue.storage.sqlite.queries.raw_writes import complete_acquired_zip_input
+
+    async with aiosqlite.connect(":memory:") as owner:
+
+        def initialize() -> str:
+            initialize_runtime_tier_probe(owner._conn, ArchiveTier.SOURCE)
+            owner._conn.execute("PRAGMA foreign_keys=ON")
+            item = _frozen_item(owner._conn)
+            owner._conn.execute("BEGIN")
+            _raw_member(owner._conn, item, "record:0")
+            return item
+
+        item = await owner._execute(initialize)
+        entered = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def coordinates() -> Iterator[str]:
+            loop.call_soon_threadsafe(entered.set)
+            release.wait()
+            yield "record:0"
+
+        task = asyncio.create_task(
+            complete_acquired_zip_input(
+                owner,
+                source_generation_id="frozen",
+                source_item_id=item,
+                enumeration_fingerprint="b" * 64,
+                record_coordinates=coordinates(),
+                member_count=1,
+                observed_at_ms=2,
+                transaction_depth=1,
+            )
+        )
+        try:
+            await entered.wait()
+            task.cancel()
+            await asyncio.sleep(0)  # Deliver cancellation to the owning adapter.
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        async with owner.execute("SELECT enumerated_at_ms FROM source_items") as cursor:
+            assert await cursor.fetchone() == (None,)
+        async with owner.execute("SELECT COUNT(*) FROM source_item_raw_members") as cursor:
+            assert await cursor.fetchone() == (1,)
+        await owner.rollback()
 
 
 def _frozen_item(conn: sqlite3.Connection, generation: str = "frozen") -> str:

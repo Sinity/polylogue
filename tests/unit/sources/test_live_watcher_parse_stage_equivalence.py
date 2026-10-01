@@ -546,7 +546,7 @@ async def test_changed_json_after_preparation_defers_without_writer_decode(
     def writer_decode(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("the writer decoded a stage-owned JSON document to classify it")
 
-    monkeypatch.setattr(batch, "detect_provider_from_path_sample_evidence", writer_decode)
+    monkeypatch.setattr(batch, "detect_provider_from_path_evidence", writer_decode)
     source = tmp_path / "inbox" / "session.json"
     source.parent.mkdir()
     source.write_bytes(b'{"broken":' if malformed_initial else _gemini_cli_document("gemini-before-copy"))
@@ -622,7 +622,7 @@ def test_path_worker_binds_provider_parse_and_seal_to_one_snapshot(
     original = _gemini_cli_document("gemini-original")
     replacement = _chatgpt_document("chatgpt-replacement")
     source.write_bytes(original)
-    real_detect = batch_support._detect_provider_from_path_sample
+    real_detect = batch_support._detect_provider_from_path
     replaced = False
 
     def detect_then_replace(path: Path, fallback_provider: Provider, **kwargs: bool) -> Provider:
@@ -634,7 +634,7 @@ def test_path_worker_binds_provider_parse_and_seal_to_one_snapshot(
         replaced = True
         return provider
 
-    monkeypatch.setattr(batch_support, "_detect_provider_from_path_sample", detect_then_replace)
+    monkeypatch.setattr(batch_support, "_detect_provider_from_path", detect_then_replace)
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
     try:
         assert stage.warm_paths([(str(source), Provider.UNKNOWN, False)]) == frozenset()
@@ -2303,7 +2303,7 @@ async def test_preparation_exception_does_not_restore_whole_json_writer_decode(
     def forbid_writer_decode(*_args: Any, **_kwargs: Any) -> NoReturn:
         raise AssertionError("whole JSON decoding re-entered the writer after preparation failed")
 
-    monkeypatch.setattr(batch, "detect_provider_from_path_sample_evidence", forbid_writer_decode)
+    monkeypatch.setattr(batch, "detect_provider_from_path_evidence", forbid_writer_decode)
     owner = batch if failure_site == "discovery" else stage
     method = "_live_parse_stage_path_candidates" if failure_site == "discovery" else "warm_paths"
     original = getattr(owner, method)

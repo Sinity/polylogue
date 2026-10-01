@@ -49,6 +49,7 @@ from polylogue.core.enums import BlockType, Provider, TitleSource, ToolResultUnk
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.pipeline.ids import idless_session_identity
+from polylogue.sources.detection_projection import DetectorProjection
 
 from .base import (
     AdmissionLedger,
@@ -263,6 +264,16 @@ __all__ = [
     "looks_like_native_bundle",
     "parse_native_bundle",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Consume every conversation and retain an exact existential shape witness."""
+    item = DetectorProjection(fields={"conversation": DetectorProjection(), "responses": DetectorProjection()})
+    return DetectorProjection(
+        fields={
+            "conversations": DetectorProjection(item=item, array_fold="any", array_predicate=looks_like_conversation),
+        }
+    )
 
 
 # These fields are emitted by the retained app-chat /responses reply and
@@ -607,3 +618,20 @@ def parse_native_bundle(payload: Mapping[str, object], fallback_id: str) -> list
     if not looks_like_native_bundle(payload):
         raise ValueError("invalid Grok endpoint bundle")
     return [parse_conversation(payload, fallback_id)]
+
+
+def native_detection_projection() -> DetectorProjection:
+    """Preserve the native predicate's exact nested identity and list shapes."""
+    identity = DetectorProjection(fields={"conversationId": DetectorProjection()})
+    conversation = DetectorProjection(
+        fields={
+            "conversationId": DetectorProjection(),
+            "conversation": identity,
+        }
+    )
+    return DetectorProjection(
+        fields={
+            "conversation": conversation,
+            "responses": DetectorProjection(fields={"responses": DetectorProjection()}),
+        }
+    )

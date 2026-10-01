@@ -26,10 +26,12 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.prepared_file import PreparedFileSeal, file_digest
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.acquisition_boundary import bound_profile_identity, open_bound_path
 from polylogue.sources.decoder_json import (
     JsonlDecodeError,
     PartialJsonStreamError,
@@ -69,7 +71,6 @@ from polylogue.sources.parsers import (
     codex_state,
     drive,
     grok,
-    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -84,6 +85,7 @@ from polylogue.sources.parsers.base_support import (
     otel_genai_unknown_wire_type,
 )
 from polylogue.sources.parsers.claude.ai_parser import parse_ai_stream, parse_design_stream
+from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
     ClaudeAttachmentScratch,
@@ -240,7 +242,7 @@ def terminal_decode_evidence(error: BaseException, *, provider: Provider) -> Raw
 
 
 @contextmanager
-def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str]]:
+def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str, CapturedHermesProfile]]:
     """Copy one revision of ``source`` into private scratch and name its digest.
 
     Everything that decides how a revision is interpreted -- provider
@@ -256,13 +258,16 @@ def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str]]
     snapshot = holder / source.name
     try:
         digest = hashlib.sha256()
-        with source.open("rb") as reader, snapshot.open("xb") as writer:
+        with open_bound_path(source, None) as reader, snapshot.open("xb") as writer:
+            profile = bound_profile_identity(reader)
+            if profile is None:
+                raise OSError("source snapshot has no bound declared namespace")
             for chunk in iter(lambda: reader.read(1024 * 1024), b""):
                 check_compute_cancelled()
                 digest.update(chunk)
                 writer.write(chunk)
         os.chmod(snapshot, 0o400)
-        yield snapshot, digest.hexdigest()
+        yield snapshot, digest.hexdigest(), profile
     finally:
         with suppress(FileNotFoundError):
             shutil.rmtree(holder)
@@ -676,6 +681,9 @@ class PreparedJsonl:
     #: For a terminal failure, which decode boundary refused the bytes, or
     #: ``None`` when the failure was not a decode failure.
     decode_failure: DecodeFailure | None = None
+    missing_profile_identity: bool = False
+    retained_zip_membership_unproved: bool = False
+    captured_profile_key: str | None = None
     codex_state_kind: str | None = None
     codex_state_text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS
     publication_publisher: ArchiveBlobPublisher | None = None
@@ -774,6 +782,7 @@ class PreparedJsonl:
         enrichment_index_path: str | None = None,
         parsed_prefix_size: int | None = None,
         resolved_provider: Provider | None = None,
+        captured_profile_key: str | None = None,
         positive_evidence_filtered: bool = False,
         attempt_directory: Path | None = None,
         codex_state_kind: str | None = None,
@@ -791,6 +800,7 @@ class PreparedJsonl:
             shard_seal=PreparedFileSeal.capture(shard_path),
             parsed_prefix_size=parsed_prefix_size,
             resolved_provider=resolved_provider,
+            captured_profile_key=captured_profile_key,
             positive_evidence_filtered=positive_evidence_filtered,
             attempt_directory=attempt_directory,
             codex_state_kind=codex_state_kind,
@@ -995,7 +1005,9 @@ class PreparedJsonl:
                     ),
                 )
 
-    def iter_attachment_claims(self) -> Iterator[tuple[int, int, PreparedBlobPublicationClaim]]:
+    def iter_attachment_claims(
+        self, *, session_ordinal: int | None = None
+    ) -> Iterator[tuple[int, int, PreparedBlobPublicationClaim]]:
         """Read exact captured claims through closed bounded artifact pages."""
         if self.sessions_path is None:
             raise ValueError("prepared artifact has no attachment carrier")
@@ -1004,11 +1016,14 @@ class PreparedJsonl:
         while True:
             check_compute_cancelled()
             with _prepared_reader(self.sessions_path) as connection:
+                predicate = "" if session_ordinal is None else "AND session_ordinal=? "
+                parameters = after if session_ordinal is None else (*after, session_ordinal)
                 rows = connection.execute(
                     "SELECT session_ordinal, attachment_ordinal, claim_json FROM prepared_attachment_publication "
                     "WHERE (session_ordinal, attachment_ordinal) > (?, ?) "
-                    "ORDER BY session_ordinal, attachment_ordinal LIMIT 256",
-                    after,
+                    + predicate
+                    + "ORDER BY session_ordinal, attachment_ordinal LIMIT 256",
+                    parameters,
                 ).fetchall()
             if not rows:
                 return
@@ -1024,10 +1039,19 @@ class PreparedJsonl:
                 )
 
     def attachment_blobs(
-        self, *, source_connection: sqlite3.Connection
+        self, *, source_connection: sqlite3.Connection, session_id: str
     ) -> Mapping[object, tuple[bytes | None, int, str]]:
         """Borrow writer-owned excision evidence for the sealed attachment view."""
-        return _PreparedAttachmentBlobs(self, source_connection)
+        if self.sessions_path is None:
+            raise ValueError("prepared artifact has no attachment carrier")
+        self.verify_files(full=False)
+        with _prepared_reader(self.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT attachment_ordinal FROM prepared_session WHERE session_id=?", (session_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        return _PreparedAttachmentBlobs(self, source_connection, int(row[0]))
 
     def iter_attachment_refs(self, *, source_path: str, acquired_at_ms: int, source_connection: sqlite3.Connection):
         from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, is_blob_hash_excised
@@ -1046,7 +1070,9 @@ class PreparedJsonl:
                     publication_receipt_id=claim.receipt.publication_id,
                 )
 
-    def iter_sidecar_claims(self) -> Iterator[tuple[int, str, PreparedBlobPublicationClaim, bool]]:
+    def iter_sidecar_claims(
+        self, *, session_ordinal: int | None = None
+    ) -> Iterator[tuple[int, str, PreparedBlobPublicationClaim, bool]]:
         if self.sessions_path is None or self.publication_publisher is None:
             return
         self.verify_files(full=False)
@@ -1054,11 +1080,14 @@ class PreparedJsonl:
         while True:
             check_compute_cancelled()
             with _prepared_reader(self.sessions_path) as connection:
+                predicate = "" if session_ordinal is None else "AND session_ordinal=? "
+                parameters = after if session_ordinal is None else (*after, session_ordinal)
                 rows = connection.execute(
                     "SELECT session_ordinal,tool_use_id,claim_json,already_present FROM prepared_sidecar_publication "
                     "WHERE claim_json IS NOT NULL AND (session_ordinal,tool_use_id)>(?,?) "
-                    "ORDER BY session_ordinal,tool_use_id LIMIT 256",
-                    after,
+                    + predicate
+                    + "ORDER BY session_ordinal,tool_use_id LIMIT 256",
+                    parameters,
                 ).fetchall()
             if not rows:
                 return
@@ -1211,25 +1240,37 @@ class PreparedJsonl:
 class _PreparedAttachmentBlobs(Mapping[object, tuple[bytes | None, int, str]]):
     """A writer-local view, never a transferred SQL handle or population map."""
 
-    def __init__(self, artifact: PreparedJsonl, source_connection: sqlite3.Connection) -> None:
+    def __init__(self, artifact: PreparedJsonl, source_connection: sqlite3.Connection, ordinal: int) -> None:
         self.artifact = artifact
         self.source_connection = source_connection
+        self.ordinal = ordinal
 
     def __len__(self) -> int:
         if self.artifact.sessions_path is None:
             raise ValueError("prepared artifact has no attachment carrier")
         self.artifact.verify_files(full=False)
         with _prepared_reader(self.artifact.sessions_path) as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM prepared_attachment_publication").fetchone()[0])
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM prepared_attachment_publication WHERE session_ordinal=?", (self.ordinal,)
+                ).fetchone()[0]
+            )
 
     def __iter__(self) -> Iterator[object]:
-        for session_ordinal, attachment_ordinal, _claim in self.artifact.iter_attachment_claims():
+        for session_ordinal, attachment_ordinal, _claim in self.artifact.iter_attachment_claims(
+            session_ordinal=self.ordinal
+        ):
             yield str(self.artifact.sessions_path), session_ordinal, attachment_ordinal
 
     def __getitem__(self, key: object) -> tuple[bytes | None, int, str]:
         from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
 
-        if not isinstance(key, tuple) or len(key) != 3 or key[0] != str(self.artifact.sessions_path):
+        if (
+            not isinstance(key, tuple)
+            or len(key) != 3
+            or key[0] != str(self.artifact.sessions_path)
+            or key[1] != self.ordinal
+        ):
             raise KeyError(key)
         self.artifact.verify_files(full=False)
         if self.artifact.sessions_path is None or self.artifact.publication_publisher is None:
@@ -1245,6 +1286,7 @@ class _PreparedAttachmentBlobs(Mapping[object, tuple[bytes | None, int, str]]):
         blob_hash = bytes.fromhex(claim.receipt.blob_hash)
         if is_blob_hash_excised(self.source_connection, blob_hash):
             return None, claim.receipt.size_bytes, "unavailable"
+        claim.publisher.validate_published_claim(self.source_connection, claim, source_path="")
         return blob_hash, claim.receipt.size_bytes, "acquired"
 
 
@@ -1257,9 +1299,8 @@ class PreparedSidecarLocators(Mapping[str, Mapping[str, str]]):
         self.source_connection = source_connection
 
     def __iter__(self) -> Iterator[str]:
-        for ordinal, tool_use_id, _claim, _present in self.artifact.iter_sidecar_claims():
-            if ordinal == self.ordinal:
-                yield tool_use_id
+        for _ordinal, tool_use_id, _claim, _present in self.artifact.iter_sidecar_claims(session_ordinal=self.ordinal):
+            yield tool_use_id
 
     def __len__(self) -> int:
         if self.artifact.sessions_path is None:
@@ -1299,9 +1340,7 @@ class PreparedSidecarLocators(Mapping[str, Mapping[str, str]]):
             "sidecar_blobs_written": 0,
             "sidecar_blobs_refused_excised": 0,
         }
-        for ordinal, tool_use_id, claim, present in self.artifact.iter_sidecar_claims():
-            if ordinal != self.ordinal:
-                continue
+        for _ordinal, tool_use_id, claim, present in self.artifact.iter_sidecar_claims(session_ordinal=self.ordinal):
             if self[tool_use_id].get("blob_refusal"):
                 counts["sidecar_blobs_refused_excised"] += 1
             else:
@@ -1474,7 +1513,7 @@ def _write_artifact(
 def _create_artifact_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE prepared_sidecar_publication (session_ordinal INTEGER NOT NULL, tool_use_id TEXT NOT NULL, "
-        "claim_json TEXT, already_present INTEGER NOT NULL DEFAULT 0, "
+        "claim_json TEXT, captured_text TEXT, already_present INTEGER NOT NULL DEFAULT 0, "
         "PRIMARY KEY(session_ordinal,tool_use_id)) WITHOUT ROWID"
     )
     conn.execute(
@@ -1564,37 +1603,49 @@ def _prepare_sidecar_publications(store: SqliteMessageStore, publisher: ArchiveB
         "AND json_type(e.event_json,'$.payload.tool_use_id')='text'",
         tuple(SIDECAR_BLOB_EVENT_TYPES),
     )
+    # Resolve the parser's final matching block once in parser order. The
+    # exact sidecar row is the disk-backed owner of this temporary evidence.
+    blocks = store.conn.execute(
+        "SELECT s.ordinal,p.tool_use_id,json_extract(b.value,'$.text') "
+        "FROM prepared_session s JOIN prepared_message m ON m.session_ordinal=s.message_ordinal "
+        "JOIN json_each(m.message_json,'$.blocks') b "
+        "JOIN prepared_sidecar_publication p ON p.session_ordinal=s.ordinal "
+        "AND p.tool_use_id=json_extract(b.value,'$.tool_id') "
+        "WHERE json_extract(b.value,'$.type')='tool_result' AND json_type(b.value,'$.text')='text' "
+        "ORDER BY s.ordinal,m.message_ordinal,CAST(b.key AS INTEGER)"
+    )
+    try:
+        while True:
+            check_compute_cancelled()
+            page = blocks.fetchmany(128)
+            if not page:
+                break
+            for ordinal, tool_use_id, text in page:
+                check_compute_cancelled()
+                store.conn.execute(
+                    "UPDATE prepared_sidecar_publication SET captured_text=? WHERE session_ordinal=? AND tool_use_id=?",
+                    (text, ordinal, tool_use_id),
+                )
+    finally:
+        blocks.close()
     after = (-1, "")
     while True:
         check_compute_cancelled()
         rows = store.conn.execute(
-            "SELECT session_ordinal,tool_use_id FROM prepared_sidecar_publication "
-            "WHERE (session_ordinal,tool_use_id)>(?,?) ORDER BY session_ordinal,tool_use_id LIMIT 256",
+            "SELECT session_ordinal,tool_use_id,captured_text FROM prepared_sidecar_publication "
+            "WHERE captured_text IS NOT NULL AND (session_ordinal,tool_use_id)>(?,?) ORDER BY session_ordinal,tool_use_id LIMIT 128",
             after,
         ).fetchall()
         if not rows:
             break
-        for ordinal, tool_use_id in rows:
+        for ordinal, tool_use_id, text in rows:
             check_compute_cancelled()
-            # The prior dictionary selected the final matching block in parser
-            # order. Preserve that decision without a whole-session tool map.
-            row = store.conn.execute(
-                "SELECT json_extract(b.value,'$.text') FROM prepared_session s "
-                "JOIN prepared_message m ON m.session_ordinal=s.message_ordinal "
-                "JOIN json_each(m.message_json,'$.blocks') b "
-                "WHERE s.ordinal=? AND json_extract(b.value,'$.type')='tool_result' "
-                "AND json_extract(b.value,'$.tool_id')=? AND json_type(b.value,'$.text')='text' "
-                "ORDER BY m.message_ordinal DESC,CAST(b.key AS INTEGER) DESC LIMIT 1",
-                (ordinal, tool_use_id),
-            ).fetchone()
-            if row is None:
-                continue
             blob = publisher.prepare_from_bytes(
-                unicodedata.normalize("NFC", str(row[0])).encode("utf-8"), staging_directory=directory
+                unicodedata.normalize("NFC", str(text)).encode("utf-8"), staging_directory=directory
             )
             claim = publisher.prepare_claim(blob)
             store.conn.execute(
-                "UPDATE prepared_sidecar_publication SET claim_json=?,already_present=? "
+                "UPDATE prepared_sidecar_publication SET claim_json=?,already_present=?,captured_text=NULL "
                 "WHERE session_ordinal=? AND tool_use_id=?",
                 (_prepared_claim_record(claim), int(publisher.exists(blob.hash_hex)), ordinal, tool_use_id),
             )
@@ -1744,6 +1795,7 @@ def prepare_jsonl_blob(
     fallback_id: str,
     *,
     is_stream: bool,
+    profile_identity: str | None = None,
     shard_directory: str,
     sidecar_resolver: SidecarResolver | None = None,
     prepare_sessions: Callable[[list[ParsedSession]], list[ParsedSession]] | None = None,
@@ -2213,6 +2265,7 @@ def prepare_jsonl_blob(
                         messages=store.new_sink(),
                         session_events=store.new_event_sink(),
                         source_path=source_path,
+                        profile_identity=profile_identity,
                     )
             session_count = 0
             if session is not None and require_positive_conversational_evidence(
@@ -2525,7 +2578,8 @@ def prepare_jsonl_blob(
                     steps,
                     _atif_subagents(store.conn) if atif_has_subagents else (),
                     fallback_id,
-                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    profile_root=profile_root_for_artifact(Path(source_path)),
+                    profile_identity=profile_identity,
                     new_events=store.new_event_sink,
                 )
                 if atif_sessions:
@@ -2805,6 +2859,7 @@ def prepare_jsonl_blob(
                         records,
                         fallback_id,
                         source_path=source_path,
+                        profile_identity=profile_identity,
                         message_sink_factory=store.new_sink,
                         event_sink_factory=store.new_event_sink,
                         sidecar_resolver=sidecar_resolver,
@@ -2815,6 +2870,7 @@ def prepare_jsonl_blob(
                         list(records),
                         fallback_id,
                         source_path=source_path,
+                        profile_identity=profile_identity,
                         sidecar_resolver=sidecar_resolver,
                     )
             after_hash = file_digest(source)
@@ -2851,6 +2907,7 @@ def prepare_jsonl_blob(
             enrichment_index_path=enrichment_index_path,
             parsed_prefix_size=parse_prefix_size,
             resolved_provider=provider,
+            captured_profile_key=profile_identity,
             # Every branch above admits its sessions before sealing.
             positive_evidence_filtered=True,
             attempt_directory=attempt_directory,
@@ -2887,6 +2944,7 @@ def prepare_jsonl_blob(
             # provider token parsed before the source was hashed.
             resolved_provider=Provider.from_string(provider_value) if error_hash is not None else None,
             decode_failure=None if retryable else classify_decode_failure(exc),
+            captured_profile_key=profile_identity,
         )
     finally:
         if store is not None:

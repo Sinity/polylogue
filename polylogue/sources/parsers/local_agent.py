@@ -12,6 +12,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.timestamps import format_timestamp
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     is_masked_tool_output,
     join_gemini_tool_output_sidecars,
@@ -392,6 +393,7 @@ def parse_hermes(
     fallback_id: str,
     *,
     source_path: str | Path | None = None,
+    profile_identity: str | None = None,
 ) -> ParsedSession:
     """Parse one ``<hermes_root>/sessions/session_*.json`` snapshot.
 
@@ -403,7 +405,7 @@ def parse_hermes(
     assertable, so identity stays unqualified rather than inventing a key.
     """
     raw_session_id = _string(payload.get("session_id")) or fallback_id
-    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     system_prompt = _string(payload.get("system_prompt"))
@@ -457,10 +459,11 @@ def parse_hermes_snapshot_stream(
     messages: MutableSequence[ParsedMessage],
     session_events: MutableSequence[ParsedSessionEvent],
     source_path: str | Path | None = None,
+    profile_identity: str | None = None,
 ) -> ParsedSession:
     """Lower one validated snapshot with disk-backed message and event rows."""
     raw_session_id = _string(envelope.get("session_id")) or fallback_id
-    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path, profile_identity)
     model = _string(envelope.get("model"))
     system_prompt = _string(envelope.get("system_prompt"))
     if system_prompt:
@@ -516,7 +519,11 @@ def parse_hermes_snapshot_stream(
     )
 
 
-def _hermes_qualified_session_id(raw_session_id: str, source_path: str | Path | None) -> str:
+def _hermes_qualified_session_id(
+    raw_session_id: str, source_path: str | Path | None, profile_identity: str | None
+) -> str:
+    if profile_identity is not None:
+        return _qualified_session_id(raw_session_id, profile_identity)
     if source_path is None:
         return raw_session_id
     return _qualified_session_id(
@@ -1339,3 +1346,14 @@ __all__ = [
     "parse_gemini_cli",
     "parse_hermes",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Project the complete local-agent root signatures, including list types."""
+    fields: dict[str, DetectorProjection | None] = dict.fromkeys(
+        ("startTime", "lastUpdated", "session_start", "last_updated", "platform")
+    )
+    fields.update(
+        {name: DetectorProjection() for name in ("sessionId", "session_id", "messages", "projectHash", "kind")}
+    )
+    return DetectorProjection(fields=fields)

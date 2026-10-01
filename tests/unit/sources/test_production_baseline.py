@@ -769,7 +769,7 @@ def test_whole_zip_member_revision_is_hashed_without_buffering_the_member(
     bundle = root / "export.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("projects/p/s1.jsonl", member)
-    original_open = decoders.open_bounded_zip_entry
+    original_open = decoders.open_zip_entry
 
     class ChunkOnlyReader:
         def __init__(self, handle: Any) -> None:
@@ -787,7 +787,7 @@ def test_whole_zip_member_revision_is_hashed_without_buffering_the_member(
 
     monkeypatch.setattr(
         decoders,
-        "open_bounded_zip_entry",
+        "open_zip_entry",
         lambda zf, info: ChunkOnlyReader(original_open(zf, info)),
     )
     baseline = capture_production_source_baseline(
@@ -1041,56 +1041,32 @@ def _write_codex_state_db(path: Path) -> None:
         conn.close()
 
 
-async def test_a_staged_sqlite_import_is_baselined_at_the_path_acquisition_retains(
+def test_explicit_sqlite_import_retains_its_original_coordinate_outside_watch_roots(
     workspace_env: dict[str, Path],
 ) -> None:
-    """``polylogue import`` stages a database; intake retains it under its original path.
-
-    The baseline observes the staged inbox copy but records the coordinate
-    the provenance sidecar names, so the retained row satisfies it.
-
-    Anti-vacuity: record the discovered staged path and verify raises
-    ``unretained revision`` after a successful ingest.
-    """
-    import polylogue.sources.live.watcher as live_watcher
-    from polylogue import Polylogue
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
-    from polylogue.sources.sqlite_snapshot import stage_sqlite_snapshot
+    """The retired watched-inbox snapshot producer cannot create a second raw identity."""
+    from polylogue.operations.import_staging import import_staging_root
+    from polylogue.operations.ingest_inputs import discover_ingest_input_spool, retain_input_page
+    from polylogue.sources.live.watcher import daemon_watch_sources
+    from polylogue.sources.source_staging import stage_source_input
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     archive_root = workspace_env["archive_root"]
     original = workspace_env["home_dir"] / ".codex" / "state_5.sqlite"
     _write_codex_state_db(original)
-    inbox = workspace_env["data_root"] / "inbox"
-    staged = inbox / "import-1" / "state_5.sqlite"
-    stage_sqlite_snapshot(original, staged)
-    source = WatchSource("inbox", inbox, suffixes=live_watcher.INBOX_SOURCE_SUFFIXES)
-
-    baseline = capture_production_source_baseline((source,), operation_id="import")
-    assert [row.path for row in baseline.accepted] == [str(original.resolve())]
-    with pytest.raises(ProductionBaselineError, match="unretained revision"):
-        baseline.verify(archive_root / "source.db")
-
-    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "cursor.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (source,),
-        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
-        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
+    staged = stage_source_input(original, import_staging_root(archive_root), check_stop=lambda: None)
+    assert all(not staged.is_relative_to(source.root) for source in daemon_watch_sources() if source.root is not None)
+    spool = discover_ingest_input_spool(staged, source_path=str(original), check_stop=lambda: None)
+    publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     try:
-        metrics = await processor.ingest_files([staged], emit_event=False)
+        [retained] = retain_input_page(spool, after_coordinate=None, publisher=publisher, check_stop=lambda: None)
+        assert retained.coordinate == "input:0"
+        assert retained.source_path == str(original)
+        assert retained.captured_identity is not None
+        assert retained.captured_identity.canonical_source_path == str(original.resolve())
     finally:
-        await archive.close()
-    assert metrics.failed_file_count == 0
-    conn = sqlite3.connect(archive_root / "source.db")
-    try:
-        retained_paths = {str(row[0]) for row in conn.execute("SELECT source_path FROM raw_sessions")}
-    finally:
-        conn.close()
-    assert retained_paths == {str(original.resolve())}, "sanity: intake retains the original coordinate"
-
-    baseline.verify(archive_root / "source.db")
+        publisher.discard_pending()
+        spool.unlink(missing_ok=True)
 
 
 def test_the_default_codex_state_source_baselines_only_its_declared_jsonl_sidecars(

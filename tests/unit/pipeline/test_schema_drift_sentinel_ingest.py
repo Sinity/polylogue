@@ -128,7 +128,6 @@ def _rig_ingest(
         provider: str | Provider,
         payload: JSONValue,
         fallback_id: str,
-        _depth: int = 0,
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,

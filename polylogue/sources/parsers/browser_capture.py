@@ -29,6 +29,7 @@ from polylogue.core.hashing import hash_bytes
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import _message_owner_coordinate
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
@@ -993,3 +994,15 @@ __all__ = [
     "looks_like",
     "parse",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Preserve the capture discriminator and declared provider, consuming all payload bytes."""
+    return DetectorProjection(
+        fields={
+            "polylogue_capture_kind": DetectorProjection(),
+            "schema_version": DetectorProjection(),
+            "session": DetectorProjection(fields={"provider": DetectorProjection()}),
+            "provenance": DetectorProjection(),
+        }
+    )

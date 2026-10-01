@@ -39,7 +39,7 @@ def _root_name(path: Path) -> str:
 @contextmanager
 def backup_verification_read_counter() -> Iterator[BackupVerificationReadCounter]:
     """Measure blob reads performed by one real backup verification pass."""
-    from polylogue.operations import archive_backup as backup_mod
+    from polylogue.storage import backup_package as backup_mod
 
     counter = BackupVerificationReadCounter()
     real_sha256_file = backup_mod._sha256_file

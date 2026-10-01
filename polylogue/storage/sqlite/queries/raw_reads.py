@@ -19,6 +19,11 @@ from polylogue.storage.sqlite.connection import _build_source_path_scope_filter
 from polylogue.storage.sqlite.queries.mappers import _ms_to_iso, _row_to_raw_session
 from polylogue.storage.sqlite.queries.raw_state import RAW_ORIGIN_FILTER_SQL, origin_filter_value
 
+_RAW_RECORD_COLUMNS = (
+    "raw_sessions.*, (SELECT profile_key FROM raw_profile_identity_receipts AS profile_receipt "
+    "WHERE profile_receipt.raw_id = raw_sessions.raw_id) AS captured_profile_key"
+)
+
 
 def _raw_rows(rows: Iterable[object]) -> list[aiosqlite.Row]:
     typed_rows: list[aiosqlite.Row] = []
@@ -178,7 +183,7 @@ async def iter_raw_headers(
 
 async def get_raw_session(conn: aiosqlite.Connection, raw_id: str) -> RawSessionRecord | None:
     cursor = await conn.execute(
-        "SELECT * FROM raw_sessions WHERE raw_id = ?",
+        f"SELECT {_RAW_RECORD_COLUMNS} FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
     )
     row = await cursor.fetchone()
@@ -206,7 +211,7 @@ async def get_raw_sessions_batch(conn: aiosqlite.Connection, raw_ids: list[str])
         return []
     placeholders = ",".join("?" * len(raw_ids))
     cursor = await conn.execute(
-        f"SELECT * FROM raw_sessions WHERE raw_id IN ({placeholders})",
+        f"SELECT {_RAW_RECORD_COLUMNS} FROM raw_sessions WHERE raw_id IN ({placeholders})",
         raw_ids,
     )
     records: list[RawSessionRecord] = []
@@ -286,7 +291,7 @@ async def iter_raw_sessions(
     yielded = 0
 
     while True:
-        query = "SELECT * FROM raw_sessions"
+        query = f"SELECT {_RAW_RECORD_COLUMNS} FROM raw_sessions"
         params: list[str | int] = []
         if origin is not None:
             query += f" WHERE {RAW_ORIGIN_FILTER_SQL} = ?"
@@ -341,7 +346,7 @@ async def get_raw_records_for_session(
     total = int(total_row["cnt"]) if total_row is not None else 0
 
     cursor = await conn.execute(
-        "SELECT * FROM raw_sessions WHERE raw_id = ? ORDER BY acquired_at_ms DESC, raw_id ASC LIMIT ? OFFSET ?",
+        f"SELECT {_RAW_RECORD_COLUMNS} FROM raw_sessions WHERE raw_id = ? ORDER BY acquired_at_ms DESC, raw_id ASC LIMIT ? OFFSET ?",
         (raw_id, limit, offset),
     )
     records = [_row_to_raw_session(row) for row in await cursor.fetchall()]

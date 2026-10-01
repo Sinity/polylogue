@@ -1296,6 +1296,8 @@ class AuditRepository:
             binding = self._machine_binding[0]
             if binding.principal_ref != principal.actor_ref or "archive.ingest" not in principal.capabilities:
                 raise AuthorizationMismatchError("ingest acceptance principal lacks bound authority")
+            if not isinstance(manifest, SealedSourceManifestRef):
+                raise TypeError("new ingest acceptance requires a staged source manifest")
             plan = cast(MutationPlan | None, values.get("plan"))
             authorization = cast(MutationAuthorization | None, values.get("authorization"))
             if (plan is None) != (authorization is None):
@@ -1820,13 +1822,15 @@ class AuditRepository:
     @_continuity_mutation("accept_ingest")
     def accept_ingest(
         self,
-        manifest: FrozenSourceManifest | SealedSourceManifestRef,
+        manifest: SealedSourceManifestRef,
         principal: MutationPrincipal,
         *,
         plan: MutationPlan | None = None,
         authorization: MutationAuthorization | None = None,
     ) -> str:
         """Bind retained physical inputs; source preparation owns acceptance."""
+        if not isinstance(manifest, SealedSourceManifestRef):
+            raise TypeError("new ingest acceptance requires a staged source manifest")
         if plan is not None:
             if self._coordinated_mutation is None:
                 raise RuntimeError("paired ingest authority requires source-WAL coordination")

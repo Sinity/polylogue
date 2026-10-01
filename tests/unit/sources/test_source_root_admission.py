@@ -14,9 +14,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_acquisition import iter_source_acquisition_records
 from polylogue.sources.source_root_admission import SourceRootRefusedError
 from polylogue.storage.blob_store import BlobStore
+from tests.infra.source_builders import acquired_payloads
 
 _SESSION_LINE = {
     "sessionId": "capture-1",
@@ -44,7 +45,11 @@ def _archive(root: Path) -> Path:
 
 def _acquire(source_root: Path, destination: Path) -> list[object]:
     store = BlobStore(destination / "blob")
-    return list(iter_source_raw_data(Source(name="claude-code", path=source_root), blob_store=store))
+    return list(
+        acquired_payloads(
+            iter_source_acquisition_records(Source(name="claude-code", path=source_root), blob_store=store)
+        )
+    )
 
 
 def test_acquisition_refuses_a_foreign_archive_drive_cache(tmp_path: Path) -> None:
@@ -52,7 +57,7 @@ def test_acquisition_refuses_a_foreign_archive_drive_cache(tmp_path: Path) -> No
     read as a source into the operator's archive.
 
     Mutation: drop the ``refuse_non_capture_source_root`` call from
-    ``iter_source_raw_data``. The development archive's cache is admitted and
+    ``iter_source_acquisition_records``. The development archive's cache is admitted and
     its bytes reach the destination blob store."""
     dev_archive = _archive(tmp_path / "polylogue-dev" / "xdg" / "polylogue")
     cache = dev_archive / "drive-cache" / "gemini"

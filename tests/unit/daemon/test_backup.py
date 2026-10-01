@@ -18,9 +18,10 @@ from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
-from polylogue.operations import archive_backup as backup_mod
+from polylogue.operations import archive_backup as backup_operations
 from polylogue.operations.archive_backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.storage import backup_package as backup_mod
 from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.backup_blob_closure import (
     SOURCE_DECLARED_ABSENT_AUTHORITY,
@@ -855,7 +856,9 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
 def test_resolved_direct_path_keeps_colon_as_filename_data(tmp_path: Path) -> None:
     """Anti-vacuity: treating every colon as a ZIP separator mangles this path."""
     source = str(tmp_path / "session:export.json")
-    assert backup_mod._resolved_source_path(source, tmp_path) == source
+    from polylogue.storage.source_blob_restoration import retained_source_location
+
+    assert retained_source_location({"source_path": source}, tmp_path) == (source, False)
 
 
 def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
@@ -2238,7 +2241,7 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
             conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
 
     monkeypatch.setattr(
-        "polylogue.operations.archive_backup._verify_archive_file_set_backup",
+        "polylogue.storage.backup_package._verify_archive_file_set_backup",
         lambda _path: {"ok": False, "error": "bad"},
     )
 
@@ -2584,7 +2587,7 @@ def test_verified_backup_restore_owns_destination_train_and_preserves_original_e
     original_history = (package / ".maintenance-state/durable-change-trains/source-002.json").read_bytes()
     receipt_bytes = (package / "verification-receipt.json").read_bytes()
     destination = tmp_path / "restored"
-    detail = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    detail = backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert detail["operational_admission"] == ("ready" if profile == "full_evidence" else "degraded")
     assert detail["unrestored_purchased_tiers"] == ([] if include_embeddings else ["embeddings.db"])
     assert detail["restored_tiers"] == sorted(json.loads((package / "manifest.json").read_text())["included_tiers"])
@@ -2619,8 +2622,8 @@ def test_verified_backup_restore_does_not_claim_partial_profiles_are_operational
     result = backup_archive(output_dir=tmp_path / "backups", profile=profile, verify=True)
     assert result.ok and result.verified and result.output_path is not None
     destination = tmp_path / "restored"
-    with pytest.raises(backup_mod.ArchiveRestoreRefusalError) as refusal:
-        backup_mod.restore_verified_backup(backup_dir=Path(result.output_path), destination=destination)
+    with pytest.raises(backup_operations.ArchiveRestoreRefusalError) as refusal:
+        backup_operations.restore_verified_backup(backup_dir=Path(result.output_path), destination=destination)
     assert refusal.value.code == "restore_partial_durable_core"
     assert not destination.exists()
 
@@ -2641,8 +2644,8 @@ def test_verified_backup_restore_refuses_existing_destination_without_changing_e
     evidence = destination / "retained.txt"
     evidence.write_bytes(b"retained")
     receipt = (backup / "verification-receipt.json").read_bytes()
-    with pytest.raises(backup_mod.ArchiveRestoreRefusalError, match="restore_destination_exists"):
-        backup_mod.restore_verified_backup(backup_dir=backup, destination=destination)
+    with pytest.raises(backup_operations.ArchiveRestoreRefusalError, match="restore_destination_exists"):
+        backup_operations.restore_verified_backup(backup_dir=backup, destination=destination)
     assert evidence.read_bytes() == b"retained"
     assert (backup / "verification-receipt.json").read_bytes() == receipt
 
@@ -2667,7 +2670,7 @@ def test_verified_backup_restore_refuses_modified_signed_evidence_before_destina
     from polylogue.storage.sqlite.migration_runner import MigrationError
 
     with pytest.raises(MigrationError):
-        backup_mod.restore_verified_backup(backup_dir=backup, destination=destination)
+        backup_operations.restore_verified_backup(backup_dir=backup, destination=destination)
     assert not destination.exists()
     assert receipt_path.read_bytes() == changed_receipt
 
@@ -2720,8 +2723,8 @@ def test_restore_pending_population_excludes_actual_readers_and_second_creator(
                 with pytest.raises(ArchivePopulationPendingError):
                     initialize_active_archive_root(target)
                 observed.append("bootstrap")
-                with pytest.raises(backup_mod.ArchiveRestoreRefusalError) as refusal:
-                    backup_mod.restore_verified_backup(backup_dir=package, destination=target)
+                with pytest.raises(backup_operations.ArchiveRestoreRefusalError) as refusal:
+                    backup_operations.restore_verified_backup(backup_dir=package, destination=target)
                 assert refusal.value.code == "restore_destination_exists"
                 observed.append("second-creator")
             except BaseException as exc:
@@ -2735,7 +2738,7 @@ def test_restore_pending_population_excludes_actual_readers_and_second_creator(
         return proof
 
     monkeypatch.setattr(archive_population, "populate_authenticated_archive", populate)
-    result = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    result = backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert observed == ["archive", "profile", "verified-leaf", "attached-query", "bootstrap", "second-creator"]
     assert result["operational_admission"] == "ready"
     with ArchiveStore.open_existing(destination, read_only=True):
@@ -2766,7 +2769,7 @@ def test_failed_restore_retains_pending_evidence_and_refuses_restart(
 
     monkeypatch.setattr(archive_population, "populate_authenticated_archive", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+        backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert (destination / POPULATION_PENDING).is_file()
     assert (destination / "source.db").is_file()
     assert (package / "verification-receipt.json").read_bytes() == original_receipt
@@ -2861,7 +2864,7 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     from tests.infra.workload_artifacts import _archive_files
 
     package_before = (_archive_files(package), (package / "manifest.json").read_bytes())
-    detail = backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+    detail = backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert (_archive_files(package), (package / "manifest.json").read_bytes()) == package_before
     assert not any(package.glob("*.db-wal"))
     assert not any(package.glob("*.db-shm"))
@@ -2971,7 +2974,7 @@ def test_verified_restore_refuses_unsafe_derived_leaf_and_retains_pending_custod
 
     monkeypatch.setattr(archive_population, "_populate_authenticated_archive", replace_derived_leaf)
     with pytest.raises(archive_population.ArchivePopulationError) as exc:
-        backup_mod.restore_verified_backup(backup_dir=package, destination=destination)
+        backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert exc.value.code == (
         "unsupported_derived_version" if leaf_kind in {"ahead", "pre_reset"} else "invalid_derived_leaf"
     )

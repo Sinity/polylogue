@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.sources.decoders import MAX_UNCOMPRESSED_SIZE
 from polylogue.sources.source_parsing import iter_source_sessions
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 
@@ -93,10 +92,6 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path: Path) -> None:
             "ratio" in str(f.get("error", "")).lower() or "json" in str(f.get("error", "")).lower() for f in failed
         )
         assert has_expected_error or len(failed) == 0
-
-
-def test_zip_oversized_file_limit_constant(tmp_path: Path) -> None:
-    assert MAX_UNCOMPRESSED_SIZE == 10 * 1024 * 1024 * 1024
 
 
 def test_zip_path_traversal_filenames_handled(tmp_path: Path) -> None:

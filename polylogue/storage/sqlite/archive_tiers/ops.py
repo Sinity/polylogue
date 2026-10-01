@@ -172,6 +172,7 @@ OPS_DDL = f"""
 CREATE TABLE IF NOT EXISTS ingest_cursor (
     source_path          TEXT PRIMARY KEY,
     canonical_source_path TEXT,
+    captured_profile_key TEXT,
     origin               TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
     stat_size            INTEGER,
     byte_offset          INTEGER,

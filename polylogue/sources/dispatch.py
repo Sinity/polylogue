@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Iterator, MutableSequence
+from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from io import BytesIO
-from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, TypeAlias, cast
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, has_chatgpt_native_payload
 from polylogue.core.binary_signatures import detect_binary_signature
@@ -22,11 +21,11 @@ from polylogue.core.json import (
     normalize_json_decimal,
 )
 from polylogue.core.payload_coercion import optional_string
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.logging import WARNING, emit, get_logger
 
 from .chunk_positions import ChunkPositions
-from .decoders import _decode_json_bytes, _iter_json_stream
 from .detection import DetectionMode
 from .origin_specs import detector_registry
 from .parsers import (
@@ -38,7 +37,6 @@ from .parsers import (
     codex,
     drive,
     grok,
-    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -76,7 +74,6 @@ BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI, Provider.CLA
 GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.HERMES})
 STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.HERMES})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
-_MAX_PARSE_DEPTH = 10
 
 PayloadRecord: TypeAlias = JSONDocument
 PayloadSequence: TypeAlias = list[JSONValue]
@@ -112,6 +109,15 @@ class LoweredPayloadSpec:
     # always-single-group ``mode="grouped_records"`` fallback (a dict-shaped
     # Claude Code payload, or any other grouped provider).
     trust_fallback_id: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _PayloadLoweringRequest:
+    provider: str | Provider
+    payload: object
+    fallback_id: str
+    schema_resolution: SchemaResolution | None = None
+    source_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +380,16 @@ def _looks_like_claude_ai_sequence(payload: object) -> bool:
     return record is not None and isinstance(record.get("chat_messages"), list)
 
 
+def _looks_like_grok_native_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and grok.looks_like_native_bundle(record)
+
+
+def _looks_like_grok_native_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and grok.looks_like_native_bundle(record)
+
+
 def _looks_like_grok_record(payload: object) -> bool:
     record = _payload_record(payload)
     return record is not None and grok.looks_like_export(record)
@@ -503,6 +519,75 @@ def detect_provider(
     return detect_provider_evidence(payload, path, expected=expected)[0]
 
 
+def detect_provider_from_stream_evidence(
+    handle: BinaryIO,
+    *,
+    expected: Provider | str | None = None,
+    check_stop: Callable[[], None] | None = None,
+) -> tuple[Provider | None, str]:
+    """Detect from complete acquired input under the declaration-owned registry."""
+    provider, evidence = detector_registry().detect_stream(handle, check_stop=check_stop)
+    evidence = evidence or "no detector matched (complete acquired stream)"
+    bound = bound_location_provider(expected)
+    if bound is not None and provider is not None and not same_origin(provider, bound):
+        raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence)
+    return provider, evidence
+
+
+def detect_provider_from_raw_stream_evidence(
+    handle: BinaryIO,
+    stream_name: str,
+    fallback_provider: Provider,
+    *,
+    truncated_tail_ok: bool = False,
+    check_stop: Callable[[], None] | None = None,
+) -> tuple[Provider, str]:
+    """Classify the complete input, preserving the caller's syntax evidence."""
+    import ijson
+
+    callback_failure: BaseException | None = None
+
+    def checkpoint() -> None:
+        nonlocal callback_failure
+        if check_stop is not None:
+            try:
+                check_stop()
+            except BaseException as exc:
+                callback_failure = exc
+                raise
+
+    checkpoint()
+    position = handle.tell()
+    signature = detect_binary_signature(handle.read(32))
+    handle.seek(position)
+    if signature is not None:
+        return fallback_provider, f"{signature.name}-shaped payload; refused as session content, used fallback_provider"
+    try:
+        if truncated_tail_ok and is_jsonl_source_path(stream_name):
+            from .live.batch_support import jsonl_parse_input_of_handle
+
+            with jsonl_parse_input_of_handle(handle, check_stop=checkpoint) as accepted:
+                has_record = False
+                while chunk := accepted.read(1 << 20):
+                    checkpoint()
+                    if chunk.strip():
+                        has_record = True
+                        break
+                if not has_record:
+                    return fallback_provider, "empty accepted record stream; used fallback_provider"
+                accepted.seek(0)
+                detected, evidence = detect_provider_from_stream_evidence(accepted, check_stop=checkpoint)
+        else:
+            detected, evidence = detect_provider_from_stream_evidence(handle, check_stop=checkpoint)
+    except (ijson.JSONError, UnicodeError, json.JSONDecodeError) as exc:
+        if callback_failure is not None:
+            raise callback_failure from None
+        return fallback_provider, f"stream decode error ({type(exc).__name__}: {exc}); used fallback_provider"
+    finally:
+        handle.seek(position)
+    return (detected, evidence) if detected is not None else (fallback_provider, f"{evidence}; used fallback_provider")
+
+
 def detect_provider_from_raw_bytes_evidence(
     raw_bytes: bytes,
     stream_name: str,
@@ -510,95 +595,13 @@ def detect_provider_from_raw_bytes_evidence(
     *,
     truncated_tail_ok: bool = False,
 ) -> tuple[Provider, str]:
-    """Detect a provider from a raw byte prefix, plus the evidence that decided it.
-
-    Sole implementation of the raw-bytes detection path; ``_detect_provider_from_raw_bytes``
-    is a thin wrapper that discards the evidence label. Used directly by the
-    production per-file acquisition log
-    (``source_acquisition_components.read_plain_source_file``) and by the
-    unclaimed-file sweep's real shape check (``sources.live.acquisition_log.
-    default_file_claim_check``) so both surfaces report the same rule a real
-    ingest would have used, not an approximation.
-    """
-    # polylogue-hbtj2: a recognized binary format (SQLite being the concrete
-    # miscapture the audit found) must be positively refused here, at the
-    # single shared raw-bytes detection chokepoint, rather than relying on
-    # the incidental ``JSONDecodeError`` a binary blob happens to raise
-    # further down. This still returns ``fallback_provider`` (detection
-    # never invents an origin the caller didn't already suspect), but with
-    # explicit evidence identifying the refusal, instead of the generic
-    # "stream decode error" text a raised exception would otherwise produce.
-    if (signature := detect_binary_signature(raw_bytes)) is not None:
-        return (
-            fallback_provider,
-            f"{signature.name}-shaped payload; refused as session content, used fallback_provider",
-        )
-    jsonl_like = _is_jsonl_stream_name(stream_name)
-    text = None if jsonl_like else _decode_json_bytes(raw_bytes)
-    if text is not None:
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            payload = None
-        else:
-            detected, evidence = detect_provider_evidence(payload)
-            if detected is not None:
-                return detected, evidence
-
-    stream_bytes = _trim_jsonl_detection_prefix(raw_bytes, stream_name) if truncated_tail_ok else raw_bytes
-    if not stream_bytes:
-        return fallback_provider, "empty byte stream after trimming; used fallback_provider"
-    try:
-        stream = _iter_json_stream(BytesIO(stream_bytes), stream_name)
-        payloads = list(islice(stream, 32)) if jsonl_like else list(stream)
-    except Exception as exc:
-        # JSON-stream detection commonly fails on payloads that the
-        # record-shape detectors above already handled (or that simply do
-        # not parse as a record stream — e.g. ChatGPT bundles read via
-        # `devtools pipeline-probe`). Emit a structured WARNING rather
-        # than a Rich traceback so default invocations do not look
-        # broken when the fallback is the intended path.
-        logger.warning(
-            "provider_detection_stream_fallback",
-            stream_name=stream_name,
-            fallback_provider=fallback_provider.value,
-            error_type=type(exc).__name__,
-            error=str(exc),
-        )
-        return fallback_provider, f"stream decode error ({type(exc).__name__}: {exc}); used fallback_provider"
-
-    detected, evidence = detect_provider_evidence(payloads)
-    if detected is None:
-        return fallback_provider, f"{evidence}; used fallback_provider"
-    return detected, evidence
-
-
-def _detect_provider_from_raw_bytes(
-    raw_bytes: bytes,
-    stream_name: str,
-    fallback_provider: Provider,
-    *,
-    truncated_tail_ok: bool = False,
-) -> Provider:
-    return detect_provider_from_raw_bytes_evidence(
-        raw_bytes,
+    """Use the same complete input owner for an already acquired byte unit."""
+    return detect_provider_from_raw_stream_evidence(
+        BytesIO(raw_bytes),
         stream_name,
         fallback_provider,
         truncated_tail_ok=truncated_tail_ok,
-    )[0]
-
-
-def _is_jsonl_stream_name(stream_name: str) -> bool:
-    return stream_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson"))
-
-
-def _trim_jsonl_detection_prefix(raw_bytes: bytes, stream_name: str) -> bytes:
-    if not _is_jsonl_stream_name(stream_name):
-        return raw_bytes
-    if raw_bytes.endswith((b"\n", b"\r")):
-        return raw_bytes
-    newline_at = raw_bytes.rfind(b"\n")
-    return raw_bytes[: newline_at + 1] if newline_at >= 0 else b""
+    )
 
 
 def _schema_guided_payload(
@@ -1548,10 +1551,9 @@ def _lower_drive_like_payload(
     shaped_payload: object,
     fallback_id: str,
     *,
-    depth: int,
     source_path: str | None,
     schema_resolution: SchemaResolution | None,
-) -> list[LoweredPayloadSpec]:
+) -> Sequence[LoweredPayloadSpec | _PayloadLoweringRequest]:
     payloads = _payload_sequence(shaped_payload)
     if payloads is not None:
         if (
@@ -1570,15 +1572,14 @@ def _lower_drive_like_payload(
             # one-item wrapped payload's session identity from the identical
             # bare-document payload's identity, purely based on which decode
             # path incidentally wrapped it in a list (polylogue-z1c6).
-            nested_specs: list[LoweredPayloadSpec] = []
+            nested_specs: list[LoweredPayloadSpec | _PayloadLoweringRequest] = []
             for index, item in enumerate(payloads):
-                nested_specs.extend(
-                    _lower_payload_specs(
+                nested_specs.append(
+                    _PayloadLoweringRequest(
                         provider,
                         item,
                         fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
                         source_path=source_path,
-                        depth=depth + 1,
                         schema_resolution=schema_resolution,
                     )
                 )
@@ -1589,13 +1590,12 @@ def _lower_drive_like_payload(
         # the loose ``chunks`` detector this route is meant to replace.
         nested_specs = []
         for index, item in enumerate(payloads):
-            nested_specs.extend(
-                _lower_payload_specs(
+            nested_specs.append(
+                _PayloadLoweringRequest(
                     provider,
                     item,
                     fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
                     source_path=source_path,
-                    depth=depth + 1,
                     schema_resolution=schema_resolution,
                 )
             )
@@ -1632,6 +1632,8 @@ def _lower_grok_export_payload(payload: object, fallback_id: str) -> list[Lowere
     record = _single_document_record(payload)
     if record is None:
         return []
+    if grok.looks_like_native_bundle(record):
+        return [_single_record_spec(Provider.GROK, record, fallback_id)]
     conversations = record.get("conversations")
     if not isinstance(conversations, list):
         return []
@@ -1679,15 +1681,53 @@ def _lower_payload_specs(
     payload: object,
     fallback_id: str,
     *,
-    depth: int = 0,
     schema_resolution: SchemaResolution | None = None,
     source_path: str | None = None,
 ) -> list[LoweredPayloadSpec]:
+    """Lower wrappers in depth-first order without a depth refusal.
+
+    Only the active ancestry establishes a cycle. Reusing one mapping in
+    separate sibling occurrences retains both occurrences and their suffixes.
+    """
+    stack: list[_PayloadLoweringRequest | LoweredPayloadSpec | int] = [
+        _PayloadLoweringRequest(provider, payload, fallback_id, schema_resolution, source_path)
+    ]
+    active: set[int] = set()
+    result: list[LoweredPayloadSpec] = []
+    while stack:
+        item = stack.pop()
+        if isinstance(item, int):
+            active.remove(item)
+            continue
+        if isinstance(item, LoweredPayloadSpec):
+            result.append(item)
+            continue
+        identity = id(item.payload)
+        if identity in active:
+            raise ValueError("cyclic payload cannot be lowered as source JSON")
+        active.add(identity)
+        stack.append(identity)
+        children = _lower_payload_specs_step(
+            item.provider,
+            item.payload,
+            item.fallback_id,
+            schema_resolution=item.schema_resolution,
+            source_path=item.source_path,
+        )
+        stack.extend(reversed(children))
+    return result
+
+
+def _lower_payload_specs_step(
+    provider: str | Provider,
+    payload: object,
+    fallback_id: str,
+    *,
+    schema_resolution: SchemaResolution | None = None,
+    source_path: str | None = None,
+) -> Sequence[LoweredPayloadSpec | _PayloadLoweringRequest]:
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.BEADS:
-        return []
-    if depth > _MAX_PARSE_DEPTH:
-        logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
 
     shaped_payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
@@ -1717,14 +1757,15 @@ def _lower_payload_specs(
     if runtime_provider is Provider.CHATGPT and sequence is not None and len(sequence) == 1:
         shared_record = _payload_record(sequence[0])
         if shared_record is not None and chatgpt.looks_like_shared_decode(shared_record):
-            return _lower_payload_specs(
-                runtime_provider,
-                shared_record,
-                fallback_id,
-                depth=depth + 1,
-                schema_resolution=schema_resolution,
-                source_path=source_path,
-            )
+            return [
+                _PayloadLoweringRequest(
+                    runtime_provider,
+                    shared_record,
+                    fallback_id,
+                    schema_resolution=schema_resolution,
+                    source_path=source_path,
+                )
+            ]
     if sequence:
         browser_capture_specs: list[LoweredPayloadSpec] = []
         for index, item in enumerate(sequence):
@@ -1744,14 +1785,13 @@ def _lower_payload_specs(
         if browser_capture_specs:
             return browser_capture_specs
     if record is not None and (sessions := _record_sessions(record)):
-        lowered_specs: list[LoweredPayloadSpec] = []
+        lowered_specs: list[LoweredPayloadSpec | _PayloadLoweringRequest] = []
         for index, item in enumerate(sessions):
-            lowered_specs.extend(
-                _lower_payload_specs(
+            lowered_specs.append(
+                _PayloadLoweringRequest(
                     runtime_provider,
                     item,
                     f"{fallback_id}-{index}",
-                    depth=depth + 1,
                     schema_resolution=schema_resolution,
                 )
             )
@@ -1783,7 +1823,6 @@ def _lower_payload_specs(
             runtime_provider,
             shaped_payload,
             fallback_id,
-            depth=depth,
             source_path=source_path,
             schema_resolution=schema_resolution,
         )
@@ -1925,7 +1964,9 @@ def parse_generic_messages_stream(
     return _generic_messages_session_from_messages(provider, envelope, fallback_id, message_sink)
 
 
-def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
+def _parse_lowered_spec(
+    spec: LoweredPayloadSpec, resolver: SidecarResolver, *, profile_identity: str | None = None
+) -> list[ParsedSession]:
     """Parse one lowered spec through the shared admission boundary.
 
     Every production route passes here, including the ones that reach an
@@ -1933,7 +1974,7 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
     markdown, Codex streams); their single-session results get the same
     outer-record ledger the decorated leaf parsers attach.
     """
-    sessions = _parse_lowered_spec_unadmitted(spec, resolver)
+    sessions = _parse_lowered_spec_unadmitted(spec, resolver, profile_identity=profile_identity)
     return admit_parsed_sessions(
         spec.provider.value.replace("-", "_"),
         spec.payload,
@@ -1946,7 +1987,9 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
     )
 
 
-def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
+def _parse_lowered_spec_unadmitted(
+    spec: LoweredPayloadSpec, resolver: SidecarResolver, *, profile_identity: str | None = None
+) -> list[ParsedSession]:
     if spec.mode == "browser_capture":
         record = _payload_record(spec.payload)
         return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
@@ -2011,9 +2054,8 @@ def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarRe
             hermes_spans.parse_atof_stream(
                 payloads,
                 spec.fallback_id,
-                profile_root=(
-                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
-                ),
+                profile_identity=profile_identity,
+                profile_root=(profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None),
             )
             if payloads is not None
             else []
@@ -2033,7 +2075,11 @@ def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarRe
                 )
             ]
         if spec.provider is Provider.HERMES:
-            return [local_agent.parse_hermes(record, spec.fallback_id, source_path=spec.source_path)]
+            return [
+                local_agent.parse_hermes(
+                    record, spec.fallback_id, source_path=spec.source_path, profile_identity=profile_identity
+                )
+            ]
         return []
 
     if spec.mode == "local_artifact_document":
@@ -2041,23 +2087,23 @@ def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarRe
         if record is None:
             return []
         if spec.provider is Provider.HERMES and hermes_state.looks_like_state_db_payload(record):
-            return hermes_state.parse_state_db_payload(record, spec.fallback_id, source_path=spec.source_path)
+            return hermes_state.parse_state_db_payload(
+                record, spec.fallback_id, source_path=spec.source_path, profile_identity=profile_identity
+            )
         if spec.provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_payload(record):
             return hermes_verification.parse_verification_evidence_db_payload(
                 record,
                 spec.fallback_id,
-                profile_root=(
-                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
-                ),
+                profile_identity=profile_identity,
+                profile_root=(profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None),
                 source_path=spec.source_path,
             )
         if spec.provider is Provider.HERMES and hermes_spans.looks_like_atif_payload(record):
             return hermes_spans.parse_atif_document(
                 record,
                 spec.fallback_id,
-                profile_root=(
-                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
-                ),
+                profile_identity=profile_identity,
+                profile_root=(profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None),
             )
         if spec.provider is Provider.ANTIGRAVITY and antigravity.looks_like_markdown_export(record):
             return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
@@ -2137,10 +2183,10 @@ def parse_payload(
     provider: str | Provider,
     payload: object,
     fallback_id: str,
-    _depth: int = 0,
     *,
     schema_resolution: SchemaResolution | None = None,
     source_path: str | None = None,
+    profile_identity: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
 ) -> list[ParsedSession]:
     """Dispatch parsed payload to the appropriate provider parser.
@@ -2160,14 +2206,13 @@ def parse_payload(
         provider,
         payload,
         fallback_id,
-        depth=_depth,
         schema_resolution=schema_resolution,
         source_path=source_path,
     )
     resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
     sessions: list[ParsedSession] = []
     for spec in lowered_specs:
-        sessions.extend(_parse_lowered_spec(spec, resolver))
+        sessions.extend(_parse_lowered_spec(spec, resolver, profile_identity=profile_identity))
     return sessions
 
 
@@ -2216,6 +2261,7 @@ def bundle_member_sessions(
     all_browser_captures: bool,
     drift: BundleCandidateDrift,
     source_path: str | None = None,
+    profile_identity: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
 ) -> list[ParsedSession]:
     """Parse one decoded bundle member through the ordinary lowering rules."""
@@ -2227,6 +2273,7 @@ def bundle_member_sessions(
             [record],
             fallback_id,
             source_path=source_path,
+            profile_identity=profile_identity,
             sidecar_resolver=resolver,
         )
     if all_browser_captures:
@@ -2235,6 +2282,7 @@ def bundle_member_sessions(
             record,
             f"{fallback_id}-{index}",
             source_path=source_path,
+            profile_identity=profile_identity,
             sidecar_resolver=resolver,
         )
     # Reuse the same bundle normalization, including ChatGPT fragment
@@ -2250,7 +2298,11 @@ def bundle_member_sessions(
         drift.matched += len(specs)
     sessions: list[ParsedSession] = []
     for spec in specs:
-        sessions.extend(_parse_lowered_spec(replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver))
+        sessions.extend(
+            _parse_lowered_spec(
+                replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver, profile_identity=profile_identity
+            )
+        )
     return sessions
 
 
@@ -2429,6 +2481,7 @@ def parse_stream_payload(
     fallback_id: str,
     *,
     source_path: str | None = None,
+    profile_identity: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
@@ -2487,7 +2540,8 @@ def parse_stream_payload(
         sessions = hermes_spans.parse_atof_stream(
             stream,
             fallback_id,
-            profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
+            profile_root=profile_root_for_artifact(Path(source_path)) if source_path else None,
+            profile_identity=profile_identity,
         )
         parsed = True
         AdmissionObserver.drain(stream)
@@ -2501,13 +2555,13 @@ __all__ = [
     "STREAM_RECORD_PROVIDERS",
     "LoweredPayloadSpec",
     "ChatGPTLoweredDocument",
-    "_detect_provider_from_raw_bytes",
     "detect_provider",
     "ForeignOriginContentError",
     "bound_location_provider",
     "same_origin",
     "detect_provider_evidence",
     "detect_provider_from_raw_bytes_evidence",
+    "detect_provider_from_raw_stream_evidence",
     "is_jsonl_source_path",
     "is_stream_record_provider",
     "parse_payload",

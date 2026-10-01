@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal, TypeAlias, cast
@@ -12,9 +11,10 @@ from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
     ArtifactKind,
     classify_artifact,
+    classify_record_candidacy,
 )
-from polylogue.archive.artifact_taxonomy.support import is_subagent_path
-from polylogue.archive.raw_payload.streams import raw_line_stream
+from polylogue.archive.artifact_taxonomy.support import record_candidacy_projection
+from polylogue.archive.raw_payload.streams import raw_byte_stream, raw_line_stream
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
 from polylogue.core.json import (
@@ -26,6 +26,7 @@ from polylogue.core.json import (
     loads,
 )
 from polylogue.core.json_envelope import OversizedRecord, bounded_lines
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.sources.dispatch import detect_provider
 
 _BINARY_ARTIFACT_MARKER = "unrecognized_binary_artifact"
@@ -82,11 +83,11 @@ class RawPayloadEnvelope:
 
 @dataclass(frozen=True)
 class JSONLSessionArtifactScan:
-    """Bounded records that supplied a stream's positive session evidence."""
+    """Complete candidacy evidence; full-record schema support remains unmeasured."""
 
     artifact: ArtifactClassification | None
-    sample: tuple[JSONValue, ...] = ()
-    oversized_records: int = 0
+    malformed_records: int = 0
+    valid_records: int = 0
 
 
 JSONL_RECORD_INSPECTION_BYTES = 64 * 1024
@@ -262,71 +263,40 @@ def scan_jsonl_session_artifact(
     provider: Provider,
     jsonl_dict_only: bool = False,
     source_path: str | Path | None = None,
-    max_record_bytes: int | None = None,
+    check_stop: Callable[[], None] | None = None,
 ) -> JSONLSessionArtifactScan:
-    """Stream JSONL until bounded decoded records prove session eligibility.
+    """Consume every record through the existing artifact predicates' projection.
 
-    Terminal artifact admission must not let an arbitrary prefix of
-    non-conversational records hide a later session record. The rolling window
-    retains at most 32 decoded records. When ``max_record_bytes`` is supplied,
-    oversized records are discarded in chunks so a later record remains
-    inspectable without allocating the oversized line.
+    Decode loss is observed separately from positive candidacy. The canonical
+    parser still validates the full records and decides their exact disposition.
     """
-    records: deque[JSONValue] = deque(maxlen=32)
-    first_line = True
-    oversized_records = 0
-    with raw_line_stream(raw) as stream:
-        for raw_line, oversized in _bounded_raw_lines(stream, max_record_bytes=max_record_bytes):
-            if oversized:
-                oversized_records += 1
-                first_line = False
-                continue
-            assert raw_line is not None
-            try:
-                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
-            except UnicodeDecodeError:
-                continue
-            if first_line:
-                line = line.lstrip("\ufeff")
-                first_line = False
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                payload = _load_json_record(line)
-            except (JSONDecodeError, ValueError):
-                continue
-            if jsonl_dict_only and not isinstance(payload, dict):
-                continue
-            records.append(payload)
-            window = list(records)
-            for start in range(len(window)):
-                sample = window[start:]
-                artifact = classify_artifact(sample, provider=provider, source_path=source_path)
-                if artifact.parse_as_session:
-                    return JSONLSessionArtifactScan(
-                        artifact=artifact,
-                        sample=tuple(sample),
-                        oversized_records=oversized_records,
-                    )
-    if oversized_records and provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
-        # A size-bounded inspection skip is unresolved evidence, not negative
-        # evidence. These providers have streaming parsers, so retain the raw
-        # as a parse candidate instead of allowing a weak path heuristic to
-        # terminalize a genuine session whose only record was oversized.
-        subagent = is_subagent_path(source_path)
-        return JSONLSessionArtifactScan(
-            artifact=ArtifactClassification(
-                provider=provider,
-                kind=ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM,
-                parse_as_session=True,
-                schema_eligible=False,
-                default_priority=90 if subagent else 120,
-                reason="uninspected oversized provider JSONL record retained for streaming parse",
-            ),
-            oversized_records=oversized_records,
+    from polylogue.sources.detection_projection import iter_projected_jsonl_records
+
+    malformed_records = 0
+    valid_records = 0
+
+    def failed(_error: Exception) -> None:
+        nonlocal malformed_records
+        malformed_records += 1
+
+    with raw_byte_stream(raw) as stream:
+        records = iter_projected_jsonl_records(
+            stream, record_candidacy_projection(), check_stop=check_stop, on_decode_failure=failed
         )
-    return JSONLSessionArtifactScan(artifact=None, oversized_records=oversized_records)
+
+        def observed_records() -> Iterator[JSONValue]:
+            nonlocal valid_records
+            for record in records:
+                valid_records += 1
+                if not jsonl_dict_only or isinstance(record, dict):
+                    yield cast(JSONValue, record)
+
+        artifact = classify_record_candidacy(
+            observed_records(),
+            provider=provider,
+            source_path=source_path,
+        )
+    return JSONLSessionArtifactScan(artifact=artifact, malformed_records=malformed_records, valid_records=valid_records)
 
 
 def jsonl_session_artifact(
@@ -334,20 +304,16 @@ def jsonl_session_artifact(
     *,
     provider: Provider,
     jsonl_dict_only: bool = False,
-    max_record_bytes: int | None = None,
+    source_path: str | Path | None = None,
+    check_stop: Callable[[], None] | None = None,
 ) -> ArtifactClassification | None:
-    """Compatibility wrapper for callers that only need classification.
-
-    ``max_record_bytes`` is forwarded so a caller inspecting untrusted bytes
-    can keep the per-record allocation bounded; the wrapper previously dropped
-    it, which silently disabled the bounded reader for every caller that only
-    wanted the classification.
-    """
+    """Return complete stream candidacy without transferring input ownership."""
     return scan_jsonl_session_artifact(
         raw,
         provider=provider,
         jsonl_dict_only=jsonl_dict_only,
-        max_record_bytes=max_record_bytes,
+        source_path=source_path,
+        check_stop=check_stop,
     ).artifact
 
 
@@ -599,7 +565,7 @@ def _hermes_sqlite_marker_payload(
     module graph is complete, and delegating here keeps raw inspection on the
     same versioned structural contract as actual parsing.
     """
-    from polylogue.sources.parsers import hermes_identity, hermes_state, hermes_verification
+    from polylogue.sources.parsers import hermes_state, hermes_verification
     from polylogue.sources.sqlite_snapshot import is_declared_logical_export
 
     if source_path is None or not is_declared_logical_export(path, source_path):
@@ -611,7 +577,7 @@ def _hermes_sqlite_marker_payload(
         # content the archive already holds under its logical revision.
         return None
 
-    profile_root = hermes_identity.profile_root_for_artifact(Path(source_path))
+    profile_root = profile_root_for_artifact(Path(source_path))
     if hermes_state.looks_like_state_db_path(path, immutable=immutable):
         return hermes_state.marker_payload(path, profile_root=profile_root, immutable=immutable)
     if hermes_verification.looks_like_verification_evidence_db_path(path, immutable=immutable):

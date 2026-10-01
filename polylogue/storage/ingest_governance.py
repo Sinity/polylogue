@@ -825,7 +825,15 @@ def _writer_preacquired_attachments(
     artifact.publish_blobs()
     accepted_raw_id = prepared.classification.accepted_raw_ids[-1]
     binding = next(binding for binding in prepared.member_bindings if binding.raw_id == accepted_raw_id)
-    return artifact.attachment_blobs(source_connection=source_conn), lambda: artifact.iter_attachment_refs(
+    return artifact.attachment_blobs(
+        source_connection=source_conn,
+        session_id=str(
+            make_session_id(
+                prepared.parsed_by_raw_id[accepted_raw_id].source_name,
+                prepared.parsed_by_raw_id[accepted_raw_id].provider_session_id,
+            )
+        ),
+    ), lambda: artifact.iter_attachment_refs(
         source_path=binding.source_path,
         acquired_at_ms=prepared.acquired_at_ms,
         source_connection=source_conn,
