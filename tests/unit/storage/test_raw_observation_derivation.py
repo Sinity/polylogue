@@ -6,12 +6,15 @@ import errno
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.stage_admission import stage_write_admission
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
 from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
@@ -20,6 +23,7 @@ from polylogue.operations.raw_observation_derivation import (
 )
 from polylogue.storage.derived.raw import RawFrame, RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
@@ -50,8 +54,24 @@ def _chatgpt_payload(names: tuple[str, ...]) -> bytes:
     ).encode()
 
 
+@contextmanager
+def _fixture_archive(root: Path) -> Iterator[ArchiveStore]:
+    with write_lease("synthetic-raw-admission", archive_root=root):
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            yield archive
+
+
+def _writer(root: Path, actor: str, work: Callable[[], bool]) -> bool:
+    with write_lease(actor, archive_root=root):
+        return work()
+
+
+def _publish(adapter: RawObservationDerivation, frame: RawFrame, replacement: RawObservationReplacement) -> bool:
+    return _writer(adapter.archive_root, "synthetic-raw-publication", lambda: adapter.publish(frame, replacement))
+
+
 def _admit(root: Path, names: tuple[str, ...], *, path: str = "bundle.json") -> str:
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
+    with _fixture_archive(root) as archive:
         return archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=_chatgpt_payload(names),
@@ -61,7 +81,11 @@ def _admit(root: Path, names: tuple[str, ...], *, path: str = "bundle.json") -> 
 
 
 def _run(root: Path) -> DerivationReport:
-    return converge(DerivationRegistry((RawObservationDerivation(root),)), raw_observation_frame(root))
+    return converge(
+        DerivationRegistry((RawObservationDerivation(root),)),
+        raw_observation_frame(root),
+        publisher=lambda actor, work: _writer(root, actor, work),
+    )
 
 
 def _snapshot(root: Path) -> tuple[tuple[tuple[object, ...], ...], ...]:
@@ -108,7 +132,7 @@ def test_non_json_retained_worker_replays_past_old_payload_limit(tmp_path: Path)
         ]
     ).encode()
     payload += b" " * (64 * 1024 * 1024 + 1 - len(payload))
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=payload,
@@ -123,10 +147,9 @@ def test_non_json_retained_worker_replays_past_old_payload_limit(tmp_path: Path)
     try:
         assert replacement.prepared_inputs is not None
         assert replacement.payload is None
-        assert adapter.publish(frame, replacement)
+        assert _publish(adapter, frame, replacement)
     finally:
-        if replacement.scratch_owner is not None:
-            replacement.scratch_owner.cleanup()
+        replacement.close()
     assert adapter.inspect(raw_observation_frame(tmp_path), (raw_id,))[raw_id] == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("large-text-route",)]
@@ -143,7 +166,7 @@ def test_retained_text_path_matches_json_session_output(tmp_path: Path) -> None:
         adapter = make_raw_observation_derivation(root)
         frame = raw_observation_frame(root)
         replacement = adapter.compute(frame, raw_id)
-        assert adapter.publish(frame, replacement)
+        assert _publish(adapter, frame, replacement)
         with sqlite3.connect(root / "index.db") as conn:
             outputs.append(
                 (
@@ -161,7 +184,7 @@ def test_sqlite_page_image_uses_worker_without_materializing_a_session(tmp_path:
     with sqlite3.connect(source) as conn:
         conn.execute("CREATE TABLE unrelated (value TEXT)")
         conn.execute("INSERT INTO unrelated VALUES ('synthetic')")
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.ANTIGRAVITY,
             payload=source.read_bytes(),
@@ -173,7 +196,7 @@ def test_sqlite_page_image_uses_worker_without_materializing_a_session(tmp_path:
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
     assert replacement.payload is None
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -205,7 +228,7 @@ def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, r
             INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'root', 'user', 'hi', 2.0);
             """
         )
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.HERMES,
             payload=logical_export_bytes(source, scope=member_export_scope(source)),
@@ -217,7 +240,7 @@ def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, r
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
     assert replacement.payload is None
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         native_ids = [str(row[0]) for row in conn.execute("SELECT native_id FROM sessions")]
         assert len(native_ids) == 1 and native_ids[0].startswith("root@profile-")
@@ -261,7 +284,7 @@ def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatc
     from polylogue.sources import revision_backfill
 
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_ids = tuple(
             archive.write_raw_payload(
                 provider=Provider.CHATGPT,
@@ -275,13 +298,14 @@ def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatc
         component, _logical_keys = archive.expand_raw_membership_selection([raw_ids[0]])
     assert set(component) == set(raw_ids)
 
-    replay = Mock(wraps=revision_backfill.backfill_historical_revision_evidence)
-    monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", replay)
+    replay = Mock(wraps=revision_backfill.apply_prepared_revision_replay)
+    monkeypatch.setattr(revision_backfill, "apply_prepared_revision_replay", replay)
 
     report = converge(
         DerivationRegistry((RawObservationDerivation(tmp_path),)),
         raw_observation_frame(tmp_path),
         budget=Budget(page=2, discovery=2, inspection=4, compute=2, publication=2),
+        publisher=lambda actor, work: _writer(tmp_path, actor, work),
     )
 
     assert report.done == 2 and report.failed == report.pending == 0
@@ -359,7 +383,7 @@ def test_duplicate_raws_share_preparation_but_keep_distinct_census(
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted_prepare)
 
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_ids = tuple(
             archive.write_raw_payload(
                 provider=Provider.CHATGPT,
@@ -377,7 +401,7 @@ def test_duplicate_raws_share_preparation_but_keep_distinct_census(
     assert len(worker_calls) == 1 and worker_calls[0] in raw_ids
     assert replacement.prepared_inputs[raw_ids[0]].raw_id == raw_ids[0]
     assert replacement.prepared_inputs[raw_ids[1]].raw_id == raw_ids[1]
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     assert adapter.inspect(frame, raw_ids) == dict.fromkeys(raw_ids, "valid")
 
 
@@ -443,13 +467,16 @@ def test_missing_prepared_raw_retries_without_quarantining_source(tmp_path: Path
     """A lost worker carrier must not become a parser verdict about retained bytes."""
     from polylogue.sources.revision_backfill import (
         RetainedPreparationRetryableError,
-        backfill_historical_revision_evidence,
+        apply_prepared_revision_census,
     )
 
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(tmp_path, ("prepared-retry",))
     with pytest.raises(RetainedPreparationRetryableError, match="missing"):
-        backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id], prepared_inputs={})
+        with write_lease("synthetic-missing-carrier", archive_root=tmp_path):
+            apply_prepared_revision_census(
+                tmp_path, active_index_path=tmp_path / "index.db", selected_raw_ids=[raw_id], prepared_inputs={}
+            )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
         assert conn.execute(
@@ -469,7 +496,7 @@ def test_retained_jsonl_replay_consumes_worker_carrier_without_inline_parse(
         b'{"type":"response_item","payload":{"type":"message","role":"user",'
         b'"content":[{"type":"input_text","text":"prepared text"}]}}\n'
     )
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX, payload=payload, source_path="prepared-session.jsonl", acquired_at_ms=1
         )
@@ -482,7 +509,7 @@ def test_retained_jsonl_replay_consumes_worker_carrier_without_inline_parse(
         "parse_retained_raw_sessions",
         lambda *_args: pytest.fail("retained replay parsed inline"),
     )
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     assert replacement.scratch_directory is not None and not replacement.scratch_directory.exists()
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchone() == ("prepared-session",)
@@ -505,7 +532,7 @@ def test_retained_json_document_uses_prepared_carrier_past_cache_budget(
         "parse_retained_raw_sessions",
         lambda *_args: pytest.fail("retained JSON replay parsed inline"),
     )
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("large-document",)]
 
@@ -513,7 +540,7 @@ def test_retained_json_document_uses_prepared_carrier_past_cache_budget(
 def test_retained_fact_json_is_terminal_without_a_session(tmp_path: Path) -> None:
     """The prepared document route keeps declared sidecar evidence out of the index."""
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
             payload=b'{"agentId":"synthetic-agent","toolUseId":"synthetic-tool"}',
@@ -525,7 +552,7 @@ def test_retained_fact_json_is_terminal_without_a_session(tmp_path: Path) -> Non
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
     assert replacement.prepared_inputs[raw_id].parser_error is None
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
@@ -553,7 +580,7 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
             }
         },
     }
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.UNKNOWN,
             payload=json.dumps([payload]).encode(),
@@ -568,7 +595,7 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
     artifact = replacement.prepared_inputs[raw_id].prepared_artifact
     assert artifact is not None
     assert artifact.resolved_provider is Provider.CHATGPT
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("detected-json",)]
 
@@ -576,7 +603,7 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
 def test_unsupported_unknown_json_records_typed_failure_past_cache_budget(tmp_path: Path) -> None:
     """An unrecognized text shape gets a parser receipt instead of a size refusal."""
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.UNKNOWN,
             payload=b'{"unrecognized":"synthetic"}',
@@ -590,7 +617,7 @@ def test_unsupported_unknown_json_records_typed_failure_past_cache_budget(tmp_pa
     parser_error = replacement.prepared_inputs[raw_id].parser_error
     assert parser_error is not None
     assert parser_error.startswith("UnsupportedRetainedJsonShapeError:")
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
             "failed",
@@ -614,7 +641,7 @@ def test_retained_compute_refusal_keeps_raw_retryable(
         b'{"type":"response_item","payload":{"type":"message","role":"user",'
         b'"content":[{"type":"input_text","text":"retry"}]}}\n'
     )
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX, payload=payload, source_path=source_path, acquired_at_ms=1
         )
@@ -635,7 +662,7 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
     from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
 
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"io-retry"}}\n',
@@ -659,7 +686,7 @@ def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeyp
     from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX, payload=b"{bad json}\n", source_path="bad-session.jsonl", acquired_at_ms=1
         )
@@ -674,7 +701,7 @@ def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeyp
     )
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
-    assert adapter.publish(frame, replacement)
+    assert _publish(adapter, frame, replacement)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
             "failed",
@@ -703,7 +730,7 @@ def test_publish_rejects_changed_source_or_generation(tmp_path: Path, mutation: 
         from dataclasses import replace
 
         frame = replace(frame, source_revision=str(tmp_path / "another-index.db"))
-    assert adapter.publish(frame, prepared) is False
+    assert _publish(adapter, frame, prepared) is False
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -711,7 +738,7 @@ def test_publish_rejects_changed_source_or_generation(tmp_path: Path, mutation: 
 def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, ("healthy",), path="healthy.json")
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         poison = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=b"not json",
@@ -757,7 +784,7 @@ def test_every_raw_discovery_lane_preserves_terminal_receipt_authority(tmp_path:
     from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 
     bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         poison = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=b"not json\n",
@@ -841,7 +868,12 @@ def test_discovery_budget_bounds_raw_enumeration(tmp_path: Path) -> None:
     registry = DerivationRegistry((RawObservationDerivation(tmp_path),))
     budget = Budget(page=2, discovery=2, inspection=2, compute=2)
 
-    report = converge(registry, raw_observation_frame(tmp_path), budget=budget)
+    report = converge(
+        registry,
+        raw_observation_frame(tmp_path),
+        budget=budget,
+        publisher=lambda actor, work: _writer(tmp_path, actor, work),
+    )
 
     # The bound is a bound: one pass may not read the whole five-raw domain.
     assert report.work.discovered == 2
@@ -852,7 +884,13 @@ def test_discovery_budget_bounds_raw_enumeration(tmp_path: Path) -> None:
     # every raw, and the domain then settles with nothing left to enumerate.
     cursor = report.cursor
     for _ in range(16):
-        report = converge(registry, raw_observation_frame(tmp_path), budget=budget, cursor=cursor)
+        report = converge(
+            registry,
+            raw_observation_frame(tmp_path),
+            budget=budget,
+            cursor=cursor,
+            publisher=lambda actor, work: _writer(tmp_path, actor, work),
+        )
         cursor = report.cursor
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -870,7 +908,8 @@ def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path
         _admit(tmp_path, (f"selected-{index}",), path=str(source / f"{index}.json"))
     _admit(tmp_path, ("outside",), path=str(tmp_path / "outside.json"))
 
-    report = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit)
+    with stage_write_admission(lambda actor, work: _writer(tmp_path, actor, work)):
+        report = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit)
 
     assert report.failed == report.pending == 0
     assert report.done == report.work.computed == report.work.published == limit
@@ -881,7 +920,8 @@ def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path
             (f"selected-{index}",) for index in range(limit)
         ]
     before = _snapshot(tmp_path)
-    unchanged = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit)
+    with stage_write_admission(lambda actor, work: _writer(tmp_path, actor, work)):
+        unchanged = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit)
     assert unchanged.made_no_publication_attempts
     assert _snapshot(tmp_path) == before
 
@@ -949,7 +989,7 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
 
     bootstrap_archive_root(tmp_path)
     source = tmp_path / "sources"
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+    with _fixture_archive(tmp_path) as archive:
         raw_ids = [
             archive.write_raw_payload(
                 provider=Provider.CHATGPT,
@@ -981,6 +1021,7 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
             DerivationRegistry((RawObservationDerivation(tmp_path),)),
             raw_observation_frame(tmp_path, raw_ids=(raw_ids[0],)),
             budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=lambda actor, work: _writer(tmp_path, actor, work),
         )
     assert publication.done == 1 and publication.failed == publication.pending == 0
     assert len(published) == len(set(published)) == 4096
@@ -1002,3 +1043,72 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
             ).fetchall()
     assert len(rows) == 128
     assert sorted_scope.metric("vm_steps", "source") > 10_000
+
+
+@pytest.mark.parametrize("admission", ["held", "rejected", "publication_failure"])
+def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admission: str
+) -> None:
+    """Abandonment closes a real Raw carrier; started publication owns its close.
+
+    The admission changes only after the production compute returned, so a
+    pre-compute barrier check cannot make the cleanup assertion vacuous.
+    """
+    from polylogue.sources import revision_backfill
+
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, ("abandoned",))
+    held: set[str] = set()
+    captured: list[RawObservationReplacement] = []
+    closes: list[RawObservationReplacement] = []
+    original_compute = RawObservationDerivation.compute
+    original_close = RawObservationReplacement.close
+
+    class ObservedRaw(RawObservationDerivation):
+        def barrier_sessions(self, frame: RawFrame, keys: tuple[str, ...]) -> dict[str, str]:
+            return dict.fromkeys(keys, "chatgpt:abandoned")
+
+        def compute(self, frame: RawFrame, key: str, *, replay_current: bool = False) -> RawObservationReplacement:
+            replacement = original_compute(self, frame, key, replay_current=replay_current)
+            captured.append(replacement)
+            return replacement
+
+    def close(replacement: RawObservationReplacement) -> None:
+        closes.append(replacement)
+        original_close(replacement)
+
+    def fail_census(*args: object, **kwargs: object) -> None:
+        raise OSError("synthetic publication failure")
+
+    def publish(actor: str, work: Callable[[], bool]) -> bool:
+        assert len(captured) == 1
+        assert captured[0].reference_seal is not None
+        assert captured[0].scratch_directory is not None
+        assert captured[0].prepared_inputs
+        if admission == "rejected":
+            raise OSError("synthetic admission rejection")
+        if admission == "held":
+            held.add("chatgpt:abandoned")
+        return _writer(tmp_path, actor, work)
+
+    monkeypatch.setattr(RawObservationReplacement, "close", close)
+    if admission == "publication_failure":
+        monkeypatch.setattr(revision_backfill, "apply_prepared_revision_census", fail_census)
+    report = converge(
+        DerivationRegistry((ObservedRaw(tmp_path),)),
+        raw_observation_frame(tmp_path, raw_ids=(raw_id,)),
+        publisher=publish,
+        barrier=lambda sessions: set(sessions).intersection(held),
+    )
+    assert report.done == 0
+    assert report.pending == int(admission == "held")
+    assert report.failed == int(admission != "held")
+    assert len(captured) == len(closes) == 1
+    replacement = captured[0]
+    assert closes[0] is replacement
+    assert replacement.reference_seal is not None
+    assert replacement.reference_seal.publication_lifetime_bound == (admission == "publication_failure")
+    if replacement.scratch_directory is not None:
+        assert not replacement.scratch_directory.exists()
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)

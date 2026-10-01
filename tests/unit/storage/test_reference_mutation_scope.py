@@ -20,6 +20,35 @@ from tests.infra.live_ingest import write_index_session
 from tests.infra.reference_sessions import reference_session
 
 
+def test_prepared_inactive_scope_writes_only_its_captured_owned_generation(tmp_path: Path) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
+
+    with write_lease("test.prepare-inactive-destination", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="prepared-destination")
+    destination = IndexMutationDestination.owned_inactive(generation)
+    with PreparedIndexMutation(Path(generation.index_path), archive_root=tmp_path, destination=destination) as seal:
+        with write_lease("test.publish-inactive-destination", archive_root=tmp_path):
+            with ArchiveStore.open_owned_inactive_generation(
+                Path(generation.index_path).parent,
+                generation_id=generation.generation_id,
+                owner_id=generation.owner_id,
+            ) as archive:
+                with archive.index_mutation_scope(prepared_seal=seal):
+                    archive._conn.execute("CREATE TABLE captured_destination(value INTEGER)")
+                    archive._conn.execute("INSERT INTO captured_destination VALUES (1)")
+                assert archive._conn.execute("SELECT value FROM captured_destination").fetchone()[0] == 1
+            with ArchiveStore.open_existing(tmp_path, read_only=False) as active:
+                assert (
+                    active._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='captured_destination'").fetchone()
+                    is None
+                )
+                with pytest.raises(ReferenceSealError):
+                    with active.index_mutation_scope(prepared_seal=seal):
+                        pytest.fail("an inactive seal admitted the active Index")
+
+
 @pytest.mark.parametrize("lookup", ["shared", "codex:shared", "codex-session:shared"])
 def test_insert_preserves_original_session_alias_resolution(tmp_path: Path, lookup: str) -> None:
     with write_lease("test.reference-alias", archive_root=tmp_path):

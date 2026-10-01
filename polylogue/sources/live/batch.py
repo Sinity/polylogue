@@ -4274,12 +4274,12 @@ class LiveBatchProcessor:
                     canonical_source_path=(
                         str(captured_sqlite.snapshot.identity_path)
                         if captured_sqlite is not None and captured_sqlite.snapshot is not None
-                        else None
+                        else raw_canonical_source_paths.get(path)
                     ),
                     captured_profile_key=(
                         captured_sqlite.snapshot.captured_profile_key
                         if captured_sqlite is not None and captured_sqlite.snapshot is not None
-                        else None
+                        else raw_profile_keys.get(path)
                     ),
                     source_index=0,
                     blob_size=blob_size,

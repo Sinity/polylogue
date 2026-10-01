@@ -11,14 +11,16 @@ import contextlib
 import hashlib
 import json
 import sqlite3
+import sys
 import tempfile
 import weakref
 import zipfile
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
@@ -76,9 +78,11 @@ if TYPE_CHECKING:
         PreparedRetainedAggregate,
         PreparedRetainedInput,
     )
+    from polylogue.storage.index_generation import IndexGeneration
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawRevisionClassification
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 RAW_OBSERVATION_DOMAIN = "raw_observation"
 
@@ -178,15 +182,46 @@ class RawObservationReplacement:
     empty: bool = False
     already_valid: bool = False
     blob_restorations: StagedBlobRestorations | None = None
+    reference_seal: PreparedIndexMutation | None = None
 
     def close(self) -> None:
         """Drain this prepared carrier when publication is cancelled or ends."""
+        if self.reference_seal is not None and self.reference_seal.publication_lifetime_bound:
+            self.reference_seal.close()
+            return
+        failures: list[BaseException] = []
+        for close in (
+            self._close_prepared_payload,
+            *(() if self.reference_seal is None else (self.reference_seal.close,)),
+        ):
+            try:
+                close()
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            raise BaseExceptionGroup("retained preparation cleanup failed", failures)
+
+    def _close_prepared_payload(self) -> None:
+        """Settle the carrier payload without recursing into its retained seal."""
         with retain_native_sql_lifetimes(*(() if self.scratch_owner is None else (self.scratch_owner,))):
-            _close_prepared_carriers(self.prepared_writes or {}, self.prepared_membership_plans or {})
-            if self.scratch_owner is not None:
-                _cleanup_scratch(self.scratch_owner)
-            if self.blob_restorations is not None:
-                self.blob_restorations.discard()
+            failures: list[BaseException] = []
+            for close in (
+                partial(_close_prepared_carriers, self.prepared_writes or {}, self.prepared_membership_plans or {}),
+                *(() if self.blob_restorations is None else (self.blob_restorations.discard,)),
+            ):
+                try:
+                    close()
+                except BaseException as failure:
+                    failures.append(failure)
+            # Scratch files depend on every native preparation owner. Keep
+            # them on any failed close for the original creator's retry.
+            if not failures and self.scratch_owner is not None:
+                try:
+                    _cleanup_scratch(self.scratch_owner)
+                except BaseException as failure:
+                    failures.append(failure)
+            if failures:
+                raise BaseExceptionGroup("retained preparation cleanup failed", failures)
 
 
 def _session_id(session: ParsedSession) -> str:
@@ -223,15 +258,44 @@ class RawObservationDerivation:
         *,
         prepare_non_json_artifact: Callable[..., PreparedJsonl] | None = None,
         index_db_path: Path | None = None,
+        owned_generation: IndexGeneration | None = None,
     ) -> None:
         self.archive_root = archive_root
         self._prepare_non_json_artifact = prepare_non_json_artifact
         self._index_db_path = index_db_path
+        self._owned_generation = owned_generation
+        if owned_generation is not None:
+            from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+            destination = IndexMutationDestination.owned_inactive(owned_generation)
+            if Path(owned_generation.archive_root).resolve(strict=True) != archive_root.resolve(strict=True):
+                raise ValueError("retained replay generation belongs to another archive")
+            if index_db_path is not None and index_db_path.resolve(strict=True) != destination.index_path:
+                raise ValueError("retained replay Index differs from its owned generation")
+            self._index_db_path = destination.index_path
 
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
         stat = path.stat()
         return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+    @contextmanager
+    def _preparation_archive(self) -> Iterator[ArchiveStore]:
+        if self._owned_generation is None:
+            from polylogue.operations.operation_context import open_operation_read
+
+            with open_operation_read(self.archive_root) as pinned:
+                yield pinned.archive
+            return
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+        destination = IndexMutationDestination.owned_inactive(self._owned_generation)
+        with ArchiveStore.open_existing(
+            self.archive_root, read_only=True, index_path=destination.index_path
+        ) as archive:
+            yield archive
+            destination.validate()
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
@@ -611,7 +675,9 @@ class RawObservationDerivation:
         )
         plan = build_raw_replay_plan(conn, execution_component)
         receipt = raw_replay_application_receipt_from_connection(
-            conn, plan, index_db_path=ArchiveLocation.resolve(self.archive_root).active_index_path
+            conn,
+            plan,
+            index_db_path=self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path,
         )
         exact, _problems = validate_raw_replay_application_receipt(plan, receipt)
         return "valid" if exact else "stale"
@@ -698,8 +764,32 @@ class RawObservationDerivation:
         return plans
 
     def compute(self, frame: RawFrame, key: str, *, replay_current: bool = False) -> RawObservationReplacement:
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
+
+        index_path = self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path
+        destination = (
+            None if self._owned_generation is None else IndexMutationDestination.owned_inactive(self._owned_generation)
+        )
+        seal = PreparedIndexMutation(index_path, archive_root=self.archive_root, destination=destination)
+        replacement: RawObservationReplacement | None = None
+        try:
+            replacement = replace(
+                self._compute_prepared(frame, key, replay_current=replay_current), reference_seal=seal
+            )
+            seal.validate_observers_current()
+            return replacement
+        except BaseException as primary:
+            try:
+                if replacement is None:
+                    seal.close()
+                else:
+                    replacement.close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("retained preparation and cleanup failed", [primary, cleanup]) from primary
+            raise
+
+    def _compute_prepared(self, frame: RawFrame, key: str, *, replay_current: bool) -> RawObservationReplacement:
         from polylogue.core.prepared_file import VerificationCancelledError
-        from polylogue.operations.operation_context import open_operation_read
         from polylogue.sources.dispatch import is_jsonl_source_path
         from polylogue.sources.revision_backfill import (
             PreparedRetainedInput,
@@ -729,8 +819,7 @@ class RawObservationDerivation:
                 already_valid=True,
             )
 
-        with open_operation_read(self.archive_root) as pinned:
-            archive = pinned.archive
+        with self._preparation_archive() as archive:
             raw_ids, logical_keys = archive.expand_raw_membership_selection([key])
             binding = self._binding(raw_ids)
             descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
@@ -1251,12 +1340,20 @@ class RawObservationDerivation:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawClassificationStaleError
 
         if replacement.already_valid:
-            return self._current(frame) and self.inspect(frame, (replacement.key,)).get(replacement.key) == "valid"
+            try:
+                return self._current(frame) and self.inspect(frame, (replacement.key,)).get(replacement.key) == "valid"
+            finally:
+                replacement.close()
 
         with retain_native_sql_lifetimes(*(() if replacement.scratch_owner is None else (replacement.scratch_owner,))):
             lease = ActiveWriterLease(self.archive_root)
+            lifetime_bound = False
             try:
                 lease.acquire()
+                if replacement.reference_seal is None:
+                    raise RetainedPreparationRetryableError("retained publication lacks its original reference seal")
+                replacement.reference_seal.retain_publication_lifetime(lease, replacement._close_prepared_payload)
+                lifetime_bound = True
                 if not self._current(frame) or self._binding(replacement.raw_ids) != replacement.input_binding:
                     return False
                 refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
@@ -1268,10 +1365,7 @@ class RawObservationDerivation:
                     # The restored bytes are prepared on the next pass, which now
                     # finds them present; this publication certifies no output.
                     return False
-                from polylogue.operations.operation_context import open_operation_read
-
-                with open_operation_read(self.archive_root) as pinned:
-                    archive = pinned.archive
+                with self._preparation_archive() as archive:
                     raw_ids, _keys = archive.expand_raw_membership_selection([replacement.key])
                     if raw_ids != replacement.raw_ids:
                         return False
@@ -1295,7 +1389,7 @@ class RawObservationDerivation:
                         return False
                 for prepared_input in (replacement.prepared_inputs or {}).values():
                     if prepared_input.prepared_artifact is not None:
-                        prepared_input.prepared_artifact.publish_blobs()
+                        prepared_input.prepared_artifact.publish_blobs(reference_seal=replacement.reference_seal)
                 for prepared in (replacement.prepared_inputs or {}).values():
                     if prepared.prepared_artifact is not None:
                         try:
@@ -1365,10 +1459,28 @@ class RawObservationDerivation:
                     raise refusal
                 return True
             finally:
-                try:
-                    lease.close()
-                finally:
-                    replacement.close()
+                if lifetime_bound:
+                    primary = sys.exception()
+                    try:
+                        replacement.close()
+                    except BaseException as cleanup:
+                        if primary is not None:
+                            raise BaseExceptionGroup(
+                                "retained publication and cleanup failed", [primary, cleanup]
+                            ) from primary
+                        raise
+                else:
+                    primary = sys.exception()
+                    failures: list[BaseException] = []
+                    for close in (replacement.close, lease.close):
+                        try:
+                            close()
+                        except BaseException as failure:
+                            failures.append(failure)
+                    if failures:
+                        if primary is not None:
+                            failures.insert(0, primary)
+                        raise BaseExceptionGroup("retained publication admission cleanup failed", failures)
 
 
 def _close_prepared_carriers(
@@ -1377,7 +1489,7 @@ def _close_prepared_carriers(
 ) -> None:
     """Attempt each owner close before deleting their containing scratch tree."""
     failures: list[BaseException] = []
-    for carrier in (*writes.values(), *plans.values()):
+    for carrier in chain(writes.values(), plans.values()):
         try:
             carrier.close()
         except BaseException as exc:
