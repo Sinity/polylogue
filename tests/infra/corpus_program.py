@@ -1042,7 +1042,7 @@ class ProductionCorpusRuntime:
 
 def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     """Encode corpus attachments through the existing browser-capture route."""
-    from polylogue.core.enums import Provider
+    from polylogue.core.enums import Provider, TitleSource
 
     provider = Provider.from_string(artifact.source_name)
     if provider not in {Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI}:
@@ -1088,7 +1088,7 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
         {
             "provider_attachment_id": attachment.attachment_id,
             "name": attachment.name,
-            "message_provider_id": turns[0]["provider_turn_id"],
+            "message_provider_id": parsed.messages[0].provider_message_id or None,
             "mime_type": attachment.mime_type,
             "size_bytes": len(attachment.payload),
             "inline_base64": _b64(attachment.payload),
@@ -1110,7 +1110,9 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
         "session": {
             "provider": provider.value,
             "provider_session_id": session_id,
-            "title": artifact.artifact_id,
+            "session_kind": parsed.session_kind.value,
+            "title": parsed.title if parsed.title_source is TitleSource.ORIGIN else None,
+            "title_source": "provider" if parsed.title_source is TitleSource.ORIGIN else None,
             "turns": turns,
             "attachments": attachment_payload,
         },

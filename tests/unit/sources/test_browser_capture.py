@@ -1052,7 +1052,7 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    with daemon_serving_archive(config.archive_root):
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
         async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
             await polylogue.parse_sources(config.sources)
 
@@ -1120,7 +1120,7 @@ async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
     blob_store = BlobStore(config.archive_root / "blob")
     config.sources = [Source(name="browser-capture", path=artifact)]
 
-    with daemon_serving_archive(config.archive_root):
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
         async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
             await polylogue.parse_sources(config.sources)
 
@@ -1246,7 +1246,7 @@ async def test_browser_capture_raw_payload_coalesces_with_chatgpt_export(
     ]
     sources = export_first_sources if source_order == "export-first" else list(reversed(export_first_sources))
 
-    with daemon_serving_archive(config.archive_root):
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
         async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
             await polylogue.parse_sources(sources)
 
@@ -1333,7 +1333,7 @@ async def test_browser_capture_raw_payload_coalesces_with_claude_ai_export(
         Source(name="browser-capture", path=artifact),
     ]
 
-    with daemon_serving_archive(config.archive_root):
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
         async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
             await polylogue.parse_sources(sources)
 
@@ -1605,7 +1605,7 @@ async def test_browser_capture_tool_turn_blocks_land_in_archive_with_consistent_
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    with daemon_serving_archive(config.archive_root):
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
         async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
             await polylogue.parse_sources(config.sources)
 
@@ -1706,7 +1706,7 @@ async def test_browser_capture_block_metadata_lands_in_archive_session_events(
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    with daemon_serving_archive(config.archive_root):
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
         async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
             await polylogue.parse_sources(config.sources)
 

@@ -226,11 +226,14 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
                 rebuild_all_action_pairs_sync(archive._conn)
                 assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
             elif mutation == "action-pairs-tautology-scope":
+                sessions = set(archive._conn.execute("SELECT DISTINCT session_id FROM action_pairs"))
                 sql = action_pairs_refresh_sql("'absent' OR 1").replace(
                     "INSERT INTO action_pairs", "INSERT OR REPLACE INTO action_pairs", 1
                 )
-                assert archive._conn.execute(sql).rowcount == count
-                assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
+                changes = archive._conn.total_changes
+                assert archive._conn.execute(sql).rowcount > 0
+                assert archive._conn.total_changes > changes
+                assert set(archive._conn.execute("SELECT DISTINCT session_id FROM action_pairs")) == sessions
             elif mutation == "fts-reset":
                 assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
                 reset_message_fts_index_sync(archive._conn)

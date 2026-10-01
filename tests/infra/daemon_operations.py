@@ -275,14 +275,15 @@ __all__ = [
 
 
 @contextlib.contextmanager
-def daemon_serving_archive(archive_root: Path) -> Iterator[DaemonOperationStack]:
+def daemon_serving_archive(archive_root: Path, *, session_derivation: bool = False) -> Iterator[DaemonOperationStack]:
     """Run the archive's resident writer on its own socket for one test.
 
     Public archive writes are daemon-owned (#5550): the facade submits a
     declared operation to ``polylogued run`` and refuses with
     ``FacadeDaemonRequiredError`` when none answers. A test that writes
     through the ``Polylogue`` facade wraps the write in this, so it reaches
-    the production operation stack.
+    the production operation stack. Ingest fixtures enable session derivation,
+    which the accepted ingest owner requires before accepting retained work.
     """
     from unittest.mock import patch
 
@@ -290,6 +291,10 @@ def daemon_serving_archive(archive_root: Path) -> Iterator[DaemonOperationStack]
 
     with (
         patch("polylogue.daemon.api_auth.resolve_api_auth_token", return_value=None),
-        running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root.resolve())) as stack,
+        running_daemon_operations(
+            archive_root,
+            socket_path=daemon_socket_path(archive_root.resolve()),
+            session_derivation=session_derivation,
+        ) as stack,
     ):
         yield stack

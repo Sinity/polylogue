@@ -298,6 +298,10 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
             composed = read_archive_session_envelope(conn, "codex-session:child-native")
             assert composed.lineage_complete
             assert composed.parent_session_id == "codex-session:tool-call-session-1"
+            selected_leaf = conn.execute(
+                "SELECT native_id FROM messages WHERE message_id = ?", (composed.active_leaf_message_id,)
+            ).fetchone()
+            assert selected_leaf is not None and selected_leaf[0] == "child-tail"
             # A child-only attachment on an inherited turn legitimately ends
             # prefix sharing. Compare the composed authored transcript, not
             # the number of physical rows that own its material.
@@ -311,7 +315,7 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
                     for key, value in dict(row).items()
                     if key not in {"message_id", "session_id", "content_hash"}
                 }
-                semantic["is_active_leaf"] = int(message.is_active_leaf)
+                semantic["is_active_leaf"] = int(message.message_id == composed.active_leaf_message_id)
                 if semantic["parent_message_id"] is not None:
                     parent = conn.execute(
                         "SELECT native_id FROM messages WHERE message_id = ?", (semantic["parent_message_id"],)
@@ -369,6 +373,180 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
     runtime.restart()
     assert runtime.converge()["parse"].parse_failures == 0
     assert semantics(runtime.archive_root) == before
+
+
+def _stored_authored_transcript(root: Path) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    with sqlite3.connect(root / "index.db") as conn:
+        return (
+            conn.execute("SELECT * FROM messages ORDER BY position, variant_index").fetchall(),
+            conn.execute("SELECT * FROM blocks ORDER BY message_id, position").fetchall(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "fixture"),
+    [
+        ("chatgpt", "chatgpt/native-conversation-v1.json"),
+        ("claude-ai", "origin-capability/claude-ai-export.json"),
+    ],
+)
+@pytest.mark.parametrize("authored_title", [False, True])
+def test_native_web_attachment_preserves_kind_title_and_retained_replay(
+    workspace_env: dict[str, Path], tmp_path: Path, provider: str, fixture: str, authored_title: bool
+) -> None:
+    """Dropping native kind or inventing provider title evidence makes this fail."""
+    from polylogue.core.enums import Provider, SessionKind, TitleSource
+    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+
+    payload = json.loads((Path(__file__).parents[1] / "fixtures" / fixture).read_text())
+    payload["is_temporary"] = True
+    payload.pop("title", None)
+    payload.pop("name", None)
+    if authored_title:
+        payload["title"] = "An authored provider title"
+    wire = json.dumps(payload).encode()
+    artifact = RawArtifact("native-web", wire, source_name=provider, source_path="native-web.json")
+    native = parse_payload(Provider.from_string(provider), payload, artifact.artifact_id)[0]
+    assert native.session_kind is SessionKind.TEMPORARY
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    state = CorpusProgram(operations=(Acquire("acquire", artifact), Converge("converge"))).run(runtime).state
+    before = _stored_authored_transcript(runtime.archive_root)
+    state = Attach("attach", artifact.artifact_id, AttachmentArtifact("added", "fixture.txt", payload=b"bytes")).apply(
+        state, runtime
+    )
+    Converge("attached-converge").apply(state, runtime)
+    assert _stored_authored_transcript(runtime.archive_root) == before
+    with ArchiveStore.open_existing(runtime.archive_root, read_only=True) as archive:
+        with archive.open_raw_revision_material(runtime._raw_ids[artifact.artifact_id][0]) as (
+            retained_provider,
+            h,
+            _,
+            _,
+        ):
+            retained = h.read()
+    capture = json.loads(retained)
+    assert capture["raw_provider_payload"] == payload
+    replayed = parse_payload(retained_provider, capture, "retained")[0]
+    assert replayed.messages == native.messages
+    assert replayed.session_kind is native.session_kind
+    if authored_title:
+        assert replayed.title == native.title == "An authored provider title"
+        assert replayed.title_source is native.title_source is TitleSource.ORIGIN
+    else:
+        assert replayed.title_source is not TitleSource.ORIGIN
+        assert capture["session"]["title"] is None
+        assert capture["session"]["title_source"] is None
+    added = next(a for a in replayed.attachments if a.provider_attachment_id == "added")
+    assert added.message_provider_id == native.messages[0].provider_message_id
+    assert added.inline_bytes == b"bytes"
+
+    replay_root = tmp_path / "native-web-replay"
+    initialize_active_archive_root(replay_root)
+    with ArchiveStore.open_existing(replay_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=retained_provider, payload=retained, source_path="capture.json", acquired_at_ms=1
+        )
+    result = backfill_historical_revision_evidence(replay_root, selected_raw_ids=[raw_id])
+    assert result.quarantined == result.adoption_deferred == 0
+    assert result.replayed_logical_sources == 1
+    assert _stored_authored_transcript(replay_root) == before
+    with sqlite3.connect(replay_root / "index.db") as conn:
+        conn.row_factory = sqlite3.Row
+        session_id = conn.execute("SELECT session_id FROM sessions").fetchone()[0]
+        composed = read_archive_session_envelope(conn, session_id)
+    assert composed.session_kind == SessionKind.TEMPORARY.value
+    assert (composed.title_source == TitleSource.ORIGIN.value) is authored_title
+
+
+def test_idless_native_attachment_keeps_session_ownership_and_retained_bytes(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """Inventing a native turn ID strands this attachment during ingestion/replay."""
+    from polylogue.core.enums import Provider
+    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+
+    records = [
+        json.loads(line)
+        for line in (Path(__file__).parents[1] / "fixtures" / "corpus-program-codex-native.jsonl")
+        .read_bytes()
+        .splitlines()
+    ]
+    for record in records:
+        if record.get("type") == "response_item" and record.get("payload", {}).get("type") == "message":
+            record["payload"].pop("id", None)
+    wire = b"".join(json.dumps(record).encode() + b"\n" for record in records)
+    native = parse_payload(Provider.CODEX, records, "native")[0]
+    assert not native.messages[0].provider_message_id
+    artifact = _artifact("idless", wire)
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    state = CorpusProgram(operations=(Acquire("acquire", artifact), Converge("converge"))).run(runtime).state
+    before = _stored_authored_transcript(runtime.archive_root)
+    state = Attach("attach", "idless", AttachmentArtifact("idless-att", "fixture.txt", payload=b"bytes")).apply(
+        state, runtime
+    )
+    Converge("attached-converge").apply(state, runtime)
+    assert _stored_authored_transcript(runtime.archive_root) == before
+    with ArchiveStore.open_existing(runtime.archive_root, read_only=True) as archive:
+        with archive.open_raw_revision_material(runtime._raw_ids["idless"][0]) as (provider, h, _, _):
+            retained = h.read()
+    capture = json.loads(retained)
+    assert capture["raw_provider_payload"] == records
+    assert capture["session"]["attachments"][0]["message_provider_id"] is None
+    replayed = parse_payload(provider, capture, "retained")[0]
+    assert replayed.messages == native.messages
+    assert replayed.attachments[0].message_provider_id is None
+    assert replayed.attachments[0].inline_bytes == b"bytes"
+
+    replay_root = tmp_path / "idless-replay"
+    initialize_active_archive_root(replay_root)
+    with ArchiveStore.open_existing(replay_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=provider, payload=retained, source_path="capture.json", acquired_at_ms=1
+        )
+    result = backfill_historical_revision_evidence(replay_root, selected_raw_ids=[raw_id])
+    assert result.quarantined == result.adoption_deferred == 0
+    assert result.replayed_logical_sources == 1
+    assert _stored_authored_transcript(replay_root) == before
+    for root in (runtime.archive_root, replay_root):
+        blobs = BlobStore(root / "blob")
+        with sqlite3.connect(root / "index.db") as conn:
+            conn.row_factory = sqlite3.Row
+            composed = read_archive_session_envelope(conn, "codex-session:tool-call-session-1", blob_store=blobs)
+        assert len(composed.orphan_attachments) == 1
+        attachment = composed.orphan_attachments[0]
+        assert attachment.message_id is None
+        assert attachment.display_name == "fixture.txt"
+        assert attachment.blob_hash is not None
+        assert blobs.read_all(attachment.blob_hash.hex()) == b"bytes"
+
+
+def test_daemon_ingest_requires_derivation_before_acceptance(workspace_env: dict[str, Path], tmp_path: Path) -> None:
+    """Fixture capability composition must not remove the production refusal."""
+    from tests.infra.daemon_operations import daemon_serving_archive
+
+    path = tmp_path / "native.jsonl"
+    path.write_bytes(_codex_transcript("capability-session", "message", "An authored turn"))
+    root = workspace_env["archive_root"]
+    with daemon_serving_archive(root) as stack:
+        result = stack.client.operation_to_completion(
+            "ingest",
+            {"path": str(path), "source_path": str(path), "source_name": "codex", "idempotency_key": None},
+            archive_root=str(root),
+        )
+    assert result is not None
+    assert result["outcome"] == "failed"
+    assert result["error"]["code"] == "ValueError"
+    assert result["accepted_reference"] is None
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 def test_production_route_persists_canonical_hook_envelope(workspace_env: dict[str, Path]) -> None:
