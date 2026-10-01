@@ -692,9 +692,10 @@ def finalize_embedding_attempt_success(
             }
             if present_ids != set(desired_ids):
                 return False
-        elif conn.execute(
-            "SELECT 1 FROM message_embedding_refs WHERE session_id = ? LIMIT 1", (attempt.session_id,)
-        ).fetchone():
+        elif attempt.source_hash != EmbeddingSourceDigest().digest():
+            # An empty current source may still have bindings from an earlier
+            # attempt. Retire those below, without discarding their vectors;
+            # an omitted nonempty source cannot certify empty publication.
             return False
         prior_ids = tuple(
             str(row[0])

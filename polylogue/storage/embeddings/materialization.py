@@ -1538,22 +1538,35 @@ def _finalize_archive_embedding_attempt(plan: _ArchiveEmbeddingPlan) -> EmbedSes
                 index_conn.close()
             raise
         try:
-            current_recipe = _configured_embedding_recipe()
+            configured_recipe_now = _configured_embedding_recipe()
+            configuration_changed = (
+                configured_recipe_now.recipe_hash != plan.configured_recipe_before.recipe_hash
+                or configured_recipe_now.output_contract_hash != plan.configured_recipe_before.output_contract_hash
+            )
+            # Source identity includes the provider request. Compare it under
+            # the recipe that produced this attempt, independently of whether
+            # the configured recipe changed while the provider was working.
             current_source_hash, current_message_count, current_message_ids = _read_archive_embedding_source_snapshot(
-                index_conn, plan.session_id, recipe=current_recipe
+                index_conn, plan.session_id, recipe=plan.recipe
             )
             if (
                 current_source_hash != plan.attempt.source_hash
                 or current_message_count != len(plan.embeddable_message_ids)
                 or current_message_ids != tuple(sorted(plan.embeddable_message_ids))
-                or current_recipe.recipe_hash != plan.configured_recipe_before.recipe_hash
-                or current_recipe.output_contract_hash != plan.configured_recipe_before.output_contract_hash
+                or configuration_changed
             ):
+                successor_recipe = configured_recipe_now if configuration_changed else plan.recipe
+                if configuration_changed:
+                    # A configured-recipe transition queues that new request,
+                    # so its source digest must use the same recipe as its key.
+                    current_source_hash, _, _ = _read_archive_embedding_source_snapshot(
+                        index_conn, plan.session_id, recipe=successor_recipe
+                    )
                 supersede_embedding_attempt(
                     conn,
                     attempt=plan.attempt,
                     source_hash=current_source_hash,
-                    recipe=current_recipe,
+                    recipe=successor_recipe,
                 )
                 return EmbedSessionOutcome(
                     status="error",
