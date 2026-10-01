@@ -553,7 +553,19 @@ def observe_source_generation_receipt(
             ) as rows:
                 observed_raws = []
                 for raw in rows:
-                    logicals = tuple(raw.logicals)
+                    logicals = tuple(
+                        SimpleNamespace(
+                            logical_source_key=logical.logical_source_key,
+                            expected_session_id=logical.expected_session_id,
+                            accepted_raw_id=logical.accepted_raw_id,
+                            application_ids=tuple(logical.application_ids),
+                            head_session_ids=logical.head_session_ids,
+                            session_ids=logical.session_ids,
+                            blockers=logical.blockers,
+                            complete=logical.complete,
+                        )
+                        for logical in raw.logicals
+                    )
                     observed_raws.append(
                         SimpleNamespace(
                             raw_id=raw.raw_id,
