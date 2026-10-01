@@ -1588,7 +1588,9 @@ def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
     assert profile_receipt.is_file()
     assert not (marker_root / ".bootstrap").exists()
     assert not (marker_root / ".bootstrap.pending").exists()
-    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, profile_receipt)
+    dependency_receipt = marker_root / "source-004.json"
+    assert dependency_receipt.is_file()
+    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, profile_receipt, dependency_receipt)
 
 
 def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(
