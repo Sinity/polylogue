@@ -196,6 +196,12 @@ class BrowserCaptureTurn(BaseModel):
     def require_content(self) -> BrowserCaptureTurn:
         if (self.text is None or not self.text.strip()) and not self.attachments and not self.blocks:
             raise ValueError("browser capture turn must include text, blocks, or attachments")
+        if (
+            not self.provider_turn_id
+            and any(not attachment.message_provider_id for attachment in self.attachments)
+            and "ordinal" not in self.model_fields_set
+        ):
+            raise ValueError("an id-less attachment turn requires an explicit native ordinal")
         return self
 
 

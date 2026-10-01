@@ -240,6 +240,11 @@ is an ingestion contract; the browser extension has no Codex page adapter.
 For Codex, ChatGPT and Claude.ai native captures, the parsed native session ID
 must match the envelope's declared session ID before attachment or lifecycle
 evidence is merged. A disagreement produces a typed refusal.
+An attachment turn without a provider message ID must retain an explicit native
+turn ordinal and matching role and text. The parser resolves that witnessed
+turn through its private message owner coordinate, preserving native IDs and
+attachment bytes on replay. Missing or conflicting evidence is refused; a
+default ordinal is not ownership evidence.
 
 DOM extraction is a compatibility fallback for pages where no provider-native
 payload has been observed yet. It still uses the provider-native conversation id

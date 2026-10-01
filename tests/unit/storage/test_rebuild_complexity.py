@@ -19,6 +19,8 @@ from polylogue.storage.fts.fts_lifecycle import reset_message_fts_index_sync
 from polylogue.storage.fts.sql import (
     FTS_MESSAGES_IDENTITY_RECIPE_ID,
     insert_all_message_identity_rows_sql,
+    insert_session_identity_rows_sql,
+    insert_session_rows_sql,
     repair_message_identity_rows_range_sql,
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql, rebuild_all_action_pairs_sync
@@ -188,6 +190,8 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
         "fts-reset",
         "fts-row-range-tautology",
         "fts-identity-rebuild",
+        "fts-session-union",
+        "fts-identity-session-union",
         "fts-literal-scope",
         "fts-tautology-scope",
         "fts-delete-all",
@@ -261,6 +265,18 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
                 assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
             elif mutation == "fts-identity-rebuild":
                 assert archive._conn.execute(insert_all_message_identity_rows_sql()).rowcount > 0
+            elif mutation in {"fts-session-union", "fts-identity-session-union"}:
+                table = "messages_fts" if mutation == "fts-session-union" else "messages_fts_identity"
+                builder = (
+                    insert_session_rows_sql if mutation == "fts-session-union" else insert_session_identity_rows_sql
+                )
+                populated = archive._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                assert populated > 0
+                sql = builder(1).replace("VALUES (?)", "VALUES (?) UNION SELECT session_id FROM sessions")
+                changes = archive._conn.total_changes
+                archive._conn.execute(sql, ("absent",))
+                assert archive._conn.total_changes > changes
+                assert archive._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == populated
             elif mutation == "fts-literal-scope":
                 assert (
                     archive._conn.execute(

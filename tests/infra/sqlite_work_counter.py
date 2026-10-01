@@ -107,7 +107,12 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
         return not (
             re.search(rf"from blocks as b where b.session_id = {_BOUND_VALUE} and b.search_text != \?$", sql)
             or (
-                "raw_target_sessions(session_id) as ( values" in sql
+                re.match(
+                    rf"^with raw_target_sessions\(session_id\) as \( values \({_BOUND_VALUE}\)"
+                    rf"(?:, \({_BOUND_VALUE}\))* \), target_sessions as \( select distinct session_id "
+                    r"from raw_target_sessions \) insert(?: or replace)? into messages_fts(?:_identity)? ",
+                    sql,
+                )
                 and sql.endswith(
                     "join target_sessions as target on target.session_id = b.session_id where b.search_text != ?"
                 )

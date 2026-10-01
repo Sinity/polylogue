@@ -1049,6 +1049,7 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
         raise CorpusProgramError("Attach requires a provider with native capture payload support")
     from polylogue.browser_capture.models import BrowserCaptureBlock
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+    from polylogue.sources.parsers.base_support import derive_attachment_provenance
 
     try:
         try:
@@ -1071,7 +1072,7 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     session_id = parsed.provider_session_id
     turns = [
         {
-            "provider_turn_id": message.provider_message_id or f"{session_id}:turn:{ordinal}",
+            "provider_turn_id": message.provider_message_id or "",
             "role": message.role.value,
             "text": message.text,
             "timestamp": message.timestamp,
@@ -1084,11 +1085,21 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
         }
         for ordinal, message in enumerate(parsed.messages)
     ]
-    attachment_payload = [
+    attachment_ordinal = next(
+        (
+            ordinal
+            for ordinal, message in enumerate(parsed.messages)
+            if derive_attachment_provenance(message.role, message.provider_message_id)[0] is not None
+        ),
+        None,
+    )
+    if attachment_ordinal is None:
+        raise CorpusProgramError("Attach requires a message with supported attachment provenance")
+    turns[attachment_ordinal]["attachments"] = [
         {
             "provider_attachment_id": attachment.attachment_id,
             "name": attachment.name,
-            "message_provider_id": parsed.messages[0].provider_message_id or None,
+            "message_provider_id": parsed.messages[attachment_ordinal].provider_message_id or None,
             "mime_type": attachment.mime_type,
             "size_bytes": len(attachment.payload),
             "inline_base64": _b64(attachment.payload),
@@ -1114,7 +1125,6 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
             "title": parsed.title if parsed.title_source is TitleSource.ORIGIN else None,
             "title_source": "provider" if parsed.title_source is TitleSource.ORIGIN else None,
             "turns": turns,
-            "attachments": attachment_payload,
         },
     }
     if provider.value == "codex":

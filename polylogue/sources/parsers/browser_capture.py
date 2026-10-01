@@ -26,7 +26,9 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource
 from polylogue.core.hashing import hash_bytes
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.pipeline.ids import _message_owner_coordinate
 from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
@@ -394,15 +396,24 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     the native payload never does.
     """
 
-    envelope_attachments = [
-        _browser_capture_parsed_attachment(
-            attachment,
-            message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
-            role=turn.role,
-        )
-        for turn in envelope.session.turns
-        for attachment in turn.attachments
-    ]
+    envelope_attachments = []
+    for turn in envelope.session.turns:
+        for attachment in turn.attachments:
+            provider_id = attachment.message_provider_id or turn.provider_turn_id or None
+            role = turn.role
+            owner_coordinate = None
+            if provider_id is None:
+                if "ordinal" not in turn.model_fields_set or not 0 <= turn.ordinal < len(parsed.messages):
+                    raise MessageOwnerAmbiguityError("capture attachment lacks a witnessed native message")
+                native = parsed.messages[turn.ordinal]
+                if native.role != turn.role or native.text != turn.text:
+                    raise MessageOwnerAmbiguityError("capture attachment turn disagrees with its native message")
+                provider_id = native.provider_message_id or None
+                role = native.role
+                owner_coordinate = _message_owner_coordinate(native, turn.ordinal)
+            candidate = _browser_capture_parsed_attachment(attachment, message_provider_id=provider_id, role=role)
+            candidate.owner_coordinate = owner_coordinate
+            envelope_attachments.append(candidate)
     parsed_roles = {
         message.provider_message_id: message.role for message in parsed.messages if message.provider_message_id
     }
@@ -469,6 +480,7 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         merged[existing.provider_attachment_id] = existing.model_copy(
             update={
                 "message_provider_id": existing.message_provider_id or candidate.message_provider_id,
+                "owner_coordinate": existing.owner_coordinate or candidate.owner_coordinate,
                 "name": existing.name or candidate.name,
                 "mime_type": existing.mime_type or candidate.mime_type,
                 "size_bytes": existing.size_bytes if existing.size_bytes is not None else candidate.size_bytes,

@@ -14,6 +14,8 @@ from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
 from polylogue.core.enums import BlockType, Provider, TitleSource
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
+from polylogue.pipeline.ids import _message_owner_coordinate
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -136,6 +138,64 @@ def _capture_payload() -> dict[str, object]:
             ],
         },
     }
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI])
+@pytest.mark.parametrize("witness", ["valid", "missing", "negative", "outside", "role", "text"])
+def test_native_attachment_without_provider_id_requires_matching_retained_turn(
+    provider: Provider, witness: str
+) -> None:
+    """Guessing an owner or discarding its private coordinate makes this fail."""
+    fixture_root = Path(__file__).parents[2] / "fixtures"
+    if provider is Provider.CODEX:
+        raw: object = [
+            json.loads(line) for line in (fixture_root / "corpus-program-codex-native.jsonl").read_text().splitlines()
+        ]
+    else:
+        fixture = (
+            "chatgpt/native-conversation-v1.json"
+            if provider is Provider.CHATGPT
+            else "origin-capability/claude-ai-export.json"
+        )
+        raw = json.loads((fixture_root / fixture).read_text())
+    native = parse_payload(provider, raw, "native")[0]
+    ordinal, message = next((i, m) for i, m in enumerate(native.messages) if m.role is Role.USER)
+    turn: dict[str, object] = {
+        "provider_turn_id": "",
+        "ordinal": ordinal,
+        "role": message.role.value,
+        "text": message.text,
+        "attachments": [{"provider_attachment_id": "owned", "name": "fixture.txt", "inline_base64": "Ynl0ZXM="}],
+    }
+    if witness == "missing":
+        turn.pop("ordinal")
+    elif witness == "negative":
+        turn["ordinal"] = -1
+    elif witness == "outside":
+        turn["ordinal"] = len(native.messages)
+    elif witness == "role":
+        turn["role"] = "assistant"
+    elif witness == "text":
+        turn["text"] = "Different authored content"
+    payload = _capture_payload()
+    session = cast(dict[str, object], payload["session"])
+    session.update(provider=provider.value, provider_session_id=native.provider_session_id, turns=[turn])
+    payload["raw_provider_payload"] = raw
+    if witness == "missing":
+        # Refuse before a canonical dump can turn a default zero into evidence.
+        with pytest.raises(ValueError):
+            BrowserCaptureEnvelope.model_validate(payload)
+    elif witness != "valid":
+        with pytest.raises(MessageOwnerAmbiguityError):
+            parse_browser_capture(payload, "capture")
+    else:
+        retained = BrowserCaptureEnvelope.model_validate(payload).model_dump(mode="json")
+        captured = parse_browser_capture(retained, "retained")
+        assert captured.messages == native.messages
+        attachment = next(a for a in captured.attachments if a.provider_attachment_id == "owned")
+        assert attachment.message_provider_id == (message.provider_message_id or None)
+        assert attachment.owner_coordinate == _message_owner_coordinate(message, ordinal)
+        assert attachment.inline_bytes == b"bytes"
 
 
 def test_browser_capture_detects_inner_provider() -> None:
@@ -1611,8 +1671,9 @@ async def test_browser_capture_tool_turn_blocks_land_in_archive_with_consistent_
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
-            "SELECT block_type, tool_id, tool_name, text FROM blocks "
-            "WHERE block_type IN ('tool_use', 'tool_result') ORDER BY position"
+            "SELECT b.block_type, b.tool_id, b.tool_name, b.text FROM blocks AS b "
+            "JOIN messages AS m ON m.message_id = b.message_id "
+            "WHERE b.block_type IN ('tool_use', 'tool_result') ORDER BY m.position, m.variant_index, b.position"
         ).fetchall()
 
     assert [dict(row) for row in rows] == [

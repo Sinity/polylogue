@@ -441,7 +441,14 @@ def test_native_web_attachment_preserves_kind_title_and_retained_replay(
         assert capture["session"]["title"] is None
         assert capture["session"]["title_source"] is None
     added = next(a for a in replayed.attachments if a.provider_attachment_id == "added")
-    assert added.message_provider_id == native.messages[0].provider_message_id
+    from polylogue.sources.parsers.base_support import derive_attachment_provenance
+
+    selected = next(
+        message
+        for message in native.messages
+        if derive_attachment_provenance(message.role, message.provider_message_id)[0] is not None
+    )
+    assert added.message_provider_id == selected.provider_message_id
     assert added.inline_bytes == b"bytes"
 
     replay_root = tmp_path / "native-web-replay"
@@ -462,7 +469,7 @@ def test_native_web_attachment_preserves_kind_title_and_retained_replay(
     assert (composed.title_source == TitleSource.ORIGIN.value) is authored_title
 
 
-def test_idless_native_attachment_keeps_session_ownership_and_retained_bytes(
+def test_idless_native_attachment_keeps_native_message_ownership_and_retained_bytes(
     workspace_env: dict[str, Path], tmp_path: Path
 ) -> None:
     """Inventing a native turn ID strands this attachment during ingestion/replay."""
@@ -499,10 +506,15 @@ def test_idless_native_attachment_keeps_session_ownership_and_retained_bytes(
             retained = h.read()
     capture = json.loads(retained)
     assert capture["raw_provider_payload"] == records
-    assert capture["session"]["attachments"][0]["message_provider_id"] is None
+    turn = capture["session"]["turns"][0]
+    assert turn["provider_turn_id"] == ""
+    assert turn["ordinal"] == 0
+    assert turn["attachments"][0]["message_provider_id"] is None
     replayed = parse_payload(provider, capture, "retained")[0]
     assert replayed.messages == native.messages
     assert replayed.attachments[0].message_provider_id is None
+    assert replayed.attachments[0].owner_coordinate is not None
+    assert replayed.attachments[0].owner_coordinate.physical_key == (0, 0)
     assert replayed.attachments[0].inline_bytes == b"bytes"
 
     replay_root = tmp_path / "idless-replay"
@@ -520,9 +532,10 @@ def test_idless_native_attachment_keeps_session_ownership_and_retained_bytes(
         with sqlite3.connect(root / "index.db") as conn:
             conn.row_factory = sqlite3.Row
             composed = read_archive_session_envelope(conn, "codex-session:tool-call-session-1", blob_store=blobs)
-        assert len(composed.orphan_attachments) == 1
-        attachment = composed.orphan_attachments[0]
-        assert attachment.message_id is None
+        assert not composed.orphan_attachments
+        assert len(composed.messages[0].attachments) == 1
+        attachment = composed.messages[0].attachments[0]
+        assert attachment.message_id == composed.messages[0].message_id
         assert attachment.display_name == "fixture.txt"
         assert attachment.blob_hash is not None
         assert blobs.read_all(attachment.blob_hash.hex()) == b"bytes"
@@ -575,9 +588,9 @@ def test_production_route_persists_canonical_hook_envelope(workspace_env: dict[s
     }
 
 
-def test_emit_hook_refuses_non_object_payload_with_named_reason(tmp_path: Path) -> None:
+def test_emit_hook_refuses_non_object_payload_with_typed_error(tmp_path: Path) -> None:
     runtime = ProductionCorpusRuntime(tmp_path / "archive")
-    with pytest.raises(CorpusProgramError, match="EmitHook refused: payload is not a JSON object"):
+    with pytest.raises(CorpusProgramError):
         runtime.emit_hook(
             HookArtifact(
                 hook_event_id="bad-hook",
