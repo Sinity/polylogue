@@ -11,7 +11,7 @@ release action dispatches [`container.yml`](../.github/workflows/container.yml),
 builds and publishes the slim and distroless OCI images to
 `ghcr.io/sinity/polylogue`.
 
-Release Please forwards its `tag_name` output as `release_tag` to the Python, container, extension, and Homebrew workflows. It uses the existing `GITHUB_TOKEN` with `actions: write`; no separate release credential is required. GitHub permits this explicit `workflow_dispatch` event even though tag pushes made with that token do not start workflows ([GitHub trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). Each consumer verifies and builds the released tag.
+Release Please forwards its `tag_name` output as `release_tag` to the Python, container, extension, and Homebrew workflows. It uses the existing `GITHUB_TOKEN` with `actions: write`; no separate release credential is required. GitHub permits this explicit `workflow_dispatch` event even though tag pushes made with that token do not start workflows ([GitHub trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). The Python, container, extension, and Homebrew consumers verify and build the released tag. FlakeHub and optional Cachix are dispatched on the exact tag ref; FlakeHub uses immutable tag publication for a tag dispatch and retains rolling publication for a branch dispatch. The Release Please action is pinned to a reviewed full commit SHA before it receives dispatch authority.
 
 This file is the operator-facing cut-time checklist. The manual procedure
 (see "Manual Fallback" below) is retained only for cases where release-please

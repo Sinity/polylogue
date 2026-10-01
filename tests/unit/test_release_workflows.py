@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -53,6 +54,7 @@ def test_release_please_dispatches_exact_tag_using_existing_authority(tmp_path: 
     steps = producer["jobs"]["release-please"]["steps"]
     action = next(step for step in steps if step.get("uses", "").startswith("googleapis/release-please-action@"))
     dispatch = next(step for step in steps if "run" in step)
+    assert re.fullmatch(r"googleapis/release-please-action@[0-9a-f]{40}", action["uses"])
     assert action["id"] == "release"
     assert action["with"]["token"] == "${{ secrets.GITHUB_TOKEN }}"
     assert dispatch["if"] == "steps.release.outputs.release_created == 'true'"
@@ -92,11 +94,15 @@ def test_release_please_dispatches_exact_tag_using_existing_authority(tmp_path: 
         ["workflow", "run", "container.yml", "--ref", "master", "-f", "release_tag=v1.2.3", "-f", "push=true"],
         ["workflow", "run", "extension-release.yml", "--ref", "master", "-f", "release_tag=v1.2.3"],
         ["workflow", "run", "homebrew-bump.yml", "--ref", "master", "-f", "release_tag=v1.2.3"],
+        ["workflow", "run", "flakehub.yml", "--ref", "v1.2.3"],
+        ["workflow", "run", "cachix.yml", "--ref", "v1.2.3"],
     ]
     assert actual == (expected if dispatch_exit == 0 else expected[:1])
     for call in expected:
         consumer = workflow(call[2])
-        assert "release_tag" in consumer["on"]["workflow_dispatch"]["inputs"]
+        assert "workflow_dispatch" in consumer["on"]
+        if call[4] == "master":
+            assert "release_tag" in consumer["on"]["workflow_dispatch"]["inputs"]
         if call[-1] in {"publish=true", "push=true"}:
             assert call[-1].split("=")[0] in consumer["on"]["workflow_dispatch"]["inputs"]
 
@@ -116,3 +122,15 @@ def test_exact_main_package_dependents_wait_for_successful_main_upload() -> None
         assert not any(token in job["if"] for token in ("always(", "failure(", "cancelled("))
         assert job["if"] == release["jobs"]["publish-pypi"]["if"]
     assert dependents == ["polylogue-mcp"]
+
+
+def test_flakehub_tag_dispatch_publishes_the_selected_tag_instead_of_rolling() -> None:
+    """The producer dispatches a tag ref; restoring event-name-only checks publishes a rolling build."""
+    flakehub = workflow("flakehub.yml")
+    push = next(step for step in flakehub["jobs"]["publish"]["steps"] if "with" in step)["with"]
+    assert push["rolling"] == "${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' }}"
+    assert (
+        push["rolling-minor"]
+        == "${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' && inputs.tag || '' }}"
+    )
+    assert push["tag"] == "${{ github.ref_type == 'tag' && github.ref_name || '' }}"

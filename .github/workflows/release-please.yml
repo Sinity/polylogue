@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: googleapis/release-please-action@v5
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
           config-file: release-please-config.json
@@ -49,3 +49,5 @@ jobs:
           gh workflow run container.yml --ref master -f "release_tag=${RELEASE_TAG}" -f push=true
           gh workflow run extension-release.yml --ref master -f "release_tag=${RELEASE_TAG}"
           gh workflow run homebrew-bump.yml --ref master -f "release_tag=${RELEASE_TAG}"
+          gh workflow run flakehub.yml --ref "${RELEASE_TAG}"
+          gh workflow run cachix.yml --ref "${RELEASE_TAG}"
