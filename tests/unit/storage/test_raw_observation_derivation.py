@@ -752,6 +752,36 @@ def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path, mo
     assert poison in {raw_id for _ in range(4) for raw_id, _cost in renewed.discover_pending_raw_ids(8)}
 
 
+@pytest.mark.parametrize("lane", ["arrival", "dependents", "sweep"])
+def test_every_raw_discovery_lane_preserves_terminal_receipt_authority(tmp_path: Path, lane: str) -> None:
+    from polylogue.operations.intake_adapters import RawMaterializationDiscovery
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        poison = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"not json\n",
+            source_path="/synthetic/project/poison.jsonl",
+            acquired_at_ms=1,
+        )
+    assert _run(tmp_path).failed == 1
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+
+    def select() -> tuple[str, ...]:
+        discovery = RawMaterializationDiscovery(tmp_path)
+        if lane == "dependents":
+            # This is the existing disposable project continuation; the row
+            # and refusal authority are read from actual Source receipts.
+            discovery._evidence_projects.append(("/synthetic/project", "", -1))
+        return getattr(discovery, f"_{lane}_selected")(frame, adapter, 8)
+
+    assert select() == ()
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_artifacts SET classification_reason='{}' WHERE raw_id=?", (poison,))
+    assert select() == (poison,)
+
+
 def test_zero_output_requires_parser_evidence(tmp_path: Path) -> None:
     """Anti-vacuity: a bare empty index cannot certify a zero-output raw."""
     bootstrap_archive_root(tmp_path)
