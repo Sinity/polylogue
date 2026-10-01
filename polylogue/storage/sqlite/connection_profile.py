@@ -391,6 +391,7 @@ class NativeSQLCustodyOwner:
                 sys.platform == "linux"
                 and isinstance(close_descriptor, BuiltinFunctionType)
                 and close_descriptor.__module__ == "posix"
+                and close_descriptor.__name__ == "close"
             )
             try:
                 close_descriptor(descriptor)
