@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -102,17 +103,18 @@ def _configure_current_embedding_messages(
     )
 
 
-def _vector_snapshot_index_binding(connection: sqlite3.Connection) -> tuple[Path, GenerationToken]:
-    """Read the selected index proof retained by the existing snapshot owner."""
-    binding = getattr(connection, "_polylogue_vector_read_index_binding", None)
+def _vector_snapshot_binding(connection: sqlite3.Connection) -> tuple[Path, GenerationToken, int]:
+    """Read index and thread proof retained by the existing snapshot owner."""
+    binding = getattr(connection, "_polylogue_vector_read_snapshot_binding", None)
     if (
         not isinstance(binding, tuple)
-        or len(binding) != 2
+        or len(binding) != 3
         or not isinstance(binding[0], Path)
         or not isinstance(binding[1], GenerationToken)
+        or not isinstance(binding[2], int)
     ):
         raise SqliteVecError("vector snapshot lacks its owner's selected index proof")
-    return binding[0], binding[1]
+    return binding[0], binding[1], binding[2]
 
 
 def open_vector_read_snapshot(
@@ -128,7 +130,7 @@ def open_vector_read_snapshot(
     Callers choose and hold both paths under their publication barrier before
     calling this function.  No configured root, active-generation resolver,
     or provider default participates here. The returned handle retains the
-    selected index path and generation proof; provider construction consumes
+    selected index path, generation and creating thread; provider construction consumes
     that proof instead of certifying a held handle by its later pathname.
     """
 
@@ -137,6 +139,7 @@ def open_vector_read_snapshot(
     selected_index = index_path.resolve(strict=True)
     selected_stat = selected_index.stat()
     selected_generation = GenerationToken(device=selected_stat.st_dev, inode=selected_stat.st_ino)
+    opening_thread_id = threading.get_ident()
     with _vector_projection_errors():
         conn = open_readonly_connection(embeddings_path, validate_schema=False)
     conn.row_factory = sqlite3.Row
@@ -165,7 +168,11 @@ def open_vector_read_snapshot(
                 raise SqliteVecError("selected archive index changed while pinning the vector snapshot; retry")
             # The existing measured connection owns this proof across later
             # provider construction, including after its pathname is replaced.
-            vars(conn)["_polylogue_vector_read_index_binding"] = (selected_index, selected_generation)
+            vars(conn)["_polylogue_vector_read_snapshot_binding"] = (
+                selected_index,
+                selected_generation,
+                opening_thread_id,
+            )
             if not defer_projection:
                 prepare_vector_read_projection(conn, recipe=recipe)
         return conn

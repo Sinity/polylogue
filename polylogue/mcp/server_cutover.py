@@ -1539,7 +1539,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
                 target = session_id or normalized
-                from polylogue.operations.archive_mutation import SessionNotFoundError
+                from polylogue.core.errors import SessionNotFoundError
                 from polylogue.operations.message_locator import MessageNotInSessionError
 
                 try:
@@ -2264,7 +2264,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 return hooks.error_json(
                     "write(operation='set_metadata') requires session_id, key, and value", code="invalid_argument"
                 )
-            from polylogue.api.archive import SessionNotFoundError
+            from polylogue.core.errors import SessionNotFoundError
             from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
 
             key_error = validate_metadata_key(key)
@@ -2302,7 +2302,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             )
             if confirm_error is not None:
                 return confirm_error
-            from polylogue.api.archive import SessionNotFoundError
+            from polylogue.core.errors import SessionNotFoundError
             from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
 
             key_error = validate_metadata_key(key)

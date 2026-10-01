@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
-from polylogue.core.errors import VectorRuntimeUnavailableError
+from polylogue.core.errors import SessionNotFoundError, VectorRuntimeUnavailableError
 from polylogue.core.protocols import VectorProvider
 from polylogue.core.sources import source_name_to_origin
 from polylogue.logging import get_logger
@@ -126,17 +126,22 @@ class RepositoryVectorMixin:
         limit: int,
     ) -> dict[str, object]:
         """Resolve hits and metadata on the same pinned index as vector ranking."""
-        if not results:
-            return {
-                "source_embedded_messages": source_embedded_messages,
-                "results": [],
-                "unresolved_message_hits": 0,
-            }
-
-        message_ids = [message_id for message_id, _ in results]
-        placeholders = ",".join("?" * len(message_ids))
         with closing(connection.cursor()) as cursor:
             cursor.row_factory = sqlite3.Row
+            if (
+                cursor.execute("SELECT 1 FROM archive_index.sessions WHERE session_id = ?", (session_id,)).fetchone()
+                is None
+            ):
+                raise SessionNotFoundError(session_id)
+            if not results:
+                return {
+                    "source_embedded_messages": source_embedded_messages,
+                    "results": [],
+                    "unresolved_message_hits": 0,
+                }
+
+            message_ids = [message_id for message_id, _ in results]
+            placeholders = ",".join("?" * len(message_ids))
             rows = cursor.execute(
                 f"SELECT message_id, session_id FROM archive_index.messages WHERE message_id IN ({placeholders})",
                 message_ids,

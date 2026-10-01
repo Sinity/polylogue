@@ -45,7 +45,7 @@ class PolylogueEmbeddingsMixin:
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
     ) -> dict[str, object]:
-        """Return vector-ranked session hits for a stored session."""
+        """Return retained-vector hits, raising SessionNotFoundError for an absent seed."""
         return cast(
             dict[str, object],
             await self.repository.search_similar_sessions(

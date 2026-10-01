@@ -139,7 +139,7 @@ async def _session_messages(store: Any, session_id: str, page_size: int, gaps: l
     gap so the truncation is distinguishable from normal exhaustion.
     """
     from polylogue.archive.query.transaction import QueryContinuationStaleError
-    from polylogue.operations.archive_mutation import SessionNotFoundError
+    from polylogue.core.errors import SessionNotFoundError
 
     page_size = max(1, min(page_size, _max_window_rows()))
     windowed = getattr(store, "read_transcript_window", None)

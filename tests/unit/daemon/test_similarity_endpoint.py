@@ -223,27 +223,6 @@ def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
     return "codex-session:seed", embeddings_db, session_by_message_id
 
 
-def _init_archive() -> None:
-    """Create an empty index.db with the ``sessions`` table only.
-
-    Used by the missing-session cases so the reader routes to the
-    archive path and returns ``None`` (404) for an unknown id.
-    """
-    archive_db = _index_db()
-    archive_db.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(archive_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
-                title TEXT,
-                origin TEXT NOT NULL
-            );
-            """
-        )
-        conn.commit()
-
-
 def _disable_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``load_polylogue_config`` to return an embeddings-off config."""
 
@@ -312,7 +291,7 @@ class TestSimilarPayloadStates:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_embeddings(monkeypatch)
-        _init_archive()
+        _seed_ready_similarity_archive()
         assert build_similar_payload("ghost") is None
 
     def test_disabled_envelope_when_embeddings_off(
@@ -409,7 +388,7 @@ class TestSimilarEndpoint:
 
     def test_missing_session_returns_404(self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         _enable_embeddings(monkeypatch)
-        _init_archive()
+        _seed_ready_similarity_archive()
         handler = _make_handler("GET", "/api/sessions/ghost/similar")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
@@ -734,3 +713,46 @@ def test_http_daemon_binds_vector_snapshot_without_acquisition_credentials(
         binding = factory().vector_binding
         assert binding is not None
         assert binding.voyage_key is None
+
+
+@pytest.mark.contract
+def test_similarity_first_publication_checks_seed_on_query_snapshot(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checking existence before opening the vector snapshot gives false not_embedded."""
+    from polylogue import Polylogue
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    _enable_embeddings(monkeypatch)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    session_id, _, _ = _seed_ready_similarity_archive()
+    root = archive_root()
+    store = IndexGenerationStore.for_archive_root(root)
+    successor = store.create(owner_id="similarity-absence", source_snapshot="synthetic-absence")
+    with sqlite3.connect(root / "index.db") as source, sqlite3.connect(successor.index_path) as target:
+        source.backup(target)
+        target.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
+        target.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        target.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+    original_query = Polylogue.search_similar_sessions
+    published: list[Path] = []
+
+    async def publish_before_query(archive: Polylogue, seed: str, *, limit: int = 10) -> dict[str, object]:
+        store.promote(successor)
+        published.append(resolve_active_index_path(root))
+        return await original_query(archive, seed, limit=limit)
+
+    monkeypatch.setattr(Polylogue, "search_similar_sessions", publish_before_query)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    closed = record_owned_vector_closes(monkeypatch)
+    handler = _make_handler("GET", f"/api/sessions/{session_id}/similar")
+    send_error, send_json = _capture_responses(handler)
+
+    handler.do_GET()
+
+    assert published == [successor.index_path]
+    send_error.assert_called_once_with(HTTPStatus.NOT_FOUND, "not_found")
+    send_json.assert_not_called()
+    assert closed == [True]
+    provider_call.assert_not_called()

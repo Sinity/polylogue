@@ -11,7 +11,7 @@ from pathlib import Path
 from polylogue.paths import embeddings_db_path
 from polylogue.storage.search_providers.sqlite_vec_embeddings import SqliteVecEmbeddingMixin
 from polylogue.storage.search_providers.sqlite_vec_queries import SqliteVecQueryMixin
-from polylogue.storage.search_providers.sqlite_vec_runtime import SqliteVecRuntimeMixin, _vector_snapshot_index_binding
+from polylogue.storage.search_providers.sqlite_vec_runtime import SqliteVecRuntimeMixin, _vector_snapshot_binding
 from polylogue.storage.search_providers.sqlite_vec_support import (
     BATCH_SIZE,
     DEFAULT_DIMENSION,
@@ -44,9 +44,8 @@ class SqliteVecProvider(
             self.db_path = Path("embeddings.db")
             self.archive_root = None
             self._snapshot_connection = snapshot_connection
-            self._snapshot_thread_id = threading.get_ident()
-            self._snapshot_index_path, self._snapshot_index_identity = _vector_snapshot_index_binding(
-                snapshot_connection
+            self._snapshot_index_path, self._snapshot_index_identity, self._snapshot_thread_id = (
+                _vector_snapshot_binding(snapshot_connection)
             )
             self.voyage_key = voyage_key
             self.model = model

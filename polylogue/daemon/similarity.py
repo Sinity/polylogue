@@ -41,11 +41,12 @@ its vectors stored. This is the property that lets the reader expose
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Final, cast
 
 from polylogue.config import Config, load_polylogue_config
-from polylogue.core.errors import VectorReadUnavailableError
+from polylogue.core.errors import SessionNotFoundError, VectorReadUnavailableError
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.operations.vector_reads import read_retained_vectors
@@ -118,105 +119,102 @@ def _build_archive_similar_payload(
     embedding_model: str,
     embedding_dimension: int,
 ) -> dict[str, object] | None:
-    index_conn = open_readonly_connection(index_db, timeout_class="interactive-read")
-    try:
-        index_conn.row_factory = sqlite3.Row
-        if not _fetch_archive_session_exists(index_conn, session_id):
-            return None
+    if disabled_reason is not None:
+        with closing(open_readonly_connection(index_db, timeout_class="interactive-read")) as index_conn:
+            if not _fetch_archive_session_exists(index_conn, session_id):
+                return None
+        envelope = _empty_envelope("disabled", reason=disabled_reason)
+        envelope["session_id"] = session_id
+        envelope["limit"] = bounded_limit
+        return envelope
 
-        if disabled_reason is not None:
-            envelope = _empty_envelope("disabled", reason=disabled_reason)
-            envelope["session_id"] = session_id
-            envelope["limit"] = bounded_limit
-            return envelope
-
-        def read() -> dict[str, object]:
-            embeddings_db = archive_root_path / "embeddings.db"
-            if not embeddings_db.exists():
+    def read() -> dict[str, object]:
+        embeddings_db = archive_root_path / "embeddings.db"
+        if not embeddings_db.exists():
+            raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
+        with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
+            if not table_exists(conn, "message_embeddings"):
                 raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
-            with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
-                if not table_exists(conn, "message_embeddings"):
-                    raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
 
-            from polylogue import Polylogue
-            from polylogue.api.sync.bridge import run_coroutine_sync
+        from polylogue import Polylogue
+        from polylogue.api.sync.bridge import run_coroutine_sync
 
-            async def query() -> dict[str, object]:
-                config = Config(
-                    archive_root=archive_root_path,
-                    render_root=archive_root_path / "render",
-                    sources=[],
-                    db_path=Path(index_db).resolve(strict=True),
-                    embedding_model=embedding_model,
-                    embedding_dimension=embedding_dimension,
-                )
-                async with Polylogue(config=config) as polylogue:
-                    return await polylogue.search_similar_sessions(
-                        session_id,
-                        limit=bounded_limit,
-                    )
-
-            return run_coroutine_sync(query())
-
-        try:
-            query_result = read_retained_vectors(read)
-        except VectorReadUnavailableError as exc:
-            envelope = _empty_envelope("unavailable", reason=exc.reason)
-            envelope["session_id"] = session_id
-            envelope["limit"] = bounded_limit
-            return envelope
-
-        if query_result["source_embedded_messages"] == 0:
-            envelope = _empty_envelope("not_embedded", reason=None)
-            envelope["session_id"] = session_id
-            envelope["limit"] = bounded_limit
-            return envelope
-
-        results = cast(list[dict[str, object]], query_result["results"])
-        hits: list[dict[str, object]] = []
-        for hit in results:
-            score = float(cast(float, hit["score"]))
-            hits.append(
-                {
-                    "session_id": str(hit["session_id"]),
-                    "score": round(score, 4),
-                    "distance": round(float(cast(float, hit["distance"])), 4),
-                    "confidence": _confidence_for_score(score),
-                    "title": hit["title"],
-                    "origin": hit["origin"],
-                    "matched_message_count": int(cast(int, hit["matched_message_count"])),
-                }
+        async def query() -> dict[str, object]:
+            config = Config(
+                archive_root=archive_root_path,
+                render_root=archive_root_path / "render",
+                sources=[],
+                db_path=Path(index_db).resolve(strict=True),
+                embedding_model=embedding_model,
+                embedding_dimension=embedding_dimension,
             )
+            async with Polylogue(config=config) as polylogue:
+                return await polylogue.search_similar_sessions(
+                    session_id,
+                    limit=bounded_limit,
+                )
 
-        # Vector hits that resolve to no indexed message mean the embeddings tier
-        # references messages this index does not carry -- a stale embedding
-        # generation, or a reindex that changed message-identity derivation. Ranking
-        # over a broken join and answering "ready" with the survivors is indis-
-        # tinguishable from "nothing is similar", so the caller cannot tell a healthy
-        # empty answer from a broken one. Report the discrepancy instead.
-        unresolved = int(cast(int, query_result.get("unresolved_message_hits", 0)))
-        if unresolved and not hits:
-            return {
-                "status": "inconsistent",
-                "reason": "embedded_messages_missing_from_index",
-                "session_id": session_id,
-                "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
-                "limit": bounded_limit,
-                "results": [],
-                "unresolved_message_hits": unresolved,
+        return run_coroutine_sync(query())
+
+    try:
+        query_result = read_retained_vectors(read)
+    except SessionNotFoundError:
+        return None
+    except VectorReadUnavailableError as exc:
+        envelope = _empty_envelope("unavailable", reason=exc.reason)
+        envelope["session_id"] = session_id
+        envelope["limit"] = bounded_limit
+        return envelope
+
+    if query_result["source_embedded_messages"] == 0:
+        envelope = _empty_envelope("not_embedded", reason=None)
+        envelope["session_id"] = session_id
+        envelope["limit"] = bounded_limit
+        return envelope
+
+    results = cast(list[dict[str, object]], query_result["results"])
+    hits: list[dict[str, object]] = []
+    for hit in results:
+        score = float(cast(float, hit["score"]))
+        hits.append(
+            {
+                "session_id": str(hit["session_id"]),
+                "score": round(score, 4),
+                "distance": round(float(cast(float, hit["distance"])), 4),
+                "confidence": _confidence_for_score(score),
+                "title": hit["title"],
+                "origin": hit["origin"],
+                "matched_message_count": int(cast(int, hit["matched_message_count"])),
             }
+        )
 
+    # Vector hits that resolve to no indexed message mean the embeddings tier
+    # references messages this index does not carry -- a stale embedding
+    # generation, or a reindex that changed message-identity derivation. Ranking
+    # over a broken join and answering "ready" with the survivors is indis-
+    # tinguishable from "nothing is similar", so the caller cannot tell a healthy
+    # empty answer from a broken one. Report the discrepancy instead.
+    unresolved = int(cast(int, query_result.get("unresolved_message_hits", 0)))
+    if unresolved and not hits:
         return {
-            "status": "ready",
-            "reason": None,
+            "status": "inconsistent",
+            "reason": "embedded_messages_missing_from_index",
             "session_id": session_id,
             "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
             "limit": bounded_limit,
-            "results": hits,
+            "results": [],
             "unresolved_message_hits": unresolved,
         }
-    finally:
-        index_conn.close()
+
+    return {
+        "status": "ready",
+        "reason": None,
+        "session_id": session_id,
+        "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
+        "limit": bounded_limit,
+        "results": hits,
+        "unresolved_message_hits": unresolved,
+    }
 
 
 def build_similar_payload(

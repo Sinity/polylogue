@@ -174,8 +174,12 @@ async def test_supplied_vector_provider_refuses_a_different_archive_index(
 
 
 @pytest.mark.asyncio
-async def test_supplied_thread_affine_snapshot_remains_owned_by_its_creator(tmp_path: Path) -> None:
+@pytest.mark.parametrize("construct_on_worker", [False, True])
+async def test_supplied_thread_affine_snapshot_remains_owned_by_its_creator(
+    tmp_path: Path, construct_on_worker: bool
+) -> None:
     """Moving this public API call to a worker violates SQLite thread affinity."""
+    import asyncio
     import threading
 
     from polylogue.storage.embeddings.identity import EmbeddingRecipe
@@ -196,7 +200,12 @@ async def test_supplied_thread_affine_snapshot_remains_owned_by_its_creator(tmp_
         recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
     )
     creator = threading.get_ident()
-    provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
+    if construct_on_worker:
+        provider = await asyncio.to_thread(
+            SqliteVecProvider.from_vector_read_snapshot, voyage_key=None, connection=connection, model="voyage-4"
+        )
+    else:
+        provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key=None, connection=connection, model="voyage-4")
     try:
         with patch.object(provider, "_get_embeddings", side_effect=AssertionError("no acquisition")) as acquisition:
             async with Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db") as archive:
@@ -289,3 +298,35 @@ async def test_supplied_snapshot_refuses_index_identity_replaced_before_api_read
         assert connection.execute("SELECT COUNT(*) FROM archive_index.sessions").fetchone()[0] == 1
     finally:
         connection.close()
+
+
+@pytest.mark.asyncio
+async def test_retained_similarity_distinguishes_missing_seed_from_present_unembedded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Returning an empty result for an absent source turns this red."""
+    from polylogue.config import Config
+    from polylogue.core.errors import SessionNotFoundError
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from tests.infra.vector_archive import record_owned_vector_closes, seed_vector_archive
+
+    seed_vector_archive(tmp_path, [("seed", "m1", "Synthetic seed prose.", [1.0] + [0.0] * 1023)])
+    import sqlite3
+
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
+            ("unembedded", "codex-session", "Unembedded", b"u" * 32),
+        )
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], embedding_model="voyage-4")
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    closed = record_owned_vector_closes(monkeypatch)
+    async with Polylogue(config=config) as archive:
+        with pytest.raises(SessionNotFoundError):
+            await archive.search_similar_sessions("codex-session:missing")
+        result = await archive.search_similar_sessions("codex-session:unembedded")
+    assert result == {"source_embedded_messages": 0, "results": [], "unresolved_message_hits": 0}
+    assert closed == [True, True]
+    provider_call.assert_not_called()

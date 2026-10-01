@@ -164,10 +164,10 @@ async def submit_facade_operation(config: Config, operation: str, payload: dict[
     if envelope is None:
         raise FacadeDaemonRequiredError(f"start `polylogued run` for {root} to apply {operation}")
     if envelope.get("outcome") == "rejected":
+        from polylogue.core.errors import SessionNotFoundError
         from polylogue.operations.archive_mutation import (
             MutationBlockedError,
             MutationTargetVanishedError,
-            SessionNotFoundError,
         )
         from polylogue.operations.daemon_errors import DaemonOperationRejectedError
 
