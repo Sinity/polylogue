@@ -59,6 +59,10 @@ def test_ordinary_reopen_preserves_both_post_floor_v1_definitions_and_batches(
                 assert historical.definition_json == item["definition_json"]
                 assert historical.definition_sha256 == item["definition_sha256"]
                 assert historical.schema.canonical_definition_json() == item["definition_json"]
+                with pytest.raises(AnnotationSchemaError):
+                    archive.save_annotation_schema(
+                        replace(historical.schema, title="Conflicting historical definition")
+                    )
                 assert hashlib.sha256(historical.definition_json.encode()).hexdigest() == historical.definition_sha256
                 current = archive.get_annotation_schema(schema_id)
                 assert current is not None and current.schema == get_annotation_schema(schema_id)
@@ -202,8 +206,17 @@ async def test_actual_facade_daemon_import_records_current_versions_for_all_five
                 result = await api.import_annotation_batch(request)
                 assert result.qualified_schema_id == f"{schema.schema_id}@v2" and result.valid_count == 1
             for kind in ("phase", "work_event"):
-                retired = request.model_copy(
-                    update={"batch_id": f"retired-{kind}", "target_ref": f"{kind}:historical-evidence"}
+                retired = AnnotationBatchImportRequest(
+                    jsonl=json.dumps({"row_key": "retired", "value": {"abstain": True}, "evidence_refs": [session_id]}),
+                    batch_id=f"retired-{kind}",
+                    schema_id="seed.activity",
+                    schema_version=2,
+                    target_ref=f"{kind}:historical-evidence",
+                    source_result_ref="result-set:current-evidence",
+                    actor_ref="agent:current-labeler",
+                    model_ref="agent:current-model",
+                    prompt_ref="block:current-prompt:0",
+                    created_at_ms=790,
                 )
                 with pytest.raises(DaemonOperationRejectedError):
                     await api.import_annotation_batch(retired)

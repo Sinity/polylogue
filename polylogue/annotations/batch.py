@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from polylogue.annotations.targets import normalize_annotation_target_ref
+from polylogue.annotations.schema import normalize_annotation_target_ref
 from polylogue.core.digest import RECEIPT, REFERENCE, KeyCollisionError, canonical_bytes
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text

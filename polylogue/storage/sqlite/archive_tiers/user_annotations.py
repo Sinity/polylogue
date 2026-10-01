@@ -16,8 +16,8 @@ from polylogue.annotations.schema import (
     BUILTIN_ANNOTATION_SCHEMAS,
     AnnotationSchema,
     AnnotationSchemaError,
+    normalize_annotation_target_ref,
 )
-from polylogue.annotations.targets import normalize_annotation_target_ref
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text

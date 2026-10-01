@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from polylogue.core.enums import AssertionKind
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -16,7 +16,7 @@ AnnotationHistoryVariant = Literal["pre_5314", "post_5314"]
 
 def historical_seed_definitions(variant: AnnotationHistoryVariant) -> list[dict[str, str]]:
     path = Path(__file__).parents[1] / "fixtures/annotations/post_floor_seed_v1.json"
-    return json.loads(path.read_text())[variant]["definitions"]
+    return cast(list[dict[str, str]], json.loads(path.read_text())[variant]["definitions"])
 
 
 def seed_annotation_history(root: Path, variant: AnnotationHistoryVariant) -> None:

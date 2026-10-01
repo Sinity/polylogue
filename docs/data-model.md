@@ -199,7 +199,6 @@ closed rather than mutating the existing definition.
 
 The five seed definitions are registered at version 2 on fresh archives and ordinary USER opens. Existing version 1 definitions and their fingerprints remain immutable, including both definitions published before and after the removal of phase and work-event operations. Explicit historical schema and batch reads retain their recorded versions and target strings. Retired targets remain inspectable provenance; structural joins report them as missing targets, and new registration, writes, and imports refuse those operations. Import requests select an explicit schema version. Occupied schema versions still refuse conflicting definitions. This vocabulary change does not alter USER DDL.
 
-
 ### Governed archive-local bootstrap
 
 Informal tags and affinity scores may nominate an archive-specific draft

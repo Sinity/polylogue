@@ -11,8 +11,13 @@ from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from polylogue.annotations.schema import ANNOTATION_SCHEMA_REGISTRY, validate_annotation_row, validate_annotation_value
-from polylogue.annotations.targets import RETIRED_ANNOTATION_TARGET_KINDS, normalize_annotation_target_ref
+from polylogue.annotations.schema import (
+    ANNOTATION_SCHEMA_REGISTRY,
+    RETIRED_ANNOTATION_TARGET_KINDS,
+    normalize_annotation_target_ref,
+    validate_annotation_row,
+    validate_annotation_value,
+)
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import ObjectRef
