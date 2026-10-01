@@ -3823,3 +3823,17 @@ def test_sink_surrogate_decode_parses_once_without_a_dump_pass(monkeypatch: pyte
 
     monkeypatch.setattr(ParsedMessage, "model_dump", no_dump)
     assert _from_text_json(ParsedMessage, encoded).text == message.text
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [OSError("source unavailable"), AssertionError("parser invariant"), RuntimeError("worker failure")],
+)
+def test_non_decode_stream_failures_remain_retryable(cause: BaseException) -> None:
+    from polylogue.sources.decoder_json import PartialJsonStreamError
+    from polylogue.sources.prepared_jsonl import classify_decode_failure, terminal_decode_evidence
+
+    error = PartialJsonStreamError("synthetic.json", recovered=1, offset=None, cause=cause)
+    assert classify_decode_failure(error) is None
+    assert terminal_decode_evidence(error, provider=Provider.CHATGPT) is None
+    assert terminal_decode_evidence(error, provider=Provider.UNKNOWN) is None

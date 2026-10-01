@@ -17,6 +17,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
+from polylogue.logging import capture
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -25,11 +26,18 @@ from polylogue.sources.live.cursor import CursorStore
 _MAX_DEFERRED_PAGES = 20
 
 
-async def _admit(archive_root: Path, source_root: Path, metrics_sink: list[Any] | None = None) -> dict[str, Any]:
+async def _admit(
+    archive_root: Path,
+    source_root: Path,
+    metrics_sink: list[Any] | None = None,
+    *,
+    source_name: str = "claude-code",
+    suffixes: tuple[str, ...] = (".jsonl",),
+) -> dict[str, Any]:
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     watcher = LiveWatcher(
         archive,
-        (WatchSource(name="claude-code", root=source_root),),
+        (WatchSource(name=source_name, root=source_root, suffixes=suffixes),),
         cursor=CursorStore(archive_root / "index.db"),
         read_snapshot=open_operation_read,
     )
@@ -171,3 +179,146 @@ async def test_a_corrupt_capture_is_excluded_as_corrupt_input(workspace_env: dic
     assert "terminal_corrupt_input" in kinds
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b"{", b'{"title": "cut", "mapping": {"n": {"id": "n", "message": '],
+    ids=["opening-brace", "truncated-mapping"],
+)
+@pytest.mark.asyncio
+async def test_an_undecodable_json_document_is_excluded_as_corrupt_input(
+    workspace_env: dict[str, Path], payload: bytes
+) -> None:
+    """A known-provider JSON document that does not decode settles as corrupt input.
+
+    Anti-vacuity: only a JSONL record's decode failure was terminal
+    (polylogue-6r7wv). A JSON document's left the raw parse-failed with no
+    terminal carrier and the page ``RETRYABLE``, so every pass re-read bytes
+    that can never decode.
+    """
+    archive_root = workspace_env["archive_root"]
+    source_root = workspace_env["data_root"] / "chatgpt-exports"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "conversation.json"
+    source_path.write_bytes(payload)
+
+    batches: list[Any] = []
+    outcomes = await _admit(archive_root, source_root, batches, source_name="chatgpt", suffixes=(".json",))
+
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.EXCLUDED}, outcomes
+    (result,) = outcomes.values()
+    assert result.reason is not None and result.reason.startswith("corrupt_input:"), result
+    assert batches[-1].excluded_paths == {str(source_path): "corrupt_input"}
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        artifacts = conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchall()
+    assert ("terminal_corrupt_input", 0) in artifacts, artifacts
+    assert batches[-1].succeeded_file_count == 0
+    assert batches[-1].ingested_bytes == 0
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        assert conn.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone() == (
+            "corrupt_input",
+        )
+    from polylogue.sources.revision_backfill import (
+        census_historical_revision_evidence,
+        uncensused_historical_revision_raw_ids,
+    )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        raw_ids = [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")]
+    assert raw_ids, "live refusal did not retain its accepted raw"
+    census_historical_revision_evidence(archive_root, selected_raw_ids=raw_ids)
+    assert uncensused_historical_revision_raw_ids(archive_root, raw_ids) == ()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT status FROM raw_authority_parser_census").fetchall() == [("complete",)]
+
+
+def _claude_record(uuid: str, parent: str | None, role: str, text: str) -> bytes:
+    content: object = text if role == "user" else [{"type": "text", "text": text}]
+    return (
+        json.dumps(
+            {
+                "type": role,
+                "message": {"role": role, "content": content},
+                "uuid": uuid,
+                "parentUuid": parent,
+                "sessionId": "partial",
+                "timestamp": "2026-01-01T00:00:00Z",
+            }
+        ).encode()
+        + b"\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stable capture whose final record is truncated admits its complete records, visibly in part.
+
+    The intake result is ``ADMITTED`` (the complete records are admitted, as
+    rejecting them would drop valid input) and carries the typed partial:
+    reason ``truncated_tail``, the complete-record count and the byte offset
+    where the left-out tail begins. The batch metrics and the dispatcher's
+    class report count it.
+
+    Anti-vacuity: before polylogue-xf8qp the same capture was a plain
+    ``ADMITTED`` with no partial and nothing in the batch counted the tail.
+    """
+    from polylogue.core.raw_failure_evidence import PARTIAL_TRUNCATED_TAIL, PartialAdmission
+
+    archive_root = workspace_env["archive_root"]
+    source_root = workspace_env["data_root"] / "claude-projects"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "partial.jsonl"
+    complete = _claude_record("u1", None, "user", "question") + _claude_record("a1", "u1", "assistant", "answer")
+    payload = complete + b'{"type":"user","message":{"role":"user","cont'
+    source_path.write_bytes(payload)
+
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    writer_entry_prefix_counts: list[tuple[int, ...]] = []
+    original_writer = LiveBatchProcessor._ingest_full_records_archive
+
+    def observe_prepared_prefix_count(self: Any, records: list[Any], *args: Any, **kwargs: Any) -> Any:
+        writer_entry_prefix_counts.append(
+            tuple(record.complete_prefix_record_count for record in records if record.complete_prefix_size is not None)
+        )
+        return original_writer(self, records, *args, **kwargs)
+
+    monkeypatch.setattr(LiveBatchProcessor, "_ingest_full_records_archive", observe_prepared_prefix_count)
+
+    batches: list[Any] = []
+    with capture() as events:
+        outcomes = await _admit(archive_root, source_root, batches)
+
+    (result,) = outcomes.values()
+    assert result.outcome is AdmissionOutcome.ADMITTED, result
+    expected = PartialAdmission(
+        reason=PARTIAL_TRUNCATED_TAIL,
+        complete_record_count=2,
+        complete_prefix_bytes=len(complete),
+        source_bytes=len(payload),
+    )
+    assert result.partial == expected
+    assert writer_entry_prefix_counts == [(2,)], "acquisition did not seal the count before archive writer entry"
+    metrics = batches[-1]
+    assert metrics.partial_admission_paths == {str(source_path): expected}
+    payload_fields = metrics.to_payload()
+    assert payload_fields["partial_file_count"] == 1
+    assert payload_fields["partial_reasons"] == {PARTIAL_TRUNCATED_TAIL: 1}
+    assert payload_fields["partial_left_out_bytes"] == len(payload) - len(complete)
+    assert payload_fields["ingested_bytes"] == len(complete)
+    assert payload_fields["refused_bytes_by_reason"] == {PARTIAL_TRUNCATED_TAIL: len(payload) - len(complete)}
+    (chunk,) = [event for event in events if event.get("event") == "live.ingest.chunk"]
+    assert chunk["outcome"] == "degraded"
+    assert chunk["partial_file_count"] == 1
+    assert chunk["partial_left_out_bytes"] == len(payload) - len(complete)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 2
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        (outcome_code, evidence_ref) = conn.execute(
+            "SELECT outcome_code, evidence_ref FROM ingest_attempts ORDER BY started_at_ms DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+    assert outcome_code == "success"
+    assert evidence_ref == "batch:partial_admission"
