@@ -80,9 +80,9 @@ def record_owned_vector_closes(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
 
 def record_similarity_read_closes(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     """Prove the route's ordinary preflight handles close on their creating thread."""
-    from polylogue.daemon import similarity
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    original_open = similarity.open_readonly_connection
+    original_open = open_readonly_connection
     closed: list[bool] = []
 
     def open_read(path: str | Path, *, timeout_class: Literal["interactive-read"]) -> sqlite3.Connection:
@@ -100,5 +100,5 @@ def record_similarity_read_closes(monkeypatch: pytest.MonkeyPatch) -> list[bool]
         monkeypatch.setattr(connection, "close", close)
         return connection
 
-    monkeypatch.setattr(similarity, "open_readonly_connection", open_read)
+    monkeypatch.setattr("polylogue.daemon.similarity.open_readonly_connection", open_read)
     return closed
