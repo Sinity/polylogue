@@ -490,27 +490,11 @@ class TestSimilarEndpoint:
         _enable_embeddings(monkeypatch)
         seed_session_id, _embeddings_db, _mapping = _seed_ready_similarity_archive()
 
-        from polylogue.storage.embeddings.identity import EmbeddingRecipe
-        from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
-
-        pinned_index = archive_root() / "pinned-index.db"
-        with sqlite3.connect(_index_db()) as current, sqlite3.connect(pinned_index) as pinned:
-            current.backup(pinned)
-
-        def pinned_connection(self: SqliteVecProvider) -> sqlite3.Connection:
-            return open_vector_read_snapshot(
-                embeddings_path=_embeddings_db,
-                index_path=pinned_index,
-                recipe=EmbeddingRecipe.current(model="voyage-4-lite", dimensions=EMBEDDING_DIMENSION),
-            )
-
-        # The vector reader retains a former projection while the ranking join
-        # addresses the replacement index. Both reads use the production SQL.
-        monkeypatch.setattr(SqliteVecProvider, "_get_read_connection", pinned_connection)
-        # Break the join the way a reindex would: keep the vectors, drop the rows
-        # they point at.
-        with sqlite3.connect(archive_root() / "index.db") as conn:
-            conn.execute("DELETE FROM messages WHERE session_id != ?", (seed_session_id,))
+        # Inject a broken ranking join at the provider seam. Production projection
+        # filters stale vectors; a malformed provider result must still stay typed.
+        monkeypatch.setattr(
+            SqliteVecProvider, "query_by_session", lambda self, session_id, **kwargs: [("orphan-message", 0.1)]
+        )
 
         handler = _make_handler("GET", f"/api/sessions/{seed_session_id}/similar?limit=3")
         _, send_json = _capture_responses(handler)
@@ -586,7 +570,75 @@ def test_retained_vectors_are_queryable_without_acquisition_credentials(
 
 
 @pytest.mark.contract
-@pytest.mark.parametrize("failure", ["corrupt", "missing", "projection", "contention"])
+@pytest.mark.parametrize("first_promotion", [False, True])
+def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_generation(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, first_promotion: bool
+) -> None:
+    """Reopening the active index between count and ranking changes this result."""
+    from polylogue.config import PolylogueConfig
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    config = PolylogueConfig(_data={"embedding_enabled": True})
+    monkeypatch.setattr("polylogue.daemon.similarity.load_polylogue_config", lambda: config)
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: config)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    session_id, _, _ = _seed_ready_similarity_archive()
+    root = archive_root()
+    store = IndexGenerationStore.for_archive_root(root)
+    first = store.create(owner_id="similarity-first", source_snapshot="synthetic-first")
+    with sqlite3.connect(root / "index.db") as source, sqlite3.connect(first.index_path) as target:
+        source.backup(target)
+    if not first_promotion:
+        store.promote(first)
+    second = store.create(owner_id="similarity-second", source_snapshot="synthetic-second")
+    with sqlite3.connect(first.index_path) as source, sqlite3.connect(second.index_path) as target:
+        source.backup(target)
+        target.execute("UPDATE sessions SET title = 'New generation'")
+        target.execute("UPDATE blocks SET text = 'Changed prose without a matching retained vector'")
+    original_count = SqliteVecProvider.count_session_embeddings
+    original_release = SqliteVecProvider._release_connection
+    published: list[Path] = []
+    closed: list[bool] = []
+
+    def count_and_publish(provider: SqliteVecProvider, seed: str) -> int:
+        count = original_count(provider, seed)
+        store.promote(second)
+        published.append(resolve_active_index_path(root))
+        return count
+
+    def release(provider: SqliteVecProvider, connection: sqlite3.Connection) -> None:
+        owned = connection is not provider._snapshot_connection
+        original_release(provider, connection)
+        if owned:
+            # Executed on the owning worker, so thread affinity cannot mask a leak.
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+            closed.append(True)
+
+    monkeypatch.setattr(SqliteVecProvider, "count_session_embeddings", count_and_publish)
+    monkeypatch.setattr(SqliteVecProvider, "_release_connection", release)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=3")
+    send_error, send_json = _capture_responses(handler)
+
+    handler.do_GET()
+
+    send_error.assert_not_called()
+    _, payload = send_json.call_args.args
+    assert published == [Path(second.index_path)]
+    assert payload["status"] == "ready"
+    assert payload["source_embedded_messages"] == 1
+    assert [(hit["session_id"], hit["title"]) for hit in payload["results"]] == [
+        ("codex-session:near", "Near"),
+        ("codex-session:far", "Far"),
+    ]
+    assert closed == [True]
+    provider_call.assert_not_called()
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize("failure", ["corrupt", "missing", "projection", "contention", "stale"])
 def test_unreadable_retained_vectors_never_certify_absence(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -597,6 +649,12 @@ def test_unreadable_retained_vectors_never_certify_absence(
         embeddings_db.write_bytes(b"synthetic unreadable database")
     elif failure == "missing":
         embeddings_db.unlink()
+    elif failure == "stale":
+        with sqlite3.connect(_index_db()) as conn:
+            conn.execute(
+                "UPDATE blocks SET text = ? WHERE session_id = ?",
+                ("Changed current prose with no retained vector for this recipe.", session_id),
+            )
     elif failure == "projection":
         with sqlite3.connect(_index_db()) as conn:
             conn.execute("DROP TABLE blocks")
@@ -621,6 +679,7 @@ def test_unreadable_retained_vectors_never_certify_absence(
             "corrupt": "embeddings_db_unreadable",
             "missing": "vec0_table_missing",
             "projection": "embedding_read_failed",
+            "stale": "embedding_read_failed",
             "contention": "sqlite_contention",
         }[failure]
     )

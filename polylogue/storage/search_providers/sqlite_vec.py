@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from polylogue.paths import embeddings_db_path
@@ -56,6 +57,35 @@ class SqliteVecProvider(
         self._vec_available: bool | None = None
         self._tables_ensured: bool = False
         self._snapshot_connection: sqlite3.Connection | None = None
+
+    def read_session_similarity(
+        self,
+        session_id: str,
+        *,
+        index_path: Path,
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        limit: int = 10,
+    ) -> dict[str, object]:
+        """Count and rank retained vectors in one operation-owned snapshot.
+
+        The caller selects the same backend generation used to hydrate hits.
+        The handle is acquired, queried and closed on this worker thread.
+        """
+        with self._lifecycle_admission():
+            connection = self._get_read_connection(index_path=index_path)
+            reader = (
+                self
+                if connection is self._snapshot_connection
+                else self.from_vector_read_snapshot(
+                    voyage_key=self.voyage_key, connection=connection, model=self.model, dimension=self.dimension
+                )
+            )
+            try:
+                count = reader.count_session_embeddings(session_id)
+                hits = reader.query_by_session(session_id, limit=limit) if count else []
+                return project(connection, count, hits)
+            finally:
+                self._release_connection(connection)
 
     @classmethod
     def from_vector_read_snapshot(

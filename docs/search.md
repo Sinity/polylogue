@@ -279,6 +279,8 @@ has, not a window-specific gap.
 | `lane` | Retrieval lane | `lane:dialogue` |
 | `lineage` | Sessions sharing topology with a seed | `lineage:id:<session>` |
 
+Existing-session similarity (`near:id:<ref>`) reads retained vectors without Voyage acquisition credentials. Text semantic queries require a new query embedding and therefore still require an API key. Unavailable vector storage produces typed uncertainty rather than certifying an empty answer.
+
 Field values support quoted strings and in-field alternatives:
 
 ```bash
@@ -1246,5 +1248,3 @@ When a query returns no results:
    query path documented in
    [Searchable Content Coverage](#searchable-content-coverage), such as
    `actions where tool:write AND text:"needle"`.
-
-Existing-session similarity (`near:id:<ref>`) reads retained vectors without Voyage acquisition credentials. Text semantic queries require a new query embedding and therefore still require an API key. Unavailable vector storage produces typed uncertainty rather than certifying an empty answer.

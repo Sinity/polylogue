@@ -318,6 +318,7 @@ def test_get_embeddings_error_does_not_leak_api_key(mock_provider: MutableSqlite
         with pytest.raises(SqliteVecError) as exc_info:
             mock_provider._get_embeddings(["test text"])
 
+    assert mock_provider.voyage_key is not None
     assert mock_provider.voyage_key not in str(exc_info.value)
 
 

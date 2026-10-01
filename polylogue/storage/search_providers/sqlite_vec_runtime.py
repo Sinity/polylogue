@@ -257,7 +257,7 @@ class SqliteVecRuntimeMixin:
 
         return conn
 
-    def _get_read_connection(self) -> sqlite3.Connection:
+    def _get_read_connection(self, *, index_path: Path | None = None) -> sqlite3.Connection:
         """Read retained vectors without acquiring a writable tier handle."""
         if self._snapshot_connection is not None:
             return self._snapshot_connection
@@ -265,7 +265,7 @@ class SqliteVecRuntimeMixin:
         assert self.archive_root is not None
         return open_vector_read_snapshot(
             embeddings_path=self.db_path,
-            index_path=resolve_active_index_path(self.archive_root),
+            index_path=index_path if index_path is not None else resolve_active_index_path(self.archive_root),
             recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
         )
 

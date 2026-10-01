@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
+from polylogue.core.enums import Origin
 from polylogue.core.protocols import VectorProvider
+from polylogue.core.sources import source_name_to_origin
 from polylogue.logging import get_logger
 from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_async
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
@@ -38,8 +42,15 @@ def resolve_optional_vector_provider(
 logger = get_logger(__name__)
 
 
-class _SessionEmbeddingCounter(Protocol):
-    def count_session_embeddings(self, session_id: str) -> int: ...
+class _SessionSimilarityReader(Protocol):
+    def read_session_similarity(
+        self,
+        session_id: str,
+        *,
+        index_path: Path,
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        limit: int = 10,
+    ) -> dict[str, object]: ...
 
 
 class RepositoryVectorMixin:
@@ -98,21 +109,34 @@ class RepositoryVectorMixin:
         if vector_provider is None:
             from polylogue.storage.search_providers import create_vector_provider
 
-            vector_provider = create_vector_provider(db_path=provider_db_path, require_credentials=False)
+            vector_provider = create_vector_provider(
+                db_path=provider_db_path,
+                archive_root=provider_db_path.parent if provider_db_path is not None else None,
+                require_credentials=False,
+            )
         if vector_provider is None:
             raise ValueError("No vector provider configured")
 
-        source_embedded_messages = await asyncio.to_thread(
-            cast(_SessionEmbeddingCounter, vector_provider).count_session_embeddings,
+        return await asyncio.to_thread(
+            cast(_SessionSimilarityReader, vector_provider).read_session_similarity,
             session_id,
-        )
-        if source_embedded_messages == 0:
-            return {"source_embedded_messages": 0, "results": [], "unresolved_message_hits": 0}
-        results = await asyncio.to_thread(
-            vector_provider.query_by_session,
-            session_id,
+            index_path=self._backend.db_path,
             limit=limit,
+            project=lambda connection, count, hits: self._project_session_similarity(
+                connection, session_id, count, hits, limit=limit
+            ),
         )
+
+    @staticmethod
+    def _project_session_similarity(
+        connection: sqlite3.Connection,
+        session_id: str,
+        source_embedded_messages: int,
+        results: list[tuple[str, float]],
+        *,
+        limit: int,
+    ) -> dict[str, object]:
+        """Resolve hits and metadata on the same pinned index as vector ranking."""
         if not results:
             return {
                 "source_embedded_messages": source_embedded_messages,
@@ -121,7 +145,12 @@ class RepositoryVectorMixin:
             }
 
         message_ids = [message_id for message_id, _ in results]
-        message_to_session = await self._get_message_session_mapping(message_ids)
+        placeholders = ",".join("?" * len(message_ids))
+        rows = connection.execute(
+            f"SELECT message_id, session_id FROM archive_index.messages WHERE message_id IN ({placeholders})",
+            message_ids,
+        ).fetchall()
+        message_to_session = {str(row["message_id"]): str(row["session_id"]) for row in rows}
         # A hit whose message id resolves to no row is not "no match" -- it means the
         # embeddings tier references messages the index does not have, so the ranking
         # is being computed over a broken join. Count it and report it, rather than
@@ -137,8 +166,13 @@ class RepositoryVectorMixin:
             aggregates[candidate_id] = (min(best_distance, distance), matched_messages)
 
         ranked = sorted(aggregates.items(), key=lambda item: (item[1][0], item[0]))[:limit]
-        sessions = await self.get_many([candidate_id for candidate_id, _ in ranked])
-        sessions_by_id = {str(session.id): session for session in sessions}
+        sessions_by_id = {}
+        for candidate_id, _ in ranked:
+            row = connection.execute(
+                "SELECT session_id, title, origin FROM archive_index.sessions WHERE session_id = ?", (candidate_id,)
+            ).fetchone()
+            if row is not None:
+                sessions_by_id[candidate_id] = row
 
         hits: list[dict[str, object]] = []
         for candidate_id, (distance, matched_messages) in ranked:
@@ -152,8 +186,8 @@ class RepositoryVectorMixin:
                     "score": score,
                     "distance": distance,
                     "matched_message_count": len(matched_messages),
-                    "title": candidate.title,
-                    "origin": str(candidate.origin),
+                    "title": candidate["title"],
+                    "origin": str(Origin.from_string(source_name_to_origin(candidate["origin"]))),
                 }
             )
         return {
