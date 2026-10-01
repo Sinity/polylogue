@@ -58,7 +58,9 @@ def test_compatible_switch_keeps_exact_outputs_and_occurrences_without_work(
     from tests.infra.embedding_config import embedding_config
 
     assert read_embedding_work_counts(root / "index.db", recipe=document_recipe) == (1, 0, 0, 0)
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: embedding_config(embedding_model=selected))
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config", lambda **kwargs: embedding_config(embedding_model=selected)
+    )
     status = embedding_status_payload(
         SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db", archive_root=root)), include_detail=True
     )
@@ -146,12 +148,13 @@ def test_missing_bindings_use_exact_outputs_and_report_free_work(
     provider = _Documents("voyage-4")
     assert embed_archive_session_sync(root / "index.db", provider, sid).status == "embedded"
     provider.calls.clear()
-    with sqlite3.connect(root / "embeddings.db") as conn:
-        conn.execute("DELETE FROM message_embedding_refs")
+    from tests.infra.embedding_compatibility import clear_embedding_refs
+
+    clear_embedding_refs(root)
     assert read_embedding_work_counts(
         root / "index.db", recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024)
     ) == (1, 0, 0, 2)
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: embedding_config())
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda **kwargs: embedding_config())
     status = embedding_status_payload(
         SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db", archive_root=root)), include_detail=True
     )
@@ -300,3 +303,98 @@ def test_provider_wire_keeps_independent_actual_roles_and_models(
     with pytest.raises(SqliteVecError):
         provider._get_embeddings([_TEXT], input_type="unknown")
     assert len(captured) == 2
+
+
+def test_adapter_label_drift_publishes_only_refs_and_preserves_purchased_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passing purchased bytes through computed replacement relabels metadata and fails this."""
+    from polylogue.storage.embeddings import identity
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.embedding_compatibility import output_rows
+
+    root = tmp_path / "archive"
+    sid, ids = _session(root)
+    provider = _Documents("voyage-4")
+    assert embed_archive_session_sync(root / "index.db", provider, sid).status == "embedded"
+    original = output_rows(root)
+    from tests.infra.embedding_compatibility import clear_embedding_refs
+
+    clear_embedding_refs(root)
+    monkeypatch.setattr(identity, "EMBEDDING_INPUT_SCHEMA_VERSION", "archive-index-v79-relabelled")
+    provider.calls.clear()
+    adapter = EmbeddingDerivationAdapter(root / "index.db", provider)
+    frame = SimpleNamespace(
+        source_revision=f"index-generation:{root / 'index.db'}",
+        scope=None,
+        recipe_version=lambda domain: adapter.recipe_version,
+    )
+    for mid in ids:
+        with write_lease("test.label-drift-reservation", archive_root=root):
+            replacement = adapter.compute(frame, f"message:{mid}")
+        assert replacement.vector is None
+        assert replacement.retained_output is not None
+        with write_lease("test.label-drift-publication", archive_root=root):
+            assert adapter.publish(frame, replacement)
+        assert output_rows(root) == original
+    assert provider.calls == []
+    assert len(_rows(root)[1]) == 2
+
+
+def test_settled_preflight_aggregates_without_materializing_session_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring the preflight session-list selection makes this production read fail."""
+    from polylogue.storage.embeddings.preflight import read_embedding_work_counts
+    from tests.infra.embedding_compatibility import add_settled_sessions
+
+    root = tmp_path / "archive"
+    sid, ids = _session(root)
+    provider = _Documents("voyage-4")
+    assert embed_archive_session_sync(root / "index.db", provider, sid).status == "embedded"
+    add_settled_sessions(root, count=256)
+
+    def materialized_membership(*args: object, **kwargs: object) -> list[object]:
+        raise AssertionError("preflight must aggregate its canonical SQL window")
+
+    monkeypatch.setattr(
+        "polylogue.storage.embeddings.materialization.select_pending_archive_session_window", materialized_membership
+    )
+    assert read_embedding_work_counts(root / "index.db") == (257, 0, 0, 0)
+    assert read_embedding_work_counts(root / "index.db", rebuild=True) == (257, 0, 0, 0)
+    assert read_embedding_work_counts(root / "index.db", max_sessions=3, max_messages=3) == (257, 0, 0, 0)
+    assert len(provider.calls) == 1
+
+
+def test_ref_only_publication_refuses_changed_output_currency(tmp_path: Path) -> None:
+    """A missing purchased payload between reservation and publication cannot create a ref."""
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.embedding_compatibility import clear_embedding_refs
+
+    root = tmp_path / "archive"
+    sid, ids = _session(root)
+    provider = _Documents("voyage-4")
+    assert embed_archive_session_sync(root / "index.db", provider, sid).status == "embedded"
+    clear_embedding_refs(root)
+    provider.calls.clear()
+    adapter = EmbeddingDerivationAdapter(root / "index.db", provider)
+    frame = SimpleNamespace(
+        source_revision=f"index-generation:{root / 'index.db'}",
+        scope=None,
+        recipe_version=lambda domain: adapter.recipe_version,
+    )
+    with write_lease("test.retained-output-reservation", archive_root=root):
+        replacement = adapter.compute(frame, f"message:{ids[0]}")
+    assert replacement.retained_output is not None
+    with closing(sqlite3.connect(root / "embeddings.db")) as conn:
+        assert try_load_sqlite_vec(conn)[0]
+        conn.execute("DELETE FROM message_embeddings")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    with write_lease("test.retained-output-publication", archive_root=root):
+        assert not adapter.publish(frame, replacement)
+    assert provider.calls == []
+    assert _rows(root)[1] == []

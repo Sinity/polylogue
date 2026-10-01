@@ -201,32 +201,27 @@ def _read_archive_pending_message_count(
         from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
         selected_recipe = recipe or _configured_embedding_recipe()
-        selected = _select_archive_pending_window(
+        from polylogue.storage.embeddings.materialization import archive_embedding_session_window_sql
+
+        compute_sql, compute_params = archive_embedding_session_window_sql(
             conn,
             status_table=status_table,
-            rebuild=True,
-            max_sessions=max_sessions,
-            max_messages=max_messages,
-            min_messages=min_messages or 1,
             recipe=selected_recipe,
-        )
-        compute_selected = _select_archive_pending_window(
-            conn,
-            status_table=status_table,
+            session_ids=(),
             rebuild=rebuild,
             max_sessions=max_sessions,
             max_messages=max_messages,
-            min_messages=min_messages or 1,
-            recipe=selected_recipe,
+            min_messages=min_messages,
         )
+        relation = archive_embeddable_messages_relation(conn, alias="d", recipe=selected_recipe)
         if not status_table:
-            return total, len(compute_selected), sum(count for _, count in compute_selected), 0
-        compute_sessions = {sid for sid, count in compute_selected}
-        selected = list(dict(compute_selected + selected).items())
+            row = conn.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(message_count), 0) FROM ({compute_sql})", compute_params
+            ).fetchone()
+            return total, int(row[0]), int(row[1]), 0
         loaded, error = try_load_sqlite_vec(conn)
         if not loaded:
             raise RuntimeError(f"embedding work inspection unavailable: {error}")
-        relation = archive_embeddable_messages_relation(conn, alias="d", recipe=selected_recipe)
         available = available_embedding_predicate(
             recipe=selected_recipe,
             source="d",
@@ -242,23 +237,37 @@ def _read_archive_pending_message_count(
             meta="em",
             vectors_table="embeddings.message_embeddings",
         )
-        pending_convs = pending_messages = binding_pending_messages = 0
-        for sid, count in selected:
-            row = conn.execute(
-                f"""SELECT
-                COALESCE(SUM(NOT COALESCE({available}, 0)), 0),
-                COALESCE(SUM(COALESCE({available}, 0) AND NOT COALESCE({retained}, 0)), 0)
-                FROM {relation}
-                LEFT JOIN embeddings.message_embedding_refs AS r ON r.message_id = d.message_id
-                LEFT JOIN embeddings.message_embeddings_meta AS em ON em.vector_derivation_hash = r.vector_derivation_hash
-                WHERE d.session_id = ?""",
-                (sid,),
-            ).fetchone()
-            missing = int(row[0])
-            if sid in compute_sessions:
-                pending_convs += int(rebuild or missing > 0)
-                pending_messages += count if rebuild else missing
-            binding_pending_messages += int(row[1])
+        joins = """LEFT JOIN embeddings.message_embedding_refs AS r ON r.message_id = d.message_id
+                   LEFT JOIN embeddings.message_embeddings_meta AS em ON em.vector_derivation_hash = r.vector_derivation_hash"""
+        missing = f"NOT COALESCE({available}, 0)"
+        row = conn.execute(
+            f"""WITH selected_window AS ({compute_sql}), per_session AS (
+                SELECT d.session_id, SUM({missing}) AS missing_count
+                FROM {relation} {joins}
+                WHERE d.session_id IN (SELECT session_id FROM selected_window)
+                GROUP BY d.session_id
+                ) SELECT COALESCE(SUM(missing_count > 0), 0), COALESCE(SUM(missing_count), 0)
+                FROM per_session""",
+            compute_params,
+        ).fetchone()
+        pending_convs, pending_messages = int(row[0]), int(row[1])
+        binding_sql, binding_params = archive_embedding_session_window_sql(
+            conn,
+            status_table=status_table,
+            recipe=selected_recipe,
+            session_ids=(),
+            rebuild=True,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+            min_messages=min_messages,
+        )
+        row = conn.execute(
+            f"""SELECT COALESCE(SUM(COALESCE({available}, 0) AND NOT COALESCE({retained}, 0)), 0)
+                FROM {relation} {joins}
+                WHERE d.session_id IN (SELECT session_id FROM ({binding_sql}))""",
+            binding_params,
+        ).fetchone()
+        binding_pending_messages = int(row[0])
     finally:
         conn.close()
     return total, pending_convs, pending_messages, binding_pending_messages
@@ -275,35 +284,6 @@ def _is_archive_index(path: Path) -> bool:
         return _table_exists(conn, "sessions")
     finally:
         conn.close()
-
-
-def _select_archive_pending_window(
-    conn: sqlite3.Connection,
-    *,
-    status_table: str,
-    rebuild: bool,
-    max_sessions: int | None,
-    max_messages: int | None,
-    min_messages: int | None = None,
-    recipe: EmbeddingRecipe | None = None,
-) -> list[tuple[str, int]]:
-    # Delegate to the canonical selector so the preflight window matches the
-    # window the backfill actually embeds — same newest-first ordering, same
-    # pending where-clause, same min-message floor. This previously kept a
-    # divergent oldest-first copy, so the preflight estimated a different
-    # (oldest, often empty-stub) window than what was embedded.
-    from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
-
-    pending = select_pending_archive_session_window(
-        conn,
-        status_table=status_table,
-        rebuild=rebuild,
-        max_sessions=max_sessions,
-        max_messages=max_messages,
-        min_messages=min_messages,
-        recipe=recipe,
-    )
-    return [(item.session_id, item.message_count) for item in pending]
 
 
 def build_preflight_report(

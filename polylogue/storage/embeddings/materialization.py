@@ -533,7 +533,7 @@ def _archive_embedding_freshness_predicate(
             WHERE COALESCE({valid}, 0)
         )
     )"""
-    blocked_sql = f"({key_is_current} AND d.attempt_state = 'failed_terminal')"
+    blocked_sql = f"(NOT ({fresh_sql}) AND {key_is_current} AND d.attempt_state = 'failed_terminal')"
     pending_sql = f"(NOT ({fresh_sql}) AND NOT ({blocked_sql}))"
     return _ArchiveEmbeddingFreshnessPredicate(
         cte_sql=cte_sql,
@@ -605,7 +605,7 @@ def archive_embedding_blocked_counts_sql(
     """
 
 
-def _select_pending_archive_session_window_by_derivation(
+def archive_embedding_session_window_sql(
     conn: sqlite3.Connection,
     *,
     status_table: str,
@@ -615,7 +615,7 @@ def _select_pending_archive_session_window_by_derivation(
     max_sessions: int | None,
     max_messages: int | None,
     min_messages: int | None,
-) -> list[PendingSession]:
+) -> tuple[str, tuple[object, ...]]:
     predicate = _archive_embedding_freshness_predicate(
         conn,
         status_table=status_table,
@@ -636,10 +636,10 @@ def _select_pending_archive_session_window_by_derivation(
         params.append(max_messages)
     pending_filter = "" if rebuild else f"AND {predicate.pending_sql}"
 
-    rows = conn.execute(
-        f"""
+    sql = f"""
         {predicate.cte_sql}
-        SELECT s.session_id, s.title, ds.message_count
+        , window_candidates AS (
+        SELECT s.session_id, s.title, ds.message_count, s.sort_key_ms
         FROM desired_sessions AS ds
         JOIN sessions AS s ON s.session_id = ds.session_id
         {predicate.join_sql}
@@ -648,30 +648,59 @@ def _select_pending_archive_session_window_by_derivation(
           {floor_filter}
           {ceiling_filter}
           {pending_filter}
-        ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
-        """,
-        tuple(params),
-    )
+        ), window_ranked AS (
+            SELECT session_id, title, message_count,
+                   ROW_NUMBER() OVER (ORDER BY (sort_key_ms IS NULL), sort_key_ms DESC, session_id) AS ordinal,
+                   SUM(message_count) OVER (
+                       ORDER BY (sort_key_ms IS NULL), sort_key_ms DESC, session_id
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   ) AS message_total
+            FROM window_candidates
+        )
+        SELECT session_id, title, message_count FROM window_ranked WHERE 1 = 1
+        """
+    if max_sessions is not None:
+        sql += " AND ordinal <= ?"
+        params.append(max_sessions)
+    if max_messages is not None:
+        sql += " AND message_total <= ?"
+        params.append(max_messages)
+    return sql + " ORDER BY ordinal", tuple(params)
 
+
+def _select_pending_archive_session_window_by_derivation(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    recipe: EmbeddingRecipe,
+    session_ids: tuple[str, ...],
+    rebuild: bool,
+    max_sessions: int | None,
+    max_messages: int | None,
+    min_messages: int | None,
+) -> list[PendingSession]:
+    sql, params = archive_embedding_session_window_sql(
+        conn,
+        status_table=status_table,
+        recipe=recipe,
+        session_ids=session_ids,
+        rebuild=rebuild,
+        max_sessions=max_sessions,
+        max_messages=max_messages,
+        min_messages=min_messages,
+    )
     pending: list[PendingSession] = []
-    message_total = 0
-    while True:
-        batch = rows.fetchmany(500)
-        if not batch:
-            break
-        for row in batch:
-            session_id = str(_row_value(row, 0, "session_id"))
-            title_value = _row_value(row, 1, "title")
-            title = None if title_value is None else str(title_value)
-            message_count = _row_int(row, 2, "message_count")
-            if max_sessions is not None and len(pending) >= max_sessions:
-                return pending
-            if max_messages is not None and pending and message_total + message_count > max_messages:
-                return pending
-            pending.append(PendingSession(session_id=session_id, title=title, message_count=message_count))
-            message_total += message_count
-            if max_messages is not None and message_total >= max_messages:
-                return pending
+    with contextlib.closing(conn.execute(sql, params)) as rows:
+        while batch := rows.fetchmany(500):
+            for row in batch:
+                title_value = _row_value(row, 1, "title")
+                pending.append(
+                    PendingSession(
+                        session_id=str(_row_value(row, 0, "session_id")),
+                        title=None if title_value is None else str(title_value),
+                        message_count=_row_int(row, 2, "message_count"),
+                    )
+                )
     return pending
 
 

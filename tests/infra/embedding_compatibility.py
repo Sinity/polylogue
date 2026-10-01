@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
@@ -32,7 +33,7 @@ def _session(root: Path, *, extra: bool = False) -> tuple[str, tuple[str, ...]]:
         sid = write_index_session(
             store, ParsedSession(source_name=Provider.CODEX, provider_session_id="compatibility", messages=messages)
         )
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn:
         ids = tuple(str(r[0]) for r in conn.execute("SELECT message_id FROM messages ORDER BY message_id"))
     return sid, ids
 
@@ -63,8 +64,75 @@ class _Documents:
 
 
 def _rows(root: Path) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
-    with sqlite3.connect(root / "embeddings.db") as conn:
+    with closing(sqlite3.connect(root / "embeddings.db")) as conn:
         return (
             conn.execute("SELECT * FROM message_embeddings_meta ORDER BY vector_derivation_hash").fetchall(),
             conn.execute("SELECT * FROM message_embedding_refs ORDER BY message_id").fetchall(),
         )
+
+
+def output_rows(root: Path) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    with closing(sqlite3.connect(root / "embeddings.db")) as conn:
+        assert try_load_sqlite_vec(conn)[0]
+        return (
+            conn.execute("SELECT * FROM message_embeddings_meta ORDER BY vector_derivation_hash").fetchall(),
+            conn.execute(
+                "SELECT vector_derivation_hash, embedding, model FROM message_embeddings ORDER BY vector_derivation_hash"
+            ).fetchall(),
+        )
+
+
+def add_settled_sessions(root: Path, *, count: int) -> None:
+    """Create synthetic current occurrences sharing the already-purchased output."""
+    with ArchiveStore(root) as store:
+        for ordinal in range(count):
+            write_index_session(
+                store,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=f"settled-{ordinal}",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m0",
+                            role=Role.USER,
+                            text=_TEXT,
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=_TEXT)],
+                            material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                        )
+                    ],
+                ),
+            )
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    store = EmbeddingGenerationStore(root)
+    with write_lease("fixture.settled-bindings", archive_root=root), store.writer_lock() as binding:
+        with closing(sqlite3.connect(binding.database_path)) as conn:
+            address = conn.execute("SELECT vector_derivation_hash FROM message_embeddings_meta").fetchone()[0]
+            conn.execute("ATTACH DATABASE ? AS idx", (str(root / "index.db"),))
+            conn.execute(
+                """INSERT INTO message_embedding_refs
+                (message_id, session_id, origin, message_content_hash, vector_derivation_hash, embedded_at_ms)
+                SELECT m.message_id, m.session_id, s.origin, m.content_hash, ?, 0
+                FROM idx.messages m JOIN idx.sessions s ON s.session_id = m.session_id
+                WHERE NOT EXISTS(SELECT 1 FROM message_embedding_refs r WHERE r.message_id = m.message_id)""",
+                (address,),
+            )
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        store.refresh_binding_contract(binding)
+
+
+def clear_embedding_refs(root: Path) -> None:
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    store = EmbeddingGenerationStore(root)
+    with write_lease("fixture.missing-bindings", archive_root=root), store.writer_lock() as binding:
+        with closing(sqlite3.connect(binding.database_path)) as conn:
+            conn.execute("DELETE FROM message_embedding_refs")
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        store.refresh_binding_contract(binding)

@@ -29,7 +29,10 @@ class SqliteVecEmbeddingMixin:
         model: str
         dimension: int
         voyage_key: str | None
-        document_recipe: EmbeddingRecipe
+
+        @property
+        def document_recipe(self) -> EmbeddingRecipe: ...
+
         query_recipe: EmbeddingRecipe
 
     def _get_embeddings(

@@ -20,7 +20,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import sqlite3
-import struct
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -51,6 +50,7 @@ from polylogue.storage.embeddings.materialization import (
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingWrite,
     replace_message_embedding_derivation,
+    upsert_message_embeddings,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
@@ -102,14 +102,27 @@ class EmbeddingMessageInput:
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddingStoredOutput:
+    """Exact purchased producer and payload proof for ref-only publication."""
+
+    vector_hash: bytes
+    model: str
+    dimension: int
+    recipe_hash: bytes
+    output_contract_hash: bytes
+    payload_hash: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class EmbeddingMessageReplacement:
-    """A computed message vector, or an empty replacement for a vanished key."""
+    """Computed output, a retained-output binding, or a vanished-key replacement."""
 
     key: str
     input_binding: str
     payload: EmbeddingMessageInput | None
     vector: list[float] | None = None
     empty: bool = False
+    retained_output: EmbeddingStoredOutput | None = None
 
 
 _REQUIRED_KEY_PREFIX = "message:"
@@ -490,12 +503,15 @@ class EmbeddingDerivationAdapter:
         )
         if reserved is None:
             return EmbeddingMessageReplacement(key=key, input_binding="", payload=None, empty=True)
-        vector = self._stored_vector(reserved)
-        vectors = (
-            [vector]
-            if vector is not None
-            else self._provider._get_embeddings([reserved.text], input_type=reserved.request.recipe.input_type)
-        )
+        retained = self._stored_output(reserved)
+        if retained is not None:
+            return EmbeddingMessageReplacement(
+                key=key,
+                input_binding=reserved.input_binding,
+                payload=reserved,
+                retained_output=retained,
+            )
+        vectors = self._provider._get_embeddings([reserved.text], input_type=reserved.request.recipe.input_type)
         if len(vectors) != 1:
             raise RuntimeError("embedding provider returned a mismatched vector count")
         return EmbeddingMessageReplacement(
@@ -505,8 +521,8 @@ class EmbeddingDerivationAdapter:
             vector=vectors[0],
         )
 
-    def _stored_vector(self, reserved: EmbeddingMessageInput) -> list[float] | None:
-        """Read the exact selected output for ref-only publication without spend."""
+    def _stored_output(self, reserved: EmbeddingMessageInput) -> EmbeddingStoredOutput | None:
+        """Read exact output proof without turning purchased bytes into computation."""
         if reserved.binding is None:
             return None
         with contextlib.closing(
@@ -515,56 +531,71 @@ class EmbeddingDerivationAdapter:
             loaded, error = try_load_sqlite_vec(conn)
             if not loaded:
                 raise RuntimeError(f"embedding output reuse unavailable: {error}")
-            with contextlib.closing(
-                conn.execute(
-                    """SELECT meta.model, meta.dimension, meta.recipe_hash
-                   FROM message_embedding_refs AS refs
-                   JOIN message_embeddings_meta AS meta ON meta.vector_derivation_hash = refs.vector_derivation_hash
-                   WHERE refs.message_id = ? AND refs.message_content_hash = ?""",
-                    (reserved.message_id, reserved.message_content_hash),
-                )
-            ) as cursor:
-                retained = cursor.fetchone()
-            if (
-                retained is not None
-                and reserved.request.recipe.proven_stored_producer(
-                    model=str(retained[0]), dimension=int(retained[1]), recipe_hash=bytes(retained[2])
-                )
-                is None
-            ):
-                raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
-            row = conn.execute(
+            return self._stored_output_on(conn, reserved)
+
+    def _stored_output_on(
+        self, conn: sqlite3.Connection, reserved: EmbeddingMessageInput
+    ) -> EmbeddingStoredOutput | None:
+        with contextlib.closing(
+            conn.execute(
+                """SELECT meta.model, meta.dimension, meta.recipe_hash
+               FROM message_embedding_refs AS refs
+               JOIN message_embeddings_meta AS meta ON meta.vector_derivation_hash = refs.vector_derivation_hash
+               WHERE refs.message_id = ? AND refs.message_content_hash = ?""",
+                (reserved.message_id, reserved.message_content_hash),
+            )
+        ) as cursor:
+            retained = cursor.fetchone()
+        if (
+            retained is not None
+            and reserved.request.recipe.proven_stored_producer(
+                model=str(retained[0]), dimension=int(retained[1]), recipe_hash=bytes(retained[2])
+            )
+            is None
+        ):
+            raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
+        with contextlib.closing(
+            conn.execute(
                 """SELECT meta.model, meta.dimension, meta.recipe_hash, meta.output_contract_hash, v.embedding
-                   FROM message_embeddings_meta AS meta
-                   LEFT JOIN message_embeddings AS v ON v.vector_derivation_hash = lower(hex(meta.vector_derivation_hash))
-                   WHERE meta.vector_derivation_hash = ?""",
+               FROM message_embeddings_meta AS meta
+               LEFT JOIN message_embeddings AS v ON v.vector_derivation_hash = lower(hex(meta.vector_derivation_hash))
+               WHERE meta.vector_derivation_hash = ?""",
                 (reserved.request.vector_derivation_hash,),
-            ).fetchone()
-            if (
-                row is not None
-                and reserved.request.recipe.proven_stored_producer(
-                    model=str(row[0]), dimension=int(row[1]), recipe_hash=bytes(row[2])
-                )
-                is None
-            ):
-                raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
-            if row is None:
-                return None
-            if not reserved.request.recipe.stored_output_matches(
+            )
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        if (
+            reserved.request.recipe.proven_stored_producer(
+                model=str(row[0]), dimension=int(row[1]), recipe_hash=bytes(row[2])
+            )
+            is None
+        ):
+            raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
+        if (
+            not reserved.request.recipe.stored_output_matches(
                 model=str(row[0]),
                 dimension=int(row[1]),
                 recipe_hash=bytes(row[2]),
                 output_contract_hash=bytes(row[3]),
                 vector_hash=reserved.request.vector_derivation_hash,
                 text=reserved.text,
-            ):
-                raise EmbeddingProvenanceError("stored embedding output is incompatible with the selected producer")
-            if row[4] is None:
-                return None
-            blob = bytes(row[4])
-            if len(blob) != reserved.request.recipe.dimensions * 4:
-                raise RuntimeError("stored embedding output has invalid dimensions")
-            return list(struct.unpack(f"<{reserved.request.recipe.dimensions}f", blob))
+            )
+            or row[4] is None
+        ):
+            return None
+        blob = bytes(row[4])
+        if len(blob) != reserved.request.recipe.dimensions * 4:
+            raise RuntimeError("stored embedding output has invalid dimensions")
+        return EmbeddingStoredOutput(
+            vector_hash=reserved.request.vector_derivation_hash,
+            model=str(row[0]),
+            dimension=int(row[1]),
+            recipe_hash=bytes(row[2]),
+            output_contract_hash=bytes(row[3]),
+            payload_hash=hashlib.sha256(blob).digest(),
+        )
 
     def publish(self, frame: object, replacement: EmbeddingMessageReplacement) -> bool:
         """Revalidate source/recipe/generation and atomically replace one ref."""
@@ -576,8 +607,10 @@ class EmbeddingDerivationAdapter:
         require_write_lease("embedding message publication", archive_root=self._embeddings_path.parent)
         if replacement.payload is None:
             return self._retire_vanished_ref(replacement)
-        if replacement.vector is None:
-            raise ValueError("embedding replacement has no vector")
+        if replacement.vector is not None and replacement.retained_output is not None:
+            raise ValueError("computed and retained embedding outputs are mutually exclusive")
+        if replacement.vector is None and replacement.retained_output is None:
+            raise ValueError("embedding replacement has no vector or stored output proof")
         expected = replacement.payload
         if expected.binding is None:
             raise ValueError("computed embedding replacement lacks a generation binding")
@@ -607,22 +640,31 @@ class EmbeddingDerivationAdapter:
                     if not loaded:
                         raise RuntimeError(f"embedding vector publication unavailable: {error}")
                     now_ms = int(datetime.now(UTC).timestamp() * 1000)
-                    replace_message_embedding_derivation(
-                        conn,
-                        ArchiveEmbeddingWrite(
-                            message_id=current.message_id,
-                            session_id=current.session_id,
-                            origin=current.origin,
-                            message_content_hash=current.message_content_hash,
-                            embedding=replacement.vector,
-                            model=current.request.recipe.model,
-                            embedded_at_ms=now_ms,
-                            vector_derivation_hash=current.request.vector_derivation_hash,
-                            recipe_hash=current.request.recipe.recipe_hash,
-                            output_contract_hash=current.request.recipe.output_contract_hash,
-                            derivation_key=bytes.fromhex(current.input_binding),
-                        ),
+                    write = ArchiveEmbeddingWrite(
+                        message_id=current.message_id,
+                        session_id=current.session_id,
+                        origin=current.origin,
+                        message_content_hash=current.message_content_hash,
+                        embedding=[] if replacement.retained_output is not None else replacement.vector or [],
+                        model=replacement.retained_output.model
+                        if replacement.retained_output is not None
+                        else current.request.recipe.model,
+                        embedded_at_ms=now_ms,
+                        vector_derivation_hash=current.request.vector_derivation_hash,
+                        recipe_hash=replacement.retained_output.recipe_hash
+                        if replacement.retained_output is not None
+                        else current.request.recipe.recipe_hash,
+                        output_contract_hash=replacement.retained_output.output_contract_hash
+                        if replacement.retained_output is not None
+                        else current.request.recipe.output_contract_hash,
+                        derivation_key=bytes.fromhex(current.input_binding),
                     )
+                    if replacement.retained_output is not None:
+                        if self._stored_output_on(conn, current) != replacement.retained_output:
+                            return False
+                        upsert_message_embeddings(conn, (write,))
+                    else:
+                        replace_message_embedding_derivation(conn, write)
                 finally:
                     with contextlib.suppress(sqlite3.Error):
                         conn.close()

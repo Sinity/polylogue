@@ -23,8 +23,8 @@ EMBEDDING_MESSAGE_GRAIN = "archive-message-vector"
 # this string changes recipe_hash, which deliberately busts every stale
 # embedding_derivation_state row so the session-attempt ledger is
 # re-evaluated -- while the vectors THEMSELVES stay valid and are reused for
-# free wherever the underlying text is unchanged (hash presence is the only
-# freshness signal at vector granularity).
+# free when the current request, original producer contract and physical
+# output are all proven. A metadata address alone cannot certify that output.
 EMBEDDING_SOURCE_CANONICALIZATION = "ordered-message-id-input-hash-v2"
 EMBEDDING_TEXT_CANONICALIZATION = "ordered-text-block-prose-v1"
 EMBEDDING_RECORD_SELECTOR = "authored-user-assistant-prose-v1"
