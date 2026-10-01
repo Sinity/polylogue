@@ -1888,6 +1888,8 @@ def _canonical_schema_inventory_for_ddl(
         fresh.commit()
         for step in steps:
             with fresh:
+                # The connection context settles a transaction; DDL does not start one.
+                fresh.execute("BEGIN IMMEDIATE")
                 _migration_runner._execute_proved_migration_sql(fresh, step)
                 fresh.execute(f"PRAGMA user_version = {step.version}")
         if int(fresh.execute("PRAGMA user_version").fetchone()[0]) != target_version:
