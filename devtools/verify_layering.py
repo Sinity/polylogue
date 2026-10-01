@@ -914,10 +914,11 @@ def _receiver_calls(
 ) -> dict[str, dict[str, set[str]]]:
     """Carry evidenced receiver types through lexical capture and actual arguments."""
 
-    def resolve(name: str, scope: str) -> str:
+    def resolve(name: str, scope: str, *, annotation: bool = False) -> str:
         while scope:
             candidate = f"{scope}.{name}"
-            if candidate in functions or candidate in classes:
+            # Executable method bodies close over functions, never class locals.
+            if (annotation or scope not in classes) and (candidate in functions or candidate in classes):
                 return candidate
             scope = scope.rpartition(".")[0]
         return name
@@ -932,7 +933,7 @@ def _receiver_calls(
             {
                 resolved
                 for node in ast.walk(annotation)
-                if isinstance(node, ast.Name) and (resolved := resolve(node.id, scope)) in classes
+                if isinstance(node, ast.Name) and (resolved := resolve(node.id, scope, annotation=True)) in classes
             }
             if annotation is not None
             else set()

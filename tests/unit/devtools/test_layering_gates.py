@@ -1127,6 +1127,28 @@ class _StaticForwarder:
 def static_argument_writer(conn):
     _StaticForwarder.send(_CollisionWriter(), conn)
 
+def _lexical_insert(conn):
+    conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+
+def _lexical_read(conn):
+    return conn.execute("SELECT session_id FROM sessions")
+
+class _BareNameReader:
+    def _lexical_insert(self, conn):
+        return "neutral"
+    def _lexical_read(self, conn):
+        conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+    def run_writer(self, conn):
+        _lexical_insert(conn)
+    def run_reader(self, conn):
+        return _lexical_read(conn)
+
+def bare_module_writer(conn):
+    _BareNameReader().run_writer(conn)
+
+def bare_module_reader(conn):
+    return _BareNameReader().run_reader(conn)
+
 def sql_scope_reader(conn):
     sql = "SELECT session_id FROM sessions"
     def unused_writer():
@@ -1158,8 +1180,10 @@ def sql_scope_reader(conn):
         "sql_scope_writer",
         "inherited_sql_writer",
         "static_argument_writer",
+        "bare_module_writer",
     }
     assert "read_collision" not in observed
     assert "sql_scope_reader" not in observed
     assert "class_sql_reader" not in observed
+    assert "bare_module_reader" not in observed
     assert not any("." in name for name in observed)
