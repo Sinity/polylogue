@@ -49,33 +49,6 @@ def _writer(path: Path, *, archive_root: Path) -> sqlite3.Connection:
     return open_isolated_write_connection(path, purpose=f"raw authority({path})", archive_root=archive_root)
 
 
-def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
-    """Validate and normalize the durable logical-key receipt payload.
-
-    The parser census writer records a sorted, duplicate-free JSON list.  A
-    few legacy membership rows carry provider prefixes, so normalize those to
-    public origins here while preserving the receipt's ordering invariant.
-    ``None`` means the receipt cannot establish parser authority.
-    """
-    try:
-        decoded = json.loads(str(logical_keys_json))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(decoded, list) or not all(isinstance(value, str) for value in decoded):
-        return None
-    raw_keys = tuple(decoded)
-    if raw_keys != tuple(sorted(set(raw_keys))):
-        return None
-    normalized: list[str] = []
-    for logical_key in raw_keys:
-        try:
-            normalized.append(canonical_authority_logical_key(logical_key))
-        except ValueError:
-            return None
-    normalized_keys = tuple(sorted(set(normalized)))
-    return normalized_keys if len(normalized_keys) == len(raw_keys) else None
-
-
 def iter_parser_census_logical_keys(logical_keys_json: object) -> Iterator[str]:
     """Validate the existing ordered receipt while yielding one canonical key.
 
@@ -956,7 +929,7 @@ __all__ = [
     "build_raw_replay_plans",
     "describe_raw_authority_blocker",
     "list_unresolved_raw_authority_blockers",
-    "parser_census_logical_keys",
+    "iter_parser_census_logical_keys",
     "raw_replay_application_receipt",
     "raw_replay_application_receipt_from_connection",
     "resolve_raw_authority_blocker",

@@ -160,53 +160,6 @@ def logical_head_cohort_sql(conn: sqlite3.Connection, *, raw_alias: str, has_mem
     )
 
 
-def durable_authority_logical_keys(
-    *,
-    raw_logical_key: object,
-    revision_kind: object,
-    membership_logical_keys: Iterable[object],
-) -> tuple[str, ...] | None:
-    """Return the canonical durable identity set a parser receipt must prove.
-
-    A ``pending-raw:`` envelope preserves bytes before parsing; it is not a
-    parser identity and must never leak into the durable parser receipt.
-    """
-    values = [str(value) for value in membership_logical_keys if value is not None]
-    if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
-        typed_key = str(raw_logical_key)
-        if not typed_key.startswith("pending-raw:"):
-            values.append(typed_key)
-    try:
-        return tuple(sorted({canonical_authority_logical_key(value) for value in values}))
-    except ValueError:
-        return None
-
-
-def parser_census_is_complete(
-    *,
-    recorded_keys: tuple[str, ...] | None,
-    durable_keys: tuple[str, ...] | None,
-    typed_non_session: bool,
-    parser_confirmed_non_session: bool,
-    byte_governed_fragment: bool,
-) -> bool:
-    """Return whether a parser receipt proves its durable authority shape.
-
-    The receipt writer and readiness reader must apply this same predicate.
-    Empty identity sets are complete only when a durable non-session or
-    byte-authority disposition proves that no parser identity is expected.
-    """
-    return parser_census_identity_is_complete(
-        durable_valid=durable_keys is not None,
-        observed_valid=recorded_keys is not None,
-        identities_match=recorded_keys == durable_keys,
-        observed_count=len(recorded_keys or ()),
-        typed_non_session=typed_non_session,
-        parser_confirmed_non_session=parser_confirmed_non_session,
-        byte_governed_fragment=byte_governed_fragment,
-    )
-
-
 def parser_census_identity_is_complete(
     *,
     durable_valid: bool,
