@@ -48,7 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_messag
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import CheckpointEscalation
-from tests.infra.vector_archive import record_owned_vector_closes
+from tests.infra.vector_archive import record_owned_vector_closes, record_similarity_read_closes
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -542,6 +542,7 @@ def test_retained_vectors_are_queryable_without_acquisition_credentials(
     monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: config)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     session_id, _, _ = _seed_ready_similarity_archive()
+    preflight_closed = record_similarity_read_closes(monkeypatch)
     provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
     monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
     handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=3")
@@ -556,6 +557,7 @@ def test_retained_vectors_are_queryable_without_acquisition_credentials(
     assert [hit["session_id"] for hit in payload["results"]] == ["codex-session:near", "codex-session:far"]
     assert payload["results"][0]["score"] > 0.98
     provider_call.assert_not_called()
+    assert preflight_closed == [True]
 
 
 @pytest.mark.contract
@@ -649,6 +651,7 @@ def test_unreadable_retained_vectors_never_certify_absence(
     _enable_embeddings(monkeypatch)
     session_id, embeddings_db, _ = _seed_ready_similarity_archive()
     closed = record_owned_vector_closes(monkeypatch)
+    preflight_closed = record_similarity_read_closes(monkeypatch)
     provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
     monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
     if failure == "runtime":
@@ -695,6 +698,7 @@ def test_unreadable_retained_vectors_never_certify_absence(
     assert payload["results"] == []
     assert closed == ([True] if failure in {"contention", "stale"} else [])
     provider_call.assert_not_called()
+    assert preflight_closed == ([] if failure in {"missing", "corrupt"} else [True])
 
 
 @pytest.mark.contract

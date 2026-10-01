@@ -132,7 +132,7 @@ def _build_archive_similar_payload(
         embeddings_db = archive_root_path / "embeddings.db"
         if not embeddings_db.exists():
             raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
-        with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
+        with closing(open_readonly_connection(embeddings_db, timeout_class="interactive-read")) as conn:
             if not table_exists(conn, "message_embeddings"):
                 raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
 

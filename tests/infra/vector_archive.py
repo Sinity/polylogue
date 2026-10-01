@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -73,4 +75,30 @@ def record_owned_vector_closes(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
             closed.append(True)
 
     monkeypatch.setattr(SqliteVecProvider, "_release_connection", release)
+    return closed
+
+
+def record_similarity_read_closes(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Prove the route's ordinary preflight handles close on their creating thread."""
+    from polylogue.daemon import similarity
+
+    original_open = similarity.open_readonly_connection
+    closed: list[bool] = []
+
+    def open_read(path: str | Path, *, timeout_class: Literal["interactive-read"]) -> sqlite3.Connection:
+        connection = original_open(path, timeout_class=timeout_class)
+        original_close = connection.close
+        creator = threading.get_ident()
+
+        def close() -> None:
+            assert threading.get_ident() == creator
+            original_close()
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+            closed.append(True)
+
+        monkeypatch.setattr(connection, "close", close)
+        return connection
+
+    monkeypatch.setattr(similarity, "open_readonly_connection", open_read)
     return closed
