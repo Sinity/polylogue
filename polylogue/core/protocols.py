@@ -1,7 +1,7 @@
 """Protocol definitions for pluggable backends in Polylogue.
 
 Only protocols with 2+ implementations earn their existence here:
-- VectorProvider: sqlite-vec (optional, requires `VOYAGE_API_KEY`)
+- VectorProvider: sqlite-vec (local retained reads; credentials for acquisition)
 
 ``SearchProvider`` (FTS5, Hybrid) was removed (polylogue-a7xr.10): both
 implementations had zero production consumers — production full-text and
@@ -19,11 +19,13 @@ inlined directly rather than inherited from a now-deleted shared base.
 from __future__ import annotations
 
 import builtins
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    import sqlite3
+
     import aiosqlite
 
     from polylogue.archive.actions.actions import Action
@@ -96,6 +98,25 @@ class VectorProvider(Protocol):
         itself). No re-embedding occurs — only stored vectors are read. Raises a typed
         error when the seed session has no stored embeddings, never silently returning
         an empty or unfiltered result.
+        """
+        ...
+
+    async def read_session_similarity(
+        self,
+        session_id: str,
+        *,
+        index_path: Path,
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        limit: int = 10,
+    ) -> dict[str, object]:
+        """Count, rank and project retained hits on one selected index snapshot.
+
+        The provider owns dispatch: acquire owned handles in one worker, and use
+        externally owned handles on their creating thread. Invoke ``project``
+        on the same thread and SQLite handle used for counting
+        and ranking, with ``archive_index`` bound to ``index_path``. Release any
+        provider-owned handle on every exit; leave externally owned handles open.
+        This operation never acquires embeddings.
         """
         ...
 

@@ -270,7 +270,10 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
             vector_binding = context.read_dependencies.vector_binding if context.read_dependencies is not None else None
             vector_recipe = (
                 vector_binding.recipe
-                if vector_binding is not None and requires_vector_snapshot(request.operation, request.payload)
+                if vector_binding is not None
+                and requires_vector_snapshot(
+                    request.operation, request.payload, acquisition_enabled=bool(vector_binding.voyage_key)
+                )
                 else None
             )
             read_control = (

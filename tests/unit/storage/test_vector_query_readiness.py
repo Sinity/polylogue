@@ -3,34 +3,38 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 
-_CURRENT_HASH = bytes.fromhex("11" * 32)
-_STALE_HASH = bytes.fromhex("22" * 32)
 
+def _snapshot(root: Path, state: str) -> sqlite3.Connection:
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
 
-def _snapshot(stored_hashes: tuple[bytes, ...]) -> sqlite3.Connection:
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    connection.executescript(
-        """
-        CREATE TABLE current_embedding_messages (vector_derivation_hash BLOB NOT NULL);
-        CREATE TABLE message_embeddings_meta (vector_derivation_hash BLOB PRIMARY KEY);
-        """
+    seed_vector_archive(
+        root,
+        [("seed", "m1", "Synthetic current recipe prose.", [1.0] + [0.0] * 1023)],
+        model="voyage-4-lite" if state == "stale" else "voyage-4",
     )
-    connection.execute("INSERT INTO current_embedding_messages VALUES (?)", (_CURRENT_HASH,))
-    for stored in stored_hashes:
-        connection.execute("INSERT INTO message_embeddings_meta VALUES (?)", (stored,))
-    return connection
+    if state == "empty":
+        with sqlite3.connect(root / "embeddings.db") as connection:
+            connection.execute("DELETE FROM message_embeddings_meta")
+    return open_vector_read_snapshot(
+        embeddings_path=root / "embeddings.db",
+        index_path=root / "index.db",
+        recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=1024),
+    )
 
 
-@pytest.mark.parametrize("stored_hashes", [(), (_STALE_HASH,)], ids=["empty-store", "stale-recipe-only"])
+@pytest.mark.parametrize("state", ["empty", "stale"], ids=["empty-store", "stale-recipe-only"])
 def test_snapshot_query_refuses_no_current_vectors_before_embedding(
-    stored_hashes: tuple[bytes, ...],
+    tmp_path: Path,
+    state: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F878: without the readiness probe the query embedding is purchased and the spy fails.
@@ -38,8 +42,10 @@ def test_snapshot_query_refuses_no_current_vectors_before_embedding(
     An empty or wholly stale store must refuse typed ("empty"), not return a
     confident empty KNN page.
     """
-    connection = _snapshot(stored_hashes)
-    provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key="fixture", connection=connection)
+    connection = _snapshot(tmp_path, state)
+    provider = SqliteVecProvider.from_vector_read_snapshot(
+        voyage_key="fixture", connection=connection, model="voyage-4"
+    )
     monkeypatch.setattr(provider, "_ensure_vec_available", lambda: None)
     monkeypatch.setattr(provider, "_ensure_tables", lambda: None)
 
@@ -57,10 +63,14 @@ def test_snapshot_query_refuses_no_current_vectors_before_embedding(
         connection.close()
 
 
-def test_snapshot_query_with_a_current_vector_proceeds_to_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snapshot_query_with_a_current_vector_proceeds_to_embedding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Anti-vacuity for the probe: one current vector admits the query route."""
-    connection = _snapshot((_CURRENT_HASH,))
-    provider = SqliteVecProvider.from_vector_read_snapshot(voyage_key="fixture", connection=connection)
+    connection = _snapshot(tmp_path, "current")
+    provider = SqliteVecProvider.from_vector_read_snapshot(
+        voyage_key="fixture", connection=connection, model="voyage-4"
+    )
     monkeypatch.setattr(provider, "_ensure_vec_available", lambda: None)
     monkeypatch.setattr(provider, "_ensure_tables", lambda: None)
     purchases: list[str] = []
