@@ -25,6 +25,7 @@ from polylogue.core.compute import (
     DaemonBackpressureError,
     DaemonOperationCancelled,
 )
+from polylogue.core.digest import stdlib_chunks
 from polylogue.core.durable_fs import sync_directory
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.logging import WARNING, emit, propagate
@@ -684,7 +685,14 @@ class DaemonOperationRuntime:
         *,
         started_at: float | None = None,
         client_disconnect: CancellationHandle | None = None,
+        request_body_bytes: int | None = None,
     ) -> dict[str, object]:
+        if request_body_bytes is None:
+            # Direct callers have no wire body. Count its canonical encoding
+            # incrementally instead of allocating another complete body.
+            request_body_bytes = sum(len(part.encode()) for part in stdlib_chunks(request.to_dict(), ensure_ascii=True))
+        if request_body_bytes < 0:
+            raise ValueError("request body byte count must be nonnegative")
         started = monotonic() if started_at is None else started_at
         spec = daemon_operation_spec(request.operation)
         if spec is None:
@@ -988,6 +996,7 @@ class DaemonOperationRuntime:
                     else:
                         scheduled = self._kernel.submit(
                             propagate(work),
+                            estimated_bytes=request_body_bytes,
                             admission_class=(
                                 "bulk-candidate"
                                 if archive_scan

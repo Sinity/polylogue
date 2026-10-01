@@ -210,7 +210,11 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
 
         with observe_peer_disconnect(self.connection) as disconnected:
             envelope = self.server.operation_runtime.call(
-                request, principal, started_at=started, client_disconnect=disconnected
+                request,
+                principal,
+                started_at=started,
+                client_disconnect=disconnected,
+                request_body_bytes=len(body),
             )
         outcome = envelope.get("outcome")
         status = 202 if outcome in {"accepted", "running", "indeterminate"} else 200

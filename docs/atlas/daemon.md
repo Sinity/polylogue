@@ -38,6 +38,13 @@ subject to exact owner task, thread and explicit grant checks; copied logging
 correlation does not authorize a writer (`core/compute.py`; `logging.py`;
 `storage/sqlite/write_lease.py`).
 
+Ordinary machine exchanges reserve their actual received request-body bytes
+in the existing compute admission budget. Direct calls count canonical encoded
+request bytes with the shared streaming encoder. The reservation lasts until
+physical completion or queued cancellation. This is wire-byte accounting;
+decoded request heap, ingress peak memory and read/result memory require their
+own measurements and ownership proof (`daemon/uds.py`; `daemon/operation_runtime.py`).
+
 Read this as a statement about the daemon's convergence path, not about the
 tree. The ratchet is a `devtools gate patterns` rule, `legacy-stdlib-logger`,
 and it matches only the *acquisition* of a stdlib logger
