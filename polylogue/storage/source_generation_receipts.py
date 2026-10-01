@@ -21,6 +21,7 @@ from polylogue.archive.revision_authority import (
     parser_census_identity_measurement,
 )
 from polylogue.archive.session_revision_membership import MembershipDecision
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.storage.raw_authority import (
     iter_parser_census_logical_keys,
@@ -339,6 +340,7 @@ def _raw_receipt(
             receipt,
             measured,
             membership_count,
+            check_stop=check_stop,
         )
         if not membership_identity_matches:
             parser_complete = False
@@ -383,6 +385,8 @@ def _parser_census_state(
     receipt: tuple[object, ...] | None,
     measured: ParserCensusIdentityMeasurement,
     membership_count: int,
+    *,
+    check_stop: Callable[[], None] | None,
 ) -> tuple[bool, tuple[SourceGenerationBlocker, ...]]:
     """Apply the shared disk identity law and this snapshot's typed disposition."""
     raw_id = str(raw[0])
@@ -416,6 +420,8 @@ def _parser_census_state(
         and recorded_count == 0
         and census_authority == RawRevisionAuthority.BYTE_PROVEN.value
     )
+    if byte_governed_fragment and not _byte_append_chain_is_exact(source_conn, raw_id=raw_id, check_stop=check_stop):
+        return False, (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
     expected_census = (
         parser_confirmed_non_session
         or byte_governed_fragment
@@ -721,7 +727,56 @@ def _byte_prefix_metadata_is_exact(
         and application_content_hash is not None
         and str(application[7]) == "byte"
         and application_end == candidate_append_end
+        and _byte_append_chain_is_exact(source_conn, raw_id=raw_id)
     )
+
+
+def _byte_append_chain_is_exact(
+    source_conn: sqlite3.Connection, *, raw_id: str, check_stop: Callable[[], None] | None = None
+) -> bool:
+    """Prove the selected append's linked authority on the supplied Source snapshot."""
+    with scratch_connection_context(prefix="polylogue-byte-chain-", filename="visited.db") as visited:
+        visited.execute("PRAGMA journal_mode=DELETE")
+        visited.execute("PRAGMA temp_store=FILE")
+        visited.execute("PRAGMA cache_size=-2048")
+        visited.execute("BEGIN")
+        visited.execute("CREATE TABLE visited(raw_id TEXT PRIMARY KEY) WITHOUT ROWID")
+        cursor_id: str | None = raw_id
+        expected_key: str | None = None
+        baseline_id: str | None = None
+        while cursor_id is not None:
+            check_compute_cancelled()
+            if check_stop is not None:
+                check_stop()
+            with closing(visited.execute("INSERT OR IGNORE INTO visited VALUES (?)", (cursor_id,))) as inserted:
+                if not inserted.rowcount:
+                    return False
+            with closing(
+                source_conn.execute(
+                    "SELECT logical_source_key, revision_kind, revision_authority, source_index, "
+                    "predecessor_raw_id, baseline_raw_id FROM main.raw_sessions WHERE raw_id=?",
+                    (cursor_id,),
+                )
+            ) as rows:
+                row = rows.fetchone()
+            if row is None or row[2] != RawRevisionAuthority.BYTE_PROVEN.value:
+                return False
+            try:
+                key = canonical_authority_logical_key(str(row[0]))
+            except ValueError:
+                return False
+            if expected_key is None:
+                expected_key = key
+                baseline_id = None if row[5] is None else str(row[5])
+            elif key != expected_key:
+                return False
+            if row[1] == "full":
+                source_index = _int_cell(row[3])
+                return cursor_id == baseline_id and source_index is not None and source_index >= 0
+            if row[1] != "append" or row[4] is None or row[5] != baseline_id:
+                return False
+            cursor_id = str(row[4])
+        return False
 
 
 def _int_cell(value: object) -> int | None:

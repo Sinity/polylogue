@@ -41,7 +41,7 @@ from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
-from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_parser_fingerprint
+from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
 from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
@@ -51,7 +51,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection_profile import ReadFrame, StaleContinuationError
+from polylogue.storage.sqlite.connection_profile import StaleContinuationError
 from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.revision_backfill_benchmark import (
@@ -108,7 +108,6 @@ def test_revision_backfill_archive_readers_use_declared_tier_profiles(
     monkeypatch.setattr(revision_backfill, "read_frame", capture_read_frame)
 
     assert revision_backfill._expand_frozen_revision_link_selection(root, []) == ()
-    assert revision_backfill.require_current_parser_source_census(root, selected_raw_ids=[]) == {}
     assert revision_backfill._replay_representative_raw_ids([], root) == {}
     assert revision_backfill.uncensused_historical_revision_raw_ids(root, ["missing-raw"]) == ()
 
@@ -143,14 +142,10 @@ def test_revision_backfill_profile_preserves_stale_source_tier_diagnostic(tmp_pa
         revision_backfill._expand_frozen_revision_link_selection(root, [])
 
 
-def test_current_parser_source_census_rebinds_between_bounded_pages(
+def test_current_parser_source_census_keeps_progress_after_elapsed_frame_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: Any
 ) -> None:
-    """The census retries complete pages after their streams expire mid-page.
-
-    Anti-vacuity: the clock advances after row one of two while both the raw-ID
-    and parser-census streams yield, forcing expiry before either stream ends.
-    """
+    """Elapsed read-frame time cannot discard a valid caller-owned Source snapshot."""
     root = tmp_path / "archive"
     bootstrap_archive_root(root)
     raw_ids: list[str] = []
@@ -185,39 +180,20 @@ def test_current_parser_source_census_rebinds_between_bounded_pages(
         for index in range(2):
             raw_ids.append(write_terminal_non_session(archive, index))
 
-    monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 2)
-    real_read_frame = cast(Any, revision_backfill).read_frame
-    frames: list[ReadFrame] = []
+    real_measurement = revision_backfill.parser_census_identity_measurement
+    measured_raws = 0
 
     @contextmanager
-    def capture_frames(path: str | Path, **kwargs: Any) -> Iterator[ReadFrame]:
-        with real_read_frame(path, **kwargs) as frame:
-            frames.append(frame)
-            yield frame
+    def advance_after_measurement(**kwargs: Any) -> Iterator[Any]:
+        nonlocal measured_raws
+        with real_measurement(**kwargs) as measured:
+            measured_raws += 1
+            frozen_clock.advance(301)
+            yield measured
 
-    real_stream = ReadFrame.stream
-    expired_id_page = False
-    expired_census_page = False
-
-    def expire_after_first_census_page(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
-        nonlocal expired_id_page, expired_census_page
-        for row in real_stream(frame, sql, parameters):
-            yield row
-            if not expired_id_page and sql.startswith("SELECT raw_id FROM raw_sessions"):
-                expired_id_page = True
-                frozen_clock.advance(301)
-            if not expired_census_page and "LEFT JOIN raw_authority_parser_census" in sql:
-                expired_census_page = True
-                frozen_clock.advance(301)
-
-    monkeypatch.setattr(revision_backfill, "read_frame", capture_frames)
-    monkeypatch.setattr(ReadFrame, "stream", expire_after_first_census_page)
-
-    result = revision_backfill.require_current_parser_source_census(root)
-
-    assert result == dict.fromkeys(raw_ids, ())
-    assert expired_id_page and expired_census_page
-    assert frames and frames[0].epoch >= 2
+    monkeypatch.setattr(revision_backfill, "parser_census_identity_measurement", advance_after_measurement)
+    assert revision_backfill.uncensused_historical_revision_raw_ids(root, raw_ids) == ()
+    assert measured_raws == 2
 
 
 def test_current_parser_source_census_refuses_reused_rowid_frontier(
@@ -265,34 +241,33 @@ def test_current_parser_source_census_refuses_reused_rowid_frontier(
             .fetchone()[0]
         )
 
-    monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 2)
-    real_stream = ReadFrame.stream
+    real_measurement = revision_backfill.parser_census_identity_measurement
     replaced = False
     replacement_raw_id: str | None = None
 
-    def replace_maximum_rowid(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
+    @contextmanager
+    def replace_after_observation(**kwargs: Any) -> Iterator[Any]:
         nonlocal replaced, replacement_raw_id
-        if not replaced and sql.startswith("SELECT raw_id FROM raw_sessions"):
-            replaced = True
-            with ArchiveStore.open_existing(root, read_only=False) as archive:
-                with archive._ensure_source_conn():
-                    archive._ensure_source_conn().execute(
-                        "DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,)
+        with real_measurement(**kwargs) as measured:
+            if not replaced:
+                replaced = True
+                with ArchiveStore.open_existing(root, read_only=False) as archive:
+                    with archive._ensure_source_conn():
+                        archive._ensure_source_conn().execute(
+                            "DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,)
+                        )
+                    replacement_raw_id = write_terminal_non_session(archive, 1)
+                    replacement_rowid = (
+                        archive._ensure_source_conn()
+                        .execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (replacement_raw_id,))
+                        .fetchone()[0]
                     )
-                replacement_raw_id = write_terminal_non_session(archive, 1)
-                replacement_rowid = (
-                    archive._ensure_source_conn()
-                    .execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (replacement_raw_id,))
-                    .fetchone()[0]
-                )
-                assert int(replacement_rowid) == original_rowid
-        yield from real_stream(frame, sql, parameters)
+                    assert int(replacement_rowid) == original_rowid
+            yield measured
 
-    monkeypatch.setattr(ReadFrame, "stream", replace_maximum_rowid)
-
-    with pytest.raises(StaleContinuationError, match="source archive changed during parser source census"):
-        revision_backfill.require_current_parser_source_census(root)
-
+    monkeypatch.setattr(revision_backfill, "parser_census_identity_measurement", replace_after_observation)
+    with pytest.raises(StaleContinuationError):
+        revision_backfill.uncensused_historical_revision_raw_ids(root, [original_raw_id])
     assert replaced
     assert replacement_raw_id is not None and replacement_raw_id != original_raw_id
 
@@ -798,7 +773,7 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
     assert memberships == [("codex-session:legacy-fragment",)]
     assert receipt is not None
     assert receipt[0] == "complete"
-    assert parser_census_logical_keys(receipt[1]) == ("codex-session:legacy-fragment",)
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == ("codex-session:legacy-fragment",)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
 
@@ -838,7 +813,7 @@ def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path
             "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone()
     assert status == "complete"
-    assert parser_census_logical_keys(keys) == ()
+    assert tuple(iter_parser_census_logical_keys(keys)) == ()
 
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
@@ -1609,11 +1584,11 @@ def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tm
     assert LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(membership[2])
     assert parser is not None
     assert parser[0] == "complete"
-    assert parser_census_logical_keys(parser[1]) == ()
+    assert tuple(iter_parser_census_logical_keys(parser[1])) == ()
     assert str(parser[2]).startswith("parser-observed:")
     assert later_parser is not None
     assert later_parser[0] == "complete"
-    assert parser_census_logical_keys(later_parser[1]) == ("codex-session:after-page-image",)
+    assert tuple(iter_parser_census_logical_keys(later_parser[1])) == ("codex-session:after-page-image",)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         sessions = conn.execute("SELECT origin, native_id FROM sessions ORDER BY origin, native_id").fetchall()
     assert sessions == [("codex-session", "after-page-image")]
@@ -2862,7 +2837,7 @@ def _census_facts(root: Path, raw_id: str) -> tuple[str | None, str, tuple[str, 
         receipt = conn.execute(
             "SELECT logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone()
-    keys = parser_census_logical_keys(receipt[0]) if receipt is not None else None
+    keys = tuple(iter_parser_census_logical_keys(receipt[0])) if receipt is not None else None
     return logical_key, str(authority), keys
 
 
@@ -4800,7 +4775,7 @@ def test_retained_replay_refuses_a_malformed_middle_record_with_a_terminal_censu
         }
         (parse_error,) = conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
     assert status == "complete"
-    assert parser_census_logical_keys(keys) == ()
+    assert tuple(iter_parser_census_logical_keys(keys)) == ()
     assert RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value in artifact_kinds
     assert parse_error is not None
     with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:

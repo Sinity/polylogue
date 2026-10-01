@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from itertools import permutations
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_parser_fingerprint
+from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -316,7 +317,7 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
 
     assert receipt is not None
     assert receipt[0] == "failed"
-    assert parser_census_logical_keys(receipt[1]) == ("codex-session:parser-observed-id",)
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == ("codex-session:parser-observed-id",)
 
 
 def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path: Path) -> None:
@@ -356,11 +357,15 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
             (raw_id,),
         ).fetchone()
     assert status == "complete"
-    assert parser_census_logical_keys(keys) == ()
+    assert tuple(iter_parser_census_logical_keys(keys)) == ()
 
-    from polylogue.sources.revision_backfill import require_current_parser_source_census
+    from polylogue.storage.source_generation_receipts import _raw_receipt
 
-    assert require_current_parser_source_census(tmp_path)[raw_id] == ()
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        with closing(_raw_receipt(source, index, raw_id, check_stop=None)) as receipts:
+            receipt = next(receipts)
+            assert receipt.parser_complete is True
+            assert tuple(receipt.logicals) == ()
 
 
 def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys(tmp_path: Path) -> None:
@@ -402,7 +407,7 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
 
     assert receipt is not None
     assert receipt[0] == "complete"
-    assert parser_census_logical_keys(receipt[1]) == ("codex-session:durable-append",)
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == ("codex-session:durable-append",)
 
 
 def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_path: Path) -> None:
@@ -444,11 +449,15 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
     assert receipt is not None
     assert receipt[0] == "complete"
     expected_keys = ("codex-session:typed-membership",)
-    assert parser_census_logical_keys(receipt[1]) == expected_keys
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == expected_keys
 
-    from polylogue.sources.revision_backfill import require_current_parser_source_census
+    from polylogue.storage.source_generation_receipts import _raw_receipt
 
-    assert require_current_parser_source_census(tmp_path)[raw_id] == expected_keys
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        with closing(_raw_receipt(source, index, raw_id, check_stop=None)) as receipts:
+            receipt = next(receipts)
+            assert receipt.parser_complete is True
+            assert tuple(logical.logical_source_key for logical in receipt.logicals) == expected_keys
 
 
 def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> None:
@@ -527,7 +536,7 @@ def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path)
         ).fetchone()
 
     assert receipt is not None
-    assert parser_census_logical_keys(receipt[0]) == ("codex-session:post-parse-receipt",)
+    assert tuple(iter_parser_census_logical_keys(receipt[0])) == ("codex-session:post-parse-receipt",)
 
 
 def test_replay_selects_newest_full_and_exact_contiguous_suffix_independent_of_order() -> None:
