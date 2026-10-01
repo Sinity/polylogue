@@ -9,14 +9,14 @@ import shutil
 import sqlite3
 import uuid
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from itertools import islice
 from pathlib import Path
-from typing import BinaryIO, Literal, cast, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, cast, overload
 
 import ijson
 
@@ -101,7 +101,12 @@ from polylogue.sources.prepared_message_sink import (
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
 from polylogue.sources.value_bounds import ValueBoundRefusedError
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_publication import (
+    ArchiveBlobPublisher,
+    PreparedBlobPublicationClaim,
+    _prepared_claim_from_record,
+)
+from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.materials import PreparedMaterial
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWrite,
@@ -114,6 +119,10 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     discard_session_shard,
     open_session_shard,
 )
+
+if TYPE_CHECKING:
+    pass
+
 
 _ARTIFACT_VERSION = 4
 
@@ -669,7 +678,7 @@ class PreparedJsonl:
     decode_failure: DecodeFailure | None = None
     codex_state_kind: str | None = None
     codex_state_text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS
-    material_publisher: ArchiveBlobPublisher | None = None
+    publication_publisher: ArchiveBlobPublisher | None = None
 
     @classmethod
     def seal(
@@ -686,7 +695,7 @@ class PreparedJsonl:
         attempt_directory: Path | None = None,
         codex_state_kind: str | None = None,
         codex_state_text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS,
-        material_publisher: ArchiveBlobPublisher | None = None,
+        publication_publisher: ArchiveBlobPublisher | None = None,
     ) -> PreparedJsonl:
         """Take custody only after both SQLite writers have closed."""
         return cls(
@@ -703,7 +712,7 @@ class PreparedJsonl:
             attempt_directory=attempt_directory,
             codex_state_kind=codex_state_kind,
             codex_state_text_chars=codex_state_text_chars,
-            material_publisher=material_publisher,
+            publication_publisher=publication_publisher,
         )
 
     def verify_files(self, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
@@ -871,7 +880,7 @@ class PreparedJsonl:
 
         if self.sessions_path is None or self.codex_state_kind not in {"goals", "memories"}:
             raise ValueError("prepared artifact has no state material")
-        if self.material_publisher is None:
+        if self.publication_publisher is None:
             raise ValueError("prepared material has no captured publisher owner")
         self.verify_files(full=False)
         ordinal = -1
@@ -897,14 +906,79 @@ class PreparedJsonl:
                     str(part_kind),
                     int(byte_size),
                     (
-                        _prepared_material_from_record(prepared_json, self.material_publisher)
+                        _prepared_material_from_record(prepared_json, self.publication_publisher)
                         if prepared_json is not None
                         else None
                     ),
                 )
 
-    def publish_codex_materials(self) -> None:
-        """Publish closed pages before the caller begins its Source transaction."""
+    def iter_attachment_claims(self) -> Iterator[tuple[int, int, PreparedBlobPublicationClaim]]:
+        """Read exact captured claims through closed bounded artifact pages."""
+        if self.sessions_path is None:
+            raise ValueError("prepared artifact has no attachment carrier")
+        self.verify_files(full=False)
+        after = (-1, -1)
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.sessions_path) as connection:
+                rows = connection.execute(
+                    "SELECT session_ordinal, attachment_ordinal, claim_json FROM prepared_attachment_publication "
+                    "WHERE (session_ordinal, attachment_ordinal) > (?, ?) "
+                    "ORDER BY session_ordinal, attachment_ordinal LIMIT 256",
+                    after,
+                ).fetchall()
+            if not rows:
+                return
+            if self.publication_publisher is None:
+                raise ValueError("prepared attachments have no captured publisher")
+            after = (int(rows[-1][0]), int(rows[-1][1]))
+            for session_ordinal, attachment_ordinal, encoded in rows:
+                check_compute_cancelled()
+                yield (
+                    int(session_ordinal),
+                    int(attachment_ordinal),
+                    _prepared_claim_from_record(str(encoded), self.publication_publisher),
+                )
+
+    def attachment_blobs(
+        self, *, source_connection: sqlite3.Connection
+    ) -> Mapping[object, tuple[bytes | None, int, str]]:
+        """Borrow writer-owned excision evidence for the sealed attachment view."""
+        return _PreparedAttachmentBlobs(self, source_connection)
+
+    def iter_attachment_refs(self, *, source_path: str, acquired_at_ms: int, source_connection: sqlite3.Connection):
+        from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, is_blob_hash_excised
+
+        for _session_ordinal, _attachment_ordinal, claim in self.iter_attachment_claims():
+            blob_hash = bytes.fromhex(claim.receipt.blob_hash)
+            if not is_blob_hash_excised(source_connection, blob_hash):
+                assert self.publication_publisher is not None
+                self.publication_publisher.validate_published_claim(source_connection, claim, source_path=source_path)
+                yield ArchiveSourceBlobRef(
+                    blob_hash=blob_hash,
+                    ref_type="attachment",
+                    source_path=source_path,
+                    size_bytes=claim.receipt.size_bytes,
+                    acquired_at_ms=acquired_at_ms,
+                    publication_receipt_id=claim.receipt.publication_id,
+                )
+
+    def publish_blobs(self) -> None:
+        """Publish exact closed-page claims before any Source transaction."""
+        publisher = self.publication_publisher
+        page_count = 0
+        for _session_ordinal, _attachment_ordinal, claim in self.iter_attachment_claims():
+            assert publisher is not None
+            publisher.queue_prepared(
+                PreparedBlob(claim.receipt.blob_hash, claim.receipt.size_bytes, claim.prepared_path), claim=claim
+            )
+            page_count += 1
+            if page_count == 256:
+                publisher.flush()
+                page_count = 0
+        if page_count:
+            assert publisher is not None
+            publisher.flush()
         from polylogue.storage.materials import publish_prepared_materials
 
         if self.codex_state_kind not in {"goals", "memories"}:
@@ -1010,6 +1084,46 @@ class PreparedJsonl:
                     "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
                 }
             )
+
+
+class _PreparedAttachmentBlobs(Mapping[object, tuple[bytes | None, int, str]]):
+    """A writer-local view, never a transferred SQL handle or population map."""
+
+    def __init__(self, artifact: PreparedJsonl, source_connection: sqlite3.Connection) -> None:
+        self.artifact = artifact
+        self.source_connection = source_connection
+
+    def __len__(self) -> int:
+        if self.artifact.sessions_path is None:
+            raise ValueError("prepared artifact has no attachment carrier")
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM prepared_attachment_publication").fetchone()[0])
+
+    def __iter__(self) -> Iterator[object]:
+        for session_ordinal, attachment_ordinal, _claim in self.artifact.iter_attachment_claims():
+            yield str(self.artifact.sessions_path), session_ordinal, attachment_ordinal
+
+    def __getitem__(self, key: object) -> tuple[bytes | None, int, str]:
+        from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+        if not isinstance(key, tuple) or len(key) != 3 or key[0] != str(self.artifact.sessions_path):
+            raise KeyError(key)
+        self.artifact.verify_files(full=False)
+        if self.artifact.sessions_path is None or self.artifact.publication_publisher is None:
+            raise ValueError("prepared attachments have no captured publisher")
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT claim_json FROM prepared_attachment_publication WHERE session_ordinal = ? AND attachment_ordinal = ?",
+                (key[1], key[2]),
+            ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        claim = _prepared_claim_from_record(str(row[0]), self.artifact.publication_publisher)
+        blob_hash = bytes.fromhex(claim.receipt.blob_hash)
+        if is_blob_hash_excised(self.source_connection, blob_hash):
+            return None, claim.receipt.size_bytes, "unavailable"
+        return blob_hash, claim.receipt.size_bytes, "acquired"
 
 
 class PreparedSessionSequence(Sequence[ParsedSession]):
@@ -1174,6 +1288,11 @@ def _write_artifact(
 
 
 def _create_artifact_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE prepared_attachment_publication (session_ordinal INTEGER NOT NULL, "
+        "attachment_ordinal INTEGER NOT NULL, claim_json TEXT NOT NULL, "
+        "PRIMARY KEY(session_ordinal, attachment_ordinal)) WITHOUT ROWID"
+    )
     conn.execute("CREATE TABLE prepared_codex_state (kind TEXT NOT NULL)")
     conn.execute("CREATE TABLE prepared_codex_thread (ordinal INTEGER PRIMARY KEY, metadata_json TEXT NOT NULL)")
     conn.execute("CREATE TABLE prepared_codex_spawn (ordinal INTEGER PRIMARY KEY, metadata_json TEXT NOT NULL)")
@@ -1187,6 +1306,55 @@ def _create_artifact_tables(conn: sqlite3.Connection) -> None:
         "CREATE TABLE artifact_seal (version INTEGER NOT NULL, source_hash TEXT NOT NULL, "
         "session_count INTEGER NOT NULL, enrichment_digest TEXT, enrichment_index_path TEXT)"
     )
+
+
+def _prepare_attachment_publications(
+    store: SqliteMessageStore, publisher: ArchiveBlobPublisher, directory: Path
+) -> None:
+    """Seal attachment claims on the existing artifact before writer admission."""
+    from polylogue.sources.prepared_message_sink import _decode_attachment
+    from polylogue.storage.blob_publication import _prepared_claim_record
+
+    after = (-1, -1)
+    while True:
+        check_compute_cancelled()
+        rows = store.conn.execute(
+            "SELECT session_ordinal, attachment_ordinal, attachment_json FROM prepared_attachment "
+            "WHERE (session_ordinal, attachment_ordinal) > (?, ?) "
+            "ORDER BY session_ordinal, attachment_ordinal LIMIT 256",
+            after,
+        ).fetchall()
+        if not rows:
+            break
+        for session_ordinal, attachment_ordinal, attachment_json in rows:
+            check_compute_cancelled()
+            attachment = _decode_attachment(attachment_json, store.path, session_ordinal, attachment_ordinal)
+            if attachment.inline_bytes is not None:
+                blob = publisher.prepare_from_bytes(attachment.inline_bytes, staging_directory=directory)
+            elif attachment.precomputed_blob is not None:
+                expected_hash, expected_size = attachment.precomputed_blob
+                blob = publisher.prepare_from_path(
+                    publisher.blob_path(expected_hash), staging_directory=directory, heartbeat=check_compute_cancelled
+                )
+                if (blob.hash_hex, blob.size_bytes) != (expected_hash, expected_size):
+                    publisher.discard_prepared(blob)
+                    raise ValueError("prepared attachment disagrees with its retained blob")
+            else:
+                continue
+            try:
+                claim = publisher.prepare_claim(blob)
+                store.conn.execute(
+                    "INSERT INTO prepared_attachment_publication VALUES (?, ?, ?)",
+                    (session_ordinal, attachment_ordinal, _prepared_claim_record(claim)),
+                )
+            except BaseException as primary:
+                try:
+                    publisher.discard_prepared(blob)
+                except BaseException as cleanup:
+                    primary.add_note(f"attachment preparation cleanup failed: {cleanup!r}")
+                raise
+        after = (int(rows[-1][0]), int(rows[-1][1]))
+    store.conn.commit()
 
 
 def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: ParsedSession) -> None:
@@ -1262,6 +1430,7 @@ def _prepare_codex_state_blob(
     enrichment_index_path: str | None = None,
     attempt_directory: Path | None = None,
     text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS,
+    publication_publisher: ArchiveBlobPublisher | None = None,
 ) -> PreparedJsonl:
     """Seal the non-session branch of the existing canonical artifact."""
     sessions_path = directory / f"prepared-{uuid.uuid4().hex}.db"
@@ -1275,7 +1444,11 @@ def _prepare_codex_state_blob(
             staging_root = next((parent for parent in directory.parents if parent.name == ".staging"), None)
             if staging_root is None:
                 raise ValueError("state material preparation requires archive-owned blob staging")
-            material_store = ArchiveBlobPublisher(staging_root.parent.parent / "source.db", staging_root.parent)
+            material_store = publication_publisher or ArchiveBlobPublisher(
+                staging_root.parent.parent / "source.db", staging_root.parent
+            )
+            if material_store.root.resolve() != staging_root.parent.resolve():
+                raise ValueError("prepared state publisher belongs to another blob root")
             store = SqliteMessageStore(sessions_path)
             _write_artifact(
                 store,
@@ -1306,7 +1479,7 @@ def _prepare_codex_state_blob(
                 attempt_directory=attempt_directory,
                 codex_state_kind=state_kind,
                 codex_state_text_chars=text_chars,
-                material_publisher=material_store,
+                publication_publisher=material_store,
             )
             sealed = True
             return artifact
@@ -1347,6 +1520,7 @@ def prepare_jsonl_blob(
     attempt_directory: Path | None = None,
     source_sha256: str | None = None,
     strict_jsonl_records: bool = False,
+    publication_publisher: ArchiveBlobPublisher | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC.
 
@@ -1394,6 +1568,7 @@ def prepare_jsonl_blob(
                     enrichment_digest=enrichment_digest,
                     enrichment_index_path=enrichment_index_path,
                     attempt_directory=attempt_directory,
+                    publication_publisher=publication_publisher,
                 )
         store = SqliteMessageStore(sessions_path)
         before_hash = source_sha256 if source_sha256 is not None else file_digest(source)
@@ -2418,6 +2593,8 @@ def prepare_jsonl_blob(
                 enrichment_digest=enrichment_digest,
                 enrichment_index_path=enrichment_index_path,
             )
+        if publication_publisher is not None:
+            _prepare_attachment_publications(store, publication_publisher, artifact_directory)
         store.close()
         store = None
         result = PreparedJsonl.seal(
@@ -2431,6 +2608,7 @@ def prepare_jsonl_blob(
             # Every branch above admits its sessions before sealing.
             positive_evidence_filtered=True,
             attempt_directory=attempt_directory,
+            publication_publisher=publication_publisher,
         )
         sealed = True
         return result

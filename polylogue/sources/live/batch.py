@@ -14,10 +14,10 @@ import uuid
 import zipfile
 from builtins import BaseExceptionGroup
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from hashlib import sha256
 from io import BytesIO
 from json import dumps as json_dumps
@@ -106,7 +106,6 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
-    BUNDLE_PROVIDERS,
     ForeignOriginContentError,
     bound_location_provider,
     is_jsonl_source_path,
@@ -223,7 +222,6 @@ from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
     enrich_sessions_from_archive,
     parse_retained_raw_sessions,
-    prepare_retained_jsonl_artifact,
     prepared_enrichment_dependency_state,
 )
 from polylogue.sources.source_acquisition_components import (
@@ -261,7 +259,11 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepared_row_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
-from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_readonly_database,
+    open_readonly_connection,
+    open_source_tier_write_connection,
+)
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -610,7 +612,7 @@ def _shard_prepared_by_raw_id(
     raw_id: str,
     parsed_by_raw_id: dict[str, ParsedSession],
     bindings: Mapping[str, PreparedSessionShardRows],
-) -> dict[str, PreparedRows | Future[PreparedRows]] | None:
+) -> dict[str, PreparedRows] | None:
     """Re-key one raw's shard binding from session identity to raw identity."""
     if not bindings:
         return None
@@ -4159,6 +4161,10 @@ class LiveBatchProcessor:
             try:
                 for publisher in publishers:
                     publisher.flush()
+                for preparation in path_preparations_by_source_path.values():
+                    preparation.publish_blobs()
+                for member in retained_preparations_by_raw_id.values():
+                    member.artifact.publish_blobs()
                 for capture in captured_sqlite_by_path.values():
                     if isinstance(capture, PreparedLiveSQLiteCapture) and capture.artifact is not None:
                         if capture.snapshot is None:
@@ -4166,7 +4172,7 @@ class LiveBatchProcessor:
                         require_published(
                             capture.publisher, capture.snapshot.blob_hash, source_path=capture.snapshot.source_path
                         )
-                        capture.artifact.publish_codex_materials()
+                        capture.artifact.publish_blobs()
             except Exception as exc:
                 if storage_fault_kind(exc) is not None:
                     # Reservation may have committed before publication
@@ -5077,6 +5083,7 @@ class LiveBatchProcessor:
                                 fresh_build_batch=fresh_build_batch,
                                 prepared_writes=prepared_writes,
                                 retained_preparations_by_raw_id=retained_preparations_by_raw_id,
+                                current_preparation=path_preparation,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -5119,6 +5126,17 @@ class LiveBatchProcessor:
                                     current_session=session,
                                     retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
+                                attachment_views = {
+                                    raw_id: self._prepared_attachment_view(
+                                        archive,
+                                        raw_id,
+                                        acquired_at_ms=acquired_at_ms,
+                                        current_raw_id=source_raw_id,
+                                        current_preparation=path_preparation,
+                                        retained=retained_preparations_by_raw_id,
+                                    )
+                                    for raw_id in plan.accepted_raw_ids
+                                }
                                 replay_fresh = _fresh_build_admits(parsed_by_raw_id.values(), fresh_build_batch)
                                 index_conn = archive.index_connection
                                 prior_row = (
@@ -5153,6 +5171,12 @@ class LiveBatchProcessor:
                                             source_raw_id, parsed_by_raw_id, shard_bindings
                                         ),
                                         prepared_write=prepared_writes.get(logical_source_key),
+                                        preacquired_attachment_blobs_by_raw_id={
+                                            raw_id: view[0] for raw_id, view in attachment_views.items()
+                                        },
+                                        preacquired_attachment_refs_by_raw_id={
+                                            raw_id: view[1] for raw_id, view in attachment_views.items()
+                                        },
                                     )
                                 current_row = (
                                     index_conn.execute(
@@ -5267,6 +5291,7 @@ class LiveBatchProcessor:
                                     fresh_build_batch=fresh_build_batch,
                                     prepared_writes=prepared_writes,
                                     retained_preparations_by_raw_id=retained_preparations_by_raw_id,
+                                    current_preparation=path_preparation,
                                 )
                     else:
                         archive.replace_raw_membership_census(
@@ -5294,6 +5319,7 @@ class LiveBatchProcessor:
                             fresh_build_batch=fresh_build_batch,
                             prepared_writes=prepared_writes,
                             retained_preparations_by_raw_id=retained_preparations_by_raw_id,
+                            current_preparation=path_preparation,
                         )
                     if raw_authority_complete:
                         result.raw_ids[_full_record_key(record)] = record_raw_id
@@ -5474,6 +5500,34 @@ class LiveBatchProcessor:
         # the cursor the commit earned and ends the unit.
         return result
 
+    @staticmethod
+    def _prepared_attachment_view(
+        archive: Any,
+        raw_id: str,
+        *,
+        acquired_at_ms: int,
+        current_raw_id: str,
+        current_preparation: PreparedJsonl | None,
+        retained: Mapping[str, PreparedLiveRetainedRaw] | None,
+    ):
+        if raw_id == current_raw_id:
+            artifact = current_preparation
+        else:
+            member = (retained or {}).get(raw_id)
+            if member is None or not member.current(archive):
+                raise RetainedPreparationRetryableError(f"retained attachment preparation changed for {raw_id}")
+            artifact = member.artifact
+        if artifact is None:
+            raise RetainedPreparationRetryableError(f"sealed attachment preparation is absent for {raw_id}")
+        _provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        source_conn = archive._ensure_source_conn()
+        return artifact.attachment_blobs(source_connection=source_conn), partial(
+            artifact.iter_attachment_refs,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            source_connection=source_conn,
+        )
+
     def _parse_raw_revision_chain(
         self,
         archive: Any,
@@ -5492,9 +5546,7 @@ class LiveBatchProcessor:
             elif member is not None and member.current(archive):
                 sessions = member.artifact.session_sequence()
             else:
-                # No carrier, or one this writer cannot publish (its evidence
-                # or index moved): the writer owns the member's replay.
-                sessions = self._parse_retained_raw_sessions(archive, raw_id)
+                raise RetainedPreparationRetryableError(f"retained raw {raw_id} lacks current sealed preparation")
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
@@ -5542,6 +5594,7 @@ class LiveBatchProcessor:
         shard_paths_by_raw_id: Mapping[str, Path] | None = None,
         fresh_build_batch: set[str] | None = None,
         prepared_writes: Mapping[str, PreparedSessionWrite] | None = None,
+        current_preparation: PreparedJsonl | None = None,
         retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> tuple[list[str], int, int, bool]:
         """Apply membership-governed classification for one logical identity.
@@ -5587,42 +5640,7 @@ class LiveBatchProcessor:
                     sequence = member.artifact.session_sequence()
                     retained_sessions_cache[raw_id] = sequence
                     return sequence
-                descriptor_reader = getattr(archive, "raw_revision_descriptor", None)
-                if descriptor_reader is None:
-                    legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
-                    retained_sessions_cache[raw_id] = legacy
-                    return legacy
-                provider, blob_hash, source_path, kind, _size = descriptor_reader(raw_id)
-                if Path(source_path).suffix.lower() == ".json" and (
-                    provider in BUNDLE_PROVIDERS or provider is Provider.HERMES
-                ):
-                    native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
-                    artifact = prepare_retained_jsonl_artifact(
-                        raw_id,
-                        provider.value,
-                        blob_hash,
-                        source_path,
-                        kind.value,
-                        native_id,
-                        str(archive.archive_root / "blob"),
-                        str(archive.source_db_path),
-                        str(archive.index_db_path),
-                        str(archive.archive_root / "tmp" / "live-retained-prepared"),
-                        archive.raw_revision_file_mtime(raw_id),
-                    )
-                    if artifact.error is not None or artifact.sessions_path is None:
-                        artifact.discard()
-                        raise RuntimeError(artifact.error or f"retained raw {raw_id} did not prepare")
-                    try:
-                        sequence = artifact.session_sequence()
-                    except BaseException:
-                        artifact.discard()
-                        raise
-                    retained_sessions_cache[raw_id] = sequence
-                    return sequence
-                legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
-                retained_sessions_cache[raw_id] = legacy
-                return legacy
+                raise RetainedPreparationRetryableError(f"retained member {raw_id} lacks current sealed preparation")
             return cached
 
         def retained_session_for(raw_id: str, logical_source_key: str) -> ParsedSession:
@@ -5755,6 +5773,16 @@ class LiveBatchProcessor:
                     )
                 classification = classify_membership_revisions(revisions, existing_accepted_raw_id=accepted_head_raw_id)
                 member_fresh = _fresh_build_admits(member_sessions.values(), fresh_build_batch)
+                attachment_blobs, attachment_refs = ({}, lambda: iter(()))
+                if classification.accepted_raw_ids:
+                    attachment_blobs, attachment_refs = self._prepared_attachment_view(
+                        archive,
+                        classification.accepted_raw_ids[-1],
+                        acquired_at_ms=acquired_at_ms,
+                        current_raw_id=source_raw_id,
+                        current_preparation=current_preparation,
+                        retained=retained_preparations_by_raw_id,
+                    )
                 with self._attached_member_shards(
                     archive, member_sessions, shard_paths_by_raw_id
                 ) as prepared_by_raw_id:
@@ -5769,6 +5797,8 @@ class LiveBatchProcessor:
                         fresh_build=member_fresh,
                         fresh_build_batch=fresh_build_batch if member_fresh else None,
                         prepared_by_raw_id=prepared_by_raw_id,
+                        preacquired_attachment_blobs=attachment_blobs,
+                        preacquired_attachment_refs=attachment_refs,
                         prepared_write=(
                             (prepared_writes or {}).get(logical_source_key)
                             if classification.accepted_raw_ids and classification.accepted_raw_ids[-1] == source_raw_id
@@ -7312,7 +7342,7 @@ class LiveBatchProcessor:
         try:
             index_db = ArchiveLocation.resolve(archive_root).active_index_path
             with (
-                closing(sqlite3.connect(source_db)) as conn,
+                closing(open_source_tier_write_connection(source_db, archive_root=archive_root)) as conn,
                 closing(open_readonly_connection(index_db)) as index_conn,
                 conn,
             ):

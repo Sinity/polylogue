@@ -54,6 +54,35 @@ def test_an_excised_payload_is_never_published(tmp_path: Path) -> None:
     assert reserved == {kept_hex}
 
 
+def test_repeated_sealed_claim_reuses_exact_reservation_after_private_file_publication(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    prepared = publisher.prepare_from_bytes(b"neutral sealed attachment")
+    claim = publisher.prepare_claim(prepared)
+    publisher.queue_prepared(prepared, claim=claim)
+    first = publisher.flush()
+    assert tuple(receipt.publication_id for receipt in first) == (claim.receipt.publication_id,)
+    assert not prepared.temporary_path.exists()
+    publisher.queue_prepared(prepared, claim=claim)
+    assert not publisher.has_pending
+    assert publisher.flush() == ()
+    with sqlite3.connect(root / "source.db") as source:
+        rows = source.execute(
+            "SELECT publication_id, blob_hash, size_bytes, publisher_id FROM blob_publication_reservations"
+        ).fetchall()
+        assert rows == [
+            (
+                claim.receipt.publication_id,
+                bytes.fromhex(claim.receipt.blob_hash),
+                claim.receipt.size_bytes,
+                publisher.publisher_id,
+            )
+        ]
+        publisher.validate_published_claim(source, claim, source_path="neutral.txt")
+
+
 def test_an_excised_sqlite_snapshot_is_a_typed_excision_not_a_parse_failure(tmp_path: Path) -> None:
     """A parse route that reads its snapshot back after flushing stops typed.
 

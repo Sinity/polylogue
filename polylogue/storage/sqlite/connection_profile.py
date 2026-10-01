@@ -42,7 +42,12 @@ from polylogue.storage.io_phase_metrics import (
     live_connection_cursors,
     settle_connection_cursors,
 )
-from polylogue.storage.sqlite.write_lease import UnleasedWriteError, current_sql_custody, require_write_lease
+from polylogue.storage.sqlite.write_lease import (
+    KnownSourceWriteAuthority,
+    UnleasedWriteError,
+    current_sql_custody,
+    require_write_lease,
+)
 
 if TYPE_CHECKING:
     from polylogue.logging import BoundLoggerLike
@@ -1074,10 +1079,90 @@ def initialize_source_tier_database_mode(conn: sqlite3.Connection) -> None:
     conn.execute(f"PRAGMA journal_mode={journal_mode}")
 
 
+def _connect_archive_writer(
+    path: str | Path,
+    *,
+    archive_root: str | Path | None = None,
+    timeout: float = DB_TIMEOUT,
+    check_same_thread: bool = True,
+    existing_only: bool = False,
+    source_permit: KnownSourceWriteAuthority | None = None,
+) -> sqlite3.Connection:
+    """Keep Source SQL authorization dynamic across admitted writer leases."""
+    selected = Path(path)
+    root = configured_archive_root(path, archive_root)
+    is_source = selected.resolve() == (root / "source.db").resolve()
+    if source_permit is not None and not is_source:
+        raise UnleasedWriteError("known Source permit cannot authorize another tier")
+    connection = connect_measured(
+        f"{selected.resolve(strict=True).as_uri()}?mode=rw" if existing_only else path,
+        uri=existing_only,
+        timeout=timeout,
+        check_same_thread=check_same_thread,
+        **({"cached_statements": 0} if is_source else {}),
+    )
+    if not is_source:
+        return connection
+    owner = NativeSQLCustodyOwner(connection)
+    try:
+        creator_pid = os.getpid()
+        creator_thread = threading.current_thread()
+        source_path = selected.resolve()
+        metadata = source_path.stat()
+        incarnation = metadata.st_dev, metadata.st_ino
+
+        def authorize(
+            action: int, first: str | None, second: str | None, schema: str | None, trigger: str | None
+        ) -> int:
+            if os.getpid() != creator_pid or threading.current_thread() is not creator_thread:
+                return sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_TRANSACTION and first == "ROLLBACK":
+                return sqlite3.SQLITE_OK
+            try:
+                current_metadata = source_path.stat()
+                if (current_metadata.st_dev, current_metadata.st_ino) != incarnation:
+                    return sqlite3.SQLITE_DENY
+                # Context inheritance is not writer admission: a child task
+                # can carry its parent's lease while owning no physical custody.
+                writes = action not in {
+                    sqlite3.SQLITE_READ,
+                    sqlite3.SQLITE_SELECT,
+                    sqlite3.SQLITE_FUNCTION,
+                    sqlite3.SQLITE_RECURSIVE,
+                } and not (action == sqlite3.SQLITE_PRAGMA and second is None)
+                if writes and require_write_lease("Source SQL execution", archive_root=root) is None:
+                    return sqlite3.SQLITE_DENY
+                custody = current_sql_custody()
+                if custody is not None:
+                    if custody.archive_root.resolve() != root.resolve():
+                        return sqlite3.SQLITE_DENY
+                    custody.assert_namespace()
+                    permit = custody.known_source_authority
+                    if permit is not None and not permit.authorize_source_sql(
+                        connection, action, first, second, schema, trigger
+                    ):
+                        return sqlite3.SQLITE_DENY
+            except (OSError, UnleasedWriteError):
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(authorize)
+        if source_permit is not None:
+            custody = current_sql_custody()
+            if custody is None or custody.known_source_authority is not source_permit:
+                raise UnleasedWriteError("Source connection does not own its current known mutation")
+            source_permit.bind_source_connection(connection)
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    return owner.handoff()
+
+
 def open_source_tier_write_connection(
     path: str | Path,
     *,
     archive_root: str | Path | None = None,
+    source_permit: KnownSourceWriteAuthority | None = None,
 ) -> sqlite3.Connection:
     """Open a source-tier writer with the normal local policy only.
 
@@ -1087,7 +1172,9 @@ def open_source_tier_write_connection(
     synchronous, busy-timeout, or foreign-key policy.
     """
     require_write_lease(f"open_source_tier_write_connection({path})", archive_root=archive_root)
-    conn = connect_measured(path, timeout=WRITE_CONNECTION_PROFILE.timeout_seconds)
+    conn = _connect_archive_writer(
+        path, archive_root=archive_root, source_permit=source_permit, timeout=WRITE_CONNECTION_PROFILE.timeout_seconds
+    )
     owner = NativeSQLCustodyOwner(conn)
     try:
         for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
@@ -1530,7 +1617,7 @@ def open_connection(
         raise ValueError("open_connection requires a write profile")
     root = configured_archive_root(path, archive_root)
     require_write_lease(f"open_connection({path})", archive_root=root)
-    conn = connect_measured(path, timeout=timeout, check_same_thread=check_same_thread)
+    conn = _connect_archive_writer(path, archive_root=root, timeout=timeout, check_same_thread=check_same_thread)
     owner = NativeSQLCustodyOwner(conn)
     try:
         if validate_schema:
@@ -1562,7 +1649,7 @@ def open_daemon_connection(
     """
     root = configured_archive_root(path, archive_root)
     require_write_lease(f"open_daemon_connection({path})", archive_root=root)
-    conn = connect_measured(path, timeout=timeout)
+    conn = _connect_archive_writer(path, archive_root=root, timeout=timeout)
     owner = NativeSQLCustodyOwner(conn)
     try:
         if validate_schema:
@@ -1906,7 +1993,10 @@ def attach_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -
         return
     if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
         raise ValueError(f"invalid SQLite attachment alias: {alias!r}")
-    conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(path),))
+    # Source mutations use its admitted direct connection. Cross-tier handles
+    # retain read access without acquiring another Source write surface.
+    attachment = f"file:{quote(str(Path(path).resolve()))}?mode=ro" if Path(path).name == "source.db" else str(path)
+    conn.execute(f"ATTACH DATABASE ? AS {alias}", (attachment,))
 
 
 def _authorize_read_temp_operation(
@@ -2061,6 +2151,7 @@ def open_isolated_write_connection(
     profile: SQLiteConnectionProfile = ISOLATED_TIER_WRITE_PROFILE,
     timeout: float | None = None,
     archive_root: str | Path | None = None,
+    source_permit: KnownSourceWriteAuthority | None = None,
 ) -> sqlite3.Connection:
     """Open one writable tier without attaching sibling databases.
 
@@ -2072,7 +2163,12 @@ def open_isolated_write_connection(
     if profile.role != "write":
         raise ValueError("open_isolated_write_connection requires a write profile")
     require_write_lease(purpose, archive_root=archive_root)
-    conn = connect_measured(path, timeout=profile.timeout_seconds if timeout is None else timeout)
+    conn = _connect_archive_writer(
+        path,
+        archive_root=archive_root,
+        source_permit=source_permit,
+        timeout=profile.timeout_seconds if timeout is None else timeout,
+    )
     owner = NativeSQLCustodyOwner(conn)
     try:
         for statement in write_connection_pragma_statements(profile):

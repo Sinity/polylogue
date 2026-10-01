@@ -243,6 +243,7 @@ def _prepare_path_snapshot(
             strict_jsonl_records=True,
         )
     from polylogue.sources.revision_backfill import open_retained_session_enricher
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     with open_retained_session_enricher(
         provider,
@@ -261,6 +262,7 @@ def _prepare_path_snapshot(
             fallback_id,
             is_stream=is_stream,
             shard_directory=shard_directory,
+            publication_publisher=ArchiveBlobPublisher(Path(evidence.source_db_path), Path(evidence.blob_root)),
             attempt_directory=None if attempt_directory is None else Path(attempt_directory),
             parse_prefix_size=parse_prefix_size,
             prepare_session=enrich,
@@ -518,6 +520,7 @@ class LiveParseStage:
                                     shard_directory=str(self._attempt_root),
                                     attempt_directory=attempt,
                                     source_sha256=snapshot.blob_hash,
+                                    publication_publisher=publisher,
                                 )
                                 if artifact.error is None:
                                     artifact.verify_files(full=True, stop=cancelled.is_set)

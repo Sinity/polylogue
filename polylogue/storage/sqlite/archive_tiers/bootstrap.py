@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_
 from polylogue.storage.sqlite.connection_profile import (
     NativeSQLCustodyOwner,
     _close_failed_native_construction,
+    _connect_archive_writer,
     open_readonly_connection,
     retained_native_sql_owners_for_lifetime,
     scratch_connection_context,
@@ -657,7 +658,11 @@ def initialize_archive_database(
                 remedy="initialize the canonical archive root to construct its baseline and admit declared trains",
             )
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = connect_measured(path)
+        conn = (
+            _connect_archive_writer(path, archive_root=path.parent)
+            if tier is ArchiveTier.SOURCE
+            else connect_measured(path)
+        )
         owner = NativeSQLCustodyOwner(conn)
     else:
         if page_size is not None:
@@ -668,7 +673,11 @@ def initialize_archive_database(
             raise RuntimeError(f"durable tier is missing; refusing runtime initialization: {path}") from exc
         if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
             raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
-        conn = connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        conn = (
+            _connect_archive_writer(path, archive_root=path.parent, existing_only=True)
+            if tier is ArchiveTier.SOURCE
+            else connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        )
         owner = NativeSQLCustodyOwner(conn)
     primary: BaseException | None = None
     try:

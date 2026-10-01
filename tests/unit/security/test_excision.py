@@ -1058,16 +1058,11 @@ class TestAttachmentBlobHashesAreExcisedToo:
             write_source_blob_refs(
                 source_conn,
                 raw_id,
-                (
-                    ArchiveSourceBlobRef(
-                        blob_hash=attachment_blob_hash,
-                        ref_type="attachment",
-                        source_path="attachment.png",
-                        size_bytes=42,
-                        acquired_at_ms=1_000,
-                    ),
+                lambda refs=(ArchiveSourceBlobRef(blob_hash=attachment_blob_hash, ref_type="attachment", source_path="attachment.png", size_bytes=42, acquired_at_ms=1_000),): (
+                    iter(refs)
                 ),
             )
+            source_conn.commit()
         finally:
             source_conn.close()
 

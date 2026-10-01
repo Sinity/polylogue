@@ -3255,23 +3255,16 @@ def _publish_drive_revision_updates(
         return None
     permit.require_rows("raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates)
     assignments = ",".join(f"{column}=?" for column in _DRIVE_REVISION_COLUMNS)
-    with (
-        closing(
-            open_isolated_write_connection(
-                archive_root / "source.db",
-                purpose="prepared Drive lineage",
-                archive_root=archive_root,
+    with permit.source_connection() as source:
+        with source:
+            source.execute("BEGIN IMMEDIATE")
+            cursor = source.executemany(
+                f"UPDATE raw_sessions SET {assignments} WHERE raw_id=?", prepared.drive_revision_updates
             )
-        ) as source,
-        source,
-    ):
-        source.execute("BEGIN IMMEDIATE")
-        cursor = source.executemany(
-            f"UPDATE raw_sessions SET {assignments} WHERE raw_id=?", prepared.drive_revision_updates
-        )
-        if int(cursor.rowcount) != len(prepared.drive_revision_updates):
-            raise RuntimeError("prepared Drive lineage did not update every exact retained raw row")
-    return permit.committed()
+            if int(cursor.rowcount) != len(prepared.drive_revision_updates):
+                raise RuntimeError("prepared Drive lineage did not update every exact retained raw row")
+            permit.allow_commit(source)
+        return permit.committed()
 
 
 def _publish_prepared_drive_revision_updates(
@@ -3283,12 +3276,13 @@ def _publish_prepared_drive_revision_updates(
         return
     reference_seal.validate_observers_current()
     permit = reference_seal.prepare_known_source_mutation(
-        "raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates
+        "raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates, key_column="raw_id"
     )
-    receipt = _publish_drive_revision_updates(prepared, archive_root, permit=permit)
-    if receipt is None:
-        raise RuntimeError("prepared Drive source mutation returned no commit receipt")
-    reference_seal.accept_known_source_commit(receipt)
+    with permit.hold_authority():
+        receipt = _publish_drive_revision_updates(prepared, archive_root, permit=permit)
+        if receipt is None:
+            raise RuntimeError("prepared Drive source mutation returned no commit receipt")
+        reference_seal.accept_known_source_commit(receipt)
 
 
 def _process_ingest_batch_sync_owned(

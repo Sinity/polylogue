@@ -96,7 +96,7 @@ def _materialize(root: Path, state_path: Path, **limits: int) -> CodexStateMater
         )
         try:
             with write_lease("synthetic-state-materialization", archive_root=root):
-                prepared.publish_codex_materials()
+                prepared.publish_blobs()
             with ArchiveStore(root) as archive:
                 receipt = materialize_codex_state_content(
                     archive,

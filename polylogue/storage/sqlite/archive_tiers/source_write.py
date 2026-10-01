@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -634,9 +634,13 @@ def _assert_additional_blob_refs_admissible(
 def write_source_blob_refs(
     conn: sqlite3.Connection,
     raw_id: str,
-    refs: tuple[ArchiveSourceBlobRef, ...],
+    refs: Callable[[], Iterable[ArchiveSourceBlobRef]],
 ) -> None:
-    """Attach already-published blobs to one retained raw record.
+    """Attach already-published blobs in the caller's Source transaction.
+
+    The repeatable cursor preflights and writes closed pages without retaining
+    every reference. The caller commits or rolls back the complete operation;
+    this helper never ends its transaction.
 
     Gated on the durable excision ledger like every other writer in this
     module (``write_source_raw_session``,
@@ -651,31 +655,34 @@ def write_source_blob_refs(
     The refusal is per reference and names the hash, so a caller reports
     which item it did not attach rather than dropping it silently.
     """
-    if not refs:
-        return
     # Preflight the complete batch so invalid storage-local categories cannot
     # leave earlier refs written in a caller-owned transaction.
-    for ref in refs:
+    for ref in refs():
         require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
-    with conn:
-        for ref in refs:
-            if is_blob_hash_excised(conn, ref.blob_hash):
-                raise ContentExcisedError(
-                    blob_hash=ref.blob_hash,
-                    source_path=ref.source_path or f"blob_ref:{ref.ref_type}",
-                )
-            _insert_blob_ref(
-                conn,
-                ArchiveSourceBlobRef(
-                    blob_hash=ref.blob_hash,
-                    raw_id=raw_id,
-                    ref_type=ref.ref_type,
-                    source_path=ref.source_path,
-                    size_bytes=ref.size_bytes,
-                    acquired_at_ms=ref.acquired_at_ms,
-                    publication_receipt_id=ref.publication_receipt_id,
-                ),
+        if ref.size_bytes is None or ref.acquired_at_ms is None:
+            raise ValueError("size_bytes and acquired_at_ms are required for blob refs")
+        if is_blob_hash_excised(conn, ref.blob_hash):
+            raise ContentExcisedError(
+                blob_hash=ref.blob_hash, source_path=ref.source_path or f"blob_ref:{ref.ref_type}"
             )
+    for ref in refs():
+        if is_blob_hash_excised(conn, ref.blob_hash):
+            raise ContentExcisedError(
+                blob_hash=ref.blob_hash,
+                source_path=ref.source_path or f"blob_ref:{ref.ref_type}",
+            )
+        _insert_blob_ref(
+            conn,
+            ArchiveSourceBlobRef(
+                blob_hash=ref.blob_hash,
+                raw_id=raw_id,
+                ref_type=ref.ref_type,
+                source_path=ref.source_path,
+                size_bytes=ref.size_bytes,
+                acquired_at_ms=ref.acquired_at_ms,
+                publication_receipt_id=ref.publication_receipt_id,
+            ),
+        )
 
 
 def write_source_raw_session(

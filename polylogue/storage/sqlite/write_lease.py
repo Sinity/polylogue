@@ -38,10 +38,28 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from polylogue.core.sql_settlement import SQLCustodyOwner
 from polylogue.logging import WARNING, emit, get_logger
+
+if TYPE_CHECKING:
+    import sqlite3
+
+
+class KnownSourceWriteAuthority(Protocol):
+    def bind_source_connection(self, connection: sqlite3.Connection) -> None: ...
+
+    def authorize_source_sql(
+        self,
+        connection: sqlite3.Connection,
+        action: int,
+        first: str | None,
+        second: str | None,
+        schema: str | None,
+        trigger: str | None,
+    ) -> bool: ...
+
 
 ARCHIVE_WRITE_CUSTODY_LOCK_NAME = ".archive-write-custody.lock"
 
@@ -93,6 +111,7 @@ class ArchiveWriteCustody:
         "_owner_open",
         "_locked",
         "_sql_owners",
+        "_known_source_mutation",
         "owner_pid",
         "owner_thread",
         "owner_task",
@@ -113,6 +132,7 @@ class ArchiveWriteCustody:
         self._owner_open = True
         self._locked = False
         self._sql_owners: dict[int, tuple[SQLCustodyOwner, threading.Thread, asyncio.Task[Any] | None]] = {}
+        self._known_source_mutation: KnownSourceWriteAuthority | None = None
         self.owner_pid = os.getpid()
         self.owner_thread: threading.Thread | None = None
         self.owner_task: asyncio.Task[Any] | None = None
@@ -130,6 +150,26 @@ class ArchiveWriteCustody:
             except BaseException as cleanup_error:
                 raise cleanup_error from primary
             raise
+
+    @contextmanager
+    def known_source_mutation(self, permit: KnownSourceWriteAuthority) -> Iterator[None]:
+        """Keep one exact Source effect bound through its observer acceptance."""
+        require_write_lease("known Source mutation", archive_root=self.archive_root)
+        if current_sql_custody() is not self:
+            raise UnleasedWriteError("known Source mutation does not own the current physical custody")
+        if self._known_source_mutation is not None:
+            raise UnleasedWriteError("physical custody already holds a known Source mutation")
+        self._known_source_mutation = permit
+        try:
+            yield
+        finally:
+            if self._known_source_mutation is not permit:
+                raise UnleasedWriteError("known Source mutation authority changed during settlement")
+            self._known_source_mutation = None
+
+    @property
+    def known_source_authority(self) -> KnownSourceWriteAuthority | None:
+        return self._known_source_mutation
 
     def bind_owner_context(self) -> None:
         self._check_process()

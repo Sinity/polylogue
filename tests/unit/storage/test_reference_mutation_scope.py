@@ -665,3 +665,53 @@ def test_seal_construction_failure_retains_primary_and_unsettled_native_child(
                 cursor.allow_cleanup.set()
             for seal in seals:
                 seal.close()
+
+
+@pytest.mark.parametrize("route", ["custom_cursor", "executemany", "executescript", "native_context"])
+def test_known_source_permit_rejects_inherited_child_using_preexisting_handle(tmp_path: Path, route: str) -> None:
+    import asyncio
+
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import async_write_lease
+
+    with write_lease("test.source-bootstrap", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        connection = open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)
+        connection.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO authority_control VALUES ('retained', 'original')")
+        connection.commit()
+
+    async def scenario() -> None:
+        async with async_write_lease("test.source-permit", archive_root=tmp_path):
+            with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+                permit = seal.prepare_known_source_mutation("authority_control", ("value",), (), key_column="key")
+                with permit.hold_authority():
+
+                    async def child() -> None:
+                        if route == "custom_cursor":
+                            with closing(connection.cursor(factory=sqlite3.Cursor)) as cursor:
+                                cursor.execute("UPDATE authority_control SET value = 'wrong'")
+                        elif route == "executemany":
+                            connection.executemany("UPDATE authority_control SET value = ?", [("wrong",)])
+                        elif route == "executescript":
+                            connection.executescript("UPDATE authority_control SET value = 'wrong'; COMMIT;")
+                        else:
+                            with connection:
+                                connection.execute("UPDATE authority_control SET value = 'wrong'")
+
+                    with pytest.raises(sqlite3.DatabaseError):
+                        await asyncio.create_task(child())
+                    connection.rollback()
+                    assert connection.execute("SELECT value FROM authority_control").fetchone()[0] == "original"
+
+    try:
+        asyncio.run(scenario())
+        # The same persistent handle can belong to a later legitimate owner;
+        # its constructor's retired lease is not permanent SQL authority.
+        with write_lease("test.source-successor", archive_root=tmp_path):
+            connection.execute("UPDATE authority_control SET value = 'successor'")
+            connection.commit()
+            assert connection.execute("SELECT value FROM authority_control").fetchone()[0] == "successor"
+    finally:
+        connection.close()

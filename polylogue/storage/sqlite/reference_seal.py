@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pickle
 import sqlite3
 import tempfile
 import threading
@@ -44,11 +45,13 @@ from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     NativeSQLCustodyOwner,
+    _close_failed_native_construction,
     _open_readonly_owner,
     open_readonly_connection,
     open_scratch_connection,
+    open_source_tier_write_connection,
 )
-from polylogue.storage.sqlite.write_lease import current_sql_custody
+from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody, current_sql_custody, require_write_lease
 
 _LIVE_SEALS_LOCK = threading.RLock()
 _LIVE_SEALS: dict[int, PreparedIndexMutation] = {}
@@ -114,6 +117,8 @@ class KnownSourceMutationReceipt:
     _columns: tuple[str, ...]
     _rows: tuple[tuple[object, ...], ...]
     _seal_nonce: object
+    _key_column: str
+    _effect_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +132,121 @@ class KnownSourceMutationPermit:
     _columns: tuple[str, ...]
     _rows: tuple[tuple[object, ...], ...]
     _seal_nonce: object
+
+    _key_column: str
+    _connection: sqlite3.Connection | None = field(default=None, init=False, compare=False, repr=False)
+    _custody: ArchiveWriteCustody | None = field(default=None, init=False, compare=False, repr=False)
+    _guard_setup: bool = field(default=False, init=False, compare=False, repr=False)
+    _effects: int = field(default=0, init=False, compare=False, repr=False)
+    _commit_allowed: bool = field(default=False, init=False, compare=False, repr=False)
+    _failure: BaseException | None = field(default=None, init=False, compare=False, repr=False)
+
+    @contextmanager
+    def hold_authority(self) -> Iterator[KnownSourceMutationPermit]:
+        self._seal.validate_observers_current()
+        require_write_lease("known Source mutation", archive_root=self._seal.archive_root)
+        custody = current_sql_custody()
+        if custody is None:
+            raise ReferenceSealError("known Source mutation requires actual physical archive custody")
+        object.__setattr__(self, "_custody", custody)
+        try:
+            with custody.known_source_mutation(self):
+                yield self
+        finally:
+            object.__setattr__(self, "_custody", None)
+
+    @contextmanager
+    def source_connection(self) -> Iterator[sqlite3.Connection]:
+        owner = NativeSQLCustodyOwner(
+            open_source_tier_write_connection(
+                self._seal._paths["source"],
+                archive_root=self._seal.archive_root,
+                source_permit=self,
+            )
+        )
+        try:
+            yield owner.require_connection()
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
+        else:
+            owner.close()
+
+    def bind_source_connection(self, connection: sqlite3.Connection) -> None:
+        self._seal._require_live_owner()
+        if self._custody is None or current_sql_custody() is not self._custody:
+            raise ReferenceSealError("known Source connection has no admitted physical custody")
+        if self._connection is not None or connection.in_transaction:
+            raise ReferenceSealError("known Source mutation requires one fresh dedicated connection")
+        path = next(str(row[2]) for row in connection.execute("PRAGMA database_list") if row[1] == "main")
+        if Path(path).resolve() != self._seal._paths["source"].resolve():
+            raise ReferenceSealError("known Source mutation selected another tier")
+        object.__setattr__(self, "_connection", connection)
+
+        def check_effect(*values: object) -> int:
+            try:
+                self._seal._require_live_owner()
+                key, actual = values[0], tuple(values[1:])
+                row = self._seal._scratch.execute(
+                    "SELECT values_blob FROM known_source_mutation_rows WHERE row_key = ?", (key,)
+                ).fetchone()
+                if row is None or pickle.loads(row[0]) != actual:
+                    raise ReferenceSealError("Source transaction attempted an undeclared key or value")
+                object.__setattr__(self, "_effects", self._effects + 1)
+                return 1
+            except BaseException as failure:
+                object.__setattr__(self, "_failure", failure)
+                raise
+
+        function = "polylogue_known_source_effect"
+        connection.create_function(function, len(self._columns) + 1, check_effect)
+        values = ", ".join(f"NEW.{column}" for column in (self._key_column, *self._columns))
+        object.__setattr__(self, "_guard_setup", True)
+        try:
+            for operation in ("INSERT", "UPDATE"):
+                connection.execute(
+                    f"CREATE TEMP TRIGGER polylogue_known_source_{operation.lower()} "
+                    f"BEFORE {operation} ON main.{self._table} BEGIN SELECT {function}({values}); END"
+                )
+        finally:
+            object.__setattr__(self, "_guard_setup", False)
+
+    def authorize_source_sql(
+        self,
+        connection: sqlite3.Connection,
+        action: int,
+        first: str | None,
+        second: str | None,
+        schema: str | None,
+        trigger: str | None,
+    ) -> bool:
+        self._seal._require_live_owner()
+        if self._custody is None or current_sql_custody() is not self._custody:
+            return False
+        reads = {sqlite3.SQLITE_READ, sqlite3.SQLITE_SELECT, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE}
+        if action in reads:
+            return True
+        if action == sqlite3.SQLITE_PRAGMA:
+            return second is None or first in {"busy_timeout", "foreign_keys", "cache_size", "mmap_size", "synchronous"}
+        if connection is not self._connection:
+            return False
+        if self._guard_setup and schema == "temp":
+            return True
+        if action == sqlite3.SQLITE_TRANSACTION:
+            return first == "BEGIN" or (first == "COMMIT" and self._commit_allowed)
+        if action == sqlite3.SQLITE_INSERT:
+            return schema == "main" and first == self._table
+        if action == sqlite3.SQLITE_UPDATE:
+            return schema == "main" and first == self._table and second in self._columns
+        return False
+
+    def allow_commit(self, connection: sqlite3.Connection) -> None:
+        self._seal._require_live_owner()
+        if connection is not self._connection or not connection.in_transaction:
+            raise ReferenceSealError("known Source commit does not own its dedicated transaction")
+        if self._failure is not None:
+            raise self._failure
+        object.__setattr__(self, "_commit_allowed", True)
 
     def require_rows(
         self,
@@ -937,13 +1057,20 @@ class PreparedIndexMutation:
         table: str,
         columns: tuple[str, ...],
         rows: tuple[tuple[object, ...], ...],
+        *,
+        key_column: str,
     ) -> KnownSourceMutationPermit:
         """Bind one exact prepared Source write to this observer baseline."""
         self._require_new_work()
-        if not table.isidentifier() or not columns or any(not column.isidentifier() for column in columns):
+        if (
+            not table.isidentifier()
+            or not key_column.isidentifier()
+            or not columns
+            or any(not column.isidentifier() for column in columns)
+        ):
             raise ReferenceSealError("known Source mutation must name declared SQL identifiers")
         if any(len(row) != len(columns) + 1 for row in rows):
-            raise ReferenceSealError("known Source mutation rows must carry declared values and raw_id")
+            raise ReferenceSealError("known Source mutation rows must carry declared values and their exact key")
         source_identity = _tier_identity(self._paths["source"])
         if source_identity != self._identities["source"]:
             raise ReferenceSealStaleError("source.db incarnation changed before prepared source publication")
@@ -957,7 +1084,17 @@ class PreparedIndexMutation:
             columns,
             rows,
             self._source_mutation_nonce,
+            key_column,
         )
+        self._scratch.execute(
+            "CREATE TABLE IF NOT EXISTS known_source_mutation_rows(row_key TEXT PRIMARY KEY, values_blob BLOB NOT NULL) WITHOUT ROWID"
+        )
+        self._scratch.execute("DELETE FROM known_source_mutation_rows")
+        self._scratch.executemany(
+            "INSERT INTO known_source_mutation_rows VALUES (?, ?)",
+            ((row[-1], pickle.dumps(row[:-1], protocol=5)) for row in rows),
+        )
+        self._scratch.commit()
         self._pending_source_permit = permit
         return permit
 
@@ -967,6 +1104,16 @@ class PreparedIndexMutation:
             raise ReferenceSealError("Source writer used a permit outside its prepared seal")
         if self._pending_source_receipt is not None:
             raise ReferenceSealError("known Source mutation permit was already committed")
+        if (
+            permit._custody is None
+            or current_sql_custody() is not permit._custody
+            or permit._custody.known_source_authority is not permit
+            or permit._connection is None
+            or permit._connection.in_transaction
+            or not permit._commit_allowed
+            or permit._failure is not None
+        ):
+            raise ReferenceSealError("Source receipt requires its actual completed dedicated transaction")
         receipt = KnownSourceMutationReceipt(
             self,
             permit._source_identity,
@@ -975,6 +1122,8 @@ class PreparedIndexMutation:
             permit._columns,
             permit._rows,
             permit._seal_nonce,
+            permit._key_column,
+            permit._effects,
         )
         self._pending_source_receipt = receipt
         return receipt
@@ -1004,16 +1153,28 @@ class PreparedIndexMutation:
         observer = self._observers["source"]
         if observer.in_transaction:
             raise ReferenceSealError("cannot advance Source authority while its observer has a read transaction")
-        if not receipt._rows:
-            raise ReferenceSealError("an empty Source mutation cannot advance the observer baseline")
+        permit = self._pending_source_permit
+        if (
+            permit is None
+            or permit._custody is None
+            or current_sql_custody() is not permit._custody
+            or permit._custody.known_source_authority is not permit
+        ):
+            raise ReferenceSealError("Source acceptance lost its exact physical mutation authority")
+        for tier in ("index", "user", "audit"):
+            if (
+                self._observer_identity(tier) != self._identities[tier]
+                or int(self._observers[tier].execute("PRAGMA data_version").fetchone()[0]) != self._versions[tier]
+            ):
+                raise ReferenceSealStaleError(f"{tier}.db changed during known Source publication")
         version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
-        if version_before == receipt._prior_data_version:
-            raise ReferenceSealStaleError("the committed Source mutation did not advance the retained observer")
+        if receipt._effect_count == 0 and version_before != receipt._prior_data_version:
+            raise ReferenceSealStaleError("a no-op Source transaction cannot absorb another mutation")
         columns_sql = ", ".join(receipt._columns)
         for expected in receipt._rows:
-            expected_values, raw_id = expected[:-1], expected[-1]
+            expected_values, row_key = expected[:-1], expected[-1]
             actual = observer.execute(
-                f"SELECT {columns_sql} FROM {receipt._table} WHERE raw_id = ?", (raw_id,)
+                f"SELECT {columns_sql} FROM {receipt._table} WHERE {receipt._key_column} = ?", (row_key,)
             ).fetchone()
             if actual is None or tuple(actual) != expected_values:
                 raise ReferenceSealStaleError("committed Source rows differ from the exact prepared mutation")

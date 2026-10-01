@@ -2265,7 +2265,7 @@ def write_parsed_session_to_archive(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     signature_cache: _SignatureCacheLike | None = None,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
     sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None = None,
     manage_transaction: bool = True,
     bulk_fts: bool = False,
@@ -6996,7 +6996,7 @@ def _write_attachments(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: Iterable[str] | None = None,
-    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
     owner_resolution: MessageOwnerResolution,
     inherited_prefix_message_ids: Sequence[str] = (),
     replace_owner_gaps: bool = True,
@@ -7265,7 +7265,7 @@ def _write_attachment_row(
     conn: sqlite3.Connection,
     attachment_id: str,
     attachment: ParsedAttachment,
-    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None,
+    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None,
 ) -> None:
     """Upsert the attachment's identity and bytes, leaving refs to the caller."""
     acquired_blob = (preacquired_blobs or {}).get(attachment.acquisition_key)

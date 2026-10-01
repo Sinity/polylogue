@@ -1224,7 +1224,7 @@ class RawObservationDerivation:
                         return False
                 for prepared_input in (replacement.prepared_inputs or {}).values():
                     if prepared_input.prepared_artifact is not None:
-                        prepared_input.prepared_artifact.publish_codex_materials()
+                        prepared_input.prepared_artifact.publish_blobs()
                 for prepared in (replacement.prepared_inputs or {}).values():
                     if prepared.prepared_artifact is not None:
                         try:

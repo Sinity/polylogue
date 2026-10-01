@@ -291,6 +291,7 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["message_variant_index"] = value.message_variant_index
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     payload["precomputed_blob"] = value.precomputed_blob
+    payload["prepared_carrier_key"] = value.prepared_carrier_key
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
     )
@@ -306,9 +307,10 @@ def _attachment_from_json(encoded: str) -> ParsedAttachment:
 
 
 def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
-    return _attachment_from_json(encoded).model_copy(
-        update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
-    )
+    attachment = _attachment_from_json(encoded)
+    if attachment.prepared_carrier_key is not None:
+        return attachment
+    return attachment.model_copy(update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)})
 
 
 # The envelope's pointer line, and the bare path as it also appears inside the

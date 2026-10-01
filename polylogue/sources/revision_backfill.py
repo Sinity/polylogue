@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from functools import wraps
+from functools import partial, wraps
 from io import BytesIO
 from itertools import chain, islice
 from pathlib import Path
@@ -611,6 +611,7 @@ def prepare_retained_jsonl_artifact(
 ) -> PreparedJsonl:
     """Prepare a retained JSON or JSONL session view on a read-only snapshot."""
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.blob_store import BlobStore
 
     provider = Provider(provider_token)
@@ -779,6 +780,7 @@ def prepare_retained_jsonl_artifact(
                 fallback_id,
                 is_stream=is_stream_record_provider(source_path, provider),
                 shard_directory=directory,
+                publication_publisher=ArchiveBlobPublisher(Path(source_db_path), Path(blob_root)),
                 # Live intake refuses a complete JSONL record that does not
                 # decode; replay of the same bytes must refuse it too.
                 strict_jsonl_records=True,
@@ -849,10 +851,17 @@ def prepare_retained_non_json_artifact(
 ) -> PreparedJsonl:
     """Seal a non-JSON retained parse inside the isolated preparation worker."""
     from polylogue.pipeline.ids import session_content_hash
-    from polylogue.sources.prepared_jsonl import PreparedJsonl, _prepare_codex_state_blob, _write_artifact
+    from polylogue.sources.prepared_jsonl import (
+        PreparedJsonl,
+        _prepare_attachment_publications,
+        _prepare_codex_state_blob,
+        _write_artifact,
+    )
     from polylogue.sources.prepared_message_sink import SqliteMessageStore
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.blob_store import BlobStore
 
+    publisher = ArchiveBlobPublisher(Path(source_db_path), Path(blob_root))
     archive_root = Path(source_db_path).parent
     if archive_root / "blob" != Path(blob_root):
         raise RetainedPreparationRetryableError(f"retained archive binding changed for raw {raw_id}")
@@ -914,6 +923,7 @@ def prepare_retained_non_json_artifact(
                 semantic_source_path=source_path,
                 enrichment_digest=dependency,
                 enrichment_index_path=str(Path(index_db_path).resolve()),
+                publication_publisher=publisher,
             )
             sealed = True
             return artifact
@@ -928,6 +938,7 @@ def prepare_retained_non_json_artifact(
             enrichment_digest=dependency,
             enrichment_index_path=str(Path(index_db_path).resolve()),
         )
+        _prepare_attachment_publications(store, publisher, Path(directory))
         store.close()
         store = None
         artifact = PreparedJsonl.seal(
@@ -937,6 +948,7 @@ def prepare_retained_non_json_artifact(
             enrichment_digest=dependency,
             enrichment_index_path=str(Path(index_db_path).resolve()),
             resolved_provider=resolved_provider,
+            publication_publisher=publisher,
         )
         sealed = True
         return artifact
@@ -2432,6 +2444,19 @@ def apply_prepared_revision_replay(
             logical_keys.difference(work_event_keys), archive, spill, archive_root
         )
         source_conn = archive._ensure_source_conn()
+
+        def attachment_preparation(raw_id: str):
+            prepared = prepared_inputs.get(raw_id)
+            if prepared is None or prepared.prepared_artifact is None:
+                raise RetainedPreparationRetryableError(f"sealed attachment carrier is absent for {raw_id}")
+            artifact = prepared.prepared_artifact
+            return artifact.attachment_blobs(source_connection=source_conn), partial(
+                artifact.iter_attachment_refs,
+                source_path=prepared.source_path,
+                acquired_at_ms=0,
+                source_connection=source_conn,
+            )
+
         ordered_logical_keys = [
             logical_key
             for logical_key in replay_schedule.order
@@ -2530,6 +2555,7 @@ def apply_prepared_revision_replay(
                     prepared_write=prepared_write,
                     prepared_inputs=prepared_inputs,
                 )
+                attachment_views = {raw_id: attachment_preparation(raw_id) for raw_id in plan.accepted_raw_ids}
                 composed_session = prepared_aggregate_session or parsed_by_raw_id[tip_raw_id]
                 shard_path = prepared_aggregate_path or _prepared_shard_path(prepared_inputs, tip_raw_id)
                 try:
@@ -2549,6 +2575,12 @@ def apply_prepared_revision_replay(
                             prepared_aggregate_session=composed_session,
                             prepared_required_raw_ids=frozenset({tip_raw_id}),
                             prepared_write=prepared_write,
+                            preacquired_attachment_blobs_by_raw_id={
+                                raw_id: view[0] for raw_id, view in attachment_views.items()
+                            },
+                            preacquired_attachment_refs_by_raw_id={
+                                raw_id: view[1] for raw_id, view in attachment_views.items()
+                            },
                         )
                 except PreparedSessionWriteRefusedError as exc:
                     raise RetainedPreparationRetryableError(
@@ -2630,6 +2662,7 @@ def apply_prepared_revision_replay(
                 else:
                     accepted_raw_id = classification.accepted_raw_ids[-1]
                     accepted_session = member_sessions[accepted_raw_id]
+                    attachment_blobs, attachment_refs = attachment_preparation(accepted_raw_id)
                     try:
                         with archive.attached_session_shard(
                             _prepared_shard_path(prepared_inputs, accepted_raw_id), required=True
@@ -2650,6 +2683,8 @@ def apply_prepared_revision_replay(
                                 prepared_by_raw_id=prepared,
                                 prepared_required_raw_ids=frozenset({accepted_raw_id}),
                                 prepared_write=_prepared_write_for(prepared_writes, accepted_raw_id, accepted_session),
+                                preacquired_attachment_blobs=attachment_blobs,
+                                preacquired_attachment_refs=attachment_refs,
                             )
                     except PreparedSessionWriteRefusedError as exc:
                         raise RetainedPreparationRetryableError(

@@ -99,8 +99,8 @@ import itertools
 import json
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import Future
+from collections import ChainMap
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -460,7 +460,7 @@ def _write_parsed_precedence_result(
     stage_timings_s: dict[str, float] | None,
     stage_timing_prefix: str,
     manage_transaction: bool,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
     revision_authoritative: bool = False,
     bulk_fts: bool = False,
     bulk_build: bool = False,
@@ -1129,7 +1129,7 @@ def write_parsed_for_retained_raw_result(
         store._blob_publisher,
         source_conn=store._ensure_source_conn(),
     )
-    write_source_blob_refs(store._ensure_source_conn(), raw_id, attachment_blob_refs)
+    write_source_blob_refs(store._ensure_source_conn(), raw_id, lambda refs=attachment_blob_refs: iter(refs))
     index_started = time.perf_counter()
     result = _index_parsed_for_retained_raw(
         store,
@@ -3357,10 +3357,10 @@ def apply_raw_revision_replay(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     skip_already_applied: bool = False,
-    prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
+    prepared_by_raw_id: dict[str, PreparedRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
-    preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[Any, tuple[bytes | None, int, str]]] | None = None,
-    preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
+    preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]] | None = None,
+    preacquired_attachment_refs_by_raw_id: Mapping[str, Callable[[], Iterable[ArchiveSourceBlobRef]]] | None = None,
     prepared_aggregate_session: ParsedSession | None = None,
     prepared_pending_session: ParsedSession | None = None,
     prepared_aggregate_rows: PreparedRows | None = None,
@@ -3369,22 +3369,10 @@ def apply_raw_revision_replay(
 ) -> tuple[str, tuple[str, ...]]:
     """Apply a proven chain and atomically receipt its exact index state.
 
-    ``prepared_by_raw_id`` (polylogue-fpid) optionally supplies rows already
-    built off the writer thread for one or more of ``plan.accepted_raw_ids``
-    -- keyed by ``raw_id``, value either tuples (``PreparedSessionRows``), a
-    binding into an attached shard (``PreparedSessionShardRows``,
-    polylogue-bp12n.6), or a ``Future`` resolved here right
-    before use (so a caller can ``submit()`` the CPU-bound build on a
-    background thread and let it run concurrently with this function's own
-    attachment-preacquisition/blob-flush/head-lookup preamble, then pay only
-    the (likely already-finished) ``Future.result()`` wait). Prepared rows
-    describe one chunk's own content and only a full replace accepts them,
-    so they are consulted only when that chunk is the entire composed write.
-    A missing key, ``None`` value, or a value that turns out
-    stale (session content hash mismatch, or lineage tail-slicing changed
-    ``messages`` after it was built) is always safe: ``write_parsed_session_
-    to_archive`` falls back to building rows inline, byte-identical to
-    ``prepared_by_raw_id=None``.
+    ``prepared_by_raw_id`` supplies physically completed rows for a single
+    accepted chunk. A composed chain uses its sealed aggregate rows and
+    attachment carrier. Publication neither submits nor waits for preparation;
+    changed preparation is a typed refusal.
 
     ``manage_transaction=False`` batches this cohort's index.db writes
     and terminal source.db parse-state markers into the caller's open
@@ -3471,44 +3459,18 @@ def apply_raw_revision_replay(
     )
     if prepared_aggregate_content_hash is not None and len(prepared_aggregate_content_hash) != 32:
         raise PreparedSessionWriteRefusedError("prepared aggregate content hash is invalid")
-    attachments_by_raw_id: dict[str, dict[Any, tuple[bytes | None, int, str]]] = {}
-    attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
+    if preacquired_attachment_blobs_by_raw_id is None or preacquired_attachment_refs_by_raw_id is None:
+        raise PreparedSessionWriteRefusedError("revision replay requires sealed attachment preparation")
     for raw_id in plan.accepted_raw_ids:
-        if preacquired_attachment_blobs_by_raw_id is not None:
-            acquired = dict(preacquired_attachment_blobs_by_raw_id.get(raw_id, {}))
-            refs = tuple((preacquired_attachment_refs_by_raw_id or {}).get(raw_id, ()))
-        else:
-            _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
-            acquired, refs = store._preacquire_attachment_blobs(
-                parsed_by_raw_id[raw_id],
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-            )
-        attachments_by_raw_id[raw_id] = acquired
-        attachment_refs_by_raw_id[raw_id] = refs
-    if store._blob_publisher is not None:
-        if not manage_transaction and store._blob_publisher.has_pending:
-            # Batched replay holds one transaction across many cohorts; a
-            # non-empty flush opens a SEPARATE source.db connection at
-            # ``BEGIN IMMEDIATE`` which would wait out its busy timeout
-            # behind this batch's held source write lock. Commit the open
-            # batch first: everything committed is a complete prior-cohort
-            # boundary (this cohort has written nothing yet), so crash
-            # semantics are identical to a smaller batch.
-            store.commit()
-        store._blob_publisher.flush()
-        for raw_id in tuple(attachments_by_raw_id):
-            attachments_by_raw_id[raw_id], attachment_refs_by_raw_id[raw_id] = reconcile_refused_attachments(
-                attachments_by_raw_id[raw_id],
-                attachment_refs_by_raw_id[raw_id],
-                store._blob_publisher,
-                source_conn=store._ensure_source_conn(),
-            )
-    if not _is_frozen_candidate(store):
-        for raw_id, refs in attachment_refs_by_raw_id.items():
-            write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
+        if raw_id not in preacquired_attachment_blobs_by_raw_id or raw_id not in preacquired_attachment_refs_by_raw_id:
+            raise PreparedSessionWriteRefusedError(f"revision replay lacks prepared attachments for {raw_id}")
     session_ids: set[str] = set()
     with store.index_mutation_scope() if manage_transaction else nullcontext():
+        if not _is_frozen_candidate(store):
+            for raw_id in plan.accepted_raw_ids:
+                write_source_blob_refs(
+                    store._ensure_source_conn(), raw_id, preacquired_attachment_refs_by_raw_id[raw_id]
+                )
         existing_head = store._conn.execute(
             """SELECT session_id, accepted_raw_id, accepted_source_revision,
                       accepted_content_hash, accepted_frontier_kind, accepted_frontier
@@ -3617,9 +3579,9 @@ def apply_raw_revision_replay(
                     composed_session = composed_session.model_copy(update=chain_header)
             # Preacquired blobs use the attachment's acquisition key. A
             # prepared carrier preserves that key across separate row reads.
-            composed_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] = {}
-            for raw_id in pending_raw_ids:
-                composed_attachment_blobs.update(attachments_by_raw_id[raw_id])
+            composed_attachment_blobs = ChainMap(
+                *(preacquired_attachment_blobs_by_raw_id[raw_id] for raw_id in reversed(pending_raw_ids))
+            )
             # The chain's newest accepted raw carries the composed write:
             # ``sessions.raw_id`` and the reparse receipt then name the tip
             # the head row is about to advertise.
@@ -3632,11 +3594,7 @@ def apply_raw_revision_replay(
             if full_replace and prepared_aggregate_rows is not None:
                 resolved_prepared = prepared_aggregate_rows
             elif full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
-                prepared_candidate = prepared_by_raw_id.get(tip_raw_id)
-                if isinstance(prepared_candidate, Future):
-                    resolved_prepared = prepared_candidate.result()
-                else:
-                    resolved_prepared = prepared_candidate
+                resolved_prepared = prepared_by_raw_id.get(tip_raw_id)
             index_started = time.perf_counter()
             result = _index_parsed_for_retained_raw(
                 store,
@@ -3888,8 +3846,8 @@ def apply_raw_membership_classification(
     bulk_build: bool = False,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
-    preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_refs: Callable[[], Iterable[ArchiveSourceBlobRef]] | None = None,
     prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
     prepared_write: PreparedSessionWrite | None = None,
@@ -3936,36 +3894,12 @@ def apply_raw_membership_classification(
         accepted_raw_id = classification.accepted_raw_ids[-1]
         accepted_session = parsed_by_raw_id[accepted_raw_id]
         _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, accepted_raw_id)
-        if preacquired_attachment_blobs is None:
-            attachments, refs = store._preacquire_attachment_blobs(
-                accepted_session,
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-            )
-            if store._blob_publisher is not None:
-                if not manage_transaction and store._blob_publisher.has_pending:
-                    # Same batched-replay deadlock avoidance as
-                    # ``apply_raw_revision_replay``: commit the open batch before
-                    # a non-empty flush takes its separate source.db write lock.
-                    store.commit()
-                store._blob_publisher.flush()
-        else:
-            # Shared compute staged attachment blobs without a source-tier
-            # reservation.  This admitted writer owns the first source write:
-            # reserve and publish the staged bytes before the durable refs
-            # below make them live, without reopening or hashing them.
-            attachments = preacquired_attachment_blobs
-            refs = preacquired_attachment_refs or ()
-            if store._blob_publisher is not None and store._blob_publisher.has_pending:
-                if not manage_transaction:
-                    store.commit()
-                store._blob_publisher.flush()
-        attachments, refs = reconcile_refused_attachments(
-            attachments, tuple(refs), store._blob_publisher, source_conn=store._ensure_source_conn()
-        )
-        if not _is_frozen_candidate(store):
-            write_source_blob_refs(conn, accepted_raw_id, refs)
+        if preacquired_attachment_blobs is None or preacquired_attachment_refs is None:
+            raise PreparedSessionWriteRefusedError("membership replay requires sealed attachment preparation")
+        attachments = preacquired_attachment_blobs
         with store.index_mutation_scope() if manage_transaction else nullcontext():
+            if not _is_frozen_candidate(store):
+                write_source_blob_refs(conn, accepted_raw_id, preacquired_attachment_refs)
             existing_head = store._conn.execute(
                 """
                 SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id,
@@ -4600,7 +4534,7 @@ def _index_parsed_for_retained_raw(
     stage_timings_s: dict[str, float] | None,
     stage_timing_prefix: str,
     manage_transaction: bool,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]],
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]],
     finalize_raw_parse: bool,
     revision_authoritative: bool = False,
     bulk_fts: bool = False,

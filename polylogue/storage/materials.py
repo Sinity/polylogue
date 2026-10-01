@@ -15,7 +15,6 @@ import mimetypes
 import os
 import socket
 import sqlite3
-import stat
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,7 +28,6 @@ from typing import Any, BinaryIO, Literal
 import ijson
 
 from polylogue.core.prepared_file import PreparedFileSeal
-from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFaultKind
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     PreparedBlobPublicationClaim,
@@ -505,7 +503,7 @@ def prepare_material(
 
         stream = BytesIO(payload) if isinstance(payload, bytes) else payload
         media_type = media_type or mimetypes.guess_type(filename or "")[0]
-        prepared_blob = blob_store.prepare_from_fileobj(CheckedInput())
+        prepared_blob = blob_store.prepare_from_fileobj(CheckedInput(), staging_directory=staging_directory)
         try:
             digest = hashlib.sha256()
             digest.update(source_uri.encode("utf-8"))
@@ -607,35 +605,10 @@ def admit_material(
     media_type, media_charset, filename = prepared.media_type, prepared.media_charset, prepared.filename
     privacy_classification = prepared.privacy_classification
     if prepared.blob is not None:
-        database_path = next((str(row[2]) for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
-        if not database_path or Path(database_path).resolve() != prepared.publisher.source_db_path.resolve():
-            raise ValueError("material publication belongs to another Source database")
         claim = prepared.publication_claim
-        if claim is None or claim.publisher is not prepared.publisher:
+        if claim is None:
             raise ValueError("material has no captured publication claim")
-        receipt = claim.receipt
-        from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, is_blob_hash_excised
-
-        if is_blob_hash_excised(conn, bytes.fromhex(receipt.blob_hash)):
-            raise ContentExcisedError(blob_hash=bytes.fromhex(receipt.blob_hash), source_path=prepared.source_uri)
-        row = conn.execute(
-            "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
-            (receipt.publication_id,),
-        ).fetchone()
-        expected = (bytes.fromhex(receipt.blob_hash), receipt.size_bytes, receipt.publisher_id)
-        if row is None or tuple(row) != expected:
-            raise ArchiveStorageFaultError(
-                StorageFaultKind.EVICTED, FileNotFoundError("material publication reservation is absent or changed")
-            )
-        blob_hash, byte_size = receipt.blob_hash, receipt.size_bytes
-        try:
-            info = prepared.publisher.blob_path(blob_hash).lstat()
-        except OSError as exc:
-            raise ArchiveStorageFaultError(StorageFaultKind.EVICTED, exc) from exc
-        if not stat.S_ISREG(info.st_mode) or info.st_size != byte_size:
-            raise ArchiveStorageFaultError(
-                StorageFaultKind.EVICTED, FileNotFoundError("material publication bytes are absent or changed")
-            )
+        blob_hash, byte_size = prepared.publisher.validate_published_claim(conn, claim, source_path=prepared.source_uri)
         custody = "retained"
     else:
         if prepared.seal is not None or prepared.publication_claim is not None:

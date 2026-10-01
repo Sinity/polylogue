@@ -21,7 +21,11 @@ from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFaultKind
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection, open_source_tier_write_connection
+from polylogue.storage.sqlite.connection_profile import (
+    open_readonly_connection,
+    open_source_tier_write_connection,
+    readonly_connection_context,
+)
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
@@ -197,6 +201,16 @@ class BlobPublicationReservationStore:
             conn.execute("BEGIN IMMEDIATE")
             excised = _excised_hashes(conn, {receipt.blob_hash for receipt in receipts})
             receipts = [receipt for receipt in receipts if receipt.blob_hash not in excised]
+            new_receipts = []
+            for receipt in receipts:
+                existing = conn.execute(
+                    "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
+                    (receipt.publication_id,),
+                ).fetchone()
+                if existing is None:
+                    new_receipts.append(receipt)
+                elif tuple(existing) != (bytes.fromhex(receipt.blob_hash), receipt.size_bytes, receipt.publisher_id):
+                    raise ValueError("publication claim collides with another reservation")
             conn.executemany(
                 """
                 INSERT INTO blob_publication_reservations (
@@ -211,7 +225,7 @@ class BlobPublicationReservationStore:
                         receipt.publisher_id,
                         now_ms,
                     )
-                    for receipt in receipts
+                    for receipt in new_receipts
                 ),
             )
             conn.commit()
@@ -338,12 +352,57 @@ class ArchiveBlobPublisher(BlobStore):
                 raise ValueError("prepared claim does not name these bytes")
             if Path(os.path.abspath(prepared.temporary_path)) != claim.prepared_path:
                 raise ValueError("prepared claim names another private path")
+            if not claim.prepared_path.exists():
+                # A reused sealed carrier names the same exact reservation,
+                # never a new hash-only adoption or a fabricated receipt.
+                with readonly_connection_context(self.source_db_path, validate_schema=False) as connection:
+                    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+                    if is_blob_hash_excised(connection, bytes.fromhex(claim.receipt.blob_hash)):
+                        return prepared.hash_hex, prepared.size_bytes
+                    self.validate_published_claim(connection, claim, source_path="")
+                return prepared.hash_hex, prepared.size_bytes
             try:
                 self._validate_claim_path(claim.prepared_path)
                 claim.seal.verify(prepared.temporary_path, full=False)
             except (OSError, ValueError) as failure:
                 raise ArchiveStorageFaultError(StorageFaultKind.EVICTED, failure) from failure
         return self._queue(prepared, claim)
+
+    def validate_published_claim(
+        self, connection: sqlite3.Connection, claim: PreparedBlobPublicationClaim, *, source_path: str
+    ) -> tuple[str, int]:
+        """Verify the exact reservation and final bytes inside the owning Source transaction."""
+        from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, is_blob_hash_excised
+
+        database_path = next(
+            (str(row[2]) for row in connection.execute("PRAGMA database_list").fetchall() if row[1] == "main"), ""
+        )
+        if not database_path or Path(database_path).resolve() != self.source_db_path.resolve():
+            raise ValueError("publication belongs to another Source database")
+        if claim.publisher is not self or claim.receipt.publisher_id != self.publisher_id:
+            raise ValueError("publication belongs to another captured publisher")
+        receipt = claim.receipt
+        blob_hash = bytes.fromhex(receipt.blob_hash)
+        if is_blob_hash_excised(connection, blob_hash):
+            raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
+        row = connection.execute(
+            "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
+            (receipt.publication_id,),
+        ).fetchone()
+        if row is None or tuple(row) != (blob_hash, receipt.size_bytes, receipt.publisher_id):
+            raise ArchiveStorageFaultError(
+                StorageFaultKind.EVICTED, FileNotFoundError("publication reservation is absent or changed")
+            )
+        try:
+            info = self._store.blob_path(receipt.blob_hash).lstat()
+        except OSError as failure:
+            raise ArchiveStorageFaultError(StorageFaultKind.EVICTED, failure) from failure
+        if not stat.S_ISREG(info.st_mode) or info.st_size != receipt.size_bytes:
+            raise ArchiveStorageFaultError(
+                StorageFaultKind.EVICTED, FileNotFoundError("publication bytes are absent or changed")
+            )
+        return receipt.blob_hash, receipt.size_bytes
 
     def write_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_path(source, heartbeat=heartbeat))
