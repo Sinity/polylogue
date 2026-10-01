@@ -144,12 +144,11 @@ def test_non_json_retained_worker_replays_past_old_payload_limit(tmp_path: Path)
     adapter = make_raw_observation_derivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
-    try:
-        assert replacement.prepared_inputs is not None
-        assert replacement.payload is None
-        assert _publish(adapter, frame, replacement)
-    finally:
-        replacement.close()
+    assert replacement.prepared_inputs is not None
+    assert replacement.payload is None
+    assert _publish(adapter, frame, replacement)
+    assert replacement.scratch_directory is not None
+    assert not replacement.scratch_directory.exists()
     assert adapter.inspect(raw_observation_frame(tmp_path), (raw_id,))[raw_id] == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("large-text-route",)]
