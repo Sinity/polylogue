@@ -258,6 +258,11 @@ def test_checked_in_baseline_holds_the_current_repository() -> None:
             0,
         ),
         (
+            "from polylogue.operations.daemon_execution import operation_envelope\nfrom other_owner import *",
+            "operation_envelope(request, context, outcome='failed', error=error)",
+            1,
+        ),
+        (
             "from other_owner import operation_envelope",
             "operation_envelope(request, context, outcome='failed', error=error)",
             1,

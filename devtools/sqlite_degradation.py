@@ -93,7 +93,9 @@ def _canonical_envelope_name(node: ast.Return, parents: dict[ast.AST, ast.AST], 
             for child in _scope_nodes(scope):
                 if isinstance(child, ast.ImportFrom):
                     for alias in child.names:
-                        if (alias.asname or alias.name) == name:
+                        if alias.name == "*":
+                            bindings.append(False)
+                        elif (alias.asname or alias.name) == name:
                             bindings.append(
                                 child.module == "polylogue.operations.daemon_execution"
                                 and child.level == 0
