@@ -441,20 +441,15 @@ def _source_presence(
         return None
     else:
         return stat.S_ISREG(info.st_mode)
-    container_text, separator, member = str(direct).partition("!")
-    if separator and member:
-        names = _member_inventory(Path(container_text), inventories)
-        if names is None:
-            return None
-        return member in names if isinstance(names, frozenset) else False
-    # Acquisition permits arbitrary ZIP filenames. Probe the shared owner's
-    # candidates in order, without selecting a boundary from spelling alone.
-    for container, member in zip_member_coordinate_candidates(str(direct)):
-        names = _member_inventory(container, inventories)
-        if names is None:
-            return None
-        if isinstance(names, frozenset):
-            return member in names
+    # Both existing acquisition spellings allow the delimiter inside a
+    # container or member name. Select only a readable actual ZIP boundary.
+    for separator in ("!", ":"):
+        for container, member in zip_member_coordinate_candidates(str(direct), separator=separator):
+            names = _member_inventory(container, inventories)
+            if names is None:
+                return None
+            if isinstance(names, frozenset):
+                return member in names
     return False
 
 

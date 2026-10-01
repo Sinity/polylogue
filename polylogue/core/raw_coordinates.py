@@ -210,15 +210,17 @@ def zip_member_identity_coordinate(
     return (entry_ordinal, split_index) if raw_id == expected_raw_id else None
 
 
-def zip_member_coordinate_candidates(source_path: str) -> Iterator[tuple[Path, str]]:
-    """Yield lexical colon boundaries without claiming a container is readable.
+def zip_member_coordinate_candidates(source_path: str, *, separator: str = ":") -> Iterator[tuple[Path, str]]:
+    """Yield lexical coordinate boundaries without claiming a container is readable.
 
     Shortest container first preserves acquisition's real-ZIP selection law.
     The observer must distinguish unreadable candidates from proven non-ZIPs;
     lexical spelling alone cannot select an arbitrary removed container.
     """
+    if separator not in {":", "!"}:
+        raise ValueError("ZIP member separator must be colon or exclamation mark")
     start = 0
-    while (separator_at := source_path.find(":", start)) != -1:
+    while (separator_at := source_path.find(separator, start)) != -1:
         start = separator_at + 1
         if separator_at == 0 or separator_at == len(source_path) - 1:
             continue
