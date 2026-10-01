@@ -1878,12 +1878,11 @@ class ResolvedRuntimeConfig:
     backup_verify_tmpdir: Path | None
 
     def as_config(self) -> Config:
-        """Return a defensive legacy projection without ambient re-resolution."""
+        """Project settings while following generations under the resolved root."""
         return Config(
             archive_root=self.paths.archive_root,
             render_root=self.paths.render_root,
             sources=list(self.sources),
-            db_path=self.paths.index_db,
             drive_config=self.drive_config,
             index_config=self.index_config,
             embedding_model=self.settings.embedding_model,
