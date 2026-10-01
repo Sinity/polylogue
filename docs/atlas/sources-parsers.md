@@ -62,6 +62,13 @@ provider (`docs/provider-origin-identity.md:15-30`;
 
 ## Invariants
 
+- Native Codex browser-capture envelopes retain the original record array and
+  delegate to the ordinary Codex parser before merging envelope attachments;
+  the extension does not provide a Codex page adapter.
+  Native attachment turns lacking provider IDs use explicit retained ordinals
+  with matching native role/text to produce private owner coordinates. The
+  parser refuses absent or conflicting evidence instead of inventing an ID.
+
 - Detection is shape-based and ordered by declared tightness, per payload mode.
 - Parsing preserves structured tool-result outcome and exit-code fields;
   prose is not an outcome oracle.

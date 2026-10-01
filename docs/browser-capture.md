@@ -230,6 +230,22 @@ imports. This is the preferred path because it preserves branches, current
 node, message ids, timestamps, model metadata, attachments, and other fields the
 visible DOM cannot reliably expose.
 
+The retained capture envelope also accepts a Codex native record array under
+`raw_provider_payload` when `session.provider` is `codex`. Acquisition adapters
+can use this existing envelope to associate attachment evidence with an original
+Codex transcript. The parser delegates the records to the ordinary Codex parser
+and merges the envelope attachments, preserving message fields and fork lineage
+on ingestion and retained replay. Invalid Codex record streams are refused. This
+is an ingestion contract; the browser extension has no Codex page adapter.
+For Codex, ChatGPT and Claude.ai native captures, the parsed native session ID
+must match the envelope's declared session ID before attachment or lifecycle
+evidence is merged. A disagreement produces a typed refusal.
+An attachment turn without a provider message ID must retain an explicit native
+turn ordinal and matching role and text. The parser resolves that witnessed
+turn through its private message owner coordinate, preserving native IDs and
+attachment bytes on replay. Missing or conflicting evidence is refused; a
+default ordinal is not ownership evidence.
+
 DOM extraction is a compatibility fallback for pages where no provider-native
 payload has been observed yet. It still uses the provider-native conversation id
 from the URL, so a later native capture or GDPR import for the same conversation

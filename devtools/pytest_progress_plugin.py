@@ -37,6 +37,15 @@ _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
+_SESSION_ENV_NAMES = (*_ARTIFACT_ENV_NAMES, "PYTEST_XDIST_WORKER", "POLYLOGUE_VERIFY_RUN_ID")
+_ACTIVE_SESSION_ENVIRONMENT: dict[str, str | None] | None = None
+
+
+def _session_environment_value(name: str) -> str | None:
+    # A running session owns its destinations even when a test changes env.
+    if _ACTIVE_SESSION_ENVIRONMENT is not None:
+        return _ACTIVE_SESSION_ENVIRONMENT.get(name)
+    return os.environ.get(name)
 
 
 @dataclass
@@ -50,6 +59,7 @@ class _SessionState:
     collection_duration_s: float | None
     controller_collection_payload: dict[str, Any] | None
     artifact_environment: dict[str, str | None]
+    active_session_environment: dict[str, str | None] | None
 
 
 _SESSION_STATE_STACK: list[_SessionState] = []
@@ -67,11 +77,14 @@ def _capture_session_state() -> _SessionState:
         controller_collection_payload=(
             dict(_CONTROLLER_COLLECTION_PAYLOAD) if _CONTROLLER_COLLECTION_PAYLOAD else None
         ),
-        artifact_environment={name: os.environ.get(name) for name in _ARTIFACT_ENV_NAMES},
+        artifact_environment={name: os.environ.get(name) for name in _SESSION_ENV_NAMES},
+        active_session_environment=_ACTIVE_SESSION_ENVIRONMENT,
     )
 
 
 def _restore_session_state(state: _SessionState) -> None:
+    global _ACTIVE_SESSION_ENVIRONMENT
+    _ACTIVE_SESSION_ENVIRONMENT = state.active_session_environment
     global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD
     global _DESELECTED_COUNT, _SELECTED_COUNT
     _DESELECTED_NODEIDS_SAMPLE[:] = state.deselected_nodeids_sample
@@ -132,14 +145,14 @@ def _selection_nodeid_limit() -> int:
 
 
 def _write_event(payload: dict[str, Any]) -> None:
-    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
-    raw_path = os.environ.get(_EVENTS_ENV)
+    raw_dir = _session_environment_value(_EVENTS_DIR_ENV)
+    raw_path = _session_environment_value(_EVENTS_ENV)
     if not raw_dir and not raw_path:
         return
     payload = {
         "updated_at": datetime.now(UTC).isoformat(),
-        "run_id": os.environ.get("POLYLOGUE_VERIFY_RUN_ID"),
-        "worker_id": os.environ.get("PYTEST_XDIST_WORKER", "controller"),
+        "run_id": _session_environment_value("POLYLOGUE_VERIFY_RUN_ID"),
+        "worker_id": (_session_environment_value("PYTEST_XDIST_WORKER") or "controller"),
         "pid": os.getpid(),
         **payload,
     }
@@ -155,13 +168,13 @@ def _write_event(payload: dict[str, Any]) -> None:
 
 
 def _write_selection(payload: dict[str, Any]) -> None:
-    raw_path = os.environ.get(_SELECTION_ENV)
+    raw_path = _session_environment_value(_SELECTION_ENV)
     if not raw_path:
         return
     payload = {
         "updated_at": datetime.now(UTC).isoformat(),
-        "run_id": os.environ.get("POLYLOGUE_VERIFY_RUN_ID"),
-        "worker_id": os.environ.get("PYTEST_XDIST_WORKER", "controller"),
+        "run_id": _session_environment_value("POLYLOGUE_VERIFY_RUN_ID"),
+        "worker_id": (_session_environment_value("PYTEST_XDIST_WORKER") or "controller"),
         "pid": os.getpid(),
         **payload,
     }
@@ -175,8 +188,8 @@ def _write_selection(payload: dict[str, Any]) -> None:
 
 def _write_worker_collection_fact(payload: dict[str, Any]) -> None:
     """Publish one worker-local collection fact for controller aggregation."""
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
-    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
+    worker_id = _session_environment_value("PYTEST_XDIST_WORKER")
+    raw_dir = _session_environment_value(_EVENTS_DIR_ENV)
     if not worker_id or not raw_dir:
         return
     path = Path(raw_dir) / f"{worker_id.replace('/', '-')}-{os.getpid()}{_COLLECTION_FACT_SUFFIX}"
@@ -191,7 +204,7 @@ def _write_worker_collection_fact(payload: dict[str, Any]) -> None:
 def _worker_collection_payloads(events_dir: Path | None = None) -> list[dict[str, Any]]:
     """Read worker collection facts in a stable order for the controller."""
     if events_dir is None:
-        raw_dir = os.environ.get(_EVENTS_DIR_ENV)
+        raw_dir = _session_environment_value(_EVENTS_DIR_ENV)
         if not raw_dir:
             return []
         events_dir = Path(raw_dir)
@@ -237,13 +250,13 @@ def merge_worker_collection_payloads(events_dir: Path | None = None) -> dict[str
 
 
 def _write_summary(payload: dict[str, Any]) -> None:
-    raw_path = os.environ.get(_SUMMARY_ENV)
+    raw_path = _session_environment_value(_SUMMARY_ENV)
     if not raw_path:
         return
     payload = {
         "updated_at": datetime.now(UTC).isoformat(),
-        "run_id": os.environ.get("POLYLOGUE_VERIFY_RUN_ID"),
-        "worker_id": os.environ.get("PYTEST_XDIST_WORKER", "controller"),
+        "run_id": _session_environment_value("POLYLOGUE_VERIFY_RUN_ID"),
+        "worker_id": (_session_environment_value("PYTEST_XDIST_WORKER") or "controller"),
         "pid": os.getpid(),
         **payload,
     }
@@ -276,10 +289,12 @@ def _durable_report_outcome(report: Any, outcome: str) -> str:
 def pytest_sessionstart(session: Any) -> None:
     """Reset per-session ledgers when tests invoke pytest in-process."""
     del session
+    global _ACTIVE_SESSION_ENVIRONMENT
     _SESSION_STATE_STACK.append(_capture_session_state())
     _reset_session_state()
     if len(_SESSION_STATE_STACK) > 1:
         _isolate_nested_artifact_destinations()
+    _ACTIVE_SESSION_ENVIRONMENT = {name: os.environ.get(name) for name in _SESSION_ENV_NAMES}
     # Emit the worker identity from inside pytest so each event is attributable
     # even when xdist forwards the report to the controller.
     _write_event({"event": "session_started"})
@@ -322,7 +337,7 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
             "selected_nodeids_omitted": max(0, _SELECTED_COUNT - len(selected_nodeids)),
         }
     )
-    if os.environ.get("PYTEST_XDIST_WORKER"):
+    if _session_environment_value("PYTEST_XDIST_WORKER"):
         _write_worker_collection_fact(payload)
     else:
         _CONTROLLER_COLLECTION_PAYLOAD = dict(payload)
@@ -402,7 +417,7 @@ def pytest_runtest_logreport(report: Any) -> None:
     # xdist forwards each worker's report to the controller. The worker has
     # already written the authoritative worker event through makereport. Keep
     # its timing in the controller's summary, but do not duplicate the ledger.
-    if not os.environ.get("PYTEST_XDIST_WORKER") and getattr(report, "worker_id", None):
+    if not _session_environment_value("PYTEST_XDIST_WORKER") and getattr(report, "worker_id", None):
         _record_phase_report(report, write_event=False)
         return
     _record_phase_report(report)
@@ -416,7 +431,7 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
         # Worker processes have their own in-memory slowest lists. The controller
         # receives the forwarded timings and is the only writer for the shared
         # summary path, so an empty worker summary cannot overwrite it.
-        if os.environ.get("PYTEST_XDIST_WORKER"):
+        if _session_environment_value("PYTEST_XDIST_WORKER"):
             return
         collection_payload = (
             merge_worker_collection_payloads() or _CONTROLLER_COLLECTION_PAYLOAD or _collection_payload()
