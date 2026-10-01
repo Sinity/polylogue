@@ -60,7 +60,17 @@ class EmbeddingReadProbe:
                 target = Path(os.readlink(descriptor).removesuffix(" (deleted)"))
             except FileNotFoundError:
                 continue
-            if target.is_relative_to(self.root) and target.name.endswith((".db", ".db-wal", ".db-shm")):
+            # Ingest intentionally retains user.db under the separate
+            # session_suppression cache owner. This probe owns only Index and
+            # Embeddings acquisitions, including attached generation files.
+            if target.is_relative_to(self.root) and target.name in {
+                "index.db",
+                "index.db-wal",
+                "index.db-shm",
+                "embeddings.db",
+                "embeddings.db-wal",
+                "embeddings.db-shm",
+            }:
                 retained.append(target.name)
         assert retained == [], retained
 

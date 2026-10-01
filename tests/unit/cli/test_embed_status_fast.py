@@ -191,7 +191,8 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
             """
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
-                message_count INTEGER NOT NULL DEFAULT 0
+                message_count INTEGER NOT NULL DEFAULT 0,
+                origin TEXT NOT NULL DEFAULT 'codex-session'
             );
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
@@ -203,8 +204,8 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
                 word_count INTEGER NOT NULL DEFAULT 8,
                 content_hash BLOB NOT NULL
             );
-            INSERT INTO sessions VALUES ('codex-session:complete', 1);
-            INSERT INTO sessions VALUES ('codex-session:pending', 2);
+            INSERT INTO sessions (session_id, message_count) VALUES ('codex-session:complete', 1);
+            INSERT INTO sessions (session_id, message_count) VALUES ('codex-session:pending', 2);
             """
         )
         for message_id, session_id, text in (
@@ -953,11 +954,19 @@ def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
         # The exact pending-message count is the v6 per-message staleness
         # predicate: current ref, current message semantics, complete recipe,
         # and a physical vector.
-        if "r.message_content_hash IS NOT m.content_hash" in sql:
+        if "WHERE NOT COALESCE" in sql and "polylogue_embedding_output_matches" in sql:
             return None
         return original_scalar(conn, sql, timeout_ms=timeout_ms, params=params)
 
     monkeypatch.setattr(status_payload_mod, "_scalar_int_with_timeout", fake_scalar_int_with_timeout)
+    original_rows = status_payload_mod._rows_with_timeout
+
+    def unavailable_work_rows(conn: sqlite3.Connection, sql: str, **kwargs: Any) -> Any:
+        if "SUM(NOT COALESCE" in sql and "polylogue_embedding_acquisition_allowed" in sql:
+            return None
+        return original_rows(conn, sql, **kwargs)
+
+    monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", unavailable_work_rows)
 
     payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
@@ -1030,11 +1039,19 @@ def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_ti
         # The exact pending-message count is the v6 per-message staleness
         # predicate: current ref, current message semantics, complete recipe,
         # and a physical vector.
-        if "r.message_content_hash IS NOT m.content_hash" in sql:
+        if "WHERE NOT COALESCE" in sql and "polylogue_embedding_output_matches" in sql:
             return None
         return original_scalar(conn, sql, timeout_ms=timeout_ms, params=params)
 
     monkeypatch.setattr(status_payload_mod, "_scalar_int_with_timeout", fake_scalar_int_with_timeout)
+    original_rows = status_payload_mod._rows_with_timeout
+
+    def unavailable_work_rows(conn: sqlite3.Connection, sql: str, **kwargs: Any) -> Any:
+        if "SUM(NOT COALESCE" in sql and "polylogue_embedding_acquisition_allowed" in sql:
+            return None
+        return original_rows(conn, sql, **kwargs)
+
+    monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", unavailable_work_rows)
 
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(

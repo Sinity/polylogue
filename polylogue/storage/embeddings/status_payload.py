@@ -1255,7 +1255,7 @@ def _archive_embedding_status_payload(
                     pending_messages = exact_pending_messages
             else:
                 pending_messages = total_messages
-            if has_refs and has_ref_semantics and has_meta and vectors_table:
+            if authoritative_state.measurable and has_refs and has_ref_semantics and has_meta and vectors_table:
                 available = available_embedding_predicate(
                     recipe=recipe,
                     source="m",

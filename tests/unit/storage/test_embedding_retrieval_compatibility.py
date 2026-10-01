@@ -30,10 +30,24 @@ def test_compatible_switch_keeps_exact_outputs_and_occurrences_without_work(
 ) -> None:
     """Removing compatibility from inspector/selector or projection makes this red."""
     root = tmp_path / "archive"
+    phases: dict[str, object] = {}
+
+    def observe_generation(phase: str) -> None:
+        path = (root / "embeddings.db").resolve()
+        sidecars = tuple((p.name, p.stat().st_size) for p in path.parent.glob("embeddings.db-*") if p.is_file())
+        descriptors: tuple[int, ...] | None = None
+        if Path("/proc/self/fd").is_dir():
+            from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+
+            stat = path.stat()
+            descriptors = selected_file_descriptors((stat.st_dev, stat.st_ino))
+        phases[phase] = (sidecars, descriptors)
+
     sid, ids = _session(root)
     original = _Documents("voyage-4")
     assert embed_archive_session_sync(root / "index.db", original, sid).status == "embedded"
     before = _rows(root)
+    observe_generation("original-written")
     document_recipe = EmbeddingRecipe.current(model=selected, dimensions=1024)
     chosen = _Documents(selected)
     adapter = EmbeddingDerivationAdapter(root / "index.db", chosen)
@@ -54,11 +68,13 @@ def test_compatible_switch_keeps_exact_outputs_and_occurrences_without_work(
     assert embed_archive_session_sync(root / "index.db", chosen, sid).status == "embedded"
     assert chosen.calls == []
     assert _rows(root) == before
+    observe_generation("inspected-and-reused")
     from polylogue.storage.embeddings.preflight import read_embedding_work_counts
     from polylogue.storage.embeddings.status_payload import embedding_status_payload
     from tests.infra.embedding_config import embedding_config
 
     assert read_embedding_work_counts(root / "index.db", recipe=document_recipe) == (1, 0, 0, 0)
+    observe_generation("preflight")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config", lambda **kwargs: embedding_config(embedding_model=selected)
     )
@@ -69,6 +85,7 @@ def test_compatible_switch_keeps_exact_outputs_and_occurrences_without_work(
     assert status["status"] == "complete"
     assert status["compute_missing_messages"] == status["binding_pending_messages"] == 0
 
+    observe_generation("status")
     requests: list[dict[str, object]] = []
     client_type = httpx.Client
 
@@ -90,9 +107,11 @@ def test_compatible_switch_keeps_exact_outputs_and_occurrences_without_work(
     assert requests[0]["input_type"] == "query"
     assert _rows(root) == before
 
+    observe_generation("text-query")
     _session(root, extra=True)
+    observe_generation("new-occurrence")
     outcome = embed_archive_session_sync(root / "index.db", chosen, sid)
-    assert outcome.status == "embedded", outcome
+    assert outcome.status == "embedded", (outcome, phases)
     assert chosen.calls == [(_NEW_TEXT,)]
     meta, refs = _rows(root)
     assert {row[1] for row in meta} == {"voyage-4", selected}
