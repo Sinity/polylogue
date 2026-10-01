@@ -3143,3 +3143,40 @@ def test_runtime_consumer_probe_keeps_native_owner_until_creator_retry(
     assert connection.close_attempts == 2
     if directory is not None:
         assert not directory.exists()
+
+
+def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite import connection_profile, managed_connection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+
+    capture = migration_runner.capture_durable_schema_inventory
+    actual: ControlledConnection | None = None
+
+    def capture_and_arm(connection: sqlite3.Connection) -> object:
+        nonlocal actual
+        result = capture(connection)
+        assert isinstance(connection, ControlledConnection)
+        actual = connection
+        connection.close_failure = OSError("synthetic canonical inventory close remains unsettled")
+        return result
+
+    monkeypatch.setattr(managed_connection, "connect_measured", connect)
+    monkeypatch.setattr(migration_runner, "capture_durable_schema_inventory", capture_and_arm)
+    canonical = durable_change_train_module._canonical_schema_inventory_for_ddl
+    canonical.cache_clear()
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as failed:
+        canonical(ArchiveTier.USER, 1, ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.USER], ())
+    assert actual is not None
+    try:
+        assert actual.close_attempts == 1
+        assert failed.value.owner.require_connection() is actual
+    finally:
+        actual.close_failure = None
+        failed.value.owner.close()
+        canonical.cache_clear()
+    assert actual.close_attempts == 2
