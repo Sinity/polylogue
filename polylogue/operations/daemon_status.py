@@ -1056,10 +1056,9 @@ def overall_status_ok(
         return False
     if raw_frontier_integrity is not None and not raw_frontier_integrity_is_proven_healthy(raw_frontier_integrity):
         return False
-    # A stale cached frame is advisory evidence only. Direct status stays
-    # usable when no daemon snapshot exists, but a known stale snapshot must
-    # not certify a green answer.
-    return not (isinstance(status_snapshot, Mapping) and status_snapshot.get("state") == "stale")
+    # An acquired stale or unavailable frame refutes health. An unobserved
+    # optional frame (None or missing) retains direct-read semantics.
+    return not (isinstance(status_snapshot, Mapping) and status_snapshot.get("state") in {"stale", "unavailable"})
 
 
 def tier_count_unavailable(tiers: Mapping[str, Mapping[str, object]]) -> bool:

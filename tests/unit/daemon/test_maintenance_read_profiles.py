@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon import convergence_stages, convergence_standing_queries
+from polylogue.operations import claude_workflow_convergence, daemon_metrics, session_source_membership
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
@@ -20,7 +21,13 @@ def _open_seeded_database(path: Path) -> None:
 
 def test_convergence_reader_census_has_no_direct_sqlite_opens() -> None:
     """Mutation: restoring a hand-built reader makes this census fail."""
-    for module in (convergence_stages, convergence_standing_queries):
+    for module in (
+        convergence_stages,
+        convergence_standing_queries,
+        claude_workflow_convergence,
+        daemon_metrics,
+        session_source_membership,
+    ):
         assert "sqlite3.connect" not in inspect.getsource(module)
 
 

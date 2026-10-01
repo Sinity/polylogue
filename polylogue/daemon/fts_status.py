@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.logging import WARNING, emit
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
@@ -255,7 +256,7 @@ def _unreadable_fts_readiness(reason: str) -> dict[str, object]:
         "coverage_pct": None,
         "coverage_exact": False,
         "inspection_state": "unavailable",
-        "unavailable_reason": reason,
+        "unavailable_reason": redact_status_error(reason),
         "surfaces": {},
     }
 
@@ -317,7 +318,7 @@ def _not_measured_readiness(state: str, *, error: str | None = None) -> dict[str
         "message_indexable_count": None,
         "coverage_pct": None,
         "coverage_exact": False,
-        "unavailable_reason": error or f"FTS readiness inspection {state}",
+        "unavailable_reason": redact_status_error(error) if error else f"FTS readiness inspection {state}",
         "surfaces": {},
     }
 

@@ -178,7 +178,7 @@ def test_claude_workflow_stage_event_is_recorded_under_its_stage_admission(tmp_p
     from types import SimpleNamespace
 
     from polylogue.core.stage_admission import stage_write_admission
-    from polylogue.daemon.convergence_stages import _record_claude_workflow_stage_event
+    from polylogue.operations.claude_workflow_convergence import record_claude_workflow_stage_event
 
     root = _bootstrapped_root(tmp_path)
     admitted: list[str] = []
@@ -189,7 +189,7 @@ def test_claude_workflow_stage_event_is_recorded_under_its_stage_admission(tmp_p
             return work()
 
     with arm_write_lease_enforcement(), stage_write_admission(admission):
-        _record_claude_workflow_stage_event(root, SimpleNamespace(gaps=("gap",)))
+        record_claude_workflow_stage_event(root, SimpleNamespace(gaps=("gap",)))
 
     assert admitted == ["stage.claude_workflow.record"]
     with sqlite3.connect(root / "ops.db") as conn:

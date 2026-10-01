@@ -13,7 +13,6 @@ from collections.abc import Callable
 import pytest
 
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
-from polylogue.daemon.convergence_stages import _is_transient_sqlite_lock
 from polylogue.daemon.cursor_lag_baseline import _database_is_locked
 from polylogue.daemon.http import _is_sqlite_busy_error
 
@@ -21,7 +20,6 @@ _Predicate = Callable[[sqlite3.OperationalError], bool]
 
 _PREDICATES: tuple[_Predicate, ...] = (
     is_transient_sqlite_lock,
-    _is_transient_sqlite_lock,
     _database_is_locked,
     _is_sqlite_busy_error,
 )

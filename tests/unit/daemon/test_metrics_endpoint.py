@@ -32,8 +32,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon.metrics import (
-    PROMETHEUS_CONTENT_TYPE,
+from polylogue.daemon.metrics import PROMETHEUS_CONTENT_TYPE
+from polylogue.operations.daemon_metrics import (
     _collect_group,
     _emit_unmeasured_probe,
     format_metrics,
@@ -328,7 +328,7 @@ class TestFormatMetricsExpositionShape:
 
     def test_no_unknown_label_escaping(self, tmp_path: Path) -> None:
         """Quotes/backslashes inside label values must be escaped."""
-        from polylogue.daemon.metrics import _escape_label_value
+        from polylogue.operations.daemon_metrics import _escape_label_value
 
         assert _escape_label_value('a"b') == 'a\\"b'
         assert _escape_label_value("c\\d") == "c\\\\d"
@@ -1095,7 +1095,7 @@ class TestMetricsEndpoint:
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.daemon import metrics as metrics_module
+        from polylogue.operations import daemon_metrics as metrics_module
 
         def fail_storage(*_args: object, **_kwargs: object) -> None:
             raise RuntimeError("unreadable /synthetic/private-input")

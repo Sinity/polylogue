@@ -33,10 +33,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -121,6 +122,11 @@ class CursorLagSummary(BaseModel):
     family_summaries: list[CursorLagFamilySummary] = Field(default_factory=list)
     stuck: list[CursorLagItem] = Field(default_factory=list)
     degraded: list[CursorLagItem] = Field(default_factory=list)
+
+    @field_validator("unavailable_reason")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
 
 
 _STUCK_SAMPLE_LIMIT = 10

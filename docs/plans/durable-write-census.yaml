@@ -1258,7 +1258,7 @@ caller_supplied_sql:
     function: "_row_exists_sync"
     parameter: "sql"
     reason: "caller-supplied SQL reaching a durable tier; pinned by the initial census"
-  - file: "polylogue/daemon/metrics.py"
+  - file: "polylogue/operations/daemon_metrics.py"
     function: "_scalar_int"
     parameter: "sql"
     reason: "caller-supplied SQL reaching a durable tier; pinned by the initial census"

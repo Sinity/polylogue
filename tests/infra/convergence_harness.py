@@ -26,7 +26,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypeVar, cast
 
-import polylogue.daemon.convergence_stages as convergence_stages
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
@@ -50,6 +49,7 @@ from polylogue.operations.session_profile_convergence import (
     make_session_summary_derivation,
     make_session_usage_rollup_derivation,
 )
+from polylogue.operations.session_source_membership import HOT_INSIGHT_SOURCE_BYTES
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
@@ -775,7 +775,7 @@ def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> Partial
     ops_db = root / "ops.db"
     target_source = root / "profile-growing-codex.jsonl"
     unrelated_source = root / "unrelated-codex.jsonl"
-    target_size = convergence_stages._HOT_INSIGHT_SOURCE_BYTES + 1 if target_hot else 1_024
+    target_size = HOT_INSIGHT_SOURCE_BYTES + 1 if target_hot else 1_024
     truncate_sparse(target_source, target_size)
     truncate_sparse(unrelated_source, 1_024)
 

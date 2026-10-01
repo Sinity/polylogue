@@ -339,19 +339,19 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     convergence pass but only ever logged (bd polylogue-uh9l /
     polylogue-z9gh.6): ``polylogue doctor`` could report healthy while
     materialization gaps existed. This drives the actual production callers —
-    ``ConvergenceStage.execute`` (``daemon/convergence_stages.py``, what the
+    ``ConvergenceStage.execute`` (``operations/claude_workflow_convergence.py``, what the
     daemon invokes every pass) and ``get_readiness`` (``readiness/__init__``,
     what ``polylogue doctor`` reads) — rather than asserting against the
     materializer's summary struct in isolation.
 
-    Anti-vacuity: removing the ``_record_claude_workflow_stage_event`` call
+    Anti-vacuity: removing the ``record_claude_workflow_stage_event`` call
     from ``execute()``, or removing the
     ``_claude_workflow_materialization_check`` registration in
     ``run_archive_readiness``, makes the degraded-report assertions below fail
     (status stays SKIP / count stays 0 instead of surfacing the real gap).
     """
     from polylogue.config import Config
-    from polylogue.daemon.convergence_stages import make_claude_workflow_stage
+    from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
     from polylogue.readiness import VerifyStatus, get_readiness
     from polylogue.storage.archive_readiness import claude_workflow_materialization_status
 
