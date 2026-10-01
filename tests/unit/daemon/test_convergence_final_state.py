@@ -127,12 +127,30 @@ def test_convergence_produces_consistent_final_archive_state(
     # ── Convergence debt ─────────────────────────────────────────────
     # Native daemon telemetry (convergence debt) lives in the disposable
     # ``ops.db`` tier.
+    _assert_no_convergence_debt(tmp_path / "ops.db")
+
+
+def _assert_no_convergence_debt(ops_db: Path) -> None:
+    assert ops_db.is_file(), "Required ops tier is missing"
+    with sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True) as conn:
+        (debt_count,) = conn.execute("SELECT COUNT(*) FROM convergence_debt").fetchone()
+        assert debt_count == 0, f"Expected no convergence debt, found {debt_count} pending items"
+
+
+@pytest.mark.parametrize("fault", ["missing-tier", "missing-table", "owed-debt"])
+def test_final_state_check_refuses_unmeasured_or_nonzero_debt(tmp_path: Path, fault: str) -> None:
+    """Removing the real count or treating missing authority as zero makes this red."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
     ops_db = tmp_path / "ops.db"
-    if ops_db.exists():
+    if fault != "missing-tier":
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
         with sqlite3.connect(ops_db) as conn:
-            table_exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_convergence_debt'"
-            ).fetchone()
-            if table_exists:
-                (debt_count,) = conn.execute("SELECT COUNT(*) FROM live_convergence_debt").fetchone()
-                assert debt_count == 0, f"Expected no convergence debt, found {debt_count} pending items"
+            if fault == "missing-table":
+                conn.execute("DROP TABLE convergence_debt")
+            else:
+                add_convergence_debt(conn, stage="test", target_type="source", target_id="neutral", created_at_ms=1)
+    with pytest.raises((AssertionError, sqlite3.OperationalError)):
+        _assert_no_convergence_debt(ops_db)

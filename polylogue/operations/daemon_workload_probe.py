@@ -40,11 +40,11 @@ from polylogue.storage.tier_access import TierRefusal, acquire_tier_reader
 
 # A tier whose schema does not match the packaged version is unreadable, not fatal:
 # the probe reports skew instead of crashing.
-_TIER_UNAVAILABLE_ERRORS = (sqlite3.Error, SchemaSkewError)
+_TIER_UNAVAILABLE_ERRORS = (sqlite3.Error, OSError, SchemaSkewError)
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 24
+REPORT_VERSION = 25
 UNKNOWN_TABLE_COUNT = -2
 
 #: The two table-count sentinels, neither of which is a cardinality: ``-1``
@@ -77,8 +77,6 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "messages_fts_docsize",
     "message_embeddings",
     "session_profiles",
-    "live_ingest_attempt",
-    "convergence_debt",
     "repos",
     "session_repos",
     "session_commits",
@@ -339,79 +337,14 @@ def _count_mode(exact: bool) -> str:
     return "exact" if exact else "mixed"
 
 
-def _recent_attempts(conn: sqlite3.Connection, *, limit: int, ops_db: Path | None = None) -> list[dict[str, Any]]:
-    ops_attempts = _ops_recent_attempts(ops_db, limit=limit)
-    if ops_attempts:
-        return ops_attempts
-    if not table_exists(conn, "live_ingest_attempt"):
-        return ops_attempts
-    columns = _columns(conn, "live_ingest_attempt")
-    stale_expr = "stale_cursor_write_count" if "stale_cursor_write_count" in columns else "0"
-    source_paths_expr = "source_paths_json" if "source_paths_json" in columns else "'[]'"
-    rows = conn.execute(
-        f"""
-        SELECT
-            attempt_id,
-            started_at,
-            updated_at,
-            completed_at,
-            status,
-            phase,
-            queued_file_count,
-            needed_file_count,
-            succeeded_file_count,
-            failed_file_count,
-            input_bytes,
-            source_payload_read_bytes,
-            cursor_fingerprint_read_bytes,
-            parse_time_s,
-            convergence_time_s,
-            {stale_expr},
-            {source_paths_expr}
-        FROM live_ingest_attempt
-        ORDER BY updated_at DESC, started_at DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    attempts: list[dict[str, Any]] = []
-    for row in rows:
-        input_bytes = int(row[10] or 0)
-        read_bytes = int(row[11] or 0) + int(row[12] or 0)
-        attempts.append(
-            {
-                "attempt_id": row[0],
-                "started_at": row[1],
-                "updated_at": row[2],
-                "completed_at": row[3],
-                "status": row[4],
-                "phase": row[5],
-                "queued_file_count": int(row[6] or 0),
-                "needed_file_count": int(row[7] or 0),
-                "succeeded_file_count": int(row[8] or 0),
-                "failed_file_count": int(row[9] or 0),
-                "input_bytes": input_bytes,
-                "source_payload_read_bytes": int(row[11] or 0),
-                "cursor_fingerprint_read_bytes": int(row[12] or 0),
-                "total_read_bytes": read_bytes,
-                "read_amplification": round(read_bytes / input_bytes, 3) if input_bytes > 0 else 0.0,
-                "parse_time_s": float(row[13] or 0.0),
-                "convergence_time_s": float(row[14] or 0.0),
-                "stale_cursor_write_count": int(row[15] or 0),
-                "source_paths": _json_list(row[16]),
-            }
-        )
-    return attempts
-
-
-def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, Any]]:
-    if ops_db is None or not ops_db.exists():
-        return []
+def _ops_recent_attempts(ops_db: Path, *, limit: int) -> list[dict[str, Any]] | None:
+    if not ops_db.exists():
+        return None
     try:
         conn = open_readonly_connection(ops_db)
         try:
             if not table_exists(conn, "ingest_attempts"):
-                return []
+                return None
             rows = conn.execute(
                 """
                 SELECT attempt_id, started_at_ms, heartbeat_at_ms, finished_at_ms,
@@ -428,7 +361,7 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
         finally:
             conn.close()
     except _TIER_UNAVAILABLE_ERRORS:
-        return []
+        return None
 
     attempts: list[dict[str, Any]] = []
     for row in rows:
@@ -466,7 +399,7 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
                 "parse_time_s": _payload_float(payload, "parse_time_s"),
                 "convergence_time_s": _payload_float(payload, "convergence_time_s"),
                 "stage_timings_s": _stage_timings_from_json(payload.get("stage_timings_json")),
-                "stale_cursor_write_count": _payload_int(payload, "stale_cursor_write_count"),
+                "stale_cursor_write_count": payload.get("stale_cursor_write_count"),
                 "storage_route": _normalise_storage_route(payload.get("storage_route")),
                 "source_paths": source_paths,
             }
@@ -475,7 +408,9 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
 
 
 def _ops_stage_payloads(conn: sqlite3.Connection, attempt_ids: list[str]) -> dict[str, dict[str, Any]]:
-    if not attempt_ids or not table_exists(conn, "daemon_stage_events"):
+    if not table_exists(conn, "daemon_stage_events"):
+        raise sqlite3.OperationalError("required daemon_stage_events table is missing")
+    if not attempt_ids:
         return {}
     placeholders = ",".join("?" for _ in attempt_ids)
     rows = conn.execute(
@@ -543,28 +478,8 @@ def _normalise_storage_route(value: object) -> str:
     return value if value in _KNOWN_STORAGE_ROUTES else "other"
 
 
-def _storage_route_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, int]:
-    ops_counts = _ops_storage_route_counts(ops_db)
-    if ops_counts is not None:
-        return ops_counts
-
-    counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
-    counts["other"] = 0
-    if not table_exists(conn, "live_ingest_attempt"):
-        return counts
-    columns = _columns(conn, "live_ingest_attempt")
-    if "storage_route" not in columns:
-        counts["unknown"] = measured_or_none(_scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")) or 0
-        return counts
-    rows = conn.execute("SELECT storage_route, COUNT(*) FROM live_ingest_attempt GROUP BY storage_route").fetchall()
-    for row in rows:
-        route = _normalise_storage_route(row[0])
-        counts[route] = counts.get(route, 0) + int(row[1] or 0)
-    return counts
-
-
-def _ops_storage_route_counts(ops_db: Path | None) -> dict[str, int] | None:
-    if ops_db is None or not ops_db.exists():
+def _ops_storage_route_counts(ops_db: Path) -> dict[str, int] | None:
+    if not ops_db.exists():
         return None
     try:
         conn = open_readonly_connection(ops_db)
@@ -573,8 +488,6 @@ def _ops_storage_route_counts(ops_db: Path | None) -> dict[str, int] | None:
                 return None
             rows = conn.execute("SELECT attempt_id FROM ingest_attempts").fetchall()
             attempt_ids = [str(row[0]) for row in rows]
-            if not attempt_ids:
-                return None
             payloads = _ops_stage_payloads(conn, attempt_ids)
             counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
             counts["other"] = 0
@@ -588,61 +501,8 @@ def _ops_storage_route_counts(ops_db: Path | None) -> dict[str, int] | None:
         return None
 
 
-def _attempt_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
-    ops_counts = _ops_attempt_counts(ops_db)
-    if ops_counts is not None and (ops_counts["total"] > 0 or not table_exists(conn, "live_ingest_attempt")):
-        return ops_counts
-    if not table_exists(conn, "live_ingest_attempt"):
-        return {
-            "total": 0,
-            "running": 0,
-            "completed": 0,
-            "failed": 0,
-            "stale_cursor_writes": 0,
-            "overlapping_source_paths": [],
-        }
-    running_rows = conn.execute(
-        """
-        SELECT source_paths_json
-        FROM live_ingest_attempt
-        WHERE status = 'running'
-        """
-    ).fetchall()
-    path_counts: dict[str, int] = {}
-    for row in running_rows:
-        for path in _json_list(row[0]):
-            path_counts[path] = path_counts.get(path, 0) + 1
-    overlapping = [
-        {"source_path": path, "running_attempt_count": count}
-        for path, count in sorted(path_counts.items())
-        if count > 1
-    ]
-    has_stale_col = "stale_cursor_write_count" in _columns(conn, "live_ingest_attempt")
-    return {
-        "total": measured_or_none(_scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")),
-        "running": measured_or_none(
-            _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'running'")
-        ),
-        "completed": measured_or_none(
-            _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'completed'")
-        ),
-        "failed": measured_or_none(
-            _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'failed'")
-        ),
-        "stale_cursor_writes": measured_or_none(
-            _scalar_int(
-                conn,
-                "SELECT COALESCE(SUM(stale_cursor_write_count), 0) FROM live_ingest_attempt"
-                if has_stale_col
-                else "SELECT 0",
-            )
-        ),
-        "overlapping_source_paths": overlapping[:20],
-    }
-
-
-def _ops_attempt_counts(ops_db: Path | None) -> dict[str, Any] | None:
-    if ops_db is None or not ops_db.exists():
+def _ops_attempt_counts(ops_db: Path) -> dict[str, Any] | None:
+    if not ops_db.exists():
         return None
     try:
         conn = open_readonly_connection(ops_db)
@@ -665,18 +525,16 @@ def _ops_attempt_counts(ops_db: Path | None) -> dict[str, Any] | None:
                 for path, count in sorted(path_counts.items())
                 if count > 1
             ]
+            counts = {
+                str(status): int(count)
+                for status, count in conn.execute("SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status")
+            }
             return {
-                "total": measured_or_none(_scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts")),
-                "running": measured_or_none(
-                    _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'running'")
-                ),
-                "completed": measured_or_none(
-                    _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'completed'")
-                ),
-                "failed": measured_or_none(
-                    _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'failed'")
-                ),
-                "stale_cursor_writes": 0,
+                "total": sum(counts.values()),
+                "running": counts.get("running", 0),
+                "completed": counts.get("completed", 0),
+                "failed": counts.get("failed", 0),
+                "stale_cursor_writes": None,
                 "overlapping_source_paths": overlapping[:20],
             }
         finally:
@@ -820,73 +678,8 @@ def _raw_replay_backlog(root: Path, *, limit: int) -> dict[str, object]:
     return raw_observation_backlog_snapshot(root, limit=limit)
 
 
-def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
-    """Rolling-window cursor-lag baseline state per source family.
-
-    Prefer ``ops.db`` ``cursor_lag_samples`` and fall back to single-file
-    ``live_cursor_lag_sample``. Returns the same per-family snapshot the
-    anomaly check uses: sample-count, time range, p50, p95.
-    Stable JSON shape so before/after probes can detect baseline drift in
-    convergence evidence snapshots (e.g. *"after this run, claude-code-session's
-    rolling p95 dropped from 600s to 12s — convergence is healthy"*).
-    """
-    ops_baselines = _ops_cursor_lag_baselines(ops_db)
-    if ops_baselines is not None:
-        return ops_baselines
-    if not table_exists(conn, "live_cursor_lag_sample"):
-        return {"table_present": False, "family_count": 0, "total_sample_count": 0, "families": []}
-    rows = conn.execute(
-        """
-        SELECT family,
-               COUNT(*),
-               MIN(observed_at),
-               MAX(observed_at),
-               MAX(max_lag_s),
-               AVG(max_lag_s),
-               SUM(stuck_file_count)
-        FROM live_cursor_lag_sample
-        GROUP BY family
-        ORDER BY COUNT(*) DESC, family
-        """
-    ).fetchall()
-    families: list[dict[str, Any]] = []
-    for row in rows:
-        family = str(row[0])
-        sample_count = int(row[1] or 0)
-        # Compute p50/p95 per family with a small follow-up read; bounded
-        # at ~200K rows total across families this stays under a second.
-        per_family = [
-            float(r[0])
-            for r in conn.execute(
-                "SELECT max_lag_s FROM live_cursor_lag_sample WHERE family = ? ORDER BY max_lag_s",
-                (family,),
-            ).fetchall()
-        ]
-        p50 = _percentile_from_sorted(per_family, 0.5)
-        p95 = _percentile_from_sorted(per_family, 0.95)
-        families.append(
-            {
-                "family": family,
-                "sample_count": sample_count,
-                "first_observed_at": row[2],
-                "last_observed_at": row[3],
-                "max_lag_s_seen": round(float(row[4] or 0.0), 3),
-                "mean_lag_s": round(float(row[5] or 0.0), 3),
-                "stuck_file_total": int(row[6] or 0),
-                "p50_lag_s": round(p50, 3),
-                "p95_lag_s": round(p95, 3),
-            }
-        )
-    return {
-        "table_present": True,
-        "family_count": len(families),
-        "total_sample_count": sum(f["sample_count"] for f in families),
-        "families": families,
-    }
-
-
-def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
-    if ops_db is None or not ops_db.exists():
+def _ops_cursor_lag_baselines(ops_db: Path) -> dict[str, Any] | None:
+    if not ops_db.exists():
         return None
     try:
         conn = open_readonly_connection(ops_db)
@@ -962,64 +755,23 @@ def _percentile_from_sorted(sorted_values: list[float], q: float) -> float:
     return float(sorted_values[lo]) * (1.0 - frac) + float(sorted_values[hi]) * frac
 
 
-def _convergence_debt(
-    conn: sqlite3.Connection,
-    *,
-    db: Path,
-    ops_db: Path | None = None,
-) -> dict[str, Any]:
-    """Project authoritative ops debt, preserving only the legacy index fallback."""
-    if ops_db is not None:
-        summary = convergence_debt_summary_info(db, ops_db=ops_db)
-        return {
-            "available": summary.available,
-            "error": summary.error,
-            "failed_count": summary.failed_count,
-            "deferred_count": summary.deferred_count,
-            "unresolved_count": summary.failed_count + summary.deferred_count,
-            "by_stage": [
-                {
-                    "stage": item.stage,
-                    "failed_count": item.failed_count,
-                    "deferred_count": item.deferred_count,
-                    "unresolved_count": item.failed_count + item.deferred_count,
-                }
-                for item in summary.stage_summaries
-            ],
-        }
-    if not table_exists(conn, "live_convergence_debt"):
-        return {
-            "available": True,
-            "error": None,
-            "failed_count": 0,
-            "deferred_count": 0,
-            "unresolved_count": 0,
-            "by_stage": [],
-        }
-    rows = conn.execute(
-        """
-        SELECT stage, COUNT(*) AS unresolved_count
-        FROM live_convergence_debt
-        WHERE status != 'resolved'
-        GROUP BY stage
-        ORDER BY unresolved_count DESC, stage
-        """
-    ).fetchall()
-    unresolved_count = sum(int(row[1] or 0) for row in rows)
+def _convergence_debt(*, ops_db: Path) -> dict[str, Any]:
+    """Project the canonical ops debt summary."""
+    summary = convergence_debt_summary_info(ops_db, ops_db=ops_db)
     return {
-        "available": True,
-        "error": None,
-        "failed_count": unresolved_count,
-        "deferred_count": 0,
-        "unresolved_count": unresolved_count,
+        "available": summary.available,
+        "error": summary.error,
+        "failed_count": summary.failed_count if summary.available else None,
+        "deferred_count": summary.deferred_count if summary.available else None,
+        "unresolved_count": summary.failed_count + summary.deferred_count if summary.available else None,
         "by_stage": [
             {
-                "stage": row[0],
-                "failed_count": int(row[1] or 0),
-                "deferred_count": 0,
-                "unresolved_count": int(row[1] or 0),
+                "stage": item.stage,
+                "failed_count": item.failed_count,
+                "deferred_count": item.deferred_count,
+                "unresolved_count": item.failed_count + item.deferred_count,
             }
-            for row in rows
+            for item in summary.stage_summaries
         ],
     }
 
@@ -1027,7 +779,7 @@ def _convergence_debt(
 def _boundary_table_counts_and_precision(
     conn: sqlite3.Connection,
     *,
-    ops_db: Path | None = None,
+    ops_db: Path,
     source_db: Path | None = None,
     exact: bool = False,
 ) -> tuple[dict[str, int], dict[str, str]]:
@@ -1047,7 +799,7 @@ def _boundary_table_counts_and_precision(
             for table in ("raw_sessions", "raw_artifacts"):
                 counts.setdefault(table, -1)
                 precision.setdefault(table, "missing")
-    if ops_db is not None and ops_db.exists():
+    if ops_db.exists():
         try:
             ops_conn = open_readonly_connection(ops_db)
             try:
@@ -1057,8 +809,12 @@ def _boundary_table_counts_and_precision(
                 ops_conn.close()
         except _TIER_UNAVAILABLE_ERRORS:
             for table in _OPS_BOUNDARY_TABLES:
-                counts.setdefault(table, -1)
-                precision.setdefault(table, "missing")
+                counts[table] = UNKNOWN_TABLE_COUNT
+                precision[table] = "unavailable"
+    else:
+        for table in _OPS_BOUNDARY_TABLES:
+            counts[table] = UNKNOWN_TABLE_COUNT
+            precision[table] = "unavailable"
     return counts, precision
 
 
@@ -1094,25 +850,22 @@ def _observability_locations(
     db: Path,
     *,
     observed_db: Path | None,
-    ops_db: Path | None,
+    ops_db: Path,
 ) -> dict[str, Any]:
     index_db = observed_db or db
     source_db = db.with_name("source.db")
-    resolved_ops_db = ops_db or db.with_name("ops.db")
     logical_tables = {
-        "live_ingest_attempt": _location_entry(
-            resolved_ops_db,
+        "ingest_attempts": _location_entry(
+            ops_db,
             table="ingest_attempts",
             tier="ops",
-            logical_table="live_ingest_attempt",
         ),
-        "live_ingest_attempt_stage_events": _location_entry(
-            resolved_ops_db,
+        "daemon_stage_events": _location_entry(
+            ops_db,
             table="daemon_stage_events",
             tier="ops",
-            logical_table="live_ingest_attempt_stage_events",
         ),
-        "convergence_debt": _location_entry(resolved_ops_db, table="convergence_debt", tier="ops"),
+        "convergence_debt": _location_entry(ops_db, table="convergence_debt", tier="ops"),
         "raw_sessions": _location_entry(source_db, table="raw_sessions", tier="source"),
         "sessions": _location_entry(index_db, table="sessions", tier="index"),
         "messages": _location_entry(index_db, table="messages", tier="index"),
@@ -1124,7 +877,7 @@ def _observability_locations(
         "tiers": {
             "index": str(index_db),
             "source": str(source_db),
-            "ops": str(resolved_ops_db),
+            "ops": str(ops_db),
         },
         "logical_tables": logical_tables,
     }
@@ -2080,7 +1833,6 @@ def _fts_trigger_state(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def _convergence_stage_timings(
     attempts: list[dict[str, Any]],
-    conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     completed = [a for a in attempts if a.get("status") == "completed"]
     if not completed:
@@ -2095,11 +1847,6 @@ def _convergence_stage_timings(
     convergence_times = [float(a.get("convergence_time_s") or 0.0) for a in completed]
     amps = [float(a.get("read_amplification") or 0.0) for a in completed]
     per_stage = _per_stage_timings_from_attempts(completed)
-    if not per_stage:
-        per_stage = _per_stage_timings(
-            [str(a.get("attempt_id")) for a in completed if a.get("attempt_id")],
-            conn,
-        )
     return {
         "sample_size": len(completed),
         "parse_time_s": _summary_stat(parse_times),
@@ -2122,70 +1869,6 @@ def _per_stage_timings_from_attempts(attempts: list[dict[str, Any]]) -> dict[str
     return {stage: _summary_stat(values) for stage, values in sorted(per_stage.items())}
 
 
-def _per_stage_timings(
-    attempt_ids: list[str],
-    conn: sqlite3.Connection | None,
-) -> dict[str, dict[str, float]]:
-    """Aggregate per-stage timings from the durable ops stage-event surface.
-
-    Returns ``{stage_name: summary_stat}`` over the latest ``stage_timings_json``
-    payload for each attempt. Returns ``{}`` when no completed attempts carry
-    timings.
-    """
-    if conn is None or not attempt_ids:
-        return {}
-    placeholders = ",".join("?" for _ in attempt_ids)
-    latest_by_attempt: dict[str, dict[str, float]] = {}
-    if table_exists(conn, "daemon_stage_events"):
-        rows = conn.execute(
-            f"""
-            SELECT attempt_id, payload_json
-            FROM daemon_stage_events
-            WHERE attempt_id IN ({placeholders})
-            ORDER BY observed_at_ms DESC, rowid DESC
-            """,
-            tuple(attempt_ids),
-        ).fetchall()
-        for row in rows:
-            attempt_id = str(row[0])
-            if attempt_id in latest_by_attempt:
-                continue
-            try:
-                decoded = json.loads(str(row[1] or "{}"))
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(decoded, dict):
-                continue
-            timings = _stage_timings_from_json(decoded.get("stage_timings_json"))
-            if timings:
-                latest_by_attempt[attempt_id] = timings
-    elif table_exists(conn, "live_ingest_stage_event"):
-        rows = conn.execute(
-            f"""
-            SELECT attempt_id, stage_timings_json
-            FROM live_ingest_stage_event
-            WHERE attempt_id IN ({placeholders})
-              AND stage_timings_json IS NOT NULL
-            ORDER BY attempt_id, sequence DESC
-            """,
-            tuple(attempt_ids),
-        ).fetchall()
-        for row in rows:
-            attempt_id = str(row[0])
-            if attempt_id in latest_by_attempt:
-                continue
-            timings = _stage_timings_from_json(row[1])
-            if timings:
-                latest_by_attempt[attempt_id] = timings
-    else:
-        return {}
-    per_stage: dict[str, list[float]] = {}
-    for timings in latest_by_attempt.values():
-        for stage_name, value in timings.items():
-            per_stage.setdefault(stage_name, []).append(value)
-    return {stage: _summary_stat(values) for stage, values in sorted(per_stage.items())}
-
-
 def _summary_stat(values: list[float]) -> dict[str, float]:
     if not values:
         return {"min": 0.0, "max": 0.0, "sum": 0.0, "mean": 0.0}
@@ -2198,57 +1881,8 @@ def _summary_stat(values: list[float]) -> dict[str, float]:
     }
 
 
-def _daemon_resource_signal(
-    attempts: list[dict[str, Any]],
-    conn: sqlite3.Connection,
-    *,
-    ops_db: Path | None = None,
-) -> dict[str, Any]:
-    """Read the most recent RSS / cgroup snapshot from `live_ingest_attempt`.
-
-    These are the only daemon-RSS signals the probe can read without IPC.
-    The probe is intentionally read-only.
-    """
-
-    ops_signal = _ops_daemon_resource_signal(ops_db)
-    if ops_signal is not None:
-        return ops_signal
-    if not table_exists(conn, "live_ingest_attempt"):
-        return {"available": False}
-    columns = _columns(conn, "live_ingest_attempt")
-    optional = (
-        "rss_current_mb",
-        "rss_peak_self_mb",
-        "rss_peak_children_mb",
-        "cgroup_memory_current_mb",
-        "cgroup_memory_peak_mb",
-        "cgroup_memory_swap_current_mb",
-        "cgroup_memory_anon_mb",
-        "cgroup_memory_file_mb",
-        "cgroup_memory_inactive_file_mb",
-        "worker_in_flight_count",
-        "worker_completed_count",
-        "worker_total_count",
-    )
-    available_columns = [name for name in optional if name in columns]
-    if not available_columns:
-        return {"available": False}
-    select_list = ", ".join(available_columns)
-    row = conn.execute(
-        f"""
-        SELECT {select_list}
-        FROM live_ingest_attempt
-        ORDER BY updated_at DESC, started_at DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    if row is None:
-        return {"available": False}
-    return {"available": True, **{col: row[idx] for idx, col in enumerate(available_columns)}}
-
-
-def _ops_daemon_resource_signal(ops_db: Path | None) -> dict[str, Any] | None:
-    if ops_db is None or not ops_db.exists():
+def _ops_daemon_resource_signal(ops_db: Path) -> dict[str, Any] | None:
+    if not ops_db.exists():
         return None
     try:
         conn = open_readonly_connection(ops_db)
@@ -2268,13 +1902,13 @@ def _ops_daemon_resource_signal(ops_db: Path | None) -> dict[str, Any] | None:
     except _TIER_UNAVAILABLE_ERRORS:
         return None
     if row is None:
-        return None
+        return {"available": False}
     try:
         payload = json.loads(str(row[0] or "{}"))
     except json.JSONDecodeError:
-        return None
+        return {"available": False}
     if not isinstance(payload, dict):
-        return None
+        return {"available": False}
     fields = {
         key: payload[key]
         for key in (
@@ -2417,7 +2051,11 @@ def probe(
         observed_db = None
         conn = sqlite3.connect(":memory:")
     try:
-        recent_attempts = _recent_attempts(conn, limit=limit, ops_db=ops_db)
+        recent_attempts = _ops_recent_attempts(ops_db, limit=limit)
+        attempt_counts = _ops_attempt_counts(ops_db)
+        storage_route_counts = _ops_storage_route_counts(ops_db)
+        cursor_lag_baselines = _ops_cursor_lag_baselines(ops_db)
+        daemon_resource_signal = _ops_daemon_resource_signal(ops_db)
         boundary_table_counts, boundary_table_count_precision = _boundary_table_counts_and_precision(
             conn,
             ops_db=ops_db,
@@ -2431,17 +2069,30 @@ def probe(
             exact_derived_counts=exact_derived_counts,
             exact_table_counts=exact_table_counts,
         )
-        convergence_debt = _convergence_debt(conn, db=db, ops_db=ops_db)
+        convergence_debt = _convergence_debt(ops_db=ops_db)
+        ops_available = all(
+            value is not None
+            for value in (
+                recent_attempts,
+                attempt_counts,
+                storage_route_counts,
+                cursor_lag_baselines,
+                daemon_resource_signal,
+            )
+        ) and bool(convergence_debt["available"])
         return {
-            "ok": True,
+            "ok": ops_available,
+            "error": None if ops_available else "ops workload evidence is unavailable",
             "report_version": REPORT_VERSION,
             "captured_at": _now_iso(),
             "db_path": str(db),
             "observability_locations": _observability_locations(db, observed_db=observed_db, ops_db=ops_db),
-            "attempt_counts": _attempt_counts(conn, ops_db=ops_db),
+            "attempt_counts": attempt_counts,
             "recent_attempts": recent_attempts,
-            "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),
-            "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
+            "storage_route_counts": storage_route_counts,
+            "convergence_stage_timings": (
+                _convergence_stage_timings(recent_attempts) if recent_attempts is not None else None
+            ),
             "boundary_table_count_mode": _count_mode(exact_table_counts),
             "boundary_table_counts": boundary_table_counts,
             "boundary_table_count_precision": boundary_table_count_precision,
@@ -2452,11 +2103,11 @@ def probe(
             "blob_reference_debt": _blob_reference_debt_state(db, enabled=blob_reference_debt),
             "gc_state": _tier_state_or_current(conn, db.with_name("source.db"), _gc_state),
             "fts_trigger_state": _fts_trigger_state(conn),
-            "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn, ops_db=ops_db),
-            "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit, db=db),
+            "daemon_resource_signal": daemon_resource_signal,
+            "source_path_churn": _source_path_churn(conn, attempts=recent_attempts or [], limit=limit, db=db),
             "raw_replay_backlog": _raw_replay_backlog(db.parent, limit=limit),
             "convergence_debt": convergence_debt,
-            "cursor_lag_baselines": _cursor_lag_baselines(conn, ops_db=ops_db),
+            "cursor_lag_baselines": cursor_lag_baselines,
             "query_plans": _query_plans(conn, db=db),
         }
     finally:
@@ -3123,7 +2774,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     counts = payload["attempt_counts"]
     print(f"  attempts: {counts['total']} total, {counts['running']} running, {counts['failed']} failed")
-    print(f"  stale cursor writes: {counts.get('stale_cursor_writes', 0)}")
+    print(
+        f"  stale cursor writes: {counts.get('stale_cursor_writes') if counts.get('stale_cursor_writes') is not None else 'unmeasured'}"
+    )
     overlaps = counts.get("overlapping_source_paths") or []
     print(f"  overlapping source paths: {len(overlaps)}")
     table_counts = payload.get("boundary_table_counts") or {}

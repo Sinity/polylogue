@@ -48,6 +48,7 @@ def test_recent_attempts_report_the_file_count_not_the_session_count(tmp_path: P
 
     attempts = _ops_recent_attempts(ops_db, limit=5)
 
+    assert attempts is not None
     assert len(attempts) == 1
     assert attempts[0]["succeeded_file_count"] == 2
     assert attempts[0]["materialized_session_count"] == 9

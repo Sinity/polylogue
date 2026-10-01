@@ -91,3 +91,16 @@ active index generation. An unreadable active generation raises instead of
 serving membership from a conventional shadow index. `operations/sinex_convergence.py` composes publication
 and its primary-mode derivation barrier. FTS readiness acquisition and publication
 are owned by `operations/fts_derivation.py`; the daemon stage schedules them.
+
+The ordinary pinned status payload includes an `attachments` readiness component
+scoped to owed Drive references. Its `unresolved_identity` count comes from
+unfetched references with contested native identity, using the same predicate
+as attachment convergence. Positive counts degrade status even when no
+transport request is executable. A failed inspection is unknown with no
+invented count. Resolved identity and terminal attachment absence contribute
+zero contested obligations; they do not restart blocked transport work.
+
+Catch-up stage-event history carries `stage_events_available` and a typed
+unavailable reason. Empty readable history remains available; failed authority
+keeps the mode degraded. Status and workload telemetry read only current ops
+tables; unavailable counts never stand in for exact zero.

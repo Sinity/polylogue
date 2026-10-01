@@ -4,14 +4,39 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
 from polylogue.core.user_state_targets import TARGET_MESSAGE
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.tier_access import TierRefusal, open_tier_reader
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+@contextmanager
+def readable_required_tier(path: Path, tier: ArchiveTier) -> Iterator[sqlite3.Connection]:
+    """Refuse inaccessible required read authority without recreating a tier."""
+    guidance = (
+        "Restore the user tier from a verified backup before reading."
+        if tier is ArchiveTier.USER
+        else "Restore readable archive authority, then retry."
+    )
+    try:
+        with open_tier_reader(tier, path) as acquired:
+            if isinstance(acquired, TierRefusal):
+                raise ArchiveTierUnavailableError(
+                    tier=tier.value, path=str(path), reason=acquired.reason, guidance=guidance
+                )
+            acquired.connection.row_factory = sqlite3.Row
+            yield acquired.connection
+    except (sqlite3.Error, OSError, json.JSONDecodeError, SchemaRefusalError) as exc:
+        raise ArchiveTierUnavailableError(tier=tier.value, path=str(path), reason=str(exc), guidance=guidance) from exc
 
 
 def _text(payload: Mapping[str, object], key: str) -> str | None:

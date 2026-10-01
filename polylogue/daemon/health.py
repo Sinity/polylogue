@@ -1232,7 +1232,7 @@ def _repeated_stage_failure_alert(
 def _check_convergence_debt_medium() -> list[HealthAlert]:
     """Per-source-family convergence-debt threshold alerts (#1226).
 
-    Aggregates ``live_convergence_debt`` by inferred source family and
+    Aggregates ``convergence_debt`` by inferred source family and
     raises one alert per family that crosses its configured warning or
     error threshold. Returns an empty list when there is no debt and no
     pending dedup state — keeps the periodic health loop quiet on a
@@ -1297,7 +1297,7 @@ def _check_cursor_lag_medium() -> list[HealthAlert]:
 
     Side effects of the anomaly layer:
 
-    - Records one ``live_cursor_lag_sample`` row per stuck family per
+    - Records one ``cursor_lag_samples`` row per stuck family per
       tick (the periodic-loop cadence is determined by
       ``health_check_interval_s``).
     - GCs samples older than ``retention_days``.

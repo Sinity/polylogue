@@ -180,7 +180,14 @@ def produce_direct_status(
     profile_component = components.get("session_profiles", {})
     summary_component = components.get("session_summary", {})
     embedding_component = components.get("embeddings", {})
+    attachment_component = components.get("attachments", {})
     derived_domains = [
+        DerivedDomainReadiness(
+            domain="attachments",
+            ready=attachment_component.get("state") == "ready",
+            summary=str(attachment_component.get("summary", "unknown")),
+            determinate=attachment_component.get("state") != "unknown",
+        ),
         _raw_materialization_domain(materialization, raw_component),
         DerivedDomainReadiness(
             domain="raw_frontier_integrity",
@@ -748,6 +755,7 @@ def _components(
     summary = session_summary_component_from_connection(index_conn).to_dict()
     components[str(summary["component"])] = summary
     components["embeddings"] = component_from_embedding_payload(embedding_status).to_dict()
+    components["attachments"] = _attachment_component(index_conn).to_dict()
     has_user = _attached_connection(index_conn, "user_tier") is not None
     has_assertions = has_user and _table_exists(index_conn, "assertions", schema="user_tier")
     if has_assertions:
@@ -790,6 +798,35 @@ def _components(
         session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
     ).to_dict()
     return components
+
+
+def _attachment_component(index_conn: sqlite3.Connection) -> ComponentReadiness:
+    """Expose owed contested identity from the same index view as ordinary status."""
+    from polylogue.core.evidence import Measured, Unavailable
+    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+    from polylogue.storage.sqlite.queries.attachment_records import unresolved_attachment_identity_count
+    from polylogue.storage.tier_access import capture_sqlite_read
+
+    evidence = capture_sqlite_read(lambda: unresolved_attachment_identity_count(index_conn))
+    if isinstance(evidence, Unavailable):
+        return ComponentReadiness(
+            component="attachments",
+            scope="owed_drive_references",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary="attachment identity unavailable",
+            counts={},
+            caveats=("attachment_identity_unavailable",),
+        )
+    assert isinstance(evidence, Measured)
+    count = evidence.value
+    return ComponentReadiness(
+        component="attachments",
+        scope="owed_drive_references",
+        state=CapabilityReadinessState.DEGRADED if count else CapabilityReadinessState.READY,
+        summary="contested attachment identity" if count else "no contested attachment identity",
+        counts={"unresolved_identity": count},
+        caveats=("contested_identity",) if count else (),
+    )
 
 
 def _search_indexable_count(search_component: Mapping[str, object]) -> int | None:
@@ -1084,7 +1121,7 @@ def _component_readiness_ok(components: Mapping[str, Mapping[str, object]], raw_
     lifecycle_state = raw_failures.get("raw_failure_lifecycle_state")
     if lifecycle_state is not None and lifecycle_state != "healthy":
         return False
-    required_missing = {"archive_sessions", "raw_materialization", "search", "transforms", "assertions"}
+    required_missing = {"archive_sessions", "raw_materialization", "search", "transforms", "assertions", "attachments"}
     required_known = {"raw_frontier_integrity"}
     if any(name not in components for name in required_known):
         return False

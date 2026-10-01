@@ -99,7 +99,7 @@ def test_unreadable_live_cursor_is_typed_unavailable_not_all_zero(
     summary = status_module._live_cursor_summary_info()
 
     assert summary.available is False
-    assert summary.unavailable_reason == "live_cursor_summary_unreadable"
+    assert summary.unavailable_reason == "ops_cursor_unavailable"
 
 
 def test_unpinned_embeddings_tier_reports_unknown_counts_not_zero() -> None:

@@ -1279,19 +1279,9 @@ def _archive_get_context_delivery(
 
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import read_context_delivery
 
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        return None
-    try:
-        conn = open_readonly_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            receipt = read_context_delivery(conn, snapshot_ref)
-            return receipt if receipt is not None and receipt.recipient_ref == recipient_ref else None
-        finally:
-            conn.close()
-    except (sqlite3.Error, ValueError):
-        return None
+    with _readable_user_tier(config) as conn:
+        receipt = read_context_delivery(conn, snapshot_ref)
+        return receipt if receipt is not None and receipt.recipient_ref == recipient_ref else None
 
 
 def _archive_list_context_deliveries(
@@ -1305,18 +1295,8 @@ def _archive_list_context_deliveries(
 
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import list_context_deliveries
 
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        return []
-    try:
-        conn = open_readonly_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            return list_context_deliveries(conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit)
-        finally:
-            conn.close()
-    except (sqlite3.Error, ValueError):
-        return []
+    with _readable_user_tier(config) as conn:
+        return list_context_deliveries(conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit)
 
 
 def _archive_list_context_injection_ledger(
@@ -1328,24 +1308,12 @@ def _archive_list_context_injection_ledger(
 ) -> list[ContextLedgerRecord]:
     """Read scheduler decisions from the disposable ops tier."""
 
-    ops_db = _active_archive_root(config) / "ops.db"
-    if not ops_db.exists():
-        return []
-    try:
-        conn = open_readonly_connection(ops_db)
-        try:
-            return list(
-                read_context_ledger(
-                    conn,
-                    target_session=target_session,
-                    execution_context_ref=execution_context_ref,
-                    limit=limit,
-                )
+    with _readable_required_tier(config, ArchiveTier.OPS) as conn:
+        return list(
+            read_context_ledger(
+                conn, target_session=target_session, execution_context_ref=execution_context_ref, limit=limit
             )
-        finally:
-            conn.close()
-    except (sqlite3.Error, ValueError):
-        return []
+        )
 
 
 def _archive_correlate_hermes_context_deliveries(
@@ -1353,59 +1321,17 @@ def _archive_correlate_hermes_context_deliveries(
     *,
     hermes_session_native_id: str,
 ) -> tuple[HermesContextDeliveryCorrelation, ...]:
-    """Correlate a Hermes session's drained ``context_injected`` events with their receipts.
-
-    Read-only audit seam over two durable tiers (fs1.7 spool + fs1.11
-    delivery ledger); see ``context.hermes_delivery_correlation`` for the
-    join semantics. Returns an empty tuple, never raises, when either tier is
-    unavailable -- consistent with the explicit-unavailable-state AC this
-    correlation exists to satisfy. "Archive not yet initialized" (no
-    source.db/user.db file at all) and "archive present but the read failed"
-    (corrupt file, missing table, decode failure) both still return the same
-    empty-tuple shape to the caller -- this facade method's contract predates
-    this fix and changing its return type is a separate, larger decision --
-    but the two cases are distinguished in the logs: only the second case
-    logs a warning, so an operator/on-call scan for "hermes_context_deliveries
-    read failed" is never confused with the ordinary "nothing ingested yet"
-    path (review finding: these were previously collapsed into total silence).
-    """
+    """Correlate drained Hermes events with receipts, refusing unavailable authority."""
 
     from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
 
-    archive_root = _active_archive_root(config)
-    source_db = archive_root / "source.db"
-    user_db = archive_root / "user.db"
-    if not source_db.exists() or not user_db.exists():
-        return ()
-    try:
-        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
-        source_conn.row_factory = sqlite3.Row
-        try:
-            user_conn = open_readonly_connection(user_db, timeout_class="background-read")
-            user_conn.row_factory = sqlite3.Row
-            try:
-                return correlate_hermes_context_deliveries(
-                    source_conn,
-                    user_conn,
-                    hermes_session_native_id=hermes_session_native_id,
-                )
-            finally:
-                user_conn.close()
-        finally:
-            source_conn.close()
-    except (sqlite3.Error, ValueError) as exc:
-        emit(
-            "archive.read.unreadable",
-            level=WARNING,
-            outcome="degraded",
-            route="hermes_context_deliveries",
-            reason="archive_present_but_unreadable",
-            session_id=hermes_session_native_id,
-            db_path=source_db,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return ()
+    with _readable_required_tier(config, ArchiveTier.SOURCE) as source_conn:
+        source_conn.execute("SELECT 1 FROM raw_hook_events LIMIT 0")
+        with _readable_user_tier(config) as user_conn:
+            user_conn.execute("SELECT snapshot_ref FROM context_deliveries LIMIT 0")
+            return correlate_hermes_context_deliveries(
+                source_conn, user_conn, hermes_session_native_id=hermes_session_native_id
+            )
 
 
 def _archive_get_setting(config: Config, setting_key: str) -> ArchiveUserSettingEnvelope | None:
@@ -1413,18 +1339,8 @@ def _archive_get_setting(config: Config, setting_key: str) -> ArchiveUserSetting
 
     from polylogue.storage.sqlite.archive_tiers.user_settings_write import get_user_setting
 
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        return None
-    try:
-        conn = open_readonly_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            return get_user_setting(conn, setting_key)
-        finally:
-            conn.close()
-    except (sqlite3.Error, ValueError):
-        return None
+    with _readable_user_tier(config) as conn:
+        return get_user_setting(conn, setting_key)
 
 
 def _archive_list_settings(config: Config) -> list[ArchiveUserSettingEnvelope]:
@@ -1432,18 +1348,8 @@ def _archive_list_settings(config: Config) -> list[ArchiveUserSettingEnvelope]:
 
     from polylogue.storage.sqlite.archive_tiers.user_settings_write import list_user_settings
 
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        return []
-    try:
-        conn = open_readonly_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            return list_user_settings(conn)
-        finally:
-            conn.close()
-    except (sqlite3.Error, ValueError):
-        return []
+    with _readable_user_tier(config) as conn:
+        return list_user_settings(conn)
 
 
 def _read_source_and_index(
@@ -1630,30 +1536,18 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
 
 
 @contextmanager
-def _readable_user_tier(config: Config) -> Iterator[sqlite3.Connection]:
-    """Open ``user.db`` read-only, refusing an unreadable durable tier.
+def _readable_required_tier(config: Config, tier: ArchiveTier) -> Iterator[sqlite3.Connection]:
+    from polylogue.operations.user_overlay_reads import readable_required_tier
 
-    The user tier is durable and irreplaceable: an assertion read that cannot
-    reach it must raise, never report an empty result set that a caller would
-    read as "no candidates".
-    """
-
-    user_db = _active_archive_root(config) / "user.db"
-    guidance = "Restore the user tier from a verified backup before reading assertions."
-    if not user_db.is_file():
-        reason = "the path is not a regular file" if user_db.exists() else "the file does not exist"
-        raise ArchiveTierUnavailableError(tier="user", path=str(user_db), reason=reason, guidance=guidance)
-    try:
-        conn = open_readonly_connection(user_db)
-    except sqlite3.Error as exc:
-        raise ArchiveTierUnavailableError(tier="user", path=str(user_db), reason=str(exc), guidance=guidance) from exc
-    conn.row_factory = sqlite3.Row
-    try:
+    with readable_required_tier(_active_archive_root(config) / f"{tier.value}.db", tier) as conn:
         yield conn
-    except sqlite3.Error as exc:
-        raise ArchiveTierUnavailableError(tier="user", path=str(user_db), reason=str(exc), guidance=guidance) from exc
-    finally:
-        conn.close()
+
+
+@contextmanager
+def _readable_user_tier(config: Config) -> Iterator[sqlite3.Connection]:
+    """Read the durable user authority, refusing unavailable state."""
+    with _readable_required_tier(config, ArchiveTier.USER) as conn:
+        yield conn
 
 
 def _archive_list_assertion_candidate_reviews(
@@ -3036,8 +2930,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         ``context_injected`` lifecycle event drained for this Hermes session,
         resolves the exact delivered context-image bytes, token budget, and
         rendered-token estimate from the existing delivery ledger. An event
-        with no resolvable receipt (archive outage, or the write has not
-        committed yet) is returned with ``available=False`` and an explicit
+        with no resolvable receipt (the write has not committed yet) is returned with ``available=False`` and an explicit
         caveat rather than omitted.
         """
 

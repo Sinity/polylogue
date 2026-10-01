@@ -565,36 +565,39 @@ def read_context_ledger(
         (*params, limit),
     ).fetchall()
     records: list[ContextLedgerRecord] = []
-    for row in rows:
-        decision = cast(
-            ContextInjectionDecision,
-            require_literal(row[3], ContextInjectionDecision, name="stored context injection decision"),
-        )
-        policy_refs = json.loads(str(row[13]))
-        if not isinstance(policy_refs, list) or not all(isinstance(item, str) for item in policy_refs):
-            raise ValueError("stored context ledger policy refs are not a string list")
-        records.append(
-            ContextLedgerRecord(
-                ledger_id=str(row[0]),
-                build_ref=str(row[1]),
-                observed_at_ms=int(row[2]),
-                row=ContextLedgerRow(
-                    decision=decision,
-                    source=str(row[4]),
-                    item_ref=str(row[5]),
-                    token_cost=int(row[6]),
-                    source_local_rank=int(row[7]),
-                    budget_before=int(row[8]),
-                    budget_after=int(row[9]),
-                    disclosure_verdict=str(row[10]),
-                    authority_verdict=str(row[11]),
-                    authority_reason=str(row[12]),
-                    policy_refs=tuple(policy_refs),
-                    target_session=None if row[14] is None else str(row[14]),
-                    execution_context_ref=str(row[15]),
-                ),
+    try:
+        for row in rows:
+            decision = cast(
+                ContextInjectionDecision,
+                require_literal(row[3], ContextInjectionDecision, name="stored context injection decision"),
             )
-        )
+            policy_refs = json.loads(str(row[13]))
+            if not isinstance(policy_refs, list) or not all(isinstance(item, str) for item in policy_refs):
+                raise ValueError("stored context ledger policy refs are not a string list")
+            records.append(
+                ContextLedgerRecord(
+                    ledger_id=str(row[0]),
+                    build_ref=str(row[1]),
+                    observed_at_ms=int(row[2]),
+                    row=ContextLedgerRow(
+                        decision=decision,
+                        source=str(row[4]),
+                        item_ref=str(row[5]),
+                        token_cost=int(row[6]),
+                        source_local_rank=int(row[7]),
+                        budget_before=int(row[8]),
+                        budget_after=int(row[9]),
+                        disclosure_verdict=str(row[10]),
+                        authority_verdict=str(row[11]),
+                        authority_reason=str(row[12]),
+                        policy_refs=tuple(policy_refs),
+                        target_session=None if row[14] is None else str(row[14]),
+                        execution_context_ref=str(row[15]),
+                    ),
+                )
+            )
+    except ValueError as exc:
+        raise sqlite3.DatabaseError("stored context injection ledger cannot be decoded") from exc
     return tuple(records)
 
 
