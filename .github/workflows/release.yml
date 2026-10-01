@@ -51,7 +51,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Manual recovery must package the immutable tag, not the workflow
           # branch that happens to contain this recovery machinery.
@@ -96,8 +96,9 @@ jobs:
             fi
           fi
           echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.21"
           python-version: "3.14"
       - name: Install dev dependencies (frozen lockfile)
         run: uv sync --extra dev --group audit --frozen
@@ -158,17 +159,17 @@ jobs:
           cp "${RUNNER_TEMP}/dist-hooks"/*.whl staged-dist-hooks/
           cp "${RUNNER_TEMP}/dist-hooks"/*.tar.gz staged-dist-hooks/
           ls -la staged-dist-mcp/ staged-dist-hooks/
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution-artifacts
           path: staged-dist/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution-artifacts-mcp
           path: staged-dist-mcp/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution-artifacts-hooks
           path: staged-dist-hooks/*
@@ -190,11 +191,11 @@ jobs:
         python-version: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install built wheel into fresh venv
@@ -242,11 +243,11 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-hooks
           path: dist-hooks/
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install polylogue-hooks wheel into fresh venv (no other deps)
@@ -295,11 +296,11 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
       - name: Install built wheel through pipx and smoke every console script
@@ -338,15 +339,15 @@ jobs:
         python-version: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-mcp
           path: dist-mcp/
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install polylogue + polylogue-mcp wrapper into fresh venv
@@ -374,12 +375,13 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.21"
           python-version: "3.14"
       - name: Generate CycloneDX SBOM from built wheel
         run: |
@@ -399,7 +401,7 @@ jobs:
             --output-format xml \
             --output-file sbom/polylogue-${{ needs.build.outputs.version }}.cdx.xml
           ls -la sbom/
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sbom-artifacts
           path: sbom/*
@@ -419,14 +421,22 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
       - name: List artifacts about to be signed and published
         run: ls -la dist/
+      - name: Pin Sigstore bootstrap installer
+        # The pinned action invokes pip install uv and uv pip install uv.
+        # Both resolvers must select the same fixed release.
+        run: |
+          printf 'uv==0.12.21\n' > "${RUNNER_TEMP}/sigstore-bootstrap-constraints.txt"
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.5.0
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
+        env:
+          PIP_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
+          UV_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
         with:
           inputs: |
             ./dist/*.whl
@@ -440,7 +450,7 @@ jobs:
         run: |
           find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           verbose: true
@@ -457,9 +467,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: v${{ needs.build.outputs.version }}
+          RECOVERY_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          gh workflow run homebrew-bump.yml --ref "${RELEASE_TAG}" -f "release_tag=${RELEASE_TAG}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            gh workflow run homebrew-bump.yml --ref "${RELEASE_TAG}"
+          else
+            gh workflow run homebrew-bump.yml --ref "${RELEASE_TAG}" -f "release_tag=${RECOVERY_TAG}"
+          fi
 
   publish-pypi-mcp:
     # Independent Trusted Publisher binding on PyPI is required for this
@@ -478,14 +493,22 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-mcp
           path: dist/
       - name: List artifacts about to be signed and published
         run: ls -la dist/
+      - name: Pin Sigstore bootstrap installer
+        # The pinned action invokes pip install uv and uv pip install uv.
+        # Both resolvers must select the same fixed release.
+        run: |
+          printf 'uv==0.12.21\n' > "${RUNNER_TEMP}/sigstore-bootstrap-constraints.txt"
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.5.0
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
+        env:
+          PIP_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
+          UV_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
         with:
           inputs: |
             ./dist/*.whl
@@ -495,7 +518,7 @@ jobs:
         run: |
           find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           verbose: true
@@ -517,14 +540,22 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-hooks
           path: dist/
       - name: List artifacts about to be signed and published
         run: ls -la dist/
+      - name: Pin Sigstore bootstrap installer
+        # The pinned action invokes pip install uv and uv pip install uv.
+        # Both resolvers must select the same fixed release.
+        run: |
+          printf 'uv==0.12.21\n' > "${RUNNER_TEMP}/sigstore-bootstrap-constraints.txt"
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.5.0
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
+        env:
+          PIP_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
+          UV_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
         with:
           inputs: |
             ./dist/*.whl
@@ -534,7 +565,7 @@ jobs:
         run: |
           find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           verbose: true

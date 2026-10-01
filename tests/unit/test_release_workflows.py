@@ -164,16 +164,71 @@ def test_homebrew_waits_for_main_publication_and_cdn_propagation(tmp_path: Path)
     assert "sha256=" in output.read_text()
 
 
-def test_newly_automatic_credential_bearing_actions_are_pinned() -> None:
-    actions: list[str] = []
-    for name, job in [("flakehub.yml", "publish"), ("homebrew-bump.yml", "bump")]:
-        actions.extend(
-            step["uses"]
-            for step in workflow(name)["jobs"][job]["steps"]
-            if step.get("uses", "").startswith(("DeterminateSystems/", "Homebrew/"))
-        )
-    assert len(actions) == 3
-    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in actions)
+def test_every_action_in_the_release_fan_out_has_an_immutable_commit() -> None:
+    """Moving a privileged action's tag must not change executed workflow code."""
+    for name in ["release-please", "release", "container", "extension-release", "homebrew-bump", "flakehub", "cachix"]:
+        for job in workflow(name + ".yml")["jobs"].values():
+            for step in job["steps"]:
+                if "uses" in step:
+                    assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"]), (name, step["uses"])
+    container = workflow("container.yml")["jobs"]["build-and-push"]["steps"]
+    for step in container:
+        if step.get("uses", "").startswith("docker/setup-qemu-action@"):
+            assert re.fullmatch(r"docker.io/tonistiigi/binfmt@sha256:[0-9a-f]{64}", step["with"]["image"])
+        if step.get("uses", "").startswith("docker/setup-buildx-action@"):
+            assert re.fullmatch(r"image=moby/buildkit@sha256:[0-9a-f]{64}", step["with"]["driver-opts"])
+            assert step["with"]["version"] == "v0.37.2"
+    for name, job in workflow("release.yml")["jobs"].items():
+        if not name.startswith("publish-pypi"):
+            continue
+        bootstrap = next(step for step in job["steps"] if step.get("name") == "Pin Sigstore bootstrap installer")
+        assert "uv==0.12.21" in bootstrap["run"]
+        assert "GITHUB_ENV" not in bootstrap["run"]
+        signer = next(step for step in job["steps"] if step.get("uses", "").startswith("sigstore/"))
+        assert signer["env"] == {
+            "PIP_CONSTRAINT": "${{ runner.temp }}/sigstore-bootstrap-constraints.txt",
+            "UV_CONSTRAINT": "${{ runner.temp }}/sigstore-bootstrap-constraints.txt",
+        }
+        publisher = next(step for step in job["steps"] if step.get("uses", "").startswith("pypa/"))
+        assert "env" not in publisher
+    cachix = workflow("cachix.yml")["jobs"]["push"]
+    assert cachix["if"] == "${{ vars.CACHIX_CACHE_ENABLED == 'true' }}"
+    action = next(step for step in cachix["steps"] if step.get("uses", "").startswith("cachix/cachix-action@"))
+    assert action["with"]["installCommand"] == "nix profile install --inputs-from . nixpkgs#cachix"
+
+
+@pytest.mark.parametrize("ref_type", ["tag", "branch"])
+def test_homebrew_dispatch_preserves_tag_fallback_and_branch_recovery(tmp_path: Path, ref_type: str) -> None:
+    """The real tag-push fallback has no GitHub Release; a recovery input wrongly requires one."""
+    dispatch = workflow("release.yml")["jobs"]["dispatch-homebrew"]["steps"][0]
+    calls = tmp_path / "calls.jsonl"
+    gh = tmp_path / "gh"
+    gh.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['CALLS'], 'a') as log:\n"
+        "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    gh.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", dispatch["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "CALLS": str(calls),
+            "RELEASE_TAG": "v1.2.3",
+            "RECOVERY_TAG": "v1.2.3",
+            "GITHUB_REF_TYPE": ref_type,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    expected = ["workflow", "run", "homebrew-bump.yml", "--ref", "v1.2.3"]
+    if ref_type == "branch":
+        expected += ["-f", "release_tag=v1.2.3"]
+    assert [json.loads(line) for line in calls.read_text().splitlines()] == [expected]
 
 
 def test_exact_main_package_dependents_wait_for_successful_main_upload() -> None:
@@ -196,7 +251,11 @@ def test_exact_main_package_dependents_wait_for_successful_main_upload() -> None
 def test_flakehub_tag_dispatch_publishes_the_selected_tag_instead_of_rolling() -> None:
     """The producer dispatches a tag ref; restoring event-name-only checks publishes a rolling build."""
     flakehub = workflow("flakehub.yml")
-    push = next(step for step in flakehub["jobs"]["publish"]["steps"] if "with" in step)["with"]
+    push = next(
+        step
+        for step in flakehub["jobs"]["publish"]["steps"]
+        if step.get("uses", "").startswith("DeterminateSystems/flakehub-push@")
+    )["with"]
     assert push["rolling"] == "${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' }}"
     assert (
         push["rolling-minor"]

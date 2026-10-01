@@ -57,7 +57,7 @@ jobs:
           echo "Bumping homebrew formula from ${tag}"
 
       - name: Check out release source (for the formula template)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: refs/tags/${{ steps.release.outputs.tag }}
           fetch-depth: 0
@@ -86,7 +86,7 @@ jobs:
           fi
 
       - name: Check out homebrew tap repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Sinity/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

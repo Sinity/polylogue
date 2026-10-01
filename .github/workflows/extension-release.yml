@@ -49,7 +49,7 @@ jobs:
     outputs:
       version: ${{ steps.summary.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Recovery builds the extension sources that belong to the release,
           # not whatever code later reached the default branch.
@@ -89,7 +89,7 @@ jobs:
           fi
           echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "20"
       - name: Install dependencies
@@ -177,7 +177,7 @@ jobs:
           print(target.read_text(), end="")
           PY
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: browser-extension-${{ steps.summary.outputs.version }}
           path: |
@@ -197,9 +197,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download workflow artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: browser-extension-${{ needs.build.outputs.version }}
           path: artifacts/
