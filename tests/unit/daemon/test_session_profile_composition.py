@@ -783,7 +783,7 @@ async def test_new_generation_resets_unsettled_sweep_facts_and_restarts_the_pref
         first = adapters[0].prefix_inspections
         for adapter in adapters:
             adapter.failure = None
-        real_frame = composition.make_session_profile_frame
+        real_frame = make_session_profile_frame
 
         def new_frame(*args: Any, **kwargs: Any) -> DerivationFrame:
             frame = real_frame(*args, **kwargs)
