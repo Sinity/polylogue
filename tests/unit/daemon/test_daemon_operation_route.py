@@ -2040,9 +2040,10 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
     def deadline_exceeded(self: QueryExecutionContext) -> bool:
         return self.deadline_monotonic is not None and clock["now"] > self.deadline_monotonic
 
-    with running_daemon_operations(
-        tmp_path / "archive", seed_archive=lambda root: _seed_sessions(root, count=1)
-    ) as stack:
+    def seed(root: Path) -> None:
+        _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
         monkeypatch.setattr(ArchiveStore, "count_sessions", slow_count)
         monkeypatch.setattr(QueryExecutionContext, "deadline_exceeded", deadline_exceeded)
         monkeypatch.setattr("polylogue.daemon.operation_runtime.monotonic", lambda: clock["now"])
