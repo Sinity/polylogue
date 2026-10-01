@@ -261,13 +261,28 @@ class _MeasuredConnection(sqlite3.Connection):
         return self.cursor().executescript(sql_script)
 
     def live_cursors(self) -> tuple[sqlite3.Cursor, ...]:
-        return tuple(
-            cursor for reference in getattr(self, "_native_cursors", {}).values() if (cursor := reference()) is not None
-        )
+        live = {
+            id(cursor): cursor
+            for reference in getattr(self, "_native_cursors", {}).values()
+            if (cursor := reference()) is not None
+        }
+        live.update(getattr(self, "_unsettled_native_cursors", {}))
+        return tuple(live.values())
 
     def close_cursor(self, cursor: sqlite3.Cursor) -> None:
-        cursor.close()
+        try:
+            cursor.close()
+        except BaseException:
+            # Healthy cursors remain weakly inventoried. A failed physical
+            # close must retain this exact actual statement independently of
+            # an exception traceback or the producer's last local reference.
+            pending = getattr(self, "_unsettled_native_cursors", None)
+            if pending is None:
+                self._unsettled_native_cursors: dict[int, sqlite3.Cursor] = {}
+            self._unsettled_native_cursors[id(cursor)] = cursor
+            raise
         getattr(self, "_native_cursors", {}).pop(id(cursor), None)
+        getattr(self, "_unsettled_native_cursors", {}).pop(id(cursor), None)
 
     def settle_cursors(self) -> None:
         failures: list[BaseException] = []

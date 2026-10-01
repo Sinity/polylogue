@@ -1,60 +1,49 @@
-"""Probe and prototype scratch survives actual native statement close failure."""
+"""Canonical probe and prototype owners retain actual failed statements."""
 
+import sqlite3
+from builtins import BaseExceptionGroup
 from contextlib import closing
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite import connection_profile as profiles
-from polylogue.storage.sqlite.archive_tiers import bootstrap
+from polylogue.storage.sqlite.archive_tiers import bootstrap, schema_inventory
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.sqlite_cursor_settlement import BackupCursorFault
+from tests.infra.sqlite_cursor_settlement import BackupCursorFault, ControlledCursor
 
 
-@pytest.mark.parametrize("fail_copy", [False, True])
-def test_in_memory_probe_retains_actual_scratch_until_cursor_settles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_copy: bool
+@pytest.mark.parametrize("fail_prepare", [False, True])
+def test_canonical_probe_consumer_retains_actual_statement_until_creator_retry(
+    monkeypatch: pytest.MonkeyPatch, fail_prepare: bool
 ) -> None:
-    import sqlite3
+    cursors: list[ControlledCursor] = []
+    initialize = schema_inventory.initialize_runtime_tier_probe
 
-    handles: list[BackupCursorFault] = []
+    def prepare(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
+        initialize(connection, tier)
+        cursor = connection.cursor(factory=ControlledCursor)
+        assert isinstance(cursor, ControlledCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        cursor.fetchone()
+        cursor.allow_cleanup.clear()
+        cursors.append(cursor)
+        if fail_prepare:
+            raise ValueError("synthetic canonical probe preparation fault")
 
-    actual_connect = connect_measured
-
-    def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        if "polylogue-tier-probe-" in str(path):
-            handle = sqlite3.connect(path, *args, factory=BackupCursorFault, **kwargs)
-            assert isinstance(handle, BackupCursorFault)
-            handle.fail_copy = fail_copy
-            handles.append(handle)
-            return handle
-        return actual_connect(path, *args, **kwargs)
-
-    monkeypatch.setattr(profiles, "connect_measured", connect)
-    # Avoid unrelated process prototype reuse; the real tier/probe/migration
-    # body still builds the isolated durable file and copies it into memory.
     monkeypatch.setattr(bootstrap, "_TIER_PROTOTYPES", {})
     monkeypatch.setattr(bootstrap, "_record_tier_prototype", lambda *_args: None)
-    with closing(connect_measured(":memory:")) as destination:
-        with pytest.raises(profiles.NativeConnectionSettlementError) as failed:
-            bootstrap.initialize_runtime_tier_probe(destination, ArchiveTier.USER)
-        owner = failed.value.owner
-        try:
-            assert owner.scratch_directory is not None
-            directory = Path(owner.scratch_directory.name)
-            assert directory.exists() and (directory / "user.db").exists()
-            assert handles[0].retained_cursor is not None
-            assert handles[0].retained_cursor.close_attempts == 1
-        finally:
-            for handle in handles:
-                if handle.retained_cursor is not None:
-                    handle.retained_cursor.allow_cleanup.set()
-            owner.close()
-        assert handles[0].retained_cursor is not None
-        assert handles[0].retained_cursor.close_attempts == 2
-        assert not directory.exists()
+    monkeypatch.setattr(schema_inventory, "initialize_runtime_tier_probe", prepare)
+    with pytest.raises(profiles.NativeConnectionSettlementError) as failed:
+        schema_inventory.canonical_schema_objects(ArchiveTier.USER)
+    owner = failed.value.owner
+    try:
+        assert owner.connection is not None and owner.scratch_directory is None
+        assert cursors[0].close_attempts == 1
+    finally:
+        cursors[0].allow_cleanup.set()
+        owner.close()
+    assert cursors[0].close_attempts == 2 and owner.connection is None
 
 
 @pytest.mark.parametrize("fail_copy", [False, True])
@@ -91,3 +80,107 @@ def test_prototype_copy_retains_staging_and_directory_until_native_cursor_settle
         assert source.retained_cursor is not None
         assert source.retained_cursor.close_attempts == 2
         assert not directory.exists()
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="native descriptor observation requires procfs")
+def test_actual_failed_cursor_survives_discarded_error_and_creator_local_until_retry(tmp_path: Path) -> None:
+    import gc
+    import weakref
+
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+    from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    path = tmp_path / "cursor-control.db"
+    connection = connect_measured(path)
+    connection.execute("CREATE TABLE evidence(value INTEGER)")
+    connection.executemany("INSERT INTO evidence VALUES (?)", [(1,), (2,)])
+    connection.commit()
+    metadata = path.stat()
+    identity = metadata.st_dev, metadata.st_ino
+    assert selected_file_descriptors(identity)
+    owner = NativeSQLCustodyOwner(connection)
+    cursor = connection.cursor(factory=ControlledCursor)
+    assert isinstance(cursor, ControlledCursor)
+    cursor.execute("SELECT value FROM evidence ORDER BY value")
+    cursor.fetchone()
+    cursor.allow_cleanup.clear()
+    actual = weakref.ref(cursor)
+    completions: list[str] = []
+    owner.retain_settlement_callback(lambda: completions.append("complete"))
+
+    def discard_close_error() -> None:
+        try:
+            owner.close()
+        except profiles.NativeConnectionSettlementError:
+            pass
+
+    try:
+        discard_close_error()
+        del cursor
+        gc.collect()
+        retained = actual()
+        assert retained is not None and retained.close_attempts == 1
+        assert owner.connection is connection and completions == []
+        assert selected_file_descriptors(identity)
+        retained.allow_cleanup.set()
+        owner.close()
+        assert retained.close_attempts == 2 and completions == ["complete"]
+        assert not selected_file_descriptors(identity)
+        del retained
+        gc.collect()
+        assert actual() is None
+    finally:
+        if retained_cursor := actual():
+            retained_cursor.allow_cleanup.set()
+        owner.close()
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="native descriptor observation requires procfs")
+def test_measured_connection_retains_failed_cursor_without_native_owner(tmp_path: Path) -> None:
+    import gc
+    import weakref
+
+    from polylogue.storage.io_phase_metrics import connect_measured, live_connection_cursors
+    from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+
+    path = tmp_path / "primitive-control.db"
+    connection = connect_measured(path)
+    connection.execute("CREATE TABLE evidence(value INTEGER)")
+    connection.executemany("INSERT INTO evidence VALUES (?)", [(1,), (2,)])
+    connection.commit()
+    metadata = path.stat()
+    identity = metadata.st_dev, metadata.st_ino
+    cursor = connection.cursor(factory=ControlledCursor)
+    assert isinstance(cursor, ControlledCursor)
+    cursor.execute("SELECT value FROM evidence ORDER BY value")
+    cursor.fetchone()
+    cursor.allow_cleanup.clear()
+    actual = weakref.ref(cursor)
+
+    def discard_close_error() -> None:
+        try:
+            connection.close()
+        except BaseExceptionGroup:
+            pass
+
+    try:
+        discard_close_error()
+        del cursor
+        gc.collect()
+        retained = actual()
+        assert retained is not None and retained.close_attempts == 1
+        assert live_connection_cursors(connection) == (retained,)
+        assert selected_file_descriptors(identity)
+        retained.allow_cleanup.set()
+        connection.close()
+        assert retained.close_attempts == 2
+        assert not selected_file_descriptors(identity)
+        del retained
+        gc.collect()
+        assert actual() is None
+    finally:
+        if retained_cursor := actual():
+            retained_cursor.allow_cleanup.set()
+        connection.close()
