@@ -82,7 +82,6 @@ def test_prototype_copy_retains_staging_and_directory_until_native_cursor_settle
         assert not directory.exists()
 
 
-@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="native descriptor observation requires procfs")
 def test_actual_failed_cursor_survives_discarded_error_and_creator_local_until_retry(tmp_path: Path) -> None:
     import gc
     import weakref
@@ -99,7 +98,9 @@ def test_actual_failed_cursor_survives_discarded_error_and_creator_local_until_r
     connection.commit()
     metadata = path.stat()
     identity = metadata.st_dev, metadata.st_ino
-    assert selected_file_descriptors(identity)
+    observe_descriptors = Path("/proc/self/fd").is_dir()
+    if observe_descriptors:
+        assert selected_file_descriptors(identity)
     owner = NativeSQLCustodyOwner(connection)
     cursor = connection.cursor(factory=ControlledCursor)
     assert isinstance(cursor, ControlledCursor)
@@ -123,11 +124,13 @@ def test_actual_failed_cursor_survives_discarded_error_and_creator_local_until_r
         retained = actual()
         assert retained is not None and retained.close_attempts == 1
         assert owner.connection is connection and completions == []
-        assert selected_file_descriptors(identity)
+        if observe_descriptors:
+            assert selected_file_descriptors(identity)
         retained.allow_cleanup.set()
         owner.close()
         assert retained.close_attempts == 2 and completions == ["complete"]
-        assert not selected_file_descriptors(identity)
+        if observe_descriptors:
+            assert not selected_file_descriptors(identity)
         del retained
         gc.collect()
         assert actual() is None
@@ -137,7 +140,6 @@ def test_actual_failed_cursor_survives_discarded_error_and_creator_local_until_r
         owner.close()
 
 
-@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="native descriptor observation requires procfs")
 def test_measured_connection_retains_failed_cursor_without_native_owner(tmp_path: Path) -> None:
     import gc
     import weakref
@@ -152,6 +154,7 @@ def test_measured_connection_retains_failed_cursor_without_native_owner(tmp_path
     connection.commit()
     metadata = path.stat()
     identity = metadata.st_dev, metadata.st_ino
+    observe_descriptors = Path("/proc/self/fd").is_dir()
     cursor = connection.cursor(factory=ControlledCursor)
     assert isinstance(cursor, ControlledCursor)
     cursor.execute("SELECT value FROM evidence ORDER BY value")
@@ -172,11 +175,13 @@ def test_measured_connection_retains_failed_cursor_without_native_owner(tmp_path
         retained = actual()
         assert retained is not None and retained.close_attempts == 1
         assert live_connection_cursors(connection) == (retained,)
-        assert selected_file_descriptors(identity)
+        if observe_descriptors:
+            assert selected_file_descriptors(identity)
         retained.allow_cleanup.set()
         connection.close()
         assert retained.close_attempts == 2
-        assert not selected_file_descriptors(identity)
+        if observe_descriptors:
+            assert not selected_file_descriptors(identity)
         del retained
         gc.collect()
         assert actual() is None
