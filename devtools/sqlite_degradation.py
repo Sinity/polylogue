@@ -152,7 +152,13 @@ def _returns_value(node: ast.ExceptHandler, parents: dict[ast.AST, ast.AST]) -> 
     """
     children = list(ast.walk(node))
 
+    terminal_failure = bool(
+        node.body and isinstance(node.body[-1], ast.Return) and _explicit_failure_return(node.body[-1], parents)
+    )
+
     def escapes_handler_loop(child: ast.AST) -> bool:
+        if not terminal_failure:
+            return True
         ancestor = parents.get(child)
         while ancestor is not None and ancestor is not node:
             if isinstance(ancestor, ast.For | ast.AsyncFor | ast.While):

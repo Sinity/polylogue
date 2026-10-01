@@ -366,3 +366,13 @@ def test_local_shadow_cannot_claim_imported_failure_boundary(tmp_path: Path, sha
         "        return operation_envelope(request, context, outcome='failed', error={})\n"
     )
     assert sum(census_sqlite_degradation_anchors(tmp_path, ("pkg",)).values()) == 1
+
+
+def test_internal_loop_without_terminal_failure_remains_censused(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\ndef read():\n    try:\n        pass\n    except sqlite3.Error:\n"
+        "        while waiting:\n            break\n    return 0\n"
+    )
+    assert sum(census_sqlite_degradation_anchors(tmp_path, ("pkg",)).values()) == 1
