@@ -36,6 +36,10 @@ def swap_main(connect: Callable[..., sqlite3.Connection], *args: Any, **kwargs: 
 
 class RacingConnection(sqlite3.Connection):
     def execute(self, statement: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        if attack == "spill-policy" and statement == "BEGIN":
+            policy = super().execute("PRAGMA temp_store").fetchone()
+            if policy != (1,):
+                raise AssertionError("source transaction must use file-backed temporary storage")
         if attack.startswith("main-"):
             Path(os.environ["POLYLOGUE_TEST_SQLITE_SQL_MARKER"]).write_text("SQL ran", encoding="utf-8")
         if attack == "sidecar" and "FROM sqlite_master" in statement:

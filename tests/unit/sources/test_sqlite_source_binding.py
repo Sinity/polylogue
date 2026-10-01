@@ -179,6 +179,24 @@ def _attack_worker(monkeypatch: pytest.MonkeyPatch, source: Path, external: Path
     monkeypatch.setattr(sqlite_export, "_WORKER_COMMAND", f"import runpy; runpy.run_path({str(fixture)!r})")
 
 
+@pytest.mark.parametrize("operation", ["export", "shape", "backup"])
+def test_bound_source_reader_selects_disk_spill_before_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    source = tmp_path / "declared.sqlite"
+    _database(source, "declared")
+    _attack_worker(monkeypatch, source, source, "spill-policy")
+    if operation == "export":
+        assert b"declared" in sqlite_export.logical_export_bytes(source)
+    elif operation == "shape":
+        assert sqlite_export.logical_source_shape(source) == {"state": ("value",)}
+    else:
+        destination = tmp_path / "backup.sqlite"
+        sqlite_snapshot.snapshot_sqlite_database(source, destination)
+        with closing(sqlite3.connect(destination)) as connection:
+            assert connection.execute("SELECT value FROM state").fetchone() == ("declared",)
+
+
 @pytest.mark.parametrize("attack", ["main-symlink", "main-regular"])
 @pytest.mark.parametrize("operation", ["frontier", "export", "shape", "backup", "staging"])
 def test_actual_connect_aba_cannot_attribute_external_database(

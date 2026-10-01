@@ -478,13 +478,17 @@ def execute_source_item_admission(
         if existing is not None and existing[0] is None:
             raise ValueError("source member raw was retired; readmission is forbidden")
         if existing is not None:
+            if existing[0] != plan.raw_id:
+                raise ValueError("accepted source member raw identity changed")
             retained = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id=?", (existing[0],)).fetchone()
             if existing[1] != plan.request.blob_hash or retained is None or retained[0] != existing[1]:
                 raise ValueError("accepted source member content changed")
             # Parsing may have refined this raw's origin or revision authority.
             # Its immutable input edge proves admission; do not replay the
             # original pending-admission plan over those later domain facts.
-            _execute_captured_raw_admission(conn, plan, manage_transaction=False)
+            admitted = _execute_captured_raw_admission(conn, plan, manage_transaction=False)
+            if admitted.raw_id != existing[0]:
+                raise ValueError("accepted source member raw identity changed")
             result = RawAdmissionResult(arm=RawAdmissionArm.SKIP_DUPLICATE, raw_id=str(existing[0]))
         else:
             result = _execute_captured_raw_admission(conn, plan, manage_transaction=False)

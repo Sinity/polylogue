@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind, raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
@@ -26,10 +28,11 @@ _PAYLOAD = b'{"synthetic":"source-item"}\n'
 _BLOB_HASH = hashlib.sha256(_PAYLOAD).digest()
 
 
-def _archive(tmp_path: Path) -> tuple[sqlite3.Connection, str, str, RawAdmissionPlan]:
+def _archive(tmp_path: Path, *, payload: bytes = _PAYLOAD) -> tuple[sqlite3.Connection, str, str, RawAdmissionPlan]:
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
-    BlobStore(root / "blob").write_from_bytes(_PAYLOAD)
+    blob_hash = hashlib.sha256(payload).digest()
+    BlobStore(root / "blob").write_from_bytes(payload)
     conn = sqlite3.connect(root / "source.db")
     conn.execute("PRAGMA foreign_keys = ON")
     (item_id,) = publish_source_generation(
@@ -38,7 +41,7 @@ def _archive(tmp_path: Path) -> tuple[sqlite3.Connection, str, str, RawAdmission
         manifest_digest="a" * 64,
         addressing_mode="physical-file-v1",
         coordinates=("capture.json",),
-        input_blob_hashes={"capture.json": _BLOB_HASH},
+        input_blob_hashes={"capture.json": blob_hash},
         enumeration_fingerprint="b" * 64,
         observed_at_ms=1,
     )
@@ -47,8 +50,8 @@ def _archive(tmp_path: Path) -> tuple[sqlite3.Connection, str, str, RawAdmission
         capture_mode=Provider.CLAUDE_CODE,
         source_path="/synthetic/capture.json",
         source_index=0,
-        blob_hash=_BLOB_HASH,
-        blob_size=len(_PAYLOAD),
+        blob_hash=blob_hash,
+        blob_size=len(payload),
         acquired_at_ms=2,
     )
     return conn, "synthetic-generation", item_id, plan_raw_admission(request)
@@ -91,6 +94,86 @@ def test_duplicate_admission_is_one_raw_row_and_one_membership_edge(tmp_path: Pa
         _BLOB_HASH,
     )
     conn.close()
+
+
+def test_existing_member_refuses_detached_explicit_raw_and_preserves_publication(tmp_path: Path) -> None:
+    conn, _generation, item_id, plan = _archive(tmp_path)
+    with conn:
+        conn.execute("BEGIN")
+        execute_source_item_admission(conn, plan, _member(item_id))
+    root = tmp_path / "archive"
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    blob_hash, _size = publisher.write_from_bytes(_PAYLOAD)
+    publisher.flush()
+    receipt = publisher.receipt_id(blob_hash)
+    assert receipt is not None
+    other = plan_raw_admission(replace(plan.request, raw_id="explicit-other-raw", blob_publication_receipt_id=receipt))
+    conn.execute("BEGIN")
+    with pytest.raises(ValueError, match="member raw identity changed"):
+        execute_source_item_admission(conn, other, _member(item_id))
+    assert conn.in_transaction
+    conn.commit()  # A caught refusal cannot commit a detached raw or spend custody.
+    assert conn.execute("SELECT raw_id FROM raw_sessions").fetchall() == [(plan.raw_id,)]
+    assert conn.execute("SELECT raw_id FROM source_item_raw_members").fetchall() == [(plan.raw_id,)]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM blob_publication_reservations WHERE publication_id=?",
+        (receipt,),
+    ).fetchone() == (1,)
+    conn.close()
+
+
+def test_duplicate_member_keeps_refined_origin_and_renews_exact_raw_receipt(tmp_path: Path) -> None:
+    conn, _generation, item_id, initial = _archive(tmp_path)
+    pending = plan_raw_admission(replace(initial.request, origin=Origin.UNKNOWN_EXPORT, raw_id=initial.raw_id))
+    with conn:
+        conn.execute("BEGIN")
+        execute_source_item_admission(conn, pending, _member(item_id))
+    with conn:
+        conn.execute("BEGIN")
+        execute_source_item_admission(conn, initial, _member(item_id))
+    assert conn.execute("SELECT origin FROM raw_sessions").fetchone() == (Origin.CLAUDE_CODE_SESSION.value,)
+    previous_receipt = conn.execute(f"SELECT {raw_receipt_order_sql()} FROM raw_sessions r").fetchone()[0]
+    with conn:
+        conn.execute("BEGIN")
+        result = execute_source_item_admission(conn, pending, _member(item_id))
+    assert result.raw_id == initial.raw_id
+    assert conn.execute("SELECT origin FROM raw_sessions").fetchone() == (Origin.CLAUDE_CODE_SESSION.value,)
+    assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+    assert conn.execute("SELECT raw_id FROM source_item_raw_members").fetchone() == (initial.raw_id,)
+    assert conn.execute(f"SELECT {raw_receipt_order_sql()} FROM raw_sessions r").fetchone()[0] > previous_receipt
+    conn.close()
+
+
+def test_duplicate_member_preserves_revision_refined_by_actual_retained_parser(tmp_path: Path) -> None:
+    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+
+    payload = (
+        b'{"sessionId":"accepted-session","uuid":"native-message","type":"user",'
+        b'"cwd":"/synthetic","message":{"role":"user","content":"retained text"}}\n'
+    )
+    conn, _generation, item_id, plan = _archive(tmp_path, payload=payload)
+    with conn:
+        conn.execute("BEGIN")
+        execute_source_item_admission(conn, plan, _member(item_id))
+    conn.close()
+    report = converge_raw_observations(tmp_path / "archive", source_roots=(), limit=32)
+    assert report.failed == 0
+    with sqlite3.connect(tmp_path / "archive" / "source.db") as source:
+        before = source.execute(
+            "SELECT logical_source_key,revision_kind,source_revision,revision_authority FROM raw_sessions WHERE raw_id=?",
+            (plan.raw_id,),
+        ).fetchone()
+        assert before is not None
+        assert before[0] == "claude-code-session:accepted-session"
+        assert before[0] != plan.revision.logical_source_key
+        source.execute("BEGIN")
+        repeated = execute_source_item_admission(source, plan, _member(item_id))
+        assert repeated.raw_id == plan.raw_id
+        after = source.execute(
+            "SELECT logical_source_key,revision_kind,source_revision,revision_authority FROM raw_sessions WHERE raw_id=?",
+            (plan.raw_id,),
+        ).fetchone()
+        assert after == before
 
 
 def test_zip_member_content_identity_reaches_retained_coordinate(tmp_path: Path) -> None:

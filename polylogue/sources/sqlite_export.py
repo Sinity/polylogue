@@ -602,6 +602,7 @@ def _prepare_inspection_grouping(stack: ExitStack, scratch: Path) -> _Inspection
     before = _descriptor_census()
     connection = stack.enter_context(_source_connection_context(path, readonly=False))
     connection.execute("PRAGMA journal_mode=OFF").close()
+    connection.execute("PRAGMA temp_store=FILE").close()
     identity = _identity(path.lstat())
     descriptors = {
         fd: info for fd, info in _descriptor_census().items() if info[2] == stat.S_IFREG and before.get(fd) != info
@@ -827,6 +828,11 @@ def _source_worker_main() -> None:
             ) as conn:
                 proof.validate()
                 _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                # Sorting a complete source or preview denominator must spill
+                # regardless of the SQLite build's default TEMP policy. Main
+                # descriptor proof precedes SQL; no transaction or TEMP object
+                # exists yet, so selecting this policy cannot discard state.
+                conn.execute("PRAGMA temp_store=FILE").close()
                 conn.text_factory = bytes
                 conn.execute("BEGIN").close()
                 schema = _source_schema(conn)
