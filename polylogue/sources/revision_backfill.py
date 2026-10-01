@@ -111,6 +111,7 @@ from polylogue.sources.sqlite_snapshot import (
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
     parser_census_logical_keys,
@@ -5986,7 +5987,7 @@ class _ReplaySpillPrefetcher:
                 plan, descriptors = self._build_plan(source_conn, keys, extra_members)
                 if not plan:
                     return
-                spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
+                spill_conn = connect_measured(self._spill.path, timeout=30.0)
                 from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
                 spill_owner = NativeSQLCustodyOwner(spill_conn)
@@ -6255,7 +6256,7 @@ class _ParsedSessionSpill:
         os.close(fd)
         self.path = Path(name)
         self._scratch_directories: list[Path] = []
-        self.conn = sqlite3.connect(self.path)
+        self.conn = connect_measured(self.path)
         self._sql_closed = False
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 

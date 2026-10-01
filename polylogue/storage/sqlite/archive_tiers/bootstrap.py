@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from polylogue.storage.archive_tuple_location import InactiveTierDestination
     from polylogue.storage.sqlite.population_admission import _PopulationAdmission
 
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_BASELINE_DDL_BY_TIER,
     ARCHIVE_BASELINE_VERSION_BY_TIER,
@@ -318,7 +319,7 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         staging = Path(staging_name)
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
 
-        target = sqlite3.connect(staging)
+        target = connect_measured(staging)
         target_owner = NativeSQLCustodyOwner(target)
         try:
             conn.backup(target)
@@ -431,7 +432,7 @@ def initialize_runtime_tier_probe(
             )
 
             path = Path(directory) / f"{tier.value}.db"
-            temporary = sqlite3.connect(path)
+            temporary = connect_measured(path)
             try:
                 initialize_runtime_tier_probe(temporary, tier, probe_path=path)
                 admitted_version = int(temporary.execute("PRAGMA user_version").fetchone()[0])
@@ -649,7 +650,7 @@ def initialize_archive_database(
                 remedy="initialize the canonical archive root to construct its baseline and admit declared trains",
             )
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path)
+        conn = connect_measured(path)
         owner = NativeSQLCustodyOwner(conn)
     else:
         if page_size is not None:
@@ -660,7 +661,7 @@ def initialize_archive_database(
             raise RuntimeError(f"durable tier is missing; refusing runtime initialization: {path}") from exc
         if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
             raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
-        conn = sqlite3.connect(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        conn = connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
         owner = NativeSQLCustodyOwner(conn)
     primary: BaseException | None = None
     try:

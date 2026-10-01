@@ -46,6 +46,7 @@ from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 from polylogue.sources.value_bounds import require_storable_string
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
 # The occurrence a parent id names (see the active-branch meaning below):
@@ -1344,7 +1345,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
 
 @contextmanager
 def _prepared_reader(path: Path) -> Iterator[sqlite3.Connection]:
-    connection = sqlite3.connect(_read_uri(path), uri=True)
+    connection = connect_measured(_read_uri(path), uri=True)
     owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield owner.require_connection()
@@ -1382,7 +1383,7 @@ class SqliteMessageStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.conn = sqlite3.connect(path)
+        self.conn = connect_measured(path)
         self._sql_owner = NativeSQLCustodyOwner(
             self.conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self)
         )

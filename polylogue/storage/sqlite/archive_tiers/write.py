@@ -119,6 +119,7 @@ from polylogue.storage.fts.sql import (
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -5370,7 +5371,7 @@ class _UnionScratch:
                 yield self.conn
                 return
             uri = self._path.as_uri() + ("?mode=rw" if write else "?mode=ro")
-            conn = sqlite3.connect(uri, uri=True)
+            conn = connect_measured(uri, uri=True)
             owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
             self._reader_owner = owner
             self._conn = conn
@@ -11273,7 +11274,7 @@ class _DiskSignatureSequence(Sequence[tuple[str, str]]):
             if self._conn is not None:
                 yield self._connection()
                 return
-            conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
+            conn = connect_measured(f"{self._path.as_uri()}?mode=ro", uri=True)
             owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
             self._reader_owner = owner
             self._conn = conn
@@ -13698,7 +13699,7 @@ class _DiskSourceMessageIds(Mapping[str, str]):
             if self._conn is not None:
                 yield self._connection()
                 return
-            conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
+            conn = connect_measured(f"{self._path.as_uri()}?mode=ro", uri=True)
             owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
             self._reader_owner = owner
             self._conn = conn
@@ -14601,7 +14602,7 @@ class _DiskDuplicateNativeIds(frozenset[str]):
                     raise RuntimeError("duplicate-id reader has no native owner")
                 yield self._reader_owner.require_connection()
                 return
-            conn = sqlite3.connect(f"{self._path.as_uri()}?mode=ro", uri=True)
+            conn = connect_measured(f"{self._path.as_uri()}?mode=ro", uri=True)
             owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(*current_native_sql_lifetimes(), self))
             self._reader_owner = owner
             self._conn = conn

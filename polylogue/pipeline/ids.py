@@ -438,7 +438,9 @@ class _DiskRevisionStore:
         self._lifetime_lock = threading.RLock()
         self._native_owner: NativeSQLCustodyOwner | None = None
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-revision-", dir=parent)
-        self.conn = sqlite3.connect(Path(self._scratch.name) / "projection.db")
+        from polylogue.storage.io_phase_metrics import connect_measured
+
+        self.conn = connect_measured(Path(self._scratch.name) / "projection.db")
         try:
             self._native_owner = _retain_projection_sql_connection(self.conn, lifetime=self)
         except NativeConnectionSettlementError as failure:
@@ -495,7 +497,9 @@ class _DiskRevisionStore:
             if self._closed:
                 raise RuntimeError("revision projection artifact is closed")
             path = Path(self._scratch.name) / "projection.db"
-            conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+            from polylogue.storage.io_phase_metrics import connect_measured
+
+            conn = connect_measured(f"{path.as_uri()}?mode=ro", uri=True)
             owner = _retain_projection_sql_connection(conn, lifetime=self)
             try:
                 from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner as NativeOwner

@@ -26,6 +26,7 @@ import aiosqlite
 import polylogue.paths as _paths
 from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.pl_fold import pl_fold
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.runtime import (
     SessionProfileRecord,
 )
@@ -208,7 +209,7 @@ def _new_write_connection(backend: SQLiteBackend, purpose: str) -> aiosqlite.Con
 
 def _connect_write_thread(backend: SQLiteBackend, grant: WriteLeaseThreadGrant) -> sqlite3.Connection:
     bind_write_lease_thread(grant)
-    return sqlite3.connect(backend._db_path, timeout=DB_TIMEOUT)
+    return connect_measured(backend._db_path, timeout=DB_TIMEOUT)
 
 
 def _retire_backend_connection_owner(conn: aiosqlite.Connection) -> None:
@@ -290,7 +291,7 @@ async def _open_configured_backend_connection(
         def connect_reader() -> sqlite3.Connection:
             if grant is not None:
                 bind_write_lease_thread(grant)
-            return sqlite3.connect(
+            return connect_measured(
                 backend._db_path.absolute().as_uri() + "?mode=ro",
                 uri=True,
                 timeout=READ_DB_TIMEOUT,

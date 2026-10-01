@@ -45,6 +45,7 @@ from typing import Any, Protocol
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.sql_settlement import current_native_sql_lifetimes, retain_native_sql_lifetimes
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     NativeSQLCustodyOwner,
@@ -152,7 +153,7 @@ def _source_connection_context(
     uri = f"{path.resolve().as_uri()}?mode={'ro' if readonly else 'rwc'}"
     if immutable:
         uri += "&immutable=1"
-    connection = sqlite3.connect(uri, uri=True, timeout=timeout)
+    connection = connect_measured(uri, uri=True, timeout=timeout)
     owner = NativeSQLCustodyOwner(
         connection,
         scratch_directory=scratch_directory,

@@ -538,25 +538,19 @@ def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
                 with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
                     frame.rebind()
             else:
-                attempts: list[str] = []
+                from tests.infra.sqlite_cursor_settlement import ControlledCursor
 
-                class Cursor:
-                    def __init__(self, name: str, fails: bool) -> None:
-                        self.name, self.fails = name, fails
-
-                    def close(self) -> None:
-                        attempts.append(self.name)
-                        if self.fails:
-                            raise OSError("synthetic cursor cleanup failure")
-
-                failed = Cursor("failed", True)
-                successful = Cursor("successful", False)
-                frame._cursors.update((failed, successful))  # type: ignore[arg-type]
+                failed = frame._conn.cursor(factory=ControlledCursor)
+                successful = frame._conn.cursor(factory=ControlledCursor)
+                failed.execute("SELECT 1 UNION ALL SELECT 2")
+                successful.execute("SELECT 1 UNION ALL SELECT 2")
+                failed.allow_cleanup.clear()
+                frame._cursors.update((failed, successful))
                 with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
                     frame.close()
-                assert set(attempts) == {"failed", "successful"}
+                assert failed.close_attempts == successful.close_attempts == 1
                 assert {id(cursor) for cursor in frame._cursors} == {id(failed)}
-                failed.fails = False
+                failed.allow_cleanup.set()
         owner = refused.value.owner
         assert owner.frame is not None
         assert cast(object, owner.connection) is handles[-1]
@@ -564,6 +558,9 @@ def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
         handles[-1].allow_cleanup.set()
         owner.close()
         assert owner.frame is None
+        if failure_point == "close":
+            assert failed.close_attempts == 2
+            assert successful.close_attempts == 1
         assert owner.connection is None
         with pytest.raises(sqlite3.ProgrammingError):
             handles[-1].connection.execute("SELECT 1")
@@ -685,21 +682,20 @@ def test_started_frame_stream_refuses_foreign_step_and_cleanup(
             actual = frame._conn
             counts = {"step": 0, "close": 0}
 
-            class Cursor:
-                def __init__(self, cursor: sqlite3.Cursor) -> None:
-                    self.cursor = cursor
-
+            class Cursor(sqlite3.Cursor):
                 def __next__(self) -> sqlite3.Row:
                     counts["step"] += 1
-                    return cast(sqlite3.Row, next(self.cursor))
+                    return cast(sqlite3.Row, super().__next__())
 
                 def close(self) -> None:
                     counts["close"] += 1
-                    self.cursor.close()
+                    super().close()
 
             class Connection:
                 def execute(self, sql: str, parameters: tuple[object, ...]) -> Cursor:
-                    return Cursor(actual.execute(sql, parameters))
+                    cursor = actual.cursor(factory=Cursor)
+                    cursor.execute(sql, parameters)
+                    return cursor
 
             frame._conn = Connection()  # type: ignore[assignment]
             stream = frame.stream("SELECT position FROM rows_ ORDER BY position")
@@ -748,3 +744,32 @@ def test_started_frame_stream_refuses_foreign_step_and_cleanup(
             assert not frame.streaming
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("exhaust", [False, True])
+def test_stream_finalization_retires_cursor_before_native_connection_close(index_db: Path, exhaust: bool) -> None:
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with read_frame(index_db) as frame:
+        actual = frame._conn
+        cursors: list[ControlledCursor] = []
+
+        class Connection:
+            def execute(self, sql: str, parameters: tuple[object, ...]) -> ControlledCursor:
+                cursor = actual.cursor(factory=ControlledCursor)
+                cursors.append(cursor)
+                cursor.execute(sql, parameters)
+                return cursor
+
+        frame._conn = Connection()  # type: ignore[assignment]
+        stream = frame.stream("SELECT position FROM rows_ ORDER BY position")
+        if exhaust:
+            assert len(list(stream)) == 10
+        else:
+            assert next(stream)[0] == 1
+            stream.close()
+        assert not frame.streaming
+        assert cursors[0].close_attempts == 1
+        frame.close()
+        stream.close()
+        assert cursors[0].close_attempts == 1

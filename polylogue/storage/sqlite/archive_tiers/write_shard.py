@@ -42,6 +42,7 @@ from typing import Any, overload
 from urllib.parse import quote
 
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 
@@ -177,7 +178,7 @@ class SessionShard:
 def _shard_connection(path: Path, *, readonly: bool = True) -> Iterator[sqlite3.Connection]:
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
-    connection = sqlite3.connect(_read_only_uri(path), uri=True) if readonly else sqlite3.connect(path)
+    connection = connect_measured(_read_only_uri(path), uri=True) if readonly else connect_measured(path)
     owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield owner.require_connection()
@@ -200,7 +201,7 @@ class SessionShardBuilder:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._conn = sqlite3.connect(path, isolation_level=None)
+        self._conn = connect_measured(path, isolation_level=None)
         self._sql_closed = False
         self._discard_on_close = True
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner

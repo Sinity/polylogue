@@ -36,7 +36,12 @@ from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import parse_qs, quote, urlsplit
 
 from polylogue.core.sql_settlement import SQLCustodyOwner, current_native_sql_lifetimes, register_native_sql_census
-from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.io_phase_metrics import (
+    close_connection_cursor,
+    connect_measured,
+    live_connection_cursors,
+    settle_connection_cursors,
+)
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, current_sql_custody, require_write_lease
 
 if TYPE_CHECKING:
@@ -343,14 +348,19 @@ class NativeSQLCustodyOwner:
         connection = self.connection
         failure: BaseException | None = None
         if connection is not None:
+            try:
+                settle_connection_cursors(connection)
+            except BaseException as error:
+                if self.frame is not None:
+                    live_ids = {id(cursor) for cursor in live_connection_cursors(connection)}
+                    self.frame._cursors = {cursor for cursor in self.frame._cursors if id(cursor) in live_ids}
+                    with _LIVE_READ_FRAMES_LOCK:
+                        _LIVE_READ_FRAMES.add(self.frame)
+                # Do not retry a failed statement in this terminal call, or
+                # roll back/close a connection while its statements remain live.
+                raise NativeConnectionSettlementError(self, error) from error
             if self.frame is not None:
-                for cursor in tuple(self.frame._cursors):
-                    try:
-                        cursor.close()
-                    except BaseException as error:
-                        failure = failure or error
-                    else:
-                        self.frame._cursors.remove(cursor)
+                self.frame._cursors.clear()
             try:
                 # Cancellation interrupts work, never original-owner cleanup.
                 connection.set_progress_handler(None, 0)
@@ -2447,7 +2457,7 @@ class ReadFrame:
             # for terminal cleanup by the original frame owner.
             self._sql_owner._require_owner()
             if cursor is not None and cursor in self._cursors:
-                cursor.close()
+                close_connection_cursor(self._sql_owner.require_connection(), cursor)
                 self._cursors.remove(cursor)
 
     def revalidate(self) -> bool:
@@ -2594,7 +2604,7 @@ def open_scratch_connection(
     lifetime_dependencies: tuple[object, ...] = (),
 ) -> NativeSQLCustodyOwner:
     """Register disposable SQL before its first pragma or schema statement."""
-    connection = sqlite3.connect(path)
+    connection = connect_measured(path)
     owner = NativeSQLCustodyOwner(
         connection,
         terminal_parent=terminal_parent,
@@ -2618,7 +2628,7 @@ def scratch_connection_context(
     """Keep disposable artifacts until their actual creator closes SQL."""
     scratch = tempfile.TemporaryDirectory(prefix=prefix, dir=directory)
     try:
-        connection = sqlite3.connect(Path(scratch.name) / filename)
+        connection = connect_measured(Path(scratch.name) / filename)
     except BaseException:
         scratch.cleanup()
         raise

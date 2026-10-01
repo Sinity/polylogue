@@ -30,6 +30,7 @@ from polylogue.storage.archive_identity import (
     ArchiveLocation,
     is_index_generation_member,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import DEFAULT_ARCHIVE_PAGE_SIZE, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import descriptor_alias_path, open_readonly_connection
@@ -1992,7 +1993,7 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for {label}: {path}")
-        conn = sqlite3.connect(str(alias))
+        conn = connect_measured(str(alias))
         owned_fd, fd = fd, -1
         owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
         try:

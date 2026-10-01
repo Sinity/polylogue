@@ -2,6 +2,7 @@
 
 import gc
 import sqlite3
+import sys
 import tempfile
 import weakref
 from contextlib import closing
@@ -11,12 +12,76 @@ from typing import cast
 import pytest
 
 from polylogue.core.sql_settlement import current_native_sql_lifetimes, retain_native_sql_lifetimes
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     NativeSQLCustodyOwner,
     retained_native_sql_owners_for_lifetime,
 )
+from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+from tests.infra.sqlite_cursor_settlement import ControlledCursor
 from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="physical descriptor observation uses Linux procfs")
+@pytest.mark.parametrize("construction_failure", [False, True])
+def test_unsettled_cursor_retains_native_owner_artifact_and_creator_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, construction_failure: bool
+) -> None:
+    from polylogue.storage.sqlite import connection_profile as profiles
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    scratch = tempfile.TemporaryDirectory(dir=tmp_path)
+    directory = Path(scratch.name)
+    path = directory / "artifact.db"
+    with closing(connect_measured(path)) as seed:
+        seed.execute("CREATE TABLE evidence(value INTEGER)")
+        seed.executemany("INSERT INTO evidence VALUES (?)", ((1,), (2,), (3,)))
+        seed.commit()
+    metadata = path.stat()
+    identity = metadata.st_dev, metadata.st_ino
+    cursors: list[ControlledCursor] = []
+    primary = ValueError("synthetic construction failure with a live statement")
+
+    def retain_statement(connection: sqlite3.Connection) -> None:
+        cursor = connection.cursor(factory=ControlledCursor)
+        cursors.append(cursor)
+        cursor.execute("SELECT value FROM evidence")
+        assert next(cursor) == (1,)
+        cursor.allow_cleanup.clear()
+
+    def refuse_setup(connection: sqlite3.Connection, *args: object, **kwargs: object) -> None:
+        retain_statement(connection)
+        raise primary
+
+    if construction_failure:
+        monkeypatch.setattr(profiles, "_assert_schema_supported", refuse_setup)
+    with write_lease("test.native-cursor-settlement", archive_root=tmp_path):
+        with pytest.raises(NativeConnectionSettlementError) as failure:
+            with profiles.readonly_connection_context(
+                path, validate_schema=construction_failure, lifetime_dependencies=(scratch,)
+            ) as connection:
+                retain_statement(connection)
+        owner = failure.value.owner
+        if construction_failure:
+            assert failure.value.__cause__ is primary
+        assert owner.connection is not None
+        assert owner.custody is not None
+        assert directory.exists()
+        assert retained_native_sql_owners_for_lifetime(scratch) == (owner,)
+        assert selected_file_descriptors(identity)
+        with pytest.raises(NativeConnectionSettlementError):
+            owner.close()
+        assert owner.connection is not None and directory.exists()
+        for cursor in cursors:
+            cursor.allow_cleanup.set()
+        owner.close()
+        assert selected_file_descriptors(identity) == ()
+        assert retained_native_sql_owners_for_lifetime(scratch) == ()
+        assert owner.connection is None and owner.custody is None
+        owner.close()
+    scratch.cleanup()
+    assert not directory.exists()
 
 
 @pytest.mark.parametrize("construction_failure", [False, True])
@@ -28,11 +93,11 @@ def test_readonly_artifact_dependency_survives_constructor_or_reader_close_failu
     scratch = tempfile.TemporaryDirectory(dir=tmp_path)
     directory = Path(scratch.name)
     path = directory / "artifact.db"
-    with closing(sqlite3.connect(path)) as seed:
+    with closing(connect_measured(path)) as seed:
         seed.execute("CREATE TABLE evidence(value TEXT)")
         seed.execute("INSERT INTO evidence VALUES ('retained')")
         seed.commit()
-    handle = SettlementHandle(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True))
+    handle = SettlementHandle(connect_measured(f"{path.as_uri()}?mode=ro", uri=True))
     monkeypatch.setattr(profiles, "connect_measured", lambda *args, **kwargs: handle)
     primary = ValueError("synthetic read construction failure")
 
@@ -69,7 +134,7 @@ def test_healthy_readonly_artifact_dependency_retires_without_deleting_sealed_ar
 
     with tempfile.TemporaryDirectory(dir=tmp_path) as directory:
         path = Path(directory) / "artifact.db"
-        with closing(sqlite3.connect(path)) as seed:
+        with closing(connect_measured(path)) as seed:
             seed.execute("CREATE TABLE evidence(value TEXT)")
         lifetime = object()
         with readonly_connection_context(path, validate_schema=False, lifetime_dependencies=(lifetime,)) as reader:
@@ -84,7 +149,7 @@ def test_scoped_artifact_survives_failed_close_and_context_reset(tmp_path: Path)
     directory = Path(scratch.name)
     reference = weakref.ref(scratch)
     with retain_native_sql_lifetimes(scratch):
-        handle = SettlementHandle(sqlite3.connect(directory / "artifact.db"))
+        handle = SettlementHandle(connect_measured(directory / "artifact.db"))
         owner = NativeSQLCustodyOwner(
             cast(sqlite3.Connection, handle), lifetime_dependencies=current_native_sql_lifetimes()
         )
@@ -121,7 +186,7 @@ def test_scoped_artifact_survives_parent_bound_closed_child_until_parent_retirem
     parent = Parent()
     with retain_native_sql_lifetimes(scratch):
         owner = NativeSQLCustodyOwner(
-            sqlite3.connect(directory / "artifact.db"),
+            connect_measured(directory / "artifact.db"),
             terminal_parent=parent,
             lifetime_dependencies=current_native_sql_lifetimes(),
         )
@@ -144,7 +209,7 @@ def test_failed_native_construction_keeps_scoped_artifact_after_context_reset(
     scratch = tempfile.TemporaryDirectory(dir=tmp_path)
     directory = Path(scratch.name)
     reference = weakref.ref(scratch)
-    handle = SettlementHandle(sqlite3.connect(directory / "artifact.db"))
+    handle = SettlementHandle(connect_measured(directory / "artifact.db"))
     primary = ValueError("synthetic constructor custody refusal")
 
     def refuse_custody() -> None:
@@ -184,7 +249,7 @@ def test_ambiguous_descriptor_close_retains_creator_custody_and_artifact_without
     fault = DescriptorCloseFault(lambda descriptor: descriptor == first)
     with write_lease("test.ambiguous-descriptor", archive_root=tmp_path):
         owner = NativeSQLCustodyOwner(
-            sqlite3.connect(":memory:"), anchored_descriptors=(first, second), scratch_directory=scratch
+            connect_measured(":memory:"), anchored_descriptors=(first, second), scratch_directory=scratch
         )
         monkeypatch.setattr(profiles, "os", fault)
         with pytest.raises(NativeConnectionSettlementError) as refused:

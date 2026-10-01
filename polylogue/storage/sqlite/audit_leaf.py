@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     NativeConnectionSettlementError,
@@ -486,7 +487,7 @@ def _owned_verified_leaf_connection(
         connection = (
             open_readonly_connection(leaf.anchored_path, validate_schema=False)
             if readonly
-            else sqlite3.connect(leaf.sqlite_uri(), uri=True, timeout=DB_TIMEOUT)
+            else connect_measured(leaf.sqlite_uri(), uri=True, timeout=DB_TIMEOUT)
         )
         owner = NativeSQLCustodyOwner(connection, leaf=leaf)
     except NativeConnectionSettlementError as error:

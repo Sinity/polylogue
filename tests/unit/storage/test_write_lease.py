@@ -1862,7 +1862,9 @@ def test_native_anchor_cleanup_attempts_all_and_never_recloses_reused_fd(
     second = os.open(tmp_path / "second-anchor", os.O_CREAT | os.O_RDWR, 0o600)
     replacement: list[int] = []
     attempts: list[int] = []
-    connection = sqlite3.connect(tmp_path / "anchor-probe.db")
+    from polylogue.storage.io_phase_metrics import connect_measured
+
+    connection = connect_measured(tmp_path / "anchor-probe.db")
 
     def close(descriptor: int) -> None:
         actual_close(descriptor)
