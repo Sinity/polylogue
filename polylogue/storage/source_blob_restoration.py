@@ -27,7 +27,11 @@ from typing import IO
 
 from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.raw_coordinates import split_zip_member_text, zip_member_coordinate_candidates
+from polylogue.core.raw_coordinates import (
+    read_captured_zip_coordinate_receipt,
+    split_zip_member_text,
+    zip_member_coordinate_candidates,
+)
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
 
@@ -141,7 +145,8 @@ _RAW_SOURCE_EVIDENCE_COLUMNS = f"""
     coordinate.entry_ordinal AS entry_ordinal,
     coordinate.split_index AS split_index,
     coordinate.addressing_mode AS addressing_mode,
-    coordinate.content_identity AS content_identity
+    coordinate.content_identity AS content_identity,
+    coordinate.captured_coordinate AS captured_coordinate
 """
 
 
@@ -197,6 +202,13 @@ def retained_source_location(row: Mapping[str, object], root: Path) -> tuple[str
                 else:
                     return candidate
         return path
+
+    receipt = row.get("captured_coordinate")
+    if receipt is not None:
+        if not isinstance(receipt, str):
+            raise ValueError("captured ZIP coordinate receipt must be text")
+        coordinate = read_captured_zip_coordinate_receipt(receipt)
+        return f"{relocate(Path(coordinate.canonical_container))}:{coordinate.member_name}", True
 
     literal = relocate(Path(source))
     recorded = is_recorded_container_member(row)

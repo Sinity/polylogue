@@ -58,7 +58,12 @@ from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
-from polylogue.core.raw_failure_evidence import MissingProfileIdentityError, RawFailureEvidenceKind
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
+from polylogue.core.raw_failure_evidence import (
+    MissingProfileIdentityError,
+    RawFailureEvidenceKind,
+    RetainedZipMembershipUnprovedError,
+)
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
@@ -135,6 +140,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     PENDING_RAW_LOGICAL_SOURCE_PREFIX,
     ArchiveSourceArtifact,
     apply_source_raw_state_update,
+    read_raw_captured_zip_coordinate,
     upsert_raw_artifact,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -916,12 +922,20 @@ class RetainedParseFailure:
     detail: str
     decode_failure: DecodeFailure | None = None
     missing_profile_identity: bool = False
+    retained_zip_membership_unproved: bool = False
 
     @classmethod
     def of(cls, error: BaseException) -> RetainedParseFailure:
-        return cls(str(error), classify_decode_failure(error), isinstance(error, MissingProfileIdentityError))
+        return cls(
+            str(error),
+            classify_decode_failure(error),
+            isinstance(error, MissingProfileIdentityError),
+            isinstance(error, RetainedZipMembershipUnprovedError),
+        )
 
     def as_exception(self) -> Exception:
+        if self.retained_zip_membership_unproved:
+            return RetainedZipMembershipUnprovedError(self.detail)
         if self.missing_profile_identity:
             return MissingProfileIdentityError(self.detail)
         return retained_parse_exception(self.detail, self.decode_failure)
@@ -974,6 +988,7 @@ class PreparedRetainedInput:
     #: decode refusal; the census turns that into a terminal outcome.
     parser_decode_failure: DecodeFailure | None = None
     missing_profile_identity: bool = False
+    retained_zip_membership_unproved: bool = False
     captured_profile_key: str | None = None
     enriched: bool = False
     # The disk-backed carrier is the retained worker's publication boundary.
@@ -1068,6 +1083,7 @@ def enrichment_dependency_digest(
     *,
     provider: Provider,
     source_path: str,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     provider_session_ids: Iterable[str],
     index_conn: sqlite3.Connection | None,
     source_conn: sqlite3.Connection | None,
@@ -1097,6 +1113,7 @@ def enrichment_dependency_digest(
             source_conn=source_conn,
             blob_root=blob_root,
             source_path=source_path,
+            captured_zip_coordinate=captured_zip_coordinate,
         )
     )
     parser_digest = (
@@ -1188,6 +1205,7 @@ def session_enrichment_evidence_key(
         source_conn=source_conn,
         blob_root=blob_root,
         source_path=source_path,
+        captured_zip_coordinate=None,
     )
     return enrichment_evidence_key(provider, data, native_id)
 
@@ -1221,6 +1239,7 @@ def prepared_enrichment_dependency_state(
     artifact: PreparedJsonl,
     *,
     provider: Provider,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     source_path: str,
     sessions: Iterable[ParsedSession],
     parser_sidecars: bool,
@@ -1237,6 +1256,7 @@ def prepared_enrichment_dependency_state(
     current = enrichment_dependency_digest(
         provider=provider,
         source_path=source_path,
+        captured_zip_coordinate=captured_zip_coordinate,
         provider_session_ids=(session.provider_session_id for session in sessions if session.provider_session_id),
         index_conn=archive.index_connection,
         source_conn=archive._ensure_source_conn(),
@@ -1298,6 +1318,7 @@ def prepare_retained_jsonl_artifact(
             from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_profile_identity
 
             profile_identity = read_raw_profile_identity(source_conn, raw_id)
+            captured_zip_coordinate = read_raw_captured_zip_coordinate(source_conn, raw_id)
             if provider is Provider.HERMES and profile_identity is None:
                 return PreparedJsonl(
                     blob_hash,
@@ -1347,6 +1368,7 @@ def prepare_retained_jsonl_artifact(
                     source_conn=source_conn,
                     blob_root=Path(blob_root),
                     source_path=source_path,
+                    captured_zip_coordinate=captured_zip_coordinate,
                     evidence_observer=capture_evidence,
                 )
 
@@ -1365,6 +1387,7 @@ def prepare_retained_jsonl_artifact(
                             source_conn=source_conn,
                             blob_root=Path(blob_root),
                             source_path=source_path,
+                            captured_zip_coordinate=captured_zip_coordinate,
                         )
                     )
                     capture_evidence(sidecar_data_cache)
@@ -1484,6 +1507,7 @@ def prepare_retained_jsonl_artifact(
                                 source_conn=source_conn,
                                 blob_root=Path(blob_root),
                                 source_path=source_path,
+                                captured_zip_coordinate=captured_zip_coordinate,
                             )
                         ),
                         _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path),
@@ -1557,6 +1581,7 @@ def prepare_retained_non_json_artifact(
             source_conn=archive._ensure_source_conn(),
             blob_root=Path(blob_root),
             source_path=source_path,
+            captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id),
         )
         dependency = _retained_dependency_digest(
             _owned_enrichment_evidence_digest(evidence),
@@ -1604,6 +1629,7 @@ def prepare_retained_non_json_artifact(
             None,
             f"{type(exc).__name__}: {exc}"[:500],
             missing_profile_identity=isinstance(exc, MissingProfileIdentityError),
+            retained_zip_membership_unproved=isinstance(exc, RetainedZipMembershipUnprovedError),
         )
     finally:
         if store is not None:
@@ -1659,6 +1685,8 @@ def _prepared_retained_outcome(
     if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash, stop=stop):
         raise RetainedPreparationRetryableError(f"prepared retained blob changed for raw {raw_id}")
     if prepared.parser_error is not None:
+        if prepared.retained_zip_membership_unproved:
+            return RetainedZipMembershipUnprovedError(prepared.parser_error)
         if prepared.missing_profile_identity:
             return MissingProfileIdentityError(prepared.parser_error)
         return retained_parse_exception(prepared.parser_error, prepared.parser_decode_failure)
@@ -1684,6 +1712,7 @@ def _prepared_retained_outcome(
             artifact,
             provider=artifact.resolved_provider or provider,
             source_path=source_path,
+            captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id),
             sessions=sessions,
             parser_sidecars=True,
         )
@@ -5019,6 +5048,7 @@ def _enrich_retained_parse_outcome(
             source_conn=source_conn,
             blob_root=Path(archive.archive_root) / "blob",
             source_path=descriptor_source_path,
+            captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id),
         ),
         payload_bytes,
         kind,
@@ -5117,6 +5147,7 @@ class RetainedSessionEnricher:
         "_session_ids",
         "_source_conn",
         "_source_path",
+        "_captured_zip_coordinate",
     )
 
     def __init__(
@@ -5124,6 +5155,7 @@ class RetainedSessionEnricher:
         provider: Provider,
         *,
         source_path: str,
+        captured_zip_coordinate: CapturedZipMemberCoordinate | None,
         index_conn: sqlite3.Connection | None,
         source_conn: sqlite3.Connection | None,
         blob_root: Path | None,
@@ -5132,6 +5164,7 @@ class RetainedSessionEnricher:
         self._provider = provider
         self._frames = frames
         self._source_path = source_path
+        self._captured_zip_coordinate = captured_zip_coordinate
         self._index_conn = index_conn
         self._source_conn = source_conn
         self._blob_root = blob_root
@@ -5170,6 +5203,7 @@ class RetainedSessionEnricher:
         return enrichment_dependency_digest(
             provider=self._provider,
             source_path=self._source_path,
+            captured_zip_coordinate=self._captured_zip_coordinate,
             provider_session_ids=self._session_ids,
             index_conn=self._index_conn,
             source_conn=self._source_conn,
@@ -5194,6 +5228,7 @@ class RetainedSessionEnricher:
                 source_conn=self._source_conn,
                 blob_root=self._blob_root,
                 source_path=self._source_path,
+                captured_zip_coordinate=self._captured_zip_coordinate,
             )[0]
         if self._cached is None:
             self._cached = _retained_enrichment_sidecar_data(
@@ -5203,6 +5238,7 @@ class RetainedSessionEnricher:
                 source_conn=self._source_conn,
                 blob_root=self._blob_root,
                 source_path=self._source_path,
+                captured_zip_coordinate=self._captured_zip_coordinate,
             )
         return stamp_enrichment_evidence(self._provider, self._cached, spec.enrich_session(session, self._cached))
 
@@ -5290,6 +5326,7 @@ def open_retained_session_enricher(
     provider: Provider,
     *,
     source_path: str,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     source_db_path: str | Path,
     index_db_path: str | Path,
     blob_root: str | Path,
@@ -5304,6 +5341,7 @@ def open_retained_session_enricher(
     enricher = RetainedSessionEnricher(
         provider,
         source_path=source_path,
+        captured_zip_coordinate=captured_zip_coordinate,
         index_conn=None,
         source_conn=None,
         blob_root=Path(blob_root),
@@ -5319,7 +5357,12 @@ def open_retained_session_enricher(
 
 
 def enrich_sessions_from_archive(
-    archive: Any, provider: Provider, source_path: str, sessions: Sequence[ParsedSession]
+    archive: Any,
+    provider: Provider,
+    source_path: str,
+    sessions: Sequence[ParsedSession],
+    *,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
 ) -> list[ParsedSession]:
     """Enrich a writer-side parse from the archive's own retained evidence.
 
@@ -5331,6 +5374,7 @@ def enrich_sessions_from_archive(
     enricher = RetainedSessionEnricher(
         provider,
         source_path=source_path,
+        captured_zip_coordinate=captured_zip_coordinate,
         index_conn=archive.index_connection,
         source_conn=archive.source_connection,
         blob_root=Path(archive.archive_root) / "blob",
@@ -5350,6 +5394,7 @@ def _replay_safe_enrich_sessions(
     source_conn: sqlite3.Connection | None,
     blob_root: Path | None,
     source_path: str | None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     evidence_observer: Callable[[object], None] | None = None,
 ) -> list[ParsedSession]:
     """Enrich one retained parse without consulting ambient source files.
@@ -5380,6 +5425,7 @@ def _replay_safe_enrich_sessions(
         source_conn=source_conn,
         blob_root=blob_root,
         source_path=source_path,
+        captured_zip_coordinate=captured_zip_coordinate,
     )
     if evidence_observer is not None:
         evidence_observer(sidecar_data)
@@ -5403,6 +5449,7 @@ def _retained_enrichment_sidecar_data(
     source_conn: sqlite3.Connection | None,
     blob_root: Path | None,
     source_path: str | None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     provider_session_ids: Iterable[str] | None = None,
 ) -> SidecarData:
     """Read the exact retained assembly evidence used by enrichment.
@@ -5442,6 +5489,7 @@ def _retained_enrichment_sidecar_data(
             source_conn=source_conn,
             blob_store=BlobStore(blob_root),
             source_path=source_path,
+            captured_zip_coordinate=captured_zip_coordinate,
         )
     return sidecar_data
 
@@ -6298,6 +6346,7 @@ class _ReplaySpillPrefetcher:
             source_conn=source_conn,
             blob_root=self._blob_root,
             source_path=source_path,
+            captured_zip_coordinate=read_raw_captured_zip_coordinate(source_conn, raw_id),
         )
         self.reparse_hits += 1
         self.decode_seconds += time.perf_counter() - started
@@ -6622,6 +6671,7 @@ class _ParsedSessionSpill:
                         source_conn=archive.source_connection,
                         blob_root=Path(archive.archive_root) / "blob",
                         source_path=enrich_source_path,
+                        captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id),
                     )
                 if from_reparse:
                     # Mirror the inline reparse fallback below exactly: a
@@ -6646,6 +6696,7 @@ class _ParsedSessionSpill:
             source_conn=archive.source_connection,
             blob_root=Path(archive.archive_root) / "blob",
             source_path=source_path,
+            captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id),
         )
         self.add(raw_id, sessions, payload_bytes=payload_bytes)
         return sessions, payload_bytes
@@ -6783,7 +6834,9 @@ def _settle_terminal_raw_refusal(
     """
     provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
     evidence = (
-        RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY
+        RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED
+        if isinstance(error, RetainedZipMembershipUnprovedError)
+        else RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY
         if isinstance(error, MissingProfileIdentityError)
         else terminal_decode_evidence(error, provider=provider)
     )

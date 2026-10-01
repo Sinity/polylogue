@@ -171,12 +171,12 @@ class LiveConvergenceDebt:
 
 
 @dataclass(frozen=True, slots=True)
-class ConvergenceDebtClear:
-    """Clear stale debt for one subject while preserving named stages."""
+class ConvergenceDebtSettlement:
+    """Settle exactly one evaluated stage and subject."""
 
     subject_type: str
     subject_id: str
-    preserved_stages: tuple[str, ...]
+    stage: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +195,7 @@ class ConvergenceDebtWrite:
 class ConvergenceDebtBatchEntry:
     """Ordered clear/write operations that previously formed one path outcome."""
 
-    clears: tuple[ConvergenceDebtClear, ...] = ()
+    clears: tuple[ConvergenceDebtSettlement, ...] = ()
     writes: tuple[ConvergenceDebtWrite, ...] = ()
 
 
@@ -905,21 +905,10 @@ class CursorStore:
                 _begin_ops_write(conn)
                 for entry in batch:
                     for clear in entry.clears:
-                        if clear.preserved_stages:
-                            placeholders = ",".join("?" for _ in clear.preserved_stages)
-                            conn.execute(
-                                f"""
-                                DELETE FROM convergence_debt
-                                WHERE target_type = ? AND target_id = ?
-                                  AND stage NOT IN ({placeholders})
-                                """,
-                                (clear.subject_type, clear.subject_id, *clear.preserved_stages),
-                            )
-                        else:
-                            conn.execute(
-                                "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
-                                (clear.subject_type, clear.subject_id),
-                            )
+                        conn.execute(
+                            "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ? AND stage = ?",
+                            (clear.subject_type, clear.subject_id, clear.stage),
+                        )
                     for debt_write in entry.writes:
                         self._sync_convergence_debt_on_conn(
                             conn,
@@ -960,37 +949,6 @@ class CursorStore:
                 conn.commit()
 
         best_effort_cursor_write("archive ops convergence debt clear", write)
-
-    def _clear_convergence_debt_except_from_ops(
-        self,
-        *,
-        subject_type: str,
-        subject_id: str,
-        stages: Iterable[str],
-    ) -> None:
-        preserved = tuple(stages)
-
-        def write() -> None:
-            with self._connect_ops() as conn:
-                if preserved:
-                    placeholders = ",".join("?" for _ in preserved)
-                    conn.execute(
-                        f"""
-                        DELETE FROM convergence_debt
-                        WHERE target_type = ?
-                          AND target_id = ?
-                          AND stage NOT IN ({placeholders})
-                        """,
-                        (subject_type, subject_id, *preserved),
-                    )
-                else:
-                    conn.execute(
-                        "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
-                        (subject_type, subject_id),
-                    )
-                conn.commit()
-
-        best_effort_cursor_write("archive ops convergence debt clear-except", write)
 
     def begin_ingest_attempt(
         self,
@@ -2012,21 +1970,6 @@ class CursorStore:
             materializer_version=materializer_version,
             now=now,
             deferred=deferred,
-        )
-
-    def clear_convergence_debt_except(
-        self,
-        *,
-        subject_type: str,
-        subject_id: str,
-        stages: Iterable[str],
-    ) -> None:
-        """Clear convergence debt for a subject except currently failed stages."""
-        preserved_stages = tuple(stages)
-        self._clear_convergence_debt_except_from_ops(
-            subject_type=subject_type,
-            subject_id=subject_id,
-            stages=preserved_stages,
         )
 
     def clear_convergence_debt_under_prefix(

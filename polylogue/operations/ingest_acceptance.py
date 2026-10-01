@@ -41,13 +41,15 @@ def ingest_context(manifest: FrozenSourceManifest | SealedSourceManifestRef) -> 
 
 
 def ingest_plan(
-    manifest: FrozenSourceManifest | SealedSourceManifestRef,
+    manifest: SealedSourceManifestRef,
     *,
     archive_instance_id: str,
     archive_identity_digest: str,
     now_ms: int,
     expires_at_ms: int,
 ) -> MutationPlan:
+    if not isinstance(manifest, SealedSourceManifestRef):
+        raise TypeError("new ingest plans require a staged source manifest")
     context = ingest_context(manifest)
     digest = hashlib.sha256(manifest.manifest_digest.encode()).hexdigest()
     target = MutationTarget(
@@ -136,7 +138,7 @@ class IngestRecovery:
 class IngestActuator:
     """Plan/inspection adapter; only the daemon's phased owner publishes."""
 
-    manifest: FrozenSourceManifest | SealedSourceManifestRef
+    manifest: SealedSourceManifestRef
     archive_instance_id: str
     archive_identity_digest: str
     now_ms: int

@@ -166,3 +166,155 @@ def test_record_retry_preserves_a_later_canonical_revision_binding(tmp_path: Pat
         "parsed-revision",
     )
     conn.close()
+
+
+@pytest.mark.parametrize("decoder_fingerprint", ["b" * 64, "c" * 64])
+def test_captured_zip_member_requires_the_accepted_decoder(tmp_path: Path, decoder_fingerprint: str) -> None:
+    """Correct container evidence cannot authorize a different decoder's raw identity."""
+    import json
+    import zipfile
+
+    from polylogue.core.raw_coordinates import (
+        CapturedZipMemberCoordinate,
+        MemberAddressingMode,
+        captured_zip_member_raw_id,
+    )
+    from polylogue.sources.source_staging import bind_source_input
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    source = tmp_path / "capture.zip"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("capture.json", _PAYLOAD)
+    store = BlobStore(root / "blob")
+    container = source.read_bytes()
+    container_hash = hashlib.sha256(container).digest()
+    store.write_from_bytes(container)
+    store.write_from_bytes(_PAYLOAD)
+    with bind_source_input(source) as binding:
+        identity = binding.captured_identity
+    profile = identity.member_profile_identity("capture.json")
+    assert profile is not None
+    coordinate = CapturedZipMemberCoordinate(
+        canonical_container=identity.canonical_source_path,
+        declared_container=identity.semantic_source_path,
+        member_name="capture.json",
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+        container_blob_hash=container_hash.hex(),
+        decoder_fingerprint=decoder_fingerprint,
+        profile_namespace=str(profile[0]),
+    )
+    with sqlite3.connect(root / "source.db") as conn:
+        (item_id,) = publish_source_generation(
+            conn,
+            source_generation_id="accepted-zip",
+            manifest_digest="a" * 64,
+            addressing_mode="physical-file-v1",
+            coordinates=(str(source),),
+            source_paths={str(source): str(source)},
+            input_blob_hashes={str(source): container_hash},
+            captured_input_identities={str(source): identity},
+            enumeration_fingerprint="b" * 64,
+            observed_at_ms=1,
+        )
+        request = PendingPreParseRawAdmissionRequest(
+            origin=Origin.CLAUDE_CODE_SESSION,
+            capture_mode=Provider.CLAUDE_CODE,
+            source_path=coordinate.declared_member,
+            canonical_source_path=coordinate.canonical_member,
+            source_index=coordinate.source_index,
+            blob_hash=_BLOB_HASH,
+            blob_size=len(_PAYLOAD),
+            acquired_at_ms=2,
+            captured_zip_coordinate=coordinate,
+            addressing_mode=coordinate.addressing_mode.value,
+            raw_id=captured_zip_member_raw_id(coordinate, _BLOB_HASH.hex()),
+        )
+        plan = plan_raw_admission(request)
+        member = SourceItemAdmission(
+            source_generation_id="accepted-zip",
+            source_item_id=item_id,
+            record_coordinate=json.dumps(["zip-v2", 0, 0, "whole_member"], separators=(",", ":")),
+            entry_ordinal=0,
+            split_index=0,
+            addressing_mode="whole_member",
+        )
+        conn.execute("BEGIN")
+        if decoder_fingerprint != "b" * 64:
+            with pytest.raises(ValueError, match="exact accepted physical input"):
+                execute_source_item_admission(conn, plan, member)
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+            assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (0,)
+        else:
+            from dataclasses import replace
+
+            wrong_address = replace(member, record_coordinate='["zip-v2",1,0,"whole_member"]')
+            with pytest.raises(ValueError, match="captured ZIP coordinate"):
+                execute_source_item_admission(conn, plan, wrong_address)
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+            assert execute_source_item_admission(conn, plan, member).raw_id == plan.raw_id
+            assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("second_decoder", ["b" * 64, "c" * 64])
+def test_completed_group_equivalence_requires_the_same_decoder(tmp_path: Path, second_decoder: str) -> None:
+    """Identical member sets do not erase the accepted enumeration authority."""
+    from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+    from polylogue.storage.sqlite.archive_tiers.source_items import (
+        complete_source_item_enumeration,
+        retained_completed_source_item_for_raw,
+    )
+
+    conn, generation, item_id, plan = _archive(tmp_path)
+    try:
+        conn.execute("BEGIN")
+        execute_source_item_admission(conn, plan, _member(item_id))
+        complete_source_item_enumeration(
+            conn,
+            source_generation_id=generation,
+            source_item_id=item_id,
+            enumeration_fingerprint="b" * 64,
+            record_coordinates=iter(("record:0",)),
+            enumerated_at_ms=3,
+        )
+        (second_item,) = publish_source_generation(
+            conn,
+            source_generation_id="another-generation",
+            manifest_digest="a" * 64,
+            addressing_mode="physical-file-v1",
+            coordinates=("capture.json",),
+            input_blob_hashes={"capture.json": _BLOB_HASH},
+            enumeration_fingerprint=second_decoder,
+            observed_at_ms=1,
+            commit=False,
+        )
+        execute_source_item_admission(
+            conn,
+            plan,
+            SourceItemAdmission(
+                source_generation_id="another-generation",
+                source_item_id=second_item,
+                record_coordinate="record:0",
+            ),
+        )
+        complete_source_item_enumeration(
+            conn,
+            source_generation_id="another-generation",
+            source_item_id=second_item,
+            enumeration_fingerprint=second_decoder,
+            record_coordinates=iter(("record:0",)),
+            enumerated_at_ms=3,
+        )
+        if second_decoder != "b" * 64:
+            with pytest.raises(RetainedZipMembershipUnprovedError):
+                retained_completed_source_item_for_raw(conn, plan.raw_id)
+        else:
+            assert retained_completed_source_item_for_raw(conn, plan.raw_id) in {
+                (generation, item_id),
+                ("another-generation", second_item),
+            }
+    finally:
+        conn.rollback()
+        conn.close()

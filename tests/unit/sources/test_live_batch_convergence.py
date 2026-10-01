@@ -85,7 +85,7 @@ def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
 
-    completed, elapsed, timings, debts = processor._converge_paths([source])
+    completed, elapsed, timings, debts, settlements = processor._converge_paths([source])
 
     assert completed == {source}
     assert elapsed >= 0.0

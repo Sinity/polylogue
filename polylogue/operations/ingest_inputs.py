@@ -31,13 +31,13 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionPlan,
-    SourceItemAdmission,
     plan_raw_admission,
 )
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     CapturedSourceInputIdentity,
     FrozenSourceInput,
     RetainedSourceInput,
+    SourceItemAdmission,
     source_item_id,
 )
 
@@ -264,6 +264,7 @@ def enumerate_ingest_input(
     item: FrozenSourceInput | RetainedSourceInput,
     *,
     source_generation_id: str,
+    enumeration_fingerprint: str,
     publisher: ArchiveBlobPublisher,
     acquired_at_ms: int,
     check_stop: Callable[[], None],
@@ -278,6 +279,7 @@ def enumerate_ingest_input(
     acquired_at = datetime.fromtimestamp(acquired_at_ms / 1000, UTC).isoformat()
     blob_size = publisher.blob_path(item.blob_hash).stat().st_size
     for retained in iter_retained_source_records(
+        enumeration_fingerprint=enumeration_fingerprint,
         source_path=item.source_path,
         blob_hash=item.blob_hash,
         blob_size=blob_size,

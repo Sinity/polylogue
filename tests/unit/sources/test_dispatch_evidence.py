@@ -1,11 +1,7 @@
-"""Tests for the evidence-tagged detection variants used by acquisition logging.
+"""Acquisition evidence comes from the complete declaration-owned detector.
 
-``detect_provider_evidence``/``detect_provider_from_raw_bytes_evidence`` are the
-single source of truth for detection (``detect_provider``/
-``_detect_provider_from_raw_bytes`` are thin wrappers that discard the evidence
-label) -- these tests both exercise the evidence label content and guard
-against the wrapper functions drifting from the evidence-returning
-implementation.
+Already acquired byte units and seekable streams use the same grammar and
+provider tightness; syntax failures and binary refusals remain visible.
 """
 
 from __future__ import annotations
@@ -150,3 +146,28 @@ def test_detect_provider_from_raw_bytes_evidence_refuses_sqlite_before_json_deco
     assert provider is Provider.CODEX
     assert "sqlite" in evidence.lower()
     assert "refused" in evidence.lower()
+
+
+@pytest.mark.parametrize("failure_type", [UnicodeError, OSError])
+def test_complete_stream_detection_does_not_reclassify_cancellation(failure_type: type[Exception]) -> None:
+    import io
+
+    from polylogue.sources.dispatch import detect_provider_from_raw_stream_evidence
+
+    calls = 0
+    failure = failure_type("synthetic cancellation")
+
+    def check_stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise failure
+
+    with pytest.raises(failure_type) as caught:
+        detect_provider_from_raw_stream_evidence(
+            io.BytesIO(b'{"messages": [{"role": "user", "content": "synthetic"}]}'),
+            "session.json",
+            Provider.UNKNOWN,
+            check_stop=check_stop,
+        )
+    assert caught.value is failure

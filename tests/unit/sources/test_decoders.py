@@ -428,29 +428,23 @@ def test_zip_json_probe_does_not_override_with_empty_session_shape(tmp_path: Pat
         assert decoder_zip.zip_entry_session_artifact(archive, archive.infolist()[0], provider=Provider.CHATGPT) is None
 
 
-def test_jsonl_session_artifact_forwards_its_record_ceiling() -> None:
-    """The classification wrapper must not drop ``max_record_bytes``.
-
-    Anti-vacuity: the wrapper previously called ``scan_jsonl_session_artifact``
-    without forwarding the bound, so every caller that wanted only the
-    classification silently got unbounded per-line reads. Reverting that
-    forwarding makes the oversized record inspectable again and the artifact
-    resolves, turning the ``is None`` assertion red.
-    """
-    oversized = (json.dumps({"title": "x" * 200_000, "mapping": {}}) + "\n").encode("utf-8")
-
-    assert (
-        jsonl_session_artifact(
-            io.BytesIO(oversized),
-            provider=Provider.CHATGPT,
-            max_record_bytes=1024,
-        )
-        is None
-    )
-    # Without the ceiling the same bytes are inspected normally, proving the
-    # input is otherwise classifiable and the bound is what changed the outcome.
-    scan = scan_jsonl_session_artifact(io.BytesIO(oversized), provider=Provider.CHATGPT)
-    assert scan.oversized_records == 0
+def test_jsonl_session_artifact_preserves_a_large_valid_record() -> None:
+    payload = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "id": "large-message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "x" * 200_000}],
+        },
+    }
+    raw = (json.dumps(payload) + "\n").encode()
+    artifact = jsonl_session_artifact(io.BytesIO(raw), provider=Provider.CODEX)
+    assert artifact is not None
+    assert artifact.parse_as_session
+    assert not artifact.schema_eligible
+    scan = scan_jsonl_session_artifact(io.BytesIO(raw), provider=Provider.CODEX)
+    assert scan.malformed_records == 0
 
 
 def test_zip_parser_uses_accepted_container_after_declared_alias_retargets(tmp_path: Path) -> None:
@@ -489,3 +483,67 @@ def test_zip_parser_uses_accepted_container_after_declared_alias_retargets(tmp_p
         assert raw.captured_zip_coordinate.member_name == "conversations.json"
         assert raw.captured_zip_coordinate.entry_ordinal == 0
         assert raw.source_path == f"{alias}:conversations.json"
+
+
+def test_complete_jsonl_candidacy_preserves_healthy_records_before_bad_utf8() -> None:
+    message = b'{"sessionId":"accepted","uuid":"m1","type":"user","cwd":"/neutral"}\n'
+    handle = io.BytesIO(message + b'{"text":"\xff"}\n' + message)
+    scan = scan_jsonl_session_artifact(handle, provider=Provider.CLAUDE_CODE)
+    assert scan.artifact is not None
+    assert scan.artifact.parse_as_session
+    assert scan.malformed_records == 1
+    assert handle.tell() == len(handle.getvalue())
+    assert not handle.closed
+
+
+@pytest.mark.parametrize("text", [b"\xed\xa0\x80", b"\\ud800", b"\xed\xa0\xbd\xed\xb8\x80"])
+def test_complete_jsonl_projection_preserves_provider_surrogates(text: bytes) -> None:
+    from polylogue.core.json import decode_provider_utf8
+    from polylogue.sources.detection_projection import DetectorProjection, iter_projected_jsonl_records
+
+    raw = b'{"text":"' + text + b'"}\n'
+    records = list(
+        iter_projected_jsonl_records(io.BytesIO(raw), DetectorProjection(fields={"text": DetectorProjection()}))
+    )
+    assert records == [json.loads(decode_provider_utf8(raw))]
+
+
+def test_complete_jsonl_projection_rejects_raw_nul_without_losing_earlier_records() -> None:
+    from polylogue.sources.detection_projection import DetectorProjection, iter_projected_jsonl_records
+
+    failures: list[Exception] = []
+    records = list(
+        iter_projected_jsonl_records(
+            io.BytesIO(b'{"id":"first"}\n{"id":"bad\x00value"}\n{"id":"last"}\n'),
+            DetectorProjection(fields={"id": DetectorProjection()}),
+            on_decode_failure=failures.append,
+        )
+    )
+    assert records == [{"id": "first"}, {"id": "last"}]
+    assert len(failures) == 1
+
+
+@pytest.mark.parametrize("error", [UnicodeError("stop"), OSError("stop"), ValueError("stop")])
+def test_complete_jsonl_projection_preserves_stop_callback_failure(error: Exception) -> None:
+    from polylogue.sources.detection_projection import DetectorProjection, iter_projected_jsonl_records
+
+    failures: list[Exception] = []
+    calls = 0
+
+    def stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # The line reader's checkpoint, inside event decoding.
+            raise error
+
+    with pytest.raises(type(error)) as raised:
+        list(
+            iter_projected_jsonl_records(
+                io.BytesIO(b'{"id":"accepted"}\n'),
+                DetectorProjection(fields={"id": DetectorProjection()}),
+                check_stop=stop,
+                on_decode_failure=failures.append,
+            )
+        )
+    assert raised.value is error
+    assert failures == []

@@ -133,6 +133,15 @@ than it deserves lets an earlier parser claim its records; a binding may also
 declare `mode_rank` to take a different precedence in one payload mode than
 its origin-wide tightness (`polylogue/sources/detection.py:36-42`).
 
+Complete-stream detector projections live in `sources/detection_projection.py`.
+Each detector declares its selected fields and first/all/any folds through its
+existing parser and registry. Unselected material is still consumed and syntax
+validated; duplicate mapping keys keep their final value. Artifact candidacy
+uses the taxonomy's separate declared projection and complete record fold.
+Diagnostic schema samples cannot choose a provider, discard a late session, or
+prove support for uninspected records. Canonical parsing validates the original
+full records and retains their exact decode/partial disposition.
+
 ## Identity vocabulary
 
 `Provider` names the older provider-wire family at acquisition/parser/schema

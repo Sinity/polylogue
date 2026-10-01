@@ -570,7 +570,7 @@ def _explain_zip(
                 BlobStore(Path(scratch)),
                 captured,
             ) as physical,
-            zipfile.ZipFile(physical) as archive,
+            zipfile.ZipFile(physical.stream) as archive,
         ):
             if container_provider is Provider.UNKNOWN:
                 # The container carried no origin identity while its contents

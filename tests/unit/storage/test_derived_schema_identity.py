@@ -227,8 +227,12 @@ def test_semantic_recipe_input_edit_moves_combined_identity_without_row_id_drift
         )
 
     source = recipe_path.read_text(encoding="utf-8")
-    assert source.count("_MAX_PARSE_DEPTH = 10") == 1
-    recipe_path.write_text(source.replace("_MAX_PARSE_DEPTH = 10", "_MAX_PARSE_DEPTH = 11"), encoding="utf-8")
+    original_rule = 'raise ValueError("cyclic payload cannot be lowered as source JSON")'
+    assert source.count(original_rule) == 1
+    recipe_path.write_text(
+        source.replace(original_rule, 'raise RuntimeError("cyclic payload cannot be lowered as source JSON")'),
+        encoding="utf-8",
+    )
     origin_specs._invalidate_source_signatures()
     after = derived_schema_identity(DerivedTier.INDEX)
 

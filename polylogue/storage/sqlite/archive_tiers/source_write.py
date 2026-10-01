@@ -16,7 +16,12 @@ from typing import Literal, cast, get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import (
+    CapturedZipMemberCoordinate,
+    MemberAddressingMode,
+    captured_zip_coordinate_receipt,
+    read_captured_zip_coordinate_receipt,
+)
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     terminal_carrier_overwrite_predicate,
@@ -322,12 +327,15 @@ def record_raw_container_coordinate(
     split_index: int,
     addressing_mode: MemberAddressingMode | str | None,
     content_identity: str | None = None,
+    captured_coordinate: CapturedZipMemberCoordinate | None = None,
     manage_transaction: bool = True,
 ) -> None:
     """Persist one content-independent container coordinate for a raw row.
 
-    The coordinate is a hint for reacquisition; ``addressing_mode`` is the
-    part that carries meaning on its own, because ``split_index`` 0 is both
+    Historical ordinal-only evidence is a reacquisition hint. New captured
+    coordinates retain the exact opened physical container and declared member
+    namespace; their receipt cannot be inferred or replaced later.
+    ``addressing_mode`` distinguishes readings because ``split_index`` 0 is both
     the first element of a split member and the only slot a whole-member
     document can occupy. ``None`` re-asserts a coordinate without claiming a
     reading, which is what a caller that did not acquire the member knows.
@@ -349,14 +357,21 @@ def record_raw_container_coordinate(
         if addressing_mode is not None
         else None
     )
+    receipt = None if captured_coordinate is None else captured_zip_coordinate_receipt(captured_coordinate)
+    if captured_coordinate is not None and (
+        captured_coordinate.entry_ordinal != entry_ordinal
+        or captured_coordinate.split_index != split_index
+        or captured_coordinate.addressing_mode.value != mode
+    ):
+        raise ValueError("captured ZIP receipt differs from its durable address")
     with conn if manage_transaction else nullcontext():
         conn.execute(
             """
             INSERT OR IGNORE INTO raw_container_coordinates (
-                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity, captured_coordinate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity),
+            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity, receipt),
         )
         if mode is not None:
             # A row written before the mode existed carries the same
@@ -371,7 +386,7 @@ def record_raw_container_coordinate(
             )
         stored = conn.execute(
             """
-            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
+            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity, captured_coordinate
             FROM raw_container_coordinates
             WHERE raw_id = ?
             """,
@@ -381,6 +396,8 @@ def record_raw_container_coordinate(
         expected = (coordinate_format, entry_ordinal, split_index)
         if stored_tuple is None or stored_tuple[:3] != expected:
             raise ValueError(f"raw container coordinate changed for {raw_id}")
+        if receipt is not None and stored_tuple[5] != receipt:
+            raise ValueError(f"captured ZIP coordinate changed or missing for {raw_id}")
         if mode is not None and stored_tuple[3] != mode:
             raise ValueError(f"raw container addressing mode changed for {raw_id}")
         if content_identity is not None and stored_tuple[4] not in {None, content_identity}:
@@ -411,6 +428,22 @@ def record_raw_container_coordinate(
             """,
             (mode, content_identity, raw_id),
         )
+
+
+def read_raw_captured_zip_coordinate(conn: sqlite3.Connection, raw_id: str) -> CapturedZipMemberCoordinate | None:
+    """Read immutable acquired member evidence without reopening its namespace."""
+    row = conn.execute(
+        "SELECT captured_coordinate FROM raw_container_coordinates WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row[0] is None:
+        from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+        raise RetainedZipMembershipUnprovedError("retained ZIP input lacks its captured namespace/member receipt")
+    if not isinstance(row[0], str):
+        raise ValueError("captured ZIP coordinate receipt must be text")
+    return read_captured_zip_coordinate_receipt(row[0])
 
 
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:

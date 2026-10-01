@@ -38,6 +38,7 @@ from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     replay_zip_entry_acquisition_revisions,
+    zip_acquisition_fingerprint,
     zip_member_admission,
 )
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
@@ -654,7 +655,7 @@ def _archive_members(
             captured,
             heartbeat=lambda: _check_observation_cancelled(cancelled),
         ) as physical,
-        zipfile.ZipFile(physical) as archive,
+        zipfile.ZipFile(physical.stream) as archive,
     ):
         central_directory = archive.infolist()
         ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
@@ -693,6 +694,8 @@ def _archive_members(
                     None,  # type: ignore[arg-type]
                     bound_provider=location_binding,
                     captured_input_identity=captured.captured_identity,
+                    container_blob_hash=physical.blob_hash,
+                    decoder_fingerprint=zip_acquisition_fingerprint(provider),
                     entry_ordinal=ordinals[id(info)],
                 )
                 for unit in replay_zip_entry_acquisition_revisions(

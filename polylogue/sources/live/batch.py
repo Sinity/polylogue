@@ -61,7 +61,7 @@ from polylogue.core.raw_coordinates import (
     MemberAddressingMode,
     captured_zip_member_raw_id,
     zip_member_container,
-    zip_member_identity_coordinate,
+    zip_member_record_coordinate,
     zip_member_source_index,
 )
 from polylogue.core.raw_failure_evidence import (
@@ -98,6 +98,8 @@ from polylogue.sources.acquisition_boundary import (
     capture_bound_path,
     captured_path_coordinate,
     open_bound_container,
+    open_zip_entry,
+    release_refused_capture,
 )
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
@@ -154,7 +156,7 @@ from polylogue.sources.live.batch_support import (
     cursor_prefix_hash,
     cursor_state_after_full_ingest,
     decode_claude_semantic_frontier,
-    detect_provider_from_path_sample_evidence,
+    detect_provider_from_path_evidence,
     encode_claude_semantic_frontier_digests,
     encode_cursor_hash_authority,
     file_prefix_sha256,
@@ -179,9 +181,10 @@ from polylogue.sources.live.convergence_debt import (
     convergence_debt_from_states,
     debt_by_path,
 )
-from polylogue.sources.live.convergence_outcome import record_convergence_outcomes
+from polylogue.sources.live.convergence_outcome import record_convergence_outcomes, settled_convergence_stages
 from polylogue.sources.live.cursor import (
     ConvergenceDebtBatchEntry,
+    ConvergenceDebtSettlement,
     ConvergenceDebtWrite,
     CursorRecord,
     CursorStore,
@@ -211,6 +214,7 @@ from polylogue.sources.origin_specs import (
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.prepared_jsonl import (
     PreparedDecodeError,
     PreparedJsonl,
@@ -218,6 +222,7 @@ from polylogue.sources.prepared_jsonl import (
     terminal_decode_evidence,
 )
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
+from polylogue.sources.retained_acquisition import SourceInputRecord, iter_captured_zip_input
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
     enrich_sessions_from_archive,
@@ -227,9 +232,8 @@ from polylogue.sources.revision_backfill import (
 )
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
-    iter_zip_entry_raw_data,
     stream_preserved_zip_entry_raw_data,
-    zip_member_admission,
+    zip_acquisition_fingerprint,
 )
 from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.sqlite_snapshot import (
@@ -249,6 +253,16 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root as initialize_archive_root,
+)
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    FrozenSourceManifest,
+    SourceItemAdmission,
+    SourceItemMemberDisposition,
+    acquired_zip_manifest,
+    complete_source_item_enumeration,
+    publish_acquired_zip_input,
+    record_source_item_member_disposition,
+    source_item_id,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -557,42 +571,6 @@ def _blob_jsonl_has_session_evidence(
         return False
 
 
-def _record_zip_container_coordinate(
-    archive: Any,
-    record: RawSessionRecord,
-    *,
-    source_raw_id: str,
-    blob_hash: str,
-) -> None:
-    if record.source_index is None:
-        return
-    captured = record.captured_zip_coordinate
-    if captured is not None:
-        if source_raw_id != captured_zip_member_raw_id(captured, blob_hash):
-            raise ValueError("published raw differs from its captured ZIP identity")
-        entry_ordinal, split_index = captured.entry_ordinal, captured.split_index
-    else:
-        coordinate = zip_member_identity_coordinate(
-            raw_id=source_raw_id,
-            source_path=record.source_path,
-            source_index=record.source_index,
-            blob_hash=blob_hash,
-        )
-        if coordinate is None:
-            return
-        entry_ordinal, split_index = coordinate
-    archive.record_raw_container_coordinate(
-        source_raw_id,
-        coordinate_format="zip-v2",
-        entry_ordinal=entry_ordinal,
-        split_index=split_index,
-        # A record that did not come from container-member acquisition has no
-        # reading to assert; the coordinate is still worth keeping.
-        addressing_mode=record.addressing_mode,
-        content_identity=record.content_identity,
-    )
-
-
 def _fresh_build_admits(sessions: Iterable[Any], written: set[str] | None) -> bool:
     """Whether fresh mode is still valid for the sessions about to be written.
 
@@ -740,6 +718,47 @@ _FullRecordKey = tuple[str, str, int | None]
 
 def _full_record_key(record: RawSessionRecord) -> _FullRecordKey:
     return record.raw_id, record.source_path, record.source_index
+
+
+@dataclass(slots=True, init=False)
+class _CapturedZipEnumeration:
+    """Private denominator retained until the actual raw admissions settle."""
+
+    manifest: FrozenSourceManifest
+    coordinates: PickleSpool[str]
+    dispositions: PickleSpool[SourceInputRecord]
+    member_count: int | None
+    file_observation: tuple[int, int, int, int, int] | None
+
+    def __init__(
+        self,
+        manifest: FrozenSourceManifest,
+        *,
+        file_observation: tuple[int, int, int, int, int] | None = None,
+    ) -> None:
+        self.manifest = manifest
+        self.member_count = None
+        self.file_observation = file_observation
+        self.coordinates = PickleSpool()
+        try:
+            self.dispositions = PickleSpool()
+        except BaseException:
+            self.coordinates.close()
+            raise
+
+    @property
+    def item_id(self) -> str:
+        return source_item_id(
+            source_generation_id=self.manifest.source_generation_id,
+            logical_coordinate=self.manifest.inputs[0].coordinate,
+            addressing_mode="physical-file-v1",
+        )
+
+    def close(self) -> None:
+        try:
+            self.coordinates.close()
+        finally:
+            self.dispositions.close()
 
 
 @dataclass(slots=True)
@@ -1425,7 +1444,7 @@ class LiveBatchProcessor:
             )
             convergence_debt: list[ConvergenceDebt] = []
             if not defer_convergence:
-                _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
+                _converged_paths, elapsed, timings, convergence_debt, convergence_settlements = await self._run_sync(
                     "watcher.live_ingest.append_convergence",
                     self._converge_paths,
                     [plan.path for plan in append_result.succeeded],
@@ -1447,6 +1466,7 @@ class LiveBatchProcessor:
                     "convergence_outcomes",
                     self._record_convergence_outcomes,
                     outcome_items,
+                    convergence_settlements,
                 )
             for plan in append_result.succeeded:
                 succeeded_paths.add(plan.path)
@@ -1733,7 +1753,13 @@ class LiveBatchProcessor:
                     bool(full_result.changed_session_count or full_result.raw_deferred) and not defer_convergence
                 )
                 if convergence_ran:
-                    _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
+                    (
+                        _converged_paths,
+                        elapsed,
+                        timings,
+                        convergence_debt,
+                        convergence_settlements,
+                    ) = await self._run_sync(
                         "watcher.live_ingest.full_convergence",
                         self._converge_paths,
                         full_result.succeeded,
@@ -1765,6 +1791,7 @@ class LiveBatchProcessor:
                             "convergence_outcomes",
                             self._record_convergence_outcomes,
                             outcome_items,
+                            convergence_settlements,
                         )
                     # One admission and one ops commit for the group's
                     # cursors: per-file admissions cost a writer round trip
@@ -2715,9 +2742,9 @@ class LiveBatchProcessor:
     def _record_convergence_outcomes(
         self,
         outcomes: Iterable[tuple[Path, Iterable[ConvergenceDebt]]],
+        settlements: Iterable[ConvergenceDebtSettlement] = (),
     ) -> None:
-        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        record_convergence_outcomes(self._cursor, outcomes, archive_root=archive_root)
+        record_convergence_outcomes(self._cursor, outcomes, settlements=settlements)
 
     def _converge_paths(
         self,
@@ -2725,12 +2752,12 @@ class LiveBatchProcessor:
         *,
         whole_archive: bool = True,
         session_ids: Iterable[str] = (),
-    ) -> tuple[set[Path], float, dict[str, float], list[ConvergenceDebt]]:
+    ) -> tuple[set[Path], float, dict[str, float], list[ConvergenceDebt], list[ConvergenceDebtSettlement]]:
         unique_paths = tuple(sorted(dict.fromkeys(paths)))
         if not unique_paths:
-            return set(), 0.0, {}, []
+            return set(), 0.0, {}, [], []
         if self._converger is None:
-            return set(unique_paths), 0.0, {}, []
+            return set(unique_paths), 0.0, {}, [], []
 
         started = time.perf_counter()
         try:
@@ -2746,6 +2773,7 @@ class LiveBatchProcessor:
                     path for path in unique_paths if path in states and bool(getattr(states[path], "converged", False))
                 }
                 debt_items = convergence_debt_from_states(unique_paths, states)
+                settlements = [item for state in states.values() for item in settled_convergence_stages(state)]
                 batch_stage_timings = {stage_name: float(elapsed) for stage_name, elapsed in timings.items()}
                 # #1654: after convergence, check for new hook events that
                 # carry paste evidence and update matching messages. Scoped to
@@ -2805,23 +2833,26 @@ class LiveBatchProcessor:
                     time.perf_counter() - started,
                     batch_stage_timings,
                     debt_items,
+                    settlements,
                 )
 
             per_file_completed: set[Path] = set()
             stage_timings: dict[str, float] = {}
             per_file_debt_items: list[ConvergenceDebt] = []
+            settlements = []
             for path in unique_paths:
                 invalidate = getattr(self._converger, "invalidate_file", None)
                 if callable(invalidate):
                     invalidate(path)
                 state = self._converger.converge_file(path)  # type: ignore[attr-defined]
+                settlements.extend(settled_convergence_stages(state))
                 for stage_name, elapsed in getattr(state, "last_stage_times", {}).items():
                     stage_timings[stage_name] = stage_timings.get(stage_name, 0.0) + float(elapsed)
                 if bool(getattr(state, "converged", False)):
                     per_file_completed.add(path)
                 else:
                     per_file_debt_items.extend(convergence_debt_from_state(path, state))
-            return per_file_completed, time.perf_counter() - started, stage_timings, per_file_debt_items
+            return per_file_completed, time.perf_counter() - started, stage_timings, per_file_debt_items, settlements
         except Exception as exc:
             logger.warning("live.watcher: post-ingest converge failed: %s", exc)
             return (
@@ -2829,6 +2860,7 @@ class LiveBatchProcessor:
                 time.perf_counter() - started,
                 {},
                 [ConvergenceDebt(path=path, stage="convergence", error=str(exc)) for path in unique_paths],
+                [],
             )
 
     @contextmanager
@@ -3227,10 +3259,12 @@ class LiveBatchProcessor:
         behind would spend more of an already-full archive on every retry.
         """
         publishers: list[BlobStore] = []
+        zip_inputs: dict[Path, _CapturedZipEnumeration] = {}
         try:
             return self._ingest_full_paths_sync_staged(
                 paths,
                 publishers=publishers,
+                zip_inputs=zip_inputs,
                 source_name=source_name,
                 heartbeat=heartbeat,
                 attempt_id=attempt_id,
@@ -3247,12 +3281,17 @@ class LiveBatchProcessor:
                     if callable(discard_pending):
                         discard_pending()
             raise
+        finally:
+            with ExitStack() as cleanup:
+                for captured_input in zip_inputs.values():
+                    cleanup.callback(captured_input.close)
 
     def _ingest_full_paths_sync_staged(
         self,
         paths: list[Path],
         *,
         publishers: list[BlobStore],
+        zip_inputs: dict[Path, _CapturedZipEnumeration],
         source_name: str,
         heartbeat: _FullIngestHeartbeat | None = None,
         attempt_id: str | None = None,
@@ -3527,18 +3566,33 @@ class LiveBatchProcessor:
                         blob_store=blob_store,
                         fallback_provider=fallback_provider,
                         file_mtime=file_mtime,
+                        zip_inputs=zip_inputs,
                     )
                     if source_only_zip is None:
                         failed.append(path)
                         continue
                     zip_records, zip_bytes = source_only_zip
                 else:
-                    zip_records, zip_bytes = self._extract_zip_member_records(
+                    extracted_zip = self._extract_zip_member_records(
                         path,
                         blob_store=blob_store,
                         fallback_provider=fallback_provider,
                         file_mtime=file_mtime,
+                        zip_inputs=zip_inputs,
                     )
+                    if extracted_zip is None:
+                        failed.append(path)
+                        continue
+                    zip_records, zip_bytes = extracted_zip
+                captured_zip = zip_inputs.get(path)
+                if captured_zip is not None:
+                    input_identity = captured_zip.manifest.inputs[0].captured_identity
+                    if input_identity is None:
+                        raise ValueError("ZIP input lost its captured namespace")
+                    raw_canonical_source_paths[path] = input_identity.canonical_source_path
+                    raw_profile_keys[path] = input_identity.profile_key
+                    if captured_zip.file_observation is not None:
+                        captured_file_observations[path] = captured_zip.file_observation
                 if not zip_records:
                     self._mark_excluded_cursor(
                         path,
@@ -4058,7 +4112,7 @@ class LiveBatchProcessor:
                         # this file) is recorded under the source's provider.
                         provider = fallback_provider
                     else:
-                        provider, detection_crash = detect_provider_from_path_sample_evidence(
+                        provider, detection_crash = detect_provider_from_path_evidence(
                             blob_store.blob_path(raw_id), fallback_provider, json_document=True
                         )
                         if detection_crash is not None:
@@ -4169,7 +4223,7 @@ class LiveBatchProcessor:
         raw_deferred_paths: list[Path] = []
         skipped_paths: set[Path] = set()
         time_budget_exceeded = acquisition_time_budget_exceeded
-        if raw_records:
+        if raw_records or zip_inputs:
             try:
                 blob_store.flush()
             except Exception as exc:
@@ -4214,6 +4268,7 @@ class LiveBatchProcessor:
                     shard_paths_by_raw_id,
                     path_preparations_by_source_path,
                     retained_preparations_by_raw_id,
+                    zip_inputs=zip_inputs,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
@@ -4456,6 +4511,7 @@ class LiveBatchProcessor:
         path_preparations_by_source_path: dict[str, PreparedJsonl] | None = None,
         retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
         *,
+        zip_inputs: Mapping[Path, _CapturedZipEnumeration] | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _ArchiveFullWriteResult:
@@ -4465,6 +4521,39 @@ class LiveBatchProcessor:
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
         with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
             source_only = _source_tier_acquisition_required()
+            if zip_inputs:
+                from polylogue.storage.blob_publication import flush_blob_publications
+
+                flush_blob_publications(blob_store)
+                conn = archive.source_connection
+                for captured_input in zip_inputs.values():
+                    conn.execute("SAVEPOINT live_zip_input")
+                    try:
+                        observed_at_ms = _iso_to_epoch_ms(datetime.now(UTC).isoformat())
+                        publish_acquired_zip_input(
+                            conn,
+                            captured_input.manifest,
+                            observed_at_ms=observed_at_ms,
+                        )
+                        for disposition in captured_input.dispositions:
+                            if disposition.entry_ordinal is None or disposition.member_name is None:
+                                raise ValueError("ZIP disposition lacks its exact central coordinate")
+                            record_source_item_member_disposition(
+                                conn,
+                                source_generation_id=captured_input.manifest.source_generation_id,
+                                source_item_id=captured_input.item_id,
+                                entry_ordinal=disposition.entry_ordinal,
+                                member_name=disposition.member_name,
+                                disposition=SourceItemMemberDisposition(disposition.member_disposition),
+                                diagnostic=disposition.diagnostic or "",
+                                observed_at_ms=observed_at_ms,
+                            )
+                    except BaseException:
+                        conn.execute("ROLLBACK TO live_zip_input")
+                        conn.execute("RELEASE live_zip_input")
+                        raise
+                    conn.execute("RELEASE live_zip_input")
+                    conn.commit()
             # polylogue-6xcqj: one materialization route. The cold-build shape
             # is not a separate offline orchestration -- it is what this same
             # dispatcher pass takes while the index generation is still empty.
@@ -4635,6 +4724,7 @@ class LiveBatchProcessor:
                                 canonical_source_path=record.canonical_source_path,
                                 captured_profile_key=record.captured_profile_key,
                                 captured_zip_coordinate=record.captured_zip_coordinate,
+                                source_item=record.source_item,
                                 addressing_mode=record.addressing_mode,
                                 content_identity=record.content_identity,
                                 source_index=record.source_index or 0,
@@ -4651,6 +4741,10 @@ class LiveBatchProcessor:
                                 source_path=record.source_path,
                                 canonical_source_path=record.canonical_source_path,
                                 captured_profile_key=record.captured_profile_key,
+                                captured_zip_coordinate=record.captured_zip_coordinate,
+                                source_item=record.source_item,
+                                addressing_mode=record.addressing_mode,
+                                content_identity=record.content_identity,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
                                 file_mtime_ms=timestamp_millis(record.file_mtime),
@@ -4666,12 +4760,6 @@ class LiveBatchProcessor:
                                 source_path=record.source_path,
                                 source_revision=blob_hash,
                             )
-                        _record_zip_container_coordinate(
-                            archive,
-                            record,
-                            source_raw_id=source_raw_id,
-                            blob_hash=blob_hash,
-                        )
                         result.raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
@@ -4686,6 +4774,7 @@ class LiveBatchProcessor:
                             canonical_source_path=record.canonical_source_path,
                             captured_profile_key=record.captured_profile_key,
                             captured_zip_coordinate=record.captured_zip_coordinate,
+                            source_item=record.source_item,
                             addressing_mode=record.addressing_mode,
                             content_identity=record.content_identity,
                             source_index=record.source_index or 0,
@@ -4712,10 +4801,15 @@ class LiveBatchProcessor:
                             source_path=record.source_path,
                             canonical_source_path=record.canonical_source_path,
                             captured_profile_key=record.captured_profile_key,
+                            captured_zip_coordinate=record.captured_zip_coordinate,
+                            source_item=record.source_item,
+                            addressing_mode=record.addressing_mode,
+                            content_identity=record.content_identity,
                             source_index=record.source_index or 0,
                             acquired_at_ms=acquired_at_ms,
                             file_mtime_ms=timestamp_millis(record.file_mtime),
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
+                            raw_id=record.raw_id if record.captured_zip_coordinate is not None else None,
                             post_parse=True,
                         )
                         source_write_name = "full.source_raw_write"
@@ -4727,12 +4821,6 @@ class LiveBatchProcessor:
                         shard_path = shard_paths_by_raw_id.pop(record.raw_id, None)
                         if shard_path is not None:
                             shard_paths_by_raw_id[source_raw_id] = shard_path
-                    _record_zip_container_coordinate(
-                        archive,
-                        record,
-                        source_raw_id=source_raw_id,
-                        blob_hash=blob_hash,
-                    )
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
                     if (
                         partial_prefix
@@ -4884,6 +4972,7 @@ class LiveBatchProcessor:
                             path_preparation,
                             provider=path_preparation.resolved_provider or provider,
                             source_path=record.source_path,
+                            captured_zip_coordinate=record.captured_zip_coordinate,
                             sessions=prepared_sessions,
                             parser_sidecars=False,
                         )
@@ -5039,7 +5128,13 @@ class LiveBatchProcessor:
                         # A sealed path preparation was enriched in its
                         # worker; this writer-side parse must publish the
                         # same interpretation retained replay would.
-                        sessions = enrich_sessions_from_archive(archive, provider, record.source_path, sessions)
+                        sessions = enrich_sessions_from_archive(
+                            archive,
+                            provider,
+                            record.source_path,
+                            sessions,
+                            captured_zip_coordinate=record.captured_zip_coordinate,
+                        )
                     record_timings["full.provider_parse"] = record_timings.get("full.provider_parse", 0.0) + (
                         time.perf_counter() - t0
                     )
@@ -5486,6 +5581,42 @@ class LiveBatchProcessor:
                         exc,
                         exc_info=True,
                     )
+            if zip_inputs:
+                conn = archive.source_connection
+
+                def check_completion_stop() -> None:
+                    if self._stop_requested():
+                        raise asyncio.CancelledError
+
+                for captured_input in zip_inputs.values():
+                    if captured_input.member_count is None:
+                        continue  # No normal decoder EOF was observed.
+                    actual_count = conn.execute(
+                        "SELECT COUNT(*) FROM source_item_raw_members "
+                        "WHERE source_generation_id=? AND source_item_id=? AND raw_id IS NOT NULL",
+                        (captured_input.manifest.source_generation_id, captured_input.item_id),
+                    ).fetchone()[0]
+                    if actual_count != len(captured_input.coordinates):
+                        continue  # An admission failed or was deferred before raw publication.
+                    conn.execute("SAVEPOINT live_zip_completion")
+                    try:
+                        complete_source_item_enumeration(
+                            conn,
+                            source_generation_id=captured_input.manifest.source_generation_id,
+                            source_item_id=captured_input.item_id,
+                            record_coordinates=captured_input.coordinates,
+                            member_ordinals=range(captured_input.member_count),
+                            member_count=captured_input.member_count,
+                            enumeration_fingerprint=captured_input.manifest.enumeration_fingerprint,
+                            enumerated_at_ms=_iso_to_epoch_ms(datetime.now(UTC).isoformat()),
+                            check_stop=check_completion_stop,
+                        )
+                    except BaseException:
+                        conn.execute("ROLLBACK TO live_zip_completion")
+                        conn.execute("RELEASE live_zip_completion")
+                        raise
+                    conn.execute("RELEASE live_zip_completion")
+                    conn.commit()
             if active_cold_build:
                 # The cold-build shape is licensed per pass, so it is also
                 # surrendered per pass. There is nothing to verify and nothing
@@ -5844,7 +5975,13 @@ class LiveBatchProcessor:
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:
         sessions = parse_retained_raw_sessions(archive, raw_id)
         provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-        return enrich_sessions_from_archive(archive, provider, source_path, sessions)
+        return enrich_sessions_from_archive(
+            archive,
+            provider,
+            source_path,
+            sessions,
+            captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id),
+        )
 
     def _extract_zip_member_records(
         self,
@@ -5853,155 +5990,117 @@ class LiveBatchProcessor:
         blob_store: BlobStore,
         fallback_provider: Provider,
         file_mtime: str,
-    ) -> tuple[list[tuple[str, RawSessionRecord]], int]:
-        """Expand an inbox ZIP into one raw record per session member.
-
-        Inbox ZIPs (account exports dropped into the watched inbox) were
-        previously routed into the byte-level provider-detection branch, where
-        ``orjson.loads`` over the ZIP container raised and the entire archive
-        was silently marked excluded (#1683). This reuses the maintenance
-        acquisition path's member extraction so inbox ZIPs ingest the same way
-        as ``polylogue run`` source ZIPs: each member is provider-detected,
-        multi-session members are split, and grouped/metadata entries preserve
-        their original bytes.
-
-        Returns ``([], 0)`` (caller marks the path excluded) only when the ZIP
-        is unreadable or contains no session-bearing members.
-        """
-        source = Source(name=fallback_provider.value, path=path.parent)
+        zip_inputs: dict[Path, _CapturedZipEnumeration],
+    ) -> tuple[list[tuple[str, RawSessionRecord]], int] | None:
+        """Acquire the canonical member stream with its exact EOF denominator."""
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
         total_bytes = 0
+        captured_input: _CapturedZipEnumeration | None = None
         try:
-            with (
-                bind_source_input(path) as captured,
-                open_bound_container(
-                    blob_store,
-                    captured,
-                ) as physical,
-                zipfile.ZipFile(physical) as zf,
-            ):
-                central_directory = zf.infolist()
-                admission = zip_member_admission(zf, path, central_directory, fallback_provider)
-                validator = _ZipEntryValidator(
-                    admission.provider_hint,
-                    cursor_state=None,
-                    zip_path=path,
+            with bind_source_input(path) as binding, open_bound_container(blob_store, binding) as physical:
+                stream = iter_captured_zip_input(
+                    capture=physical,
+                    source_path=str(binding.source_path),
+                    source_name=fallback_provider.value,
+                    blob_store=blob_store,
+                    file_mtime=file_mtime,
                 )
-                entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-                entries = [
-                    (entry_ordinals[id(info)], info)
-                    for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path)
-                ]
-                # A GDPR/Takeout export ZIP dropped into a provider-agnostic
-                # inbox (``fallback_provider is Provider.UNKNOWN``) still has
-                # a real dominant provider -- it just isn't visible from any
-                # *one* member in isolation. Establish it once from whichever
-                # member detects cleanly (typically ``conversations.json``)
-                # and seed every member's detection with it, rather than
-                # each low-signal sibling (``user.json``,
-                # ``message_feedback.json``, ``shared_conversations.json``,
-                # attachment ``file_*.json`` blobs, ...) independently
-                # falling back to ``Provider.UNKNOWN`` -> ``unknown-export``
-                # (polylogue-hs3y). A source that already resolved a
-                # provider (a per-provider watched directory) is left alone.
-                for entry_ordinal, info in entries:
-                    if info.file_size == 0:
-                        continue
-                    try:
-                        entry_provider_hint = admission.entry_provider_hint(zf, info)
-                        for raw_data in iter_zip_entry_raw_data(
-                            zf,
-                            ZipEntryReadContext(
-                                source=source,
-                                zip_path=path,
-                                entry=info,
-                                file_mtime=file_mtime,
-                                provider_hint=entry_provider_hint,
-                                blob_store=blob_store,
-                                bound_provider=bound_location_provider(fallback_provider),
-                                captured_input_identity=captured.captured_identity,
-                                entry_ordinal=entry_ordinal,
-                            ),
-                        ):
-                            if raw_data.blob_hash is None:
-                                continue
-                            member_provider = raw_data.provider_hint or fallback_provider
-                            member_size = raw_data.blob_size or 0
-                            total_bytes += member_size
-                            # A whole-member document has no element index.
-                            # ``split_index`` 0 is the coordinate slot it
-                            # occupies, and the acquired addressing mode --
-                            # not the slot -- says which reading applies.
-                            coordinate = raw_data.captured_zip_coordinate
-                            if coordinate is None:
-                                raise ValueError("accepted ZIP member lost its captured coordinate")
-                            split_index = coordinate.split_index
-                            source_index = zip_member_source_index(
-                                entry_ordinal=entry_ordinal,
-                                split_index=split_index,
+                try:
+                    for envelope in stream:
+                        if envelope.input_blob_hash is not None:
+                            if (
+                                envelope.captured_input_identity is None
+                                or envelope.input_publication_receipt_id is None
+                                or envelope.enumeration_fingerprint is None
+                            ):
+                                raise ValueError("ZIP input lost its accepted publication evidence")
+                            manifest = acquired_zip_manifest(
+                                blob_hash=envelope.input_blob_hash,
+                                publication_receipt_id=envelope.input_publication_receipt_id,
+                                captured_identity=envelope.captured_input_identity,
+                                enumeration_fingerprint=envelope.enumeration_fingerprint,
+                                source_name=envelope.input_source_name,
                             )
-                            member_raw_id = captured_zip_member_raw_id(coordinate, raw_data.blob_hash)
+                            captured_input = _CapturedZipEnumeration(
+                                manifest, file_observation=envelope.file_observation
+                            )
+                            previous = zip_inputs.get(path)
+                            if previous is not None:
+                                previous.close()
+                            zip_inputs[path] = captured_input
+                        elif envelope.member_disposition is not None:
+                            if captured_input is None:
+                                raise ValueError("ZIP disposition has no accepted input")
+                            captured_input.dispositions.append(envelope)
+                            if envelope.member_disposition == "refused":
+                                assert envelope.entry_ordinal is not None and envelope.member_name is not None
+                                self._record_zip_member_refusal(
+                                    path,
+                                    envelope.entry_ordinal,
+                                    envelope.member_name,
+                                    reason=envelope.member_refusal_code or _CONTENT_IDENTITY_REFUSED,
+                                    error=envelope.diagnostic or "member refused",
+                                )
+                        elif envelope.enumeration_complete:
+                            if captured_input is None or envelope.member_count is None:
+                                raise ValueError("ZIP completion has no accepted denominator")
+                            captured_input.member_count = envelope.member_count
+                        elif envelope.data is not None:
+                            if captured_input is None:
+                                raise ValueError("ZIP raw has no accepted input")
+                            raw = envelope.data
+                            coordinate = raw.captured_zip_coordinate
+                            if coordinate is None or raw.blob_hash is None:
+                                raise ValueError("ZIP raw lost its captured coordinate or bytes")
+                            raw_id = captured_zip_member_raw_id(coordinate, raw.blob_hash)
+                            member = SourceItemAdmission(
+                                captured_input.manifest.source_generation_id,
+                                captured_input.item_id,
+                                envelope.coordinate,
+                                coordinate.entry_ordinal,
+                                coordinate.split_index,
+                                coordinate.addressing_mode.value,
+                                raw.content_identity,
+                            )
+                            captured_input.coordinates.append(envelope.coordinate)
+                            total_bytes += raw.blob_size or 0
                             records.append(
                                 (
-                                    member_raw_id,
+                                    raw_id,
                                     RawSessionRecord(
-                                        raw_id=member_raw_id,
-                                        blob_hash=raw_data.blob_hash,
-                                        payload_provider=member_provider,
+                                        raw_id=raw_id,
+                                        blob_hash=raw.blob_hash,
+                                        payload_provider=raw.provider_hint or fallback_provider,
                                         capture_mode=fallback_provider,
-                                        source_name=member_provider.value,
-                                        source_path=raw_data.source_path,
-                                        canonical_source_path=raw_data.canonical_source_path,
-                                        captured_profile_key=raw_data.captured_profile_key,
+                                        source_name=(raw.provider_hint or fallback_provider).value,
+                                        source_path=raw.source_path,
+                                        canonical_source_path=raw.canonical_source_path,
+                                        captured_profile_key=raw.captured_profile_key,
                                         captured_zip_coordinate=coordinate,
-                                        source_index=source_index,
-                                        addressing_mode=raw_data.addressing_mode,
-                                        content_identity=raw_data.content_identity,
-                                        blob_size=member_size,
-                                        blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
+                                        source_item=member,
+                                        source_index=coordinate.source_index,
+                                        addressing_mode=raw.addressing_mode,
+                                        content_identity=raw.content_identity,
+                                        blob_size=raw.blob_size or 0,
+                                        blob_publication_receipt_id=raw.blob_publication_receipt_id,
                                         acquired_at=acquired_at,
-                                        file_mtime=raw_data.file_mtime,
+                                        file_mtime=raw.file_mtime,
                                     ),
                                 )
                             )
-                    except zipfile.BadZipFile as exc:
-                        logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
-                        # An unreadable member proves nothing about a refusal
-                        # it carried; keep that gap until the member is read.
-                        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(
-                            _zip_member_debt_subject(path, entry_ordinals[id(info)], info.filename)
-                        )
-                    except ForeignOriginContentError as exc:
-                        # A refused member is named on its own; admissible
-                        # siblings in the archive are still acquired. The
-                        # member yields no split before it validated whole,
-                        # and its captures are released with the refusal.
-                        self._record_zip_member_refusal(
-                            path,
-                            entry_ordinals[id(info)],
-                            info.filename,
-                            reason=foreign_origin_exclusion(exc),
-                            error=f"{exc.code}: {exc}",
-                        )
-                    except ContentIdentityRefusal as exc:
-                        self._record_zip_member_refusal(
-                            path,
-                            entry_ordinals[id(info)],
-                            info.filename,
-                            reason=_CONTENT_IDENTITY_REFUSED,
-                            error=f"{_CONTENT_IDENTITY_REFUSED}: {exc}",
-                        )
+                finally:
+                    stream.close()
         except (zipfile.BadZipFile, OSError) as exc:
-            # An aborted scan reconciles nothing; drop its partial refusal set
-            # so a later pass starts clean.
             self._zip_member_refusals_this_pass.pop(str(path), None)
-            # Members stream into the archive's blob staging: a full or
-            # read-only archive is not a property of this ZIP, and reporting
-            # "no admissible record" would exclude the unchanged file for good.
+            # Keep a yielded prefix's input pending. CRC/read failure cannot
+            # authorize an exclusion or completion of the missing denominator.
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
+            for _raw_id, record in records:
+                if record.blob_hash is not None:
+                    release_refused_capture(blob_store, record.blob_hash, record.blob_publication_receipt_id)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
-            return [], 0
+            return None
         self._reconcile_zip_member_refusals(path)
         return records, total_bytes
 
@@ -6012,6 +6111,7 @@ class LiveBatchProcessor:
         blob_store: BlobStore,
         fallback_provider: Provider,
         file_mtime: str,
+        zip_inputs: dict[Path, _CapturedZipEnumeration],
     ) -> tuple[list[tuple[str, RawSessionRecord]], int] | None:
         """Acquire admitted ZIP members without interpreting their bytes.
 
@@ -6032,13 +6132,49 @@ class LiveBatchProcessor:
                     blob_store,
                     captured,
                 ) as physical,
-                zipfile.ZipFile(physical) as zf,
+                zipfile.ZipFile(physical.stream) as zf,
             ):
                 central_directory = zf.infolist()
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
+                container_hash, _container_size, input_receipt = physical.retain()
+                if input_receipt is None:
+                    raise ValueError("ZIP input lacks its accepted publication receipt")
+                manifest = acquired_zip_manifest(
+                    blob_hash=container_hash,
+                    publication_receipt_id=input_receipt,
+                    captured_identity=captured.captured_identity,
+                    enumeration_fingerprint=zip_acquisition_fingerprint(fallback_provider, preserved_only=True),
+                    source_name=fallback_provider.value,
+                )
+                captured_input = _CapturedZipEnumeration(manifest, file_observation=physical.file_observation)
+                previous = zip_inputs.get(path)
+                if previous is not None:
+                    previous.close()
+                zip_inputs[path] = captured_input
+
+                def disposition(info: zipfile.ZipInfo, reason: str, kind: str = "unselected") -> None:
+                    captured_input.dispositions.append(
+                        SourceInputRecord(
+                            coordinate=json_dumps(["zip-member-v1", entry_ordinals[id(info)]], separators=(",", ":")),
+                            data=None,
+                            entry_ordinal=entry_ordinals[id(info)],
+                            member_name=info.filename,
+                            member_disposition=kind,
+                            diagnostic=reason,
+                        )
+                    )
+
                 allowed_path = is_declared_artifact_path if fallback_provider is Provider.UNKNOWN else None
-                for info in validator.filter_entries(central_directory, allowed_path=allowed_path):
+                for info in validator.filter_entries(
+                    central_directory,
+                    allowed_path=allowed_path,
+                    on_unselected=disposition,
+                ):
                     if info.file_size == 0:
+                        with open_zip_entry(zf, info) as empty:
+                            if empty.read(1):
+                                raise zipfile.BadZipFile("empty member yielded data")
+                        disposition(info, "member is empty")
                         continue
                     entry_ordinal = entry_ordinals[id(info)]
                     split_index = 0
@@ -6055,6 +6191,8 @@ class LiveBatchProcessor:
                         blob_store=blob_store,
                         bound_provider=bound_location_provider(fallback_provider),
                         captured_input_identity=captured.captured_identity,
+                        container_blob_hash=physical.blob_hash,
+                        decoder_fingerprint=manifest.enumeration_fingerprint,
                         entry_ordinal=entry_ordinal,
                     )
                     try:
@@ -6064,15 +6202,9 @@ class LiveBatchProcessor:
                             zf,
                             member_context,
                             provider_hint=fallback_provider,
-                            source_index=source_index,
                         )
-                    except zipfile.BadZipFile as exc:
-                        logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
-                        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(
-                            _zip_member_debt_subject(path, entry_ordinal, info.filename)
-                        )
-                        continue
                     except ForeignOriginContentError as exc:
+                        disposition(info, f"{exc.code}: {exc}", "refused")
                         self._record_zip_member_refusal(
                             path,
                             entry_ordinal,
@@ -6082,6 +6214,7 @@ class LiveBatchProcessor:
                         )
                         continue
                     except ContentIdentityRefusal as exc:
+                        disposition(info, f"{_CONTENT_IDENTITY_REFUSED}: {exc}", "refused")
                         self._record_zip_member_refusal(
                             path,
                             entry_ordinal,
@@ -6091,12 +6224,27 @@ class LiveBatchProcessor:
                         )
                         continue
                     if raw_data.blob_hash is None:
-                        continue
+                        raise ValueError("preserved ZIP member lost its accepted bytes")
                     total_bytes += raw_data.blob_size or 0
                     coordinate = raw_data.captured_zip_coordinate
                     if coordinate is None:
                         raise ValueError("accepted ZIP member lost its captured coordinate")
                     member_raw_id = captured_zip_member_raw_id(coordinate, raw_data.blob_hash)
+                    record_coordinate = zip_member_record_coordinate(
+                        entry_ordinal=entry_ordinal,
+                        split_index=split_index,
+                        addressing_mode=coordinate.addressing_mode,
+                    )
+                    captured_input.coordinates.append(record_coordinate)
+                    member = SourceItemAdmission(
+                        manifest.source_generation_id,
+                        captured_input.item_id,
+                        record_coordinate,
+                        entry_ordinal,
+                        split_index,
+                        coordinate.addressing_mode.value,
+                        raw_data.content_identity,
+                    )
                     records.append(
                         (
                             member_raw_id,
@@ -6110,6 +6258,7 @@ class LiveBatchProcessor:
                                 canonical_source_path=raw_data.canonical_source_path,
                                 captured_profile_key=raw_data.captured_profile_key,
                                 captured_zip_coordinate=coordinate,
+                                source_item=member,
                                 source_index=source_index,
                                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
                                 content_identity=raw_data.content_identity,
@@ -6120,11 +6269,15 @@ class LiveBatchProcessor:
                             ),
                         )
                     )
+                captured_input.member_count = len(central_directory)
         except (zipfile.BadZipFile, OSError) as exc:
             # An aborted scan reconciles nothing; drop its partial refusal set
             # so a later pass starts clean.
             self._zip_member_refusals_this_pass.pop(str(path), None)
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
+            for _raw_id, record in records:
+                if record.blob_hash is not None:
+                    release_refused_capture(blob_store, record.blob_hash, record.blob_publication_receipt_id)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             # A transport/read failure is not evidence that the archive has no
             # admissible members. Keep it distinct from a successful empty

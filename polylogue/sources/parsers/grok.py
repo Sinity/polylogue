@@ -618,3 +618,20 @@ def parse_native_bundle(payload: Mapping[str, object], fallback_id: str) -> list
     if not looks_like_native_bundle(payload):
         raise ValueError("invalid Grok endpoint bundle")
     return [parse_conversation(payload, fallback_id)]
+
+
+def native_detection_projection() -> DetectorProjection:
+    """Preserve the native predicate's exact nested identity and list shapes."""
+    identity = DetectorProjection(fields={"conversationId": DetectorProjection()})
+    conversation = DetectorProjection(
+        fields={
+            "conversationId": DetectorProjection(),
+            "conversation": identity,
+        }
+    )
+    return DetectorProjection(
+        fields={
+            "conversation": conversation,
+            "responses": DetectorProjection(fields={"responses": DetectorProjection()}),
+        }
+    )

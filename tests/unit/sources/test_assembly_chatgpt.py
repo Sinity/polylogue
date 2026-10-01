@@ -20,7 +20,7 @@ from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 from polylogue.storage.blob_store import BlobStore
-from tests.infra.source_builders import ChatGPTExportBuilder
+from tests.infra.source_builders import ChatGPTExportBuilder, acquired_payloads, captured_zip_coordinate
 
 
 def _session(
@@ -899,9 +899,15 @@ def test_two_exports_are_two_scopes() -> None:
     """One export's retained maps never address another export's members."""
     from polylogue.sources.retained_assembly import chatgpt_export_scope
 
-    zip_scope = chatgpt_export_scope("/archive/exports/first.zip:conversations.json")
-    other_zip_scope = chatgpt_export_scope("/archive/exports/second.zip:conversations.json")
-    dir_scope = chatgpt_export_scope("/archive/exports/extracted/conversations.json")
+    zip_scope = chatgpt_export_scope(
+        "/archive/exports/first.zip:conversations.json",
+        captured_zip_coordinate=captured_zip_coordinate("/archive/exports/first.zip", "conversations.json"),
+    )
+    other_zip_scope = chatgpt_export_scope(
+        "/archive/exports/second.zip:conversations.json",
+        captured_zip_coordinate=captured_zip_coordinate("/archive/exports/second.zip", "conversations.json"),
+    )
+    dir_scope = chatgpt_export_scope("/archive/exports/extracted/conversations.json", captured_zip_coordinate=None)
 
     assert zip_scope == "/archive/exports/first.zip:"
     assert other_zip_scope == "/archive/exports/second.zip:"
@@ -917,9 +923,21 @@ def test_uppercase_zip_suffix_is_its_own_export_scope() -> None:
     """
     from polylogue.sources.retained_assembly import chatgpt_export_scope
 
-    assert chatgpt_export_scope("/archive/exports/first.ZIP:conversations.json") == "/archive/exports/first.ZIP:"
+    assert (
+        chatgpt_export_scope(
+            "/archive/exports/first.ZIP:conversations.json",
+            captured_zip_coordinate=captured_zip_coordinate("/archive/exports/first.ZIP", "conversations.json"),
+        )
+        == "/archive/exports/first.ZIP:"
+    )
     # "İ" lowercases to two code points; the scope still ends at the separator.
-    assert chatgpt_export_scope("/archive/İ/first.Zip:conversations.json") == "/archive/İ/first.Zip:"
+    assert (
+        chatgpt_export_scope(
+            "/archive/İ/first.Zip:conversations.json",
+            captured_zip_coordinate=captured_zip_coordinate("/archive/İ/first.Zip", "conversations.json"),
+        )
+        == "/archive/İ/first.Zip:"
+    )
 
 
 def test_retained_asset_member_names_still_carry_their_provider_id() -> None:
@@ -946,7 +964,7 @@ def test_zip_export_retains_asset_members_and_maps_byte_exact(tmp_path: Path) ->
     import zipfile
 
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
     from polylogue.storage.blob_store import BlobStore
 
     root = tmp_path / "inbox"
@@ -962,7 +980,9 @@ def test_zip_export_retains_asset_members_and_maps_byte_exact(tmp_path: Path) ->
     store = BlobStore(tmp_path / "blobs")
     acquired = {
         raw.source_path.rsplit(":", 1)[-1]: raw
-        for raw in iter_source_raw_data(Source(name="chatgpt", path=root), blob_store=store)
+        for raw in acquired_payloads(
+            iter_source_acquisition_records(Source(name="chatgpt", path=root), blob_store=store)
+        )
     }
 
     assert "dalle-generations/file-ABC.webp" in acquired
@@ -984,7 +1004,7 @@ def test_inbox_zip_export_is_sniffed_before_its_asset_members_are_admitted(tmp_p
     acquisition and its bytes are never retained.
     """
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
 
     root = tmp_path / "inbox"
     root.mkdir()
@@ -1017,7 +1037,9 @@ def test_inbox_zip_export_is_sniffed_before_its_asset_members_are_admitted(tmp_p
     store = BlobStore(tmp_path / "blobs")
     acquired = {
         raw.source_path.rsplit(":", 1)[-1]: raw
-        for raw in iter_source_raw_data(Source(name="inbox", path=root), blob_store=store, cursor_state={})
+        for raw in acquired_payloads(
+            iter_source_acquisition_records(Source(name="inbox", path=root), blob_store=store, cursor_state={})
+        )
     }
 
     assert "file-abc.png" in acquired

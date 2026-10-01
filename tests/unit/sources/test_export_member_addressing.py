@@ -123,15 +123,8 @@ def test_inserted_element_shifts_the_hint_without_losing_the_conversation(tmp_pa
     assert unit is not None and unit.byte_identity == _sha(expected)
 
 
-def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: Path) -> None:
-    """Replay applies acquisition's ZIP admission before decompressing a member.
-
-    The same member bytes replay from an archive that stores them plainly.
-    Stored at a compression ratio above the admission limit, acquisition
-    refuses the member, so replay refuses it too and caches nothing.
-    Anti-vacuity: without the admission check the high-ratio archive yields
-    the recorded payload.
-    """
+def test_reacquisition_preserves_valid_member_across_compression_ratios(tmp_path: Path) -> None:
+    """Compression ratio cannot change exact retained member byte identity."""
     padded = {**_session("padded"), "pad": " " * 1_000_000}
     member_bytes = json.dumps([_META, padded, _session("other")], separators=(",", ":")).encode()
     expected = dumps_bytes(padded)
@@ -271,7 +264,7 @@ def test_whole_member_document_is_acquired_as_a_whole_member(tmp_path: Path, rec
     assert [item.addressing_mode for item in replayed] == [MemberAddressingMode.WHOLE_MEMBER]
 
 
-def test_preserved_whole_member_drops_element_index_hint(tmp_path: Path) -> None:
+def test_preserved_whole_member_has_document_addressing(tmp_path: Path) -> None:
     """A transport coordinate must not become a positional member address."""
     zip_path = tmp_path / "preserved.zip"
     _write_member(zip_path, {"metadata": "document"})
@@ -291,7 +284,6 @@ def test_preserved_whole_member_drops_element_index_hint(tmp_path: Path) -> None
             archive,
             context,
             provider_hint=Provider.CHATGPT,
-            source_index=17,
         )
 
     assert record.addressing_mode is MemberAddressingMode.WHOLE_MEMBER

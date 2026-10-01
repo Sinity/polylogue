@@ -8,15 +8,17 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from itertools import islice
+from pathlib import Path, PurePosixPath
 
 from polylogue.core.enums import IngestOutcome, Origin
-from polylogue.core.provider_identity import captured_hermes_profile_key
+from polylogue.core.provider_identity import captured_hermes_profile_key, profile_root_for_artifact
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 from .common import require_vocabulary
 from .source_attachments import (
@@ -25,6 +27,19 @@ from .source_attachments import (
     record_source_attachments,
     source_attachment_census,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceItemAdmission:
+    """Exact frozen-input membership joined to one raw admission."""
+
+    source_generation_id: str
+    source_item_id: str
+    record_coordinate: str
+    entry_ordinal: int | None = None
+    split_index: int | None = None
+    addressing_mode: str | None = None
+    content_identity: str | None = None
 
 
 class AcquisitionDisposition(StrEnum):
@@ -57,7 +72,6 @@ class SourceItemMemberDisposition(StrEnum):
     UNSELECTED = "unselected"
 
 
-_MAX_MEMBER_IDENTITY_CHARS = 4096
 _MAX_MEMBER_DIAGNOSTIC_CHARS = 4080
 
 
@@ -106,6 +120,14 @@ class CapturedSourceInputIdentity:
             Path(self.profile_source_path).relative_to(self.profile_root)
         except ValueError as exc:
             raise ValueError("captured profile member is outside its accepted namespace") from exc
+
+    def member_profile_identity(self, member_name: str) -> tuple[Path, Path] | None:
+        """Interpret a relative member only in this accepted namespace."""
+        member = PurePosixPath(member_name)
+        if member.is_absolute() or ".." in member.parts:
+            return None
+        profile_path = Path(self.profile_source_path).parent.joinpath(*member.parts)
+        return profile_root_for_artifact(profile_path), profile_path
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -240,7 +262,12 @@ def page_retained_source_inputs(
 
 @dataclass(frozen=True, slots=True)
 class FrozenSourceManifest:
-    """The complete typed source denominator fixed before machine acceptance."""
+    """Inline evidence for an opened ZIP or an immutable historical command.
+
+    New general acceptance plans use the staged manifest owner and carry only
+    its sealed reference. Historical command decoding preserves these exact
+    fields and their digest without rediscovering source inputs.
+    """
 
     source_generation_id: str
     enumeration_fingerprint: str
@@ -249,11 +276,19 @@ class FrozenSourceManifest:
 
     def __post_init__(self) -> None:
         _require_digest(self.enumeration_fingerprint, "enumeration_fingerprint")
-        if not self.source_generation_id or not 1 <= len(self.inputs) <= 10_000:
-            raise ValueError("frozen manifest requires a generation and bounded input set")
-        if len({item.coordinate for item in self.inputs}) != len(self.inputs):
-            raise ValueError("frozen manifest coordinates must be distinct")
-        if self.source_name is not None and (not self.source_name.strip() or len(self.source_name) > 255):
+        if not self.source_generation_id or not self.inputs:
+            raise ValueError("frozen manifest requires a generation and nonempty input set")
+        if len(self.inputs) > 1:
+            with scratch_connection_context(prefix="polylogue-manifest-", filename="coordinates.db") as keys:
+                keys.execute("PRAGMA journal_mode=DELETE")
+                keys.execute("BEGIN")
+                keys.execute("CREATE TABLE coordinates(value TEXT PRIMARY KEY) WITHOUT ROWID")
+                for item in self.inputs:
+                    try:
+                        keys.execute("INSERT INTO coordinates VALUES (?)", (item.coordinate,))
+                    except sqlite3.IntegrityError as exc:
+                        raise ValueError("frozen manifest coordinates must be distinct") from exc
+        if self.source_name is not None and (not self.source_name.strip()):
             raise ValueError("frozen source name must be nonempty and bounded")
         for item in self.inputs:
             _require_digest(item.blob_hash, "input blob_hash")
@@ -264,17 +299,26 @@ class FrozenSourceManifest:
     def manifest_digest(self) -> str:
         # A publication receipt proves retention, not input identity. Exclude
         # its independently generated ID from this immutable content digest.
-        content = [
-            self.enumeration_fingerprint,
-            [
-                [item.coordinate, item.source_path, item.blob_hash]
-                + ([item.captured_identity.to_dict()] if item.captured_identity is not None else [])
-                for item in self.inputs
-            ],
-        ]
+        digest = hashlib.sha256()
+        digest.update(
+            ("[" + json.dumps(self.enumeration_fingerprint, ensure_ascii=False, separators=(",", ":")) + ",[").encode()
+        )
+        for index, item in enumerate(self.inputs):
+            fields: list[object] = [item.coordinate, item.source_path, item.blob_hash]
+            if item.captured_identity is not None:
+                fields.append(item.captured_identity.to_dict())
+            digest.update(
+                (("," if index else "") + json.dumps(fields, ensure_ascii=False, separators=(",", ":"))).encode()
+            )
+        digest.update(b"]")
         if self.source_name is not None:
-            content.append(["source_name", self.source_name])
-        return hashlib.sha256(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+            digest.update(
+                (
+                    ',["source_name",' + json.dumps(self.source_name, ensure_ascii=False, separators=(",", ":")) + "]"
+                ).encode()
+            )
+        digest.update(b"]")
+        return digest.hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -338,7 +382,7 @@ class SealedSourceManifestRef:
             raise ValueError("sealed manifest requires a nonempty generation")
         for name in ("enumeration_fingerprint", "manifest_digest", "custody_digest"):
             _require_digest(getattr(self, name), name)
-        if self.source_name is not None and (not self.source_name.strip() or len(self.source_name) > 255):
+        if self.source_name is not None and (not self.source_name.strip()):
             raise ValueError("sealed source name must be bounded and nonempty")
 
     def to_dict(self) -> dict[str, object]:
@@ -390,7 +434,7 @@ def begin_prepared_source_manifest(
     if not conn.in_transaction or not source_generation_id or not publisher_id:
         raise ValueError("prepared source manifest needs a source transaction and generation")
     _require_digest(enumeration_fingerprint, "enumeration_fingerprint")
-    if source_name is not None and (not source_name.strip() or len(source_name) > 255):
+    if source_name is not None and (not source_name.strip()):
         raise ValueError("invalid source name")
     conn.execute(
         "INSERT INTO prepared_source_manifests(source_generation_id, publisher_id, enumeration_fingerprint, source_name) "
@@ -485,6 +529,44 @@ def append_prepared_source_inputs(
         "UPDATE prepared_source_manifests SET input_count=? WHERE source_generation_id=?",
         (start_ordinal + len(inputs), source_generation_id),
     )
+
+
+def prepare_source_manifest(
+    conn: sqlite3.Connection,
+    *,
+    source_generation_id: str,
+    publisher_id: str,
+    enumeration_fingerprint: str,
+    inputs: Iterable[FrozenSourceInput],
+    source_name: str | None,
+    sealed_at_ms: int,
+    check_stop: Callable[[], None] | None = None,
+) -> SealedSourceManifestRef:
+    """Stage public inputs pagewise before constructing new acceptance plans.
+
+    The caller owns the source transaction and publication reservations. This
+    uses the same manifest rows and seal as daemon discovery; no inline audit
+    command or input-count ceiling is created.
+    """
+    if check_stop is not None:
+        check_stop()
+    begin_prepared_source_manifest(
+        conn,
+        source_generation_id=source_generation_id,
+        publisher_id=publisher_id,
+        enumeration_fingerprint=enumeration_fingerprint,
+        source_name=source_name,
+    )
+    iterator = iter(inputs)
+    ordinal = 0
+    while page := tuple(islice(iterator, 256)):
+        if check_stop is not None:
+            check_stop()
+        append_prepared_source_inputs(conn, source_generation_id, ordinal, page)
+        ordinal += len(page)
+    if check_stop is not None:
+        check_stop()
+    return seal_prepared_source_manifest(conn, source_generation_id, sealed_at_ms=sealed_at_ms)
 
 
 def _prepared_manifest_digests(
@@ -699,6 +781,49 @@ def publish_frozen_source_manifest(
     )
     for item in manifest.inputs:
         consume_blob_publication_receipt(conn, item.publication_receipt_id, bytes.fromhex(item.blob_hash))
+
+
+def acquired_zip_manifest(
+    *,
+    blob_hash: str,
+    publication_receipt_id: str,
+    captured_identity: CapturedSourceInputIdentity,
+    enumeration_fingerprint: str,
+    source_name: str | None,
+) -> FrozenSourceManifest:
+    """Freeze an ordinary opened ZIP without a pass or clock identity."""
+    item = FrozenSourceInput(
+        '["physical-input-v1",0]',
+        captured_identity.semantic_source_path,
+        blob_hash,
+        publication_receipt_id,
+        captured_identity,
+    )
+    candidate = FrozenSourceManifest("ordinary-zip", enumeration_fingerprint, (item,), source_name)
+    return FrozenSourceManifest(
+        "ordinary-zip:" + candidate.manifest_digest,
+        enumeration_fingerprint,
+        (item,),
+        source_name,
+    )
+
+
+def publish_acquired_zip_input(
+    conn: sqlite3.Connection,
+    manifest: FrozenSourceManifest,
+    *,
+    observed_at_ms: int,
+) -> str:
+    """Authenticate and publish one input inside the caller's transaction."""
+    if len(manifest.inputs) != 1:
+        raise ValueError("ordinary ZIP acquisition requires exactly one opened input")
+    validate_frozen_source_manifest(conn, manifest)
+    publish_frozen_source_manifest(conn, manifest, prepared_at_ms=observed_at_ms)
+    return source_item_id(
+        source_generation_id=manifest.source_generation_id,
+        logical_coordinate=manifest.inputs[0].coordinate,
+        addressing_mode="physical-file-v1",
+    )
 
 
 def source_item_id(*, source_generation_id: str, logical_coordinate: str, addressing_mode: str) -> str:
@@ -1016,22 +1141,28 @@ def complete_source_item_enumeration(
     source_generation_id: str,
     source_item_id: str,
     enumeration_fingerprint: str,
-    record_coordinates: tuple[str, ...],
+    record_coordinates: Iterable[str],
     enumerated_at_ms: int,
-    member_ordinals: tuple[int, ...] | None = None,
+    member_ordinals: Iterable[int] | None = None,
     member_count: int | None = None,
+    check_stop: Callable[[], None] | None = None,
 ) -> str:
-    """Record exhausted decoder evidence, atomically with its final admission.
+    """Validate exhausted decoder evidence against the same durable membership.
 
-    The caller supplies the complete coordinate denominator only after normal
-    iterator exhaustion. Interruption or a skipped malformed record must not
-    call this function. An empty tuple therefore means proven empty input.
+    Call only after normal EOF and integrity validation. Temporary denominator
+    rows belong to this validation and never establish acquisition membership.
+    Exact sets and canonical digests are compared in SQLite order, without
+    retaining the complete decoder output or central directory in Python.
     """
     if not conn.in_transaction:
         raise ValueError("enumeration completion requires a source transaction")
+
+    def checkpoint() -> None:
+        if check_stop is not None:
+            check_stop()
+
+    checkpoint()
     _require_digest(enumeration_fingerprint, "enumeration_fingerprint")
-    if len(set(record_coordinates)) != len(record_coordinates) or any(not c.strip() for c in record_coordinates):
-        raise ValueError("enumeration coordinates must be distinct and nonempty")
     item = conn.execute(
         "SELECT enumeration_fingerprint, enumerated_record_count, enumeration_digest, enumerated_at_ms, "
         "enumerated_member_count, enumeration_member_digest "
@@ -1040,77 +1171,194 @@ def complete_source_item_enumeration(
     ).fetchone()
     if item is None or item[0] != enumeration_fingerprint:
         raise ValueError("source enumeration decoder binding changed")
-    members = list(
-        conn.execute(
+    binding = (source_generation_id, source_item_id)
+    with scratch_connection_context(prefix="polylogue-enumeration-", filename="denominator.db") as denominator:
+        # Regular indexed tables spill to this owner's private file even when
+        # the connection profile intentionally keeps unrelated TEMP tables in
+        # memory. Source membership is read from the caller's live transaction.
+        # The scratch factory's MEMORY journal would retain an update journal
+        # for the full ordinal set. Select a disk journal before any SQL data
+        # or transaction exists; never change TEMP storage under the caller.
+        denominator.execute("PRAGMA journal_mode=DELETE")
+        denominator.execute("BEGIN")
+        denominator.execute("CREATE TABLE records(coordinate TEXT PRIMARY KEY) WITHOUT ROWID")
+        denominator.execute(
+            "CREATE TABLE ordinals(ordinal INTEGER PRIMARY KEY, accepted INTEGER, "
+            "member_name TEXT, disposition TEXT, diagnostic TEXT)"
+        )
+        for coordinate in record_coordinates:
+            checkpoint()
+            if not isinstance(coordinate, str) or not coordinate.strip():
+                raise ValueError("enumeration coordinates must be distinct and nonempty")
+            try:
+                denominator.execute("INSERT INTO records VALUES (?)", (coordinate,))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("enumeration coordinates must be distinct and nonempty") from exc
+        count = int(denominator.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+        record_hash = hashlib.sha256(b"[")
+        seen = 0
+        is_zip = False
+        cursor = conn.execute(
             "SELECT record_coordinate, raw_blob_hash, raw_id FROM source_item_raw_members "
             "WHERE source_generation_id=? AND source_item_id=? ORDER BY record_coordinate",
-            (source_generation_id, source_item_id),
+            binding,
         )
-    )
-    if {row[0] for row in members} != set(record_coordinates):
-        raise ValueError("source enumeration has missing or unexpected raw members")
-    if any(row[2] is None for row in members):
-        raise ValueError("source enumeration contains retired raw members")
-    is_zip_member = any(str(row[0]).startswith('["zip-v2"') for row in members)
-    if member_count is None and is_zip_member:
-        raise ValueError("ZIP source enumeration requires its central-directory denominator")
-    if member_count is not None:
-        if member_count < 0:
-            raise ValueError("source member denominator must be non-negative")
-        if member_ordinals is None:
-            raise ValueError("source member denominator requires central-directory ordinals")
-        if len(set(member_ordinals)) != len(member_ordinals) or any(value < 0 for value in member_ordinals):
-            raise ValueError("source member ordinals must be distinct and non-negative")
-        if len(member_ordinals) != member_count or set(member_ordinals) != set(range(member_count)):
-            raise ValueError("source enumeration has missing or unexpected central-directory members")
-        disposition_rows = list(
-            conn.execute(
-                "SELECT entry_ordinal, member_name, disposition, diagnostic FROM source_item_member_dispositions "
-                "WHERE source_generation_id=? AND source_item_id=? ORDER BY entry_ordinal",
-                (source_generation_id, source_item_id),
+        try:
+            for coordinate, blob_hash, raw_id in cursor:
+                checkpoint()
+                if raw_id is None:
+                    raise ValueError("source enumeration contains retired raw members")
+                if denominator.execute("SELECT 1 FROM records WHERE coordinate=?", (coordinate,)).fetchone() is None:
+                    raise ValueError("source enumeration has missing or unexpected raw members")
+                is_zip |= coordinate.startswith('["zip-v2"')
+                if seen:
+                    record_hash.update(b",")
+                record_hash.update(
+                    json.dumps((coordinate, blob_hash.hex()), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                )
+                seen += 1
+        finally:
+            cursor.close()
+        if seen != count:
+            raise ValueError("source enumeration has missing or unexpected raw members")
+        record_hash.update(b"]")
+        digest = record_hash.hexdigest()
+        if member_count is None and is_zip:
+            raise ValueError("ZIP source enumeration requires its central-directory denominator")
+        member_hash = hashlib.sha256(b"[")
+        first = True
+
+        def emit_member(value: object) -> None:
+            nonlocal first
+            checkpoint()
+            if not first:
+                member_hash.update(b",")
+            member_hash.update(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            first = False
+
+        if member_count is not None:
+            if type(member_count) is not int or member_count < 0 or member_ordinals is None:
+                raise ValueError("source member denominator requires non-negative count and ordinals")
+            for ordinal in member_ordinals:
+                checkpoint()
+                if type(ordinal) is not int or ordinal < 0:
+                    raise ValueError("source member ordinals must be distinct and non-negative")
+                try:
+                    denominator.execute("INSERT INTO ordinals(ordinal) VALUES (?)", (ordinal,))
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError("source member ordinals must be distinct and non-negative") from exc
+            extent = denominator.execute("SELECT COUNT(*), MIN(ordinal), MAX(ordinal) FROM ordinals").fetchone()
+            if extent[0] != member_count or (member_count and extent[1:] != (0, member_count - 1)):
+                raise ValueError("source enumeration has missing or unexpected central-directory members")
+            cursor = conn.execute(
+                "SELECT c.entry_ordinal FROM source_item_raw_members m JOIN raw_container_coordinates c "
+                "ON c.raw_id=m.raw_id WHERE m.source_generation_id=? AND m.source_item_id=?",
+                binding,
             )
+            try:
+                for row in cursor:
+                    checkpoint()
+                    updated = denominator.execute(
+                        "UPDATE ordinals SET accepted=1 WHERE ordinal=? AND (accepted IS NULL OR accepted=1)",
+                        (row[0],),
+                    )
+                    if updated.rowcount != 1:
+                        raise ValueError("source enumeration has overlapping or missing central-directory dispositions")
+            finally:
+                cursor.close()
+            cursor = conn.execute(
+                "SELECT entry_ordinal, member_name, disposition, diagnostic FROM source_item_member_dispositions "
+                "WHERE source_generation_id=? AND source_item_id=?",
+                binding,
+            )
+            try:
+                for ordinal, name, disposition, diagnostic in cursor:
+                    checkpoint()
+                    updated = denominator.execute(
+                        "UPDATE ordinals SET accepted=0,member_name=?,disposition=?,diagnostic=? "
+                        "WHERE ordinal=? AND accepted IS NULL",
+                        (name, disposition, diagnostic, ordinal),
+                    )
+                    if updated.rowcount != 1:
+                        raise ValueError("source enumeration has overlapping or missing central-directory dispositions")
+            finally:
+                cursor.close()
+            if denominator.execute("SELECT 1 FROM ordinals WHERE accepted IS NULL LIMIT 1").fetchone() is not None:
+                raise ValueError("source enumeration has overlapping or missing central-directory dispositions")
+            cursor = denominator.execute("SELECT ordinal FROM ordinals WHERE accepted=1 ORDER BY ordinal")
+            try:
+                for row in cursor:
+                    emit_member((int(row[0]), "accepted", "", ""))
+            finally:
+                cursor.close()
+            cursor = denominator.execute(
+                "SELECT ordinal,member_name,disposition,diagnostic FROM ordinals WHERE accepted=0 ORDER BY ordinal"
+            )
+            try:
+                for row in cursor:
+                    emit_member((int(row[0]), str(row[1]), str(row[2]), str(row[3])))
+            finally:
+                cursor.close()
+        else:
+            member_count = count
+            for ordinal in range(count):
+                emit_member(ordinal)
+        member_hash.update(b"]")
+        member_digest = member_hash.hexdigest()
+        checkpoint()
+        if item[3] is not None:
+            if tuple(item[1:3]) != (count, digest) or tuple(item[4:]) != (member_count, member_digest):
+                raise ValueError("completed source enumeration changed")
+            return digest
+        conn.execute(
+            "UPDATE source_items SET enumerated_record_count=?, enumeration_digest=?, enumerated_at_ms=?, "
+            "enumerated_member_count=?, enumeration_member_digest=? "
+            "WHERE source_generation_id=? AND source_item_id=?",
+            (count, digest, enumerated_at_ms, member_count, member_digest, *binding),
         )
-        accepted_ordinals: set[int] = set()
-        for row in conn.execute(
-            "SELECT DISTINCT c.entry_ordinal FROM source_item_raw_members m "
-            "JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
-            "WHERE m.source_generation_id=? AND m.source_item_id=? AND m.raw_id IS NOT NULL",
-            (source_generation_id, source_item_id),
-        ):
-            accepted_ordinals.add(int(row[0]))
-        disposition_ordinals = {int(row[0]) for row in disposition_rows}
-        if accepted_ordinals & disposition_ordinals or accepted_ordinals | disposition_ordinals != set(member_ordinals):
-            raise ValueError("source enumeration has overlapping or missing central-directory dispositions")
-        member_payload = [(ordinal, "accepted", "", "") for ordinal in sorted(accepted_ordinals)] + [
-            (int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in disposition_rows
-        ]
-        member_digest = hashlib.sha256(
-            json.dumps(member_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-    else:
-        # Non-container inputs predate the physical-member denominator. Their
-        # one record is also their one physical member; preserve that route's
-        # established source-43 digest while making the new columns complete.
-        member_count = len(members)
-        member_digest = hashlib.sha256(
-            json.dumps(tuple(range(member_count)), separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-    digest = hashlib.sha256(
-        json.dumps([(row[0], row[1].hex()) for row in members], ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()
-    if item[3] is not None:
-        if tuple(item[1:3]) != (len(members), digest) or item[4:] != (member_count, member_digest):
-            raise ValueError("completed source enumeration changed")
         return digest
-    conn.execute(
-        "UPDATE source_items SET enumerated_record_count=?, enumeration_digest=?, enumerated_at_ms=?, "
-        "enumerated_member_count=?, enumeration_member_digest=? "
-        "WHERE source_generation_id=? AND source_item_id=?",
-        (len(members), digest, enumerated_at_ms, member_count, member_digest, source_generation_id, source_item_id),
+
+
+def retained_completed_source_item_for_raw(conn: sqlite3.Connection, raw_id: str) -> tuple[str, str]:
+    """Select an exact completed set, never an acquisition clock or group rank.
+
+    A raw can occur in multiple accepted inputs. They prove one interchangeable
+    group only when the decoder binding, complete enumeration digests and
+    their counts agree.
+    The deterministic returned coordinate does not choose newer authority.
+    """
+    from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+    cursor = conn.execute(
+        "SELECT i.source_generation_id, i.source_item_id, i.enumeration_fingerprint, "
+        "i.enumerated_record_count, i.enumeration_digest, i.enumerated_member_count, i.enumeration_member_digest "
+        "FROM source_item_raw_members m JOIN source_items i "
+        "ON i.source_generation_id=m.source_generation_id AND i.source_item_id=m.source_item_id "
+        "JOIN raw_sessions r ON r.raw_id=m.raw_id AND r.blob_hash=m.raw_blob_hash "
+        "WHERE m.raw_id=? AND i.enumerated_at_ms IS NOT NULL "
+        "ORDER BY i.source_generation_id, i.source_item_id",
+        (raw_id,),
     )
-    return digest
+    selected: tuple[str, str] | None = None
+    signature: tuple[object, ...] | None = None
+    try:
+        for row in cursor:
+            if row[2] is None:
+                raise RetainedZipMembershipUnprovedError("completed ZIP input has no decoder binding")
+            _require_digest(str(row[2]), "enumeration_fingerprint")
+            current = tuple(row[2:])
+            if any(value is None for value in current):
+                raise RetainedZipMembershipUnprovedError("completed ZIP input has incomplete enumeration evidence")
+            if signature is not None and signature != current:
+                raise RetainedZipMembershipUnprovedError("raw belongs to different completed ZIP acquisition sets")
+            signature = current
+            if selected is None:
+                selected = (str(row[0]), str(row[1]))
+    finally:
+        cursor.close()
+    if selected is None:
+        raise RetainedZipMembershipUnprovedError("retained ZIP raw has no proved complete acquisition group")
+    return selected
 
 
 def record_source_item_member_disposition(
@@ -1136,8 +1384,6 @@ def record_source_item_member_disposition(
     ).fetchone()
     if item is None:
         raise KeyError(f"unmanifested source item: {source_generation_id}/{source_item_id}")
-    if item[0] is not None:
-        raise ValueError("completed source enumeration cannot gain member dispositions")
     admitted = conn.execute(
         "SELECT 1 FROM source_item_raw_members m "
         "JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
@@ -1146,12 +1392,8 @@ def record_source_item_member_disposition(
     ).fetchone()
     if admitted is not None:
         raise ValueError("source member already has an admitted raw record")
-    # Central-directory names and admission explanations are attacker
-    # controlled. Keep both bounded before they reach the durable source
-    # tier; the diagnostic budget leaves room for the truncation marker used
-    # by bounded_diagnostic while the identity keeps its ordinal as the
-    # collision-free coordinate.
-    bounded_name = member_name[:_MAX_MEMBER_IDENTITY_CHARS]
+    # The exact member name is evidence. Only display diagnostics are shortened;
+    # central-directory ordinal and complete name remain available for replay.
     bounded = bounded_diagnostic(diagnostic, max_len=_MAX_MEMBER_DIAGNOSTIC_CHARS) or ""
     row = conn.execute(
         "SELECT member_name, disposition, diagnostic, observed_at_ms FROM source_item_member_dispositions "
@@ -1159,14 +1401,16 @@ def record_source_item_member_disposition(
         (source_generation_id, source_item_id, entry_ordinal),
     ).fetchone()
     if row is not None:
-        if tuple(row[:3]) != (bounded_name, value, bounded):
+        if tuple(row[:3]) != (member_name, value, bounded):
             raise ValueError("source member disposition changed")
         return
+    if item[0] is not None:
+        raise ValueError("completed source enumeration cannot gain member dispositions")
     conn.execute(
         "INSERT INTO source_item_member_dispositions "
         "(source_generation_id, source_item_id, entry_ordinal, member_name, disposition, diagnostic, observed_at_ms) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (source_generation_id, source_item_id, entry_ordinal, bounded_name, value, bounded, observed_at_ms),
+        (source_generation_id, source_item_id, entry_ordinal, member_name, value, bounded, observed_at_ms),
     )
 
 
@@ -1191,6 +1435,11 @@ __all__ = [
     "SourceItem",
     "FrozenSourceInput",
     "FrozenSourceManifest",
+    "CapturedSourceInputIdentity",
+    "acquired_zip_manifest",
+    "publish_acquired_zip_input",
+    "SourceItemAdmission",
+    "retained_completed_source_item_for_raw",
     "complete_source_item_enumeration",
     "publish_source_generation",
     "validate_frozen_source_manifest",

@@ -22,6 +22,7 @@ import ijson
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.logging import WARNING, emit
@@ -65,7 +66,6 @@ from polylogue.sources.parsers import (
     chatgpt,
     drive,
     grok,
-    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -689,6 +689,7 @@ class PreparedJsonl:
     #: ``None`` when the failure was not a decode failure.
     decode_failure: DecodeFailure | None = None
     missing_profile_identity: bool = False
+    retained_zip_membership_unproved: bool = False
     captured_profile_key: str | None = None
 
     @classmethod
@@ -1847,7 +1848,7 @@ def prepare_jsonl_blob(
                     steps,
                     _atif_subagents(store.conn) if atif_has_subagents else (),
                     fallback_id,
-                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    profile_root=profile_root_for_artifact(Path(source_path)),
                     profile_identity=profile_identity,
                     new_events=store.new_event_sink,
                 )

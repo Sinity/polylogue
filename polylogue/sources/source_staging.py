@@ -453,7 +453,7 @@ def bind_source_input(
                     or any(not isinstance(value, str) for value in receipt.values())
                 ):
                     raise OSError(errno.EPROTO, "invalid staged profile identity receipt")
-                from polylogue.sources.parsers.hermes_identity import profile_root_for_artifact
+                from polylogue.core.provider_identity import profile_root_for_artifact
 
                 profile_root = Path(receipt["profile_root"])
                 profile_source = Path(receipt["profile_source_path"])

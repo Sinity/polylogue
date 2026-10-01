@@ -32,6 +32,18 @@ class DetectorProjection:
     mapping_predicate: Callable[[object], bool] | None = None
     mapping_witness: object = None
     mapping_key_predicate: Callable[[str], bool] | None = None
+    preserve_mapping_size: bool = False
+
+
+class _ProjectedMapping(dict[str, object]):
+    """Selected predicate fields carrying the original unique-key count."""
+
+    def __init__(self, fields: dict[str, object], original_size: int) -> None:
+        super().__init__(fields)
+        self.original_size = original_size
+
+    def __len__(self) -> int:
+        return self.original_size
 
 
 class _ByteReader(Protocol):
@@ -39,11 +51,19 @@ class _ByteReader(Protocol):
 
 
 class _ObservedLine:
-    def __init__(self, source: _ByteReader) -> None:
+    def __init__(self, source: _ByteReader, check_stop: Callable[[], None] | None = None) -> None:
         self.source = source
+        self.check_stop = check_stop
         self.nonblank = False
+        self.callback_failure: BaseException | None = None
 
     def read(self, size: int = -1) -> bytes:
+        if self.check_stop is not None:
+            try:
+                self.check_stop()
+            except BaseException as exc:
+                self.callback_failure = exc
+                raise
         data = self.source.read(size)
         self.nonblank |= bool(data.strip(b" \t\r\n"))
         return data
@@ -54,11 +74,11 @@ class _ObservedLine:
 
 
 class _DetectionText(io.RawIOBase):
-    def __init__(self, handle: BinaryIO, encoding: str, check_stop: Callable[[], None] | None = None) -> None:
+    def __init__(self, handle: _ByteReader, encoding: str, check_stop: Callable[[], None] | None = None) -> None:
         self.handle = handle
         self.check_stop = check_stop
         self.callback_failure: BaseException | None = None
-        self.decoder = codecs.getincrementaldecoder(encoding)()
+        self.decoder = codecs.getincrementaldecoder(encoding)(errors="surrogatepass")
         self.pending = bytearray()
         self.ended = False
         self.started = False
@@ -77,11 +97,15 @@ class _DetectionText(io.RawIOBase):
         while not self.pending and not self.ended:
             chunk = self.handle.read(1024 * 1024)
             self.ended = not chunk
-            text = self.decoder.decode(chunk, final=self.ended).replace("\0", "")
+            text = self.decoder.decode(chunk, final=self.ended)
             if not self.started:
                 text = text.lstrip("\ufeff")
                 self.started = bool(text)
-            self.pending.extend(text.encode("utf-8", "surrogatepass"))
+            # JSON accepts escaped lone surrogates, while the event decoder's
+            # UTF-8 reader rejects their directly encoded provider spelling.
+            # Escaping only those code units preserves both lone units and
+            # adjacent CESU-8 pairs without changing ordinary string content.
+            self.pending.extend(text.encode("utf-8", "backslashreplace"))
         count = min(len(view), len(self.pending))
         view[:count] = self.pending[:count]
         del self.pending[:count]
@@ -115,10 +139,14 @@ def _project(
             fields: dict[str, object] = {}
             matching_key = False
             database: sqlite3.Connection | None = None
-            if rule.mapping_predicate is not None:
+            if rule.mapping_predicate is not None or rule.preserve_mapping_size:
                 database = mapping_stack.enter_context(
                     scratch_connection_context(prefix="polylogue-detector-", filename="keys.db")
                 )
+                # Duplicate keys update this complete key set. Keep their
+                # rollback journal on the same private disk as the rows.
+                database.execute("PRAGMA journal_mode=DELETE")
+                database.execute("BEGIN")
                 database.execute("CREATE TABLE keys (name BLOB PRIMARY KEY, accepted INTEGER NOT NULL) WITHOUT ROWID")
             while True:
                 event, key = next(events)
@@ -127,7 +155,8 @@ def _project(
                 if event != "map_key" or not isinstance(key, str):
                     raise ValueError("invalid detector object event")
                 event, value = next(events)
-                if database is not None:
+                if rule.mapping_predicate is not None:
+                    assert database is not None
                     item = _project(events, event, value, rule.item, stack)
                     assert rule.mapping_predicate is not None
                     database.execute(
@@ -141,11 +170,21 @@ def _project(
                     fields[key] = _project(events, event, value, rule.fields[key], stack)
                 else:
                     _skip(events, event)
-            if database is not None:
+                if rule.preserve_mapping_size and rule.mapping_predicate is None:
+                    assert database is not None
+                    database.execute(
+                        "INSERT INTO keys VALUES (?, 1) ON CONFLICT(name) DO NOTHING",
+                        (key.encode("utf-8", "surrogatepass"),),
+                    )
+            if database is not None and rule.mapping_predicate is not None:
                 count, refused = database.execute("SELECT COUNT(*), SUM(accepted=0) FROM keys").fetchone()
                 return {} if not count else {"node": None if refused else rule.mapping_witness}
             if rule.mapping_key_predicate is not None:
                 return rule.mapping_witness if matching_key else {}
+            if rule.preserve_mapping_size:
+                assert database is not None
+                count = int(database.execute("SELECT COUNT(*) FROM keys").fetchone()[0])
+                return _ProjectedMapping(fields, count)
             return fields
     if event == "start_array":
         first: object = None
@@ -227,7 +266,7 @@ def project_detection_input(
             try:
                 payload = _document_projection(reader, rule, stream_predicate)
                 return ("sequence" if isinstance(payload, list) else "record"), payload
-            except (ijson.JSONError, ValueError, StopIteration) as exc:
+            except (ijson.JSONError, StopIteration) as exc:
                 if source.callback_failure is not None:
                     raise source.callback_failure from None
                 syntax_error = exc
@@ -254,7 +293,7 @@ def project_detection_input(
                 observed = _ObservedLine(line)
                 try:
                     item = _document_projection(observed, rule, None)
-                except (StopIteration, ValueError, ijson.JSONError):
+                except (StopIteration, ijson.JSONError):
                     if source.callback_failure is not None:
                         raise source.callback_failure from None
                     observed.drain()
@@ -275,3 +314,83 @@ def project_detection_input(
         finally:
             reader.close()
     raise ijson.JSONError("unsupported JSON text encoding")
+
+
+def iter_projected_jsonl_records(
+    handle: BinaryIO,
+    rule: DetectorProjection,
+    *,
+    check_stop: Callable[[], None] | None = None,
+    on_decode_failure: Callable[[Exception], None] | None = None,
+) -> Iterator[object]:
+    """Project each complete JSONL value while consuming every physical line.
+
+    The caller owns the original handle. A supplied failure observer permits
+    candidacy from healthy records while retaining decode-loss evidence;
+    canonical parsing remains responsible for the exact failure disposition.
+    """
+    from polylogue.core.json_envelope import _LineSource
+
+    lines = _LineSource(handle)
+    while (line := lines.next_line()) is not None:
+        observed = _ObservedLine(line, check_stop)
+        source = _DetectionText(observed, "utf-8", check_stop)
+        reader = io.BufferedReader(source)
+        try:
+            try:
+                value = _document_projection(reader, rule, None)
+            except (StopIteration, ijson.JSONError, UnicodeError) as exc:
+                if source.callback_failure is not None:
+                    raise source.callback_failure from None
+                if observed.callback_failure is not None:
+                    raise observed.callback_failure from None
+                observed.drain()
+                if not observed.nonblank:
+                    continue
+                if on_decode_failure is None:
+                    raise
+                on_decode_failure(exc)
+                continue
+            observed.drain()
+            yield value
+        finally:
+            reader.close()
+
+
+def iter_projected_document_records(
+    handle: BinaryIO,
+    rule: DetectorProjection,
+    *,
+    encoding: str = "utf-8",
+    check_stop: Callable[[], None] | None = None,
+) -> Iterator[object]:
+    """Project a complete document's root records without retaining its array.
+
+    Yielded records are provisional until normal exhaustion validates the
+    closing delimiter and EOF. The caller owns the original input handle.
+    """
+    from ijson.backends import python as exact_backend
+
+    from polylogue.core.json_envelope import _PrefixStringReader
+
+    source = _DetectionText(handle, encoding, check_stop)
+    with io.BufferedReader(source) as reader, ExitStack() as stack:
+        events = iter(exact_backend.basic_parse(_PrefixStringReader(reader, scalar_values=True)))
+        try:
+            event, value = next(events)
+            if event == "start_array":
+                while True:
+                    event, value = next(events)
+                    if event == "end_array":
+                        break
+                    yield _project(events, event, value, rule, stack)
+            else:
+                yield _project(events, event, value, rule, stack)
+            for _event in events:
+                raise ijson.JSONError("trailing JSON candidacy value")
+        except StopIteration as exc:
+            raise ijson.JSONError("incomplete JSON candidacy document") from exc
+        except (UnicodeError, ijson.JSONError):
+            if source.callback_failure is not None:
+                raise source.callback_failure from None
+            raise

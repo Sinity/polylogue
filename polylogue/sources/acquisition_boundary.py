@@ -41,7 +41,7 @@ from ijson.backends import python as ijson_python
 
 from polylogue.archive.zip_admission import open_zip_entry
 from polylogue.core.enums import Provider
-from polylogue.storage.blob_store import BlobStore, Heartbeat
+from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 
 from .dispatch import (
     ForeignOriginContentError,
@@ -53,6 +53,7 @@ from .dispatch import (
 if TYPE_CHECKING:
     from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
     from polylogue.sources.source_staging import SourceInputBinding
+    from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
 
 _READ_CHUNK_BYTES = 1 << 20
 
@@ -620,18 +621,45 @@ def capture_bound_path(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class BoundContainerCapture:
+    """One proved private input and its existing publication ownership handoff."""
+
+    stream: BinaryIO
+    blob_hash: str
+    blob_size: int
+    captured_identity: CapturedSourceInputIdentity
+    file_observation: tuple[int, int, int, int, int]
+    _prepared: PreparedBlob
+    _store: BlobStore
+    _transferred: bool = False
+
+    def retain(self) -> tuple[str, int, str | None]:
+        """Retain this same prepared input, without reopening the source."""
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher, publication_receipt_id
+
+        if self._transferred:
+            raise ValueError("container publication was already transferred")
+        if isinstance(self._store, ArchiveBlobPublisher):
+            result = self._store.queue_prepared(self._prepared)
+        else:
+            result = self._store.publish_prepared(self._prepared)
+        object.__setattr__(self, "_transferred", True)
+        return (*result, publication_receipt_id(self._store, result[0]))
+
+
 @contextmanager
 def open_bound_container(
     blob_store: BlobStore,
     source_binding: SourceInputBinding,
     *,
     heartbeat: Heartbeat | None = None,
-) -> Iterator[BinaryIO]:
+) -> Iterator[BoundContainerCapture]:
     """Read a private copy of the accepted container after its reader settles.
 
-    Member acquisition publishes member bytes. This operation-owned container
-    copy is discarded only after all readers close; it has no publication
-    receipt or independent durable identity.
+    The caller may transfer this exact prepared copy into frozen Source input
+    custody. Otherwise it is discarded after readers settle. Source bytes are
+    never reopened to construct a group identity.
     """
     from polylogue.sources.source_staging import write_bound_input
 
@@ -647,13 +675,27 @@ def open_bound_container(
         settlement.update(write_bound_input(source_binding, ProgressSink()))
 
     prepared = blob_store.prepare_from_writer(retain, heartbeat=heartbeat)
+    capture = None
     try:
         if (settlement["content_revision"], settlement["size_bytes"]) != (prepared.hash_hex, prepared.size_bytes):
             raise OSError(errno.ESTALE, "container copy differs from its proved source descriptor")
+        observed = settlement["file_observation"]
+        if not isinstance(observed, list) or len(observed) != 5:
+            raise ValueError("container reader did not return its descriptor observation")
         with prepared.temporary_path.open("rb") as stream:
-            yield stream
+            capture = BoundContainerCapture(
+                stream,
+                prepared.hash_hex,
+                prepared.size_bytes,
+                source_binding.captured_identity,
+                (observed[0], observed[1], observed[2], observed[3], observed[4]),
+                prepared,
+                blob_store,
+            )
+            yield capture
     finally:
-        blob_store.discard_prepared(prepared)
+        if capture is None or not capture._transferred:
+            blob_store.discard_prepared(prepared)
 
 
 def release_refused_capture(blob_store: BlobStore, blob_hash: str, receipt_id: str | None) -> None:

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import IO, TypeAlias
 
 from polylogue.config import Source
-from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.logging import WARNING, emit, get_logger
@@ -19,18 +18,14 @@ from . import cursor as _cursor
 from . import decoders as _decoders
 from .acquisition_boundary import open_bound_container
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
-from .decoders import _ZipEntryValidator
-from .dispatch import ForeignOriginContentError, bound_location_provider
-from .parsers.base import RawSessionData
+from .dispatch import ForeignOriginContentError
+from .retained_acquisition import SourceInputRecord, iter_captured_zip_input
 from .source_acquisition_components import (
     ObservationCallback,
     SourceReadContext,
     StatusCallback,
-    ZipEntryReadContext,
     iter_entry_payloads,
-    iter_zip_entry_raw_data,
     read_plain_source_file,
-    zip_member_admission,
 )
 from .source_root_admission import refuse_non_capture_source_root
 from .source_staging import bind_source_input
@@ -59,7 +54,7 @@ def _iter_entry_payloads(
         yield (detected.provider, detected.payload, detected.detect_provider_ms)
 
 
-def iter_source_raw_data(
+def iter_source_acquisition_records(
     source: Source,
     *,
     blob_root: Path | None = None,
@@ -69,7 +64,7 @@ def iter_source_raw_data(
     known_cursors: dict[str, dict[str, object]] | None = None,
     observation_callback: ObservationCallback | None = None,
     status_callback: StatusCallback | None = None,
-) -> Iterable[RawSessionData]:
+) -> Iterable[SourceInputRecord]:
     """Iterate raw source payloads without parsing provider payload semantics.
 
     For non-ZIP files, uses the blob store for streaming hash — the file is
@@ -115,69 +110,40 @@ def iter_source_raw_data(
             if path.suffix.lower() == ".zip":
                 with (
                     bind_source_input(path) as captured,
-                    open_bound_container(
-                        blob_store,
-                        captured,
-                    ) as physical,
-                    zipfile.ZipFile(physical) as zf,
+                    open_bound_container(blob_store, captured) as physical,
                 ):
-                    central_directory = zf.infolist()
-                    admission = zip_member_admission(zf, path, central_directory, provider_hint)
-                    validator = _ZipEntryValidator(
-                        admission.provider_hint,
-                        cursor_state=cursor_state,
-                        zip_path=path,
-                    )
-                    ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-                    for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
-                        entry_path = f"{path}:{info.filename}"
-                        if info.file_size == 0:
-                            empty_artifact_count += 1
-                            logger.debug("Skipping empty source entry: %s", entry_path)
-                            _record_cursor_failure(cursor_state, entry_path, "empty file")
-                            continue
-                        try:
-                            yield from iter_zip_entry_raw_data(
-                                zf,
-                                ZipEntryReadContext(
-                                    source=source,
-                                    zip_path=path,
-                                    entry=info,
-                                    file_mtime=file_mtime,
-                                    provider_hint=admission.entry_provider_hint(zf, info),
-                                    blob_store=blob_store,
-                                    observation_callback=observation_callback,
-                                    status_callback=status_callback,
-                                    bound_provider=bound_location_provider(provider_hint),
-                                    captured_input_identity=captured.captured_identity,
-                                    entry_ordinal=ordinals[id(info)],
-                                ),
-                            )
-                        except ForeignOriginContentError as exc:
-                            # One refused member must not discard its admissible
-                            # siblings; the refusal is recorded per member.
+                    for record in iter_captured_zip_input(
+                        capture=physical,
+                        source_path=str(captured.source_path),
+                        source_name=source.name,
+                        blob_store=blob_store,
+                        file_mtime=file_mtime,
+                        observation_callback=observation_callback,
+                        status_callback=status_callback,
+                    ):
+                        if record.member_disposition == "refused":
                             failed_count += 1
-                            emit(
-                                "sources.acquisition.foreign_origin_refused",
-                                level=WARNING,
-                                outcome="refused",
-                                source_path=str(entry_path),
-                                reason=f"{exc.code}: {exc}",
-                            )
-                            _record_cursor_failure(cursor_state, entry_path, f"{exc.code}: {exc}")
-                        except ContentIdentityRefusal as exc:
-                            # The member cannot be stored; record the gap and
-                            # acquire the rest of the ZIP.
-                            emit(
-                                "sources.zip.member_identity_refused",
-                                level=WARNING,
-                                outcome="refused",
-                                entry=entry_path,
-                                reason=str(exc),
-                            )
-                            _record_cursor_failure(cursor_state, entry_path, str(exc))
+                            member_path = f"{physical.captured_identity.semantic_source_path}:{record.member_name}"
+                            _record_cursor_failure(cursor_state, member_path, record.diagnostic or "member refused")
+                            if record.member_refusal_code == ForeignOriginContentError.code:
+                                emit(
+                                    "sources.acquisition.foreign_origin_refused",
+                                    level=WARNING,
+                                    outcome="refused",
+                                    source_path=member_path,
+                                    reason=record.diagnostic or "member refused",
+                                )
+                            else:
+                                emit(
+                                    "sources.zip.member_identity_refused",
+                                    level=WARNING,
+                                    outcome="refused",
+                                    entry=member_path,
+                                    reason=record.diagnostic or "member refused",
+                                )
+                        yield record
             else:
-                yield read_plain_source_file(
+                data = read_plain_source_file(
                     SourceReadContext(
                         source=source,
                         path=path,
@@ -188,6 +154,7 @@ def iter_source_raw_data(
                         status_callback=status_callback,
                     )
                 )
+                yield SourceInputRecord('["physical-file-v1",0]', data)
         except FileNotFoundError as exc:
             failed_count += 1
             logger.warning("File disappeared during processing (TOCTOU race): %s", path)
@@ -230,4 +197,4 @@ def iter_source_raw_data(
         )
 
 
-__all__ = ["iter_source_raw_data"]
+__all__ = ["iter_source_acquisition_records"]

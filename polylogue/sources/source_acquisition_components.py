@@ -5,13 +5,14 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import json
 import pickle
 import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import IO, TypeAlias, cast
 
 import ijson
@@ -53,14 +54,14 @@ from .decoders import _zip_entry_provider_hint
 from .dispatch import (
     GROUP_PROVIDERS,
     detect_provider,
-    detect_provider_from_raw_bytes_evidence,
+    detect_provider_from_raw_stream_evidence,
     detect_provider_from_stream_evidence,
+    is_jsonl_source_path,
 )
 from .parsers.base import RawSessionData
 from .source_staging import SourceInputBinding, bind_source_input
 from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 
-_DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
 _REVISION_CHUNK_BYTES = 1024 * 1024
 AcquisitionObservation: TypeAlias = JSONDocument
@@ -109,6 +110,8 @@ class ZipEntryReadContext:
     bound_provider: Provider | None = None
     captured_input_identity: CapturedSourceInputIdentity | None = None
     entry_ordinal: int | None = None
+    container_blob_hash: str | None = None
+    decoder_fingerprint: str | None = None
 
     @property
     def source_path(self) -> str:
@@ -456,7 +459,6 @@ def _read_plain_source_file(context: SourceReadContext, binding: SourceInputBind
             blob_hash, blob_size = context.retained_blob.sha256, context.retained_blob.size_bytes
             with bind_stream(context.blob_store.open(blob_hash), str(context.path), context.provider_hint) as stream:
                 drain_bound(stream)
-        prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
         with stage_timings.stage("detect"):
             if path_declaration_refuses_session(context.provider_hint, context.path):
                 # Declared raw-only evidence (a prompt log, a sidecar) is
@@ -464,12 +466,13 @@ def _read_plain_source_file(context: SourceReadContext, binding: SourceInputBind
                 detected_provider = context.provider_hint
                 detection_evidence = "declared raw-only artifact rule (location)"
             else:
-                detected_provider, detection_evidence = detect_provider_from_raw_bytes_evidence(
-                    prefix,
-                    context.path.name,
-                    context.provider_hint,
-                    truncated_tail_ok=blob_size > len(prefix),
-                )
+                with context.blob_store.open(blob_hash) as detection_input:
+                    detected_provider, detection_evidence = detect_provider_from_raw_stream_evidence(
+                        detection_input,
+                        context.path.name,
+                        context.provider_hint,
+                        truncated_tail_ok=is_jsonl_source_path(str(context.path)),
+                    )
             if detected_provider is Provider.UNKNOWN and context.source.name == "browser-capture":
                 detected_provider = _stream_browser_capture_provider(context.blob_store, blob_hash)
                 detection_evidence = "browser_capture provider recovered from spool metadata"
@@ -572,7 +575,6 @@ def stream_preserved_zip_entry_raw_data(
     context: ZipEntryReadContext,
     *,
     provider_hint: Provider,
-    source_index: int | None = None,
 ) -> RawSessionData:
     """Durably stream one admitted ZIP member without decoding its content.
 
@@ -619,10 +621,8 @@ def stream_preserved_zip_entry_raw_data(
             provider_hint=provider_hint,
             blob_hash=blob_hash,
             blob_size=blob_size,
-            # A preserved member is addressed as the document itself.  Callers
-            # may still carry a ZIP-coordinate hint for their own raw-row keying,
-            # but publishing it on ``RawSessionData`` would make a whole member
-            # look like element ``N`` and invite positional replay.
+            # A preserved member addresses the document itself. Its physical
+            # entry ordinal is independent of element addressing on replay.
             source_index=None,
             blob_publication_receipt_id=publication_id,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
@@ -954,18 +954,21 @@ def zip_member_admission(
     return ZipMemberAdmission(provider or Provider.UNKNOWN, is_declared_artifact_path, None)
 
 
-def zip_member_profile_identity(
-    receipt: CapturedSourceInputIdentity,
-    member_name: str,
-) -> tuple[Path, Path] | None:
-    """Resolve a relative virtual member only within the accepted namespace."""
-    member = PurePosixPath(member_name)
-    if member.is_absolute() or ".." in member.parts:
-        return None
-    from polylogue.sources.parsers.hermes_identity import profile_root_for_artifact
+def zip_acquisition_fingerprint(provider: Provider, *, preserved_only: bool = False) -> str:
+    """Bind the actual decoder closure and its declared origin admission input."""
+    from .dispatch import bound_location_provider
+    from .origin_specs import retained_enumeration_fingerprint
 
-    profile_path = Path(receipt.profile_source_path).parent.joinpath(*member.parts)
-    return profile_root_for_artifact(profile_path), profile_path
+    return hashlib.sha256(
+        json.dumps(
+            (
+                retained_enumeration_fingerprint(),
+                bound_location_provider(provider).value if bound_location_provider(provider) is not None else None,
+                preserved_only,
+            ),
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _captured_zip_record(data: RawSessionData, context: ZipEntryReadContext) -> RawSessionData:
@@ -979,9 +982,11 @@ def _captured_zip_record(data: RawSessionData, context: ZipEntryReadContext) -> 
         raise ValueError("captured ZIP member lacks its central-directory ordinal")
     if data.addressing_mode is None:
         raise ValueError("captured ZIP member lacks its addressing mode")
+    if context.container_blob_hash is None or context.decoder_fingerprint is None:
+        raise ValueError("captured ZIP member lacks its accepted container or decoder identity")
     namespace: Path | None = None
     profile_path: Path | None = None
-    profile = zip_member_profile_identity(receipt, context.entry.filename)
+    profile = receipt.member_profile_identity(context.entry.filename)
     if profile is not None:
         namespace, profile_path = profile
     coordinate = CapturedZipMemberCoordinate(
@@ -991,13 +996,15 @@ def _captured_zip_record(data: RawSessionData, context: ZipEntryReadContext) -> 
         context.entry_ordinal,
         data.source_index or 0,
         data.addressing_mode,
+        context.container_blob_hash,
+        context.decoder_fingerprint,
         None if namespace is None else str(namespace),
     )
     from polylogue.core.provider_identity import captured_hermes_profile_key
 
     return data.model_copy(
         update={
-            "source_path": f"{receipt.semantic_source_path}:{context.entry.filename}",
+            "source_path": coordinate.declared_member,
             "source_index": coordinate.source_index,
             "canonical_source_path": coordinate.canonical_member,
             "captured_zip_coordinate": coordinate,

@@ -597,7 +597,7 @@ def test_bound_verification_preview_preserves_python_grouping_under_native_nocas
     """SQL NOCASE grouping would collapse ABC and abc into one observer identity."""
     from dataclasses import asdict
 
-    from polylogue.sources.parsers.hermes_identity import profile_root_for_artifact
+    from polylogue.core.provider_identity import profile_root_for_artifact
 
     path = tmp_path / "verification_evidence.db"
     _write_verification_evidence_db(path)

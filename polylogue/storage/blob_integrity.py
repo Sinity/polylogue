@@ -435,6 +435,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                coordinate.split_index AS split_index,
                coordinate.addressing_mode AS addressing_mode,
                coordinate.content_identity AS content_identity,
+               coordinate.captured_coordinate AS captured_coordinate,
                1 AS ref_id_has_raw_session
         FROM raw_sessions
         LEFT JOIN raw_container_coordinates coordinate ON coordinate.raw_id = raw_sessions.raw_id

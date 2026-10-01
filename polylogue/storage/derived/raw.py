@@ -833,6 +833,7 @@ class RawObservationDerivation:
                                 artifact.error,
                                 parser_decode_failure=artifact.decode_failure,
                                 missing_profile_identity=artifact.missing_profile_identity,
+                                retained_zip_membership_unproved=artifact.retained_zip_membership_unproved,
                                 captured_profile_key=profile_identity,
                                 prepared_artifact=artifact if artifact.error is None else None,
                             )

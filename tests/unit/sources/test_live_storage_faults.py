@@ -320,11 +320,19 @@ def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(t
     full = _FullBlobStore(tmp_path / "blob")
     with pytest.raises(ArchiveStorageFaultError):
         processor._extract_zip_member_records(
-            bundle, blob_store=full, fallback_provider=Provider.CLAUDE_CODE, file_mtime="2026-09-04T00:00:00+00:00"
+            bundle,
+            blob_store=full,
+            fallback_provider=Provider.CLAUDE_CODE,
+            file_mtime="2026-09-04T00:00:00+00:00",
+            zip_inputs={},
         )
     with pytest.raises(ArchiveStorageFaultError):
         processor._extract_source_only_zip_member_records(
-            bundle, blob_store=full, fallback_provider=Provider.CLAUDE_CODE, file_mtime="2026-09-04T00:00:00+00:00"
+            bundle,
+            blob_store=full,
+            fallback_provider=Provider.CLAUDE_CODE,
+            file_mtime="2026-09-04T00:00:00+00:00",
+            zip_inputs={},
         )
 
 

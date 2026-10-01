@@ -6,6 +6,7 @@ CREATE TABLE raw_profile_identity_receipts (
 
 ALTER TABLE prepared_source_manifest_members ADD COLUMN captured_input_identity TEXT;
 ALTER TABLE source_items ADD COLUMN captured_input_identity TEXT;
+ALTER TABLE raw_container_coordinates ADD COLUMN captured_coordinate TEXT;
 
 DROP INDEX idx_raw_artifacts_source_identity;
 CREATE UNIQUE INDEX idx_raw_artifacts_source_identity
@@ -21,7 +22,8 @@ WHERE artifact_kind NOT IN (
     'terminal_unknown_export_no_session',
     'terminal_unsupported_shape',
     'terminal_missing_source_coordinates',
-    'terminal_missing_profile_identity'
+    'terminal_missing_profile_identity',
+    'terminal_retained_zip_membership_unproved'
 );
 
 DROP INDEX idx_raw_artifacts_failure_identity;
@@ -38,5 +40,6 @@ WHERE artifact_kind IN (
     'terminal_unknown_export_no_session',
     'terminal_unsupported_shape',
     'terminal_missing_source_coordinates',
-    'terminal_missing_profile_identity'
+    'terminal_missing_profile_identity',
+    'terminal_retained_zip_membership_unproved'
 );

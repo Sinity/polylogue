@@ -32,11 +32,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.core.provider_identity import captured_hermes_profile_key
+from polylogue.core.provider_identity import captured_hermes_profile_key, profile_root_for_artifact
 
 __all__ = [
     "profile_key",
-    "profile_root_for_artifact",
     "qualified_session_id",
     "split_qualified_session_id",
 ]
@@ -125,35 +124,6 @@ def observe_profile_namespace(artifact_path: Path, expected: os.stat_result) -> 
             return profile
     finally:
         os.close(parent)
-
-
-#: Directory names Hermes interposes between its install root and a raw
-#: artifact file. ``state.db`` and ``verification_evidence.db`` sit at the
-#: root itself; session snapshots live under ``sessions/`` (``sessions/saved/``
-#: when retained); NeMo Relay ATIF/ATOF documents live under
-#: ``observability/nemo-relay/<family>/``.
-_PROFILE_SUBTREE_DIRECTORIES: frozenset[str] = frozenset(
-    {"sessions", "saved", "observability", "nemo-relay", "atif", "atof"}
-)
-
-
-def profile_root_for_artifact(artifact_path: Path) -> Path:
-    """Return the Hermes install root that owns any raw Hermes artifact.
-
-    Every Hermes artifact family must hash the *same* root or one logical
-    session gets two profile keys and lands as two archive sessions
-    (polylogue-q5j3o): handing a family its file's immediate parent makes
-    ``<root>/observability/nemo-relay/atof/events.jsonl`` resolve to
-    ``.../atof`` while ``<root>/state.db`` resolves to ``<root>``.
-
-    The root is found by climbing the contiguous chain of Hermes' own
-    interposed subtree directories above the file, so this is pure path
-    arithmetic and works during replay, where the source tree is gone.
-    """
-    root = artifact_path.parent
-    while root.name in _PROFILE_SUBTREE_DIRECTORIES and root != root.parent:
-        root = root.parent
-    return root
 
 
 def qualified_session_id(raw_session_id: str, key: str) -> str:

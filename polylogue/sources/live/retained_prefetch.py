@@ -58,6 +58,7 @@ class PreparedLiveRetainedRaw:
                 self.artifact,
                 provider=self.artifact.resolved_provider or provider,
                 source_path=source_path,
+                captured_zip_coordinate=archive.raw_captured_zip_coordinate(self.raw_id),
                 sessions=self.artifact.session_sequence(),
                 parser_sidecars=True,
             )

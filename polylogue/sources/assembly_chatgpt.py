@@ -66,7 +66,7 @@ def _read_index_file(path: Path, index: ChatGPTAssetIndex, *, library: bool) -> 
                 binding,
             ) as source,
         ):
-            return index.load_stream(source, library=library)
+            return index.load_stream(source.stream, library=library)
     except (OSError, ValueError, ijson.JSONError) as exc:
         logger.warning("chatgpt_sidecar_read_failed", path=str(path), error=str(exc))
         return False
@@ -103,7 +103,7 @@ def _read_chatgpt_zip_sidecars(
                 BlobStore(Path(scratch)),
                 binding,
             ) as physical,
-            zipfile.ZipFile(physical) as zf,
+            zipfile.ZipFile(physical.stream) as zf,
         ):
             validator = ZipEntryValidator("chatgpt", cursor_state=None, zip_path=zip_path)
             entries = validator.filter_entries(

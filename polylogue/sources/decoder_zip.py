@@ -91,7 +91,7 @@ class ZipEntryValidator:
 
     def filter_entries(
         self,
-        entries: list[zipfile.ZipInfo],
+        entries: Iterable[zipfile.ZipInfo],
         *,
         allowed_suffixes: Collection[str] | None = None,
         allowed_path: Callable[[str], bool] | None = None,
@@ -263,6 +263,7 @@ def process_zip(
     from .source_acquisition_components import (
         ZipEntryReadContext,
         _captured_zip_record,
+        zip_acquisition_fingerprint,
         zip_member_admission,
         zip_member_profile_identity,
     )
@@ -271,7 +272,7 @@ def process_zip(
     with ExitStack() as custody:
         binding = source_binding or custody.enter_context(bind_source_input(zip_path))
         physical = custody.enter_context(open_bound_container(store, binding))
-        zf = custody.enter_context(zipfile.ZipFile(physical))
+        zf = custody.enter_context(zipfile.ZipFile(physical.stream))
         entries = zf.infolist()
         ordinals = {id(info): ordinal for ordinal, info in enumerate(entries)}
         admission = zip_member_admission(zf, zip_path, entries, provider_hint)
@@ -287,6 +288,8 @@ def process_zip(
                 blob_store=store,
                 bound_provider=bound_location_provider(provider_hint),
                 captured_input_identity=binding.captured_identity,
+                container_blob_hash=physical.blob_hash,
+                decoder_fingerprint=zip_acquisition_fingerprint(provider_hint),
                 entry_ordinal=ordinals[id(info)],
             )
             namespace = zip_member_profile_identity(binding.captured_identity, name)

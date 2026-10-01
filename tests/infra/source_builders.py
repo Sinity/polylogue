@@ -4,12 +4,45 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.config import Source
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
+from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.retained_acquisition import SourceInputRecord
+
+if TYPE_CHECKING:
+    from polylogue.sources.live.batch import _CapturedZipEnumeration
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, SealedSourceManifestRef
+
+
+@contextmanager
+def live_zip_capture(
+    archive_root: Path,
+) -> Iterator[tuple[ArchiveBlobPublisher, dict[Path, _CapturedZipEnumeration]]]:
+    """Supply the real publisher and parent-owned input spool lifetime."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+
+    source_path = archive_root / "source.db"
+    if not source_path.exists():
+        initialize_runtime_source_fixture(source_path)
+    publisher = ArchiveBlobPublisher(source_path, archive_root / "blob")
+    inputs: dict[Path, _CapturedZipEnumeration] = {}
+    try:
+        yield publisher, inputs
+    finally:
+        with ExitStack() as cleanup:
+            cleanup.callback(publisher.discard_pending)
+            for captured in inputs.values():
+                cleanup.callback(captured.close)
+
 
 JsonObject: TypeAlias = dict[str, object]
 JsonObjectList: TypeAlias = list[JsonObject]
@@ -430,3 +463,57 @@ class InboxBuilder:
 
     def get_file_path(self, filename: str) -> Path:
         return self.base_path / filename
+
+
+def acquired_payloads(records: Iterable[SourceInputRecord]) -> Iterator[RawSessionData]:
+    """Observe payloads in tests whose contract excludes acquisition controls."""
+    for record in records:
+        if record.data is not None:
+            yield record.data
+
+
+def captured_zip_coordinate(container: str, member: str) -> CapturedZipMemberCoordinate:
+    """A neutral immutable namespace receipt for coordinate-only law tests."""
+    return CapturedZipMemberCoordinate(
+        container,
+        container,
+        member,
+        0,
+        0,
+        MemberAddressingMode.WHOLE_MEMBER,
+        hashlib.sha256(b"synthetic-container").hexdigest(),
+        hashlib.sha256(b"synthetic-decoder").hexdigest(),
+    )
+
+
+def prepared_ingest_manifest(
+    archive_root: Path,
+    source_generation_id: str,
+    enumeration_fingerprint: str,
+    inputs: Iterable[FrozenSourceInput],
+    source_name: str | None = None,
+    *,
+    publisher_id: str,
+) -> SealedSourceManifestRef:
+    """Use the production staged denominator before constructing test plans."""
+    from polylogue.storage.sqlite.archive_tiers.source_items import prepare_source_manifest
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+
+    with closing(
+        open_isolated_write_connection(
+            archive_root / "source.db",
+            purpose="synthetic source manifest preparation",
+            archive_root=archive_root,
+        )
+    ) as source:
+        with source:
+            source.execute("BEGIN IMMEDIATE")
+            return prepare_source_manifest(
+                source,
+                source_generation_id=source_generation_id,
+                publisher_id=publisher_id,
+                enumeration_fingerprint=enumeration_fingerprint,
+                inputs=inputs,
+                source_name=source_name,
+                sealed_at_ms=1,
+            )

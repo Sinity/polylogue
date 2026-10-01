@@ -30,6 +30,7 @@ from polylogue.sources.dispatch import ForeignOriginContentError
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
+from tests.infra.source_builders import acquired_payloads
 
 _SESSION_ID = "bad69218-73bd-490a-869a-2b3a30bf421b"
 _CLAUDE: JSONDocumentList = [
@@ -237,11 +238,15 @@ def _route_zip_parse(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
 
 def _route_acquire(path: Path, store: ArchiveBlobPublisher) -> bool:
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
 
     cursor_state: CursorStatePayload = {"failed_count": 0, "failed_files": []}
     items = list(
-        iter_source_raw_data(Source(name="claude-code", path=path), blob_store=store, cursor_state=cursor_state)
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="claude-code", path=path), blob_store=store, cursor_state=cursor_state
+            )
+        )
     )
     return not items and _refused(cursor_state)
 
@@ -265,6 +270,7 @@ def _route_retained(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
     with pytest.raises(ForeignOriginContentError):
         list(
             iter_retained_source_records(
+                enumeration_fingerprint="b" * 64,
                 source_path=str(path),
                 blob_hash=blob_hash,
                 blob_size=blob_size,

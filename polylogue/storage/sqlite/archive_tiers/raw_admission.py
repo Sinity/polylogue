@@ -94,6 +94,7 @@ copy-forward) is gone with the repair strategy that was its only caller
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -105,10 +106,15 @@ from typing import Literal, TypeAlias
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
-from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, captured_zip_member_raw_id
+from polylogue.core.raw_coordinates import (
+    CapturedZipMemberCoordinate,
+    captured_zip_member_raw_id,
+    zip_member_record_coordinate,
+)
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.artifacts.inspection import artifact_observation_id
+from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity, SourceItemAdmission
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
@@ -193,6 +199,8 @@ class PendingPreParseRawAdmissionRequest:
     raw_id: str | None = None
     blob_publication_receipt_id: str | None = None
     policy_snapshot: ExcisionPolicySnapshot | None = None
+    source_item: SourceItemAdmission | None = None
+    artifact: ArchiveSourceArtifact | None = None
 
 
 RawAdmissionRequest: TypeAlias = PendingPreParseRawAdmissionRequest
@@ -297,7 +305,7 @@ def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
 def _validate_captured_zip_observation(request: PendingPreParseRawAdmissionRequest, raw_id: str) -> None:
     coordinate = request.captured_zip_coordinate
     if coordinate is not None and (
-        request.source_path != f"{coordinate.declared_container}:{coordinate.member_name}"
+        request.source_path != coordinate.declared_member
         or request.canonical_source_path != coordinate.canonical_member
         or request.source_index != coordinate.source_index
         or request.addressing_mode != coordinate.addressing_mode.value
@@ -307,6 +315,28 @@ def _validate_captured_zip_observation(request: PendingPreParseRawAdmissionReque
 
 
 def execute_raw_admission_plan_sync(
+    conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
+) -> RawAdmissionResult:
+    """Join exact input membership to the same captured raw admission."""
+    member = plan.request.source_item
+    if member is None:
+        return _execute_captured_raw_admission(conn, plan, manage_transaction=manage_transaction)
+    if not manage_transaction and not conn.in_transaction:
+        raise ValueError("participating source-item admission requires a source transaction")
+    conn.execute("SAVEPOINT acquired_source_item")
+    try:
+        result = execute_source_item_admission(conn, plan, member)
+    except BaseException:
+        conn.execute("ROLLBACK TO acquired_source_item")
+        conn.execute("RELEASE acquired_source_item")
+        raise
+    conn.execute("RELEASE acquired_source_item")
+    if manage_transaction:
+        conn.commit()
+    return result
+
+
+def _execute_captured_raw_admission(
     conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
 ) -> RawAdmissionResult:
     """Publish a raw observation and its captured member coordinate atomically."""
@@ -328,6 +358,7 @@ def execute_raw_admission_plan_sync(
                 split_index=coordinate.split_index,
                 addressing_mode=coordinate.addressing_mode.value,
                 content_identity=plan.request.content_identity,
+                captured_coordinate=coordinate,
                 manage_transaction=False,
             )
     except BaseException:
@@ -347,7 +378,7 @@ def _execute_raw_admission_plan_sync(
     if not manage_transaction and not conn.in_transaction:
         raise ValueError("participating raw admission requires an existing source transaction")
     request = plan.request
-    if _assert_existing_raw_observation_identity(
+    existing = _assert_existing_raw_observation_identity(
         conn,
         raw_id=plan.raw_id,
         origin=request.origin,
@@ -358,9 +389,7 @@ def _execute_raw_admission_plan_sync(
         source_index=request.source_index,
         blob_hash=request.blob_hash,
         blob_size=request.blob_size,
-    ):
-        _backfill_raw_file_mtime(conn, raw_id=plan.raw_id, file_mtime_ms=request.file_mtime_ms)
-        return RawAdmissionResult(arm=plan.arm, raw_id=plan.raw_id)
+    )
     admitted_raw_id = write_source_raw_session_blob_ref(
         conn,
         origin=request.origin,
@@ -376,24 +405,12 @@ def _execute_raw_admission_plan_sync(
         native_id=request.native_id,
         raw_id=plan.raw_id,
         blob_publication_receipt_id=request.blob_publication_receipt_id,
-        revision=plan.revision,
+        artifact=request.artifact,
+        revision=None if existing or request.artifact is not None else plan.revision,
         manage_transaction=manage_transaction,
         policy_snapshot=request.policy_snapshot,
     )
     return RawAdmissionResult(arm=plan.arm, raw_id=admitted_raw_id)
-
-
-@dataclass(frozen=True, slots=True)
-class SourceItemAdmission:
-    """Exact frozen-input membership joined to one raw admission."""
-
-    source_generation_id: str
-    source_item_id: str
-    record_coordinate: str
-    entry_ordinal: int | None = None
-    split_index: int | None = None
-    addressing_mode: str | None = None
-    content_identity: str | None = None
 
 
 def execute_source_item_admission(
@@ -412,12 +429,38 @@ def execute_source_item_admission(
         raise ValueError("source-item admission requires the caller's source transaction")
     coordinate = plan.request.captured_zip_coordinate
     if coordinate is not None and (
-        member.entry_ordinal != coordinate.entry_ordinal
+        member.record_coordinate
+        != zip_member_record_coordinate(
+            entry_ordinal=coordinate.entry_ordinal,
+            split_index=coordinate.split_index,
+            addressing_mode=coordinate.addressing_mode,
+        )
+        or member.entry_ordinal != coordinate.entry_ordinal
         or member.split_index != coordinate.split_index
         or member.addressing_mode != coordinate.addressing_mode.value
         or member.content_identity != plan.request.content_identity
     ):
         raise ValueError("source input membership differs from its captured ZIP coordinate")
+    if coordinate is not None:
+        accepted_input = conn.execute(
+            "SELECT blob_hash, source_path, captured_input_identity, enumeration_fingerprint FROM source_items "
+            "WHERE source_generation_id=? AND source_item_id=?",
+            (member.source_generation_id, member.source_item_id),
+        ).fetchone()
+        if accepted_input is None or accepted_input[2] is None:
+            raise ValueError("captured ZIP member requires its accepted input namespace")
+        identity = CapturedSourceInputIdentity.from_dict(json.loads(accepted_input[2]))
+        profile = identity.member_profile_identity(coordinate.member_name)
+        expected_namespace = None if profile is None else str(profile[0])
+        if (
+            accepted_input[0] != bytes.fromhex(coordinate.container_blob_hash)
+            or accepted_input[3] != coordinate.decoder_fingerprint
+            or accepted_input[1] != coordinate.declared_container
+            or identity.semantic_source_path != coordinate.declared_container
+            or identity.canonical_source_path != coordinate.canonical_container
+            or coordinate.profile_namespace != expected_namespace
+        ):
+            raise ValueError("ZIP raw differs from the exact accepted physical input")
     conn.execute("SAVEPOINT source_item_raw_admission")
     try:
         if member.entry_ordinal is not None:
@@ -442,9 +485,10 @@ def execute_source_item_admission(
             # Parsing may have refined this raw's origin or revision authority.
             # Its immutable input edge proves admission; do not replay the
             # original pending-admission plan over those later domain facts.
+            _execute_captured_raw_admission(conn, plan, manage_transaction=False)
             result = RawAdmissionResult(arm=RawAdmissionArm.SKIP_DUPLICATE, raw_id=str(existing[0]))
         else:
-            result = execute_raw_admission_plan_sync(conn, plan, manage_transaction=False)
+            result = _execute_captured_raw_admission(conn, plan, manage_transaction=False)
         record_source_item_raw_member(
             conn,
             source_generation_id=member.source_generation_id,
@@ -464,6 +508,7 @@ def execute_source_item_admission(
                 split_index=member.split_index,
                 addressing_mode=member.addressing_mode,
                 content_identity=member.content_identity,
+                captured_coordinate=plan.request.captured_zip_coordinate,
                 manage_transaction=False,
             )
         consume_blob_publication_receipt(conn, plan.request.blob_publication_receipt_id, plan.request.blob_hash)
@@ -913,6 +958,7 @@ def admit_raw_blob_observation(
     canonical_source_path: str | None = None,
     captured_profile_key: str | None = None,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
     addressing_mode: str | None = None,
     content_identity: str | None = None,
     source_index: int,
@@ -936,6 +982,7 @@ def admit_raw_blob_observation(
                 canonical_source_path=canonical_source_path,
                 captured_profile_key=captured_profile_key,
                 captured_zip_coordinate=captured_zip_coordinate,
+                source_item=source_item,
                 addressing_mode=addressing_mode,
                 content_identity=content_identity,
                 source_index=source_index,
@@ -961,6 +1008,7 @@ def admit_raw_artifact_blob_observation(
     canonical_source_path: str | None = None,
     captured_profile_key: str | None = None,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
     addressing_mode: str | None = None,
     content_identity: str | None = None,
     source_index: int,
@@ -983,76 +1031,44 @@ def admit_raw_artifact_blob_observation(
         source_path=source_path,
         source_index=source_index,
     )
-    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
-
-    request = PendingPreParseRawAdmissionRequest(
-        origin=origin,
-        capture_mode=capture_mode,
-        source_path=source_path,
-        canonical_source_path=canonical_source_path,
-        captured_profile_key=captured_profile_key,
-        captured_zip_coordinate=captured_zip_coordinate,
-        addressing_mode=addressing_mode,
-        content_identity=content_identity,
-        source_index=source_index,
-        blob_hash=blob_hash,
-        blob_size=blob_size,
-        acquired_at_ms=acquired_at_ms,
-        raw_id=raw_id,
-    )
-    plan = plan_raw_admission(request)
-    _validate_captured_zip_observation(request, plan.raw_id)
-    conn.execute("SAVEPOINT captured_artifact_admission")
-    try:
-        admitted_raw_id = write_source_raw_session_blob_ref(
-            conn,
-            origin=origin,
-            capture_mode=capture_mode,
-            source_path=source_path,
-            canonical_source_path=canonical_source_path,
-            captured_profile_key=captured_profile_key,
-            source_index=source_index,
-            blob_hash=blob_hash,
-            blob_size=blob_size,
-            acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=file_mtime_ms,
-            raw_id=raw_id,
-            blob_publication_receipt_id=blob_publication_receipt_id,
-            artifact=ArchiveSourceArtifact(
-                artifact_id=artifact_id,
+    result = execute_raw_admission_plan_sync(
+        conn,
+        plan_raw_admission(
+            PendingPreParseRawAdmissionRequest(
                 origin=origin,
+                capture_mode=capture_mode,
                 source_path=source_path,
-                artifact_kind=classification.cohort,
-                classification_reason=classification.reason,
-                support_status=ArtifactSupportStatus.UNKNOWN,
-                parse_as_session=False,
-                schema_eligible=classification.schema_eligible,
-                first_observed_at_ms=acquired_at_ms,
-                last_observed_at_ms=acquired_at_ms,
-                source_index=source_index,
-            ),
-            revision=None,
-            manage_transaction=False,
-            policy_snapshot=policy_snapshot,
-        )
-        if captured_zip_coordinate is not None:
-            record_raw_container_coordinate(
-                conn,
-                admitted_raw_id,
-                coordinate_format="zip-v2",
-                entry_ordinal=captured_zip_coordinate.entry_ordinal,
-                split_index=captured_zip_coordinate.split_index,
-                addressing_mode=captured_zip_coordinate.addressing_mode.value,
+                canonical_source_path=canonical_source_path,
+                captured_profile_key=captured_profile_key,
+                captured_zip_coordinate=captured_zip_coordinate,
+                source_item=source_item,
+                addressing_mode=addressing_mode,
                 content_identity=content_identity,
-                manage_transaction=False,
+                source_index=source_index,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                acquired_at_ms=acquired_at_ms,
+                file_mtime_ms=file_mtime_ms,
+                raw_id=raw_id,
+                blob_publication_receipt_id=blob_publication_receipt_id,
+                policy_snapshot=policy_snapshot,
+                artifact=ArchiveSourceArtifact(
+                    artifact_id=artifact_id,
+                    origin=origin,
+                    source_path=source_path,
+                    artifact_kind=classification.cohort,
+                    classification_reason=classification.reason,
+                    support_status=ArtifactSupportStatus.UNKNOWN,
+                    parse_as_session=False,
+                    schema_eligible=classification.schema_eligible,
+                    first_observed_at_ms=acquired_at_ms,
+                    last_observed_at_ms=acquired_at_ms,
+                    source_index=source_index,
+                ),
             )
-    except BaseException:
-        conn.execute("ROLLBACK TO captured_artifact_admission")
-        conn.execute("RELEASE captured_artifact_admission")
-        raise
-    conn.execute("RELEASE captured_artifact_admission")
-    conn.commit()
-    return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=admitted_raw_id, artifact_id=artifact_id)
+        ),
+    )
+    return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=result.raw_id, artifact_id=artifact_id)
 
 
 def _admit_artifact(

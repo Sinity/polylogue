@@ -257,7 +257,7 @@ def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_drive_acquisition_refuses_a_foreign_archive_cache(tmp_path: Path) -> None:
-    """The Drive branch bypasses ``iter_source_raw_data``'s root refusal.
+    """The Drive branch bypasses ``iter_source_acquisition_records``'s root refusal.
 
     Anti-vacuity: drop the guard from ``iter_raw_record_stream`` and the Drive
     branch accepts a foreign archive's drive cache as a capture location, so

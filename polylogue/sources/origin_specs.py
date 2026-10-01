@@ -2216,20 +2216,22 @@ def _grok_spec() -> OriginSpec:
         Origin.GROK_EXPORT,
         provider=Provider.GROK,
         tightness=85,
-        discovery="Grok account-data export document admission.",
-        acquisition_modes=("export-json",),
+        discovery="Grok account export and original app-chat endpoint bundle admission.",
+        acquisition_modes=("export-json", "native-json"),
         parser_paths=("polylogue/sources/parsers/grok.py",),
         fixture_paths=(
             "tests/unit/sources/parsers/test_grok.py",
+            "tests/unit/sources/parsers/test_grok_native.py",
             "tests/unit/sources/parsers/test_origin_regression_pack.py",
         ),
         assembly_paths=("polylogue/sources/dispatch.py:_lower_grok_export_payload",),
         fidelity_notes=(
-            "No native conversation or response id is present in any confirmed export shape; "
-            "provider_session_id is derived from file identity and provider_message_id from response content.",
+            "Account exports lack native IDs; original endpoint bundles preserve native conversation/response IDs. "
+            "In account exports, "
+            "provider_session_id and provider_message_id are derived from their declared semantic content.",
             "The export drops attachments/images by xAI's own documentation; only text turns are recoverable.",
         ),
-        display_description="Grok account-data exports (lab: xAI)",
+        display_description="Grok account exports and original endpoint bundles (lab: xAI)",
         topology_capabilities=_no_topology_capabilities(Origin.GROK_EXPORT),
     )
 
@@ -3385,6 +3387,23 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
     ),
     Origin.GROK_EXPORT: (
         _completeness_mode(
+            "provider-package:grok-export/native-json@v1",
+            "native-json",
+            Provider.GROK,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/grok.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/grok.py",),
+            parser_paths=("polylogue/sources/parsers/grok.py",),
+            normalizer_paths=("polylogue/sources/parsers/grok.py",),
+            fixture_paths=("tests/unit/sources/parsers/test_grok_native.py", "tests/fixtures/grok/native-bundle.json"),
+            schema_paths=(),
+            docs_paths=("docs/providers/README.md",),
+            caveats=(
+                "Original endpoint replies preserve native identity and structured material. "
+                "No nonempty response_nodes graph contract or operational schema package is admitted.",
+            ),
+        ),
+        _completeness_mode(
             "provider-package:grok-export/export-json@v1",
             "export-json",
             Provider.GROK,
@@ -3760,10 +3779,28 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
     ),
     Origin.GROK_EXPORT: (
         DetectorBinding(
+            "grok-native-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_grok_native_record",
+            0,
+            "grok.looks_like_native_bundle",
+            fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:native_detection_projection",
+        ),
+        DetectorBinding(
+            "grok-native-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_grok_native_sequence",
+            0,
+            "grok.looks_like_native_bundle (sequence[0])",
+            fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:native_detection_projection",
+        ),
+        DetectorBinding(
             "grok-record",
             DetectionMode.RECORD,
             "polylogue.sources.dispatch:_looks_like_grok_record",
-            0,
+            1,
             "grok.looks_like_export",
             fixed_provider=Provider.GROK,
             stream_projection_path="polylogue.sources.parsers.grok:detection_projection",
@@ -3772,7 +3809,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "grok-sequence",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_grok_sequence",
-            0,
+            1,
             "grok.looks_like_export (sequence[0])",
             fixed_provider=Provider.GROK,
             stream_projection_path="polylogue.sources.parsers.grok:detection_projection",

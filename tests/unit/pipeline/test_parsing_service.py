@@ -28,6 +28,7 @@ from polylogue.pipeline.services.planning import PlanningService
 from polylogue.pipeline.services.planning_backlog import collect_parse_backlog
 from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
 from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.retained_acquisition import SourceInputRecord
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
@@ -785,7 +786,7 @@ class TestParsingServiceStreaming:
 
 
 class TestPlanningService:
-    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_acquisition_records")
     async def test_parse_plan_uses_existing_raw_scope_without_scanning_sources(
         self, mock_iter: MagicMock, tmp_path: Path
     ) -> None:
@@ -844,7 +845,7 @@ class TestPlanningService:
         assert plan.summary.details["backlog_validate"] == 1
         assert set(plan.validate_raw_ids) == {"raw-scoped"}
 
-    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_acquisition_records")
     async def test_build_plan_dedupes_duplicate_scanned_raw_ids(self, mock_iter: MagicMock, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -858,7 +859,7 @@ class TestPlanningService:
             source_index=0,
             provider_hint=Provider.CHATGPT,
         )
-        mock_iter.return_value = iter([raw_data, raw_data])
+        mock_iter.return_value = iter([SourceInputRecord('["physical-file-v1",0]', raw_data)] * 2)
 
         plan = await planner.build_plan(
             sources=[Source(name="inbox-a", path=source_dir)],

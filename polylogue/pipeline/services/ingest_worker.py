@@ -23,11 +23,11 @@ from polylogue.archive.artifact_taxonomy import (
     classify_artifact,
     classify_artifact_path,
 )
-from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.decode import (
+    JSONL_RECORD_INSPECTION_BYTES,
     RawPayloadEnvelope,
     _sample_jsonl_payload_with_detail,
-    jsonl_session_artifact,
+    scan_jsonl_session_artifact,
 )
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
@@ -346,61 +346,48 @@ def _build_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    from polylogue.sources.dispatch import detect_provider
+    from polylogue.sources.dispatch import detect_provider_from_raw_stream_evidence
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
-
+    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
+    if runtime_provider not in STREAM_RECORD_PROVIDERS:
+        with context.raw_source.open("rb") as handle:
+            runtime_provider, _detail = detect_provider_from_raw_stream_evidence(
+                handle,
+                stream_name,
+                runtime_provider,
+                truncated_tail_ok=True,
+            )
+        if runtime_provider not in STREAM_RECORD_PROVIDERS:
+            return None
+    path_artifact = classify_artifact_path(context.raw_record.source_path, provider=runtime_provider)
+    path_is_terminal = _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider)
+    scan = scan_jsonl_session_artifact(
+        context.raw_source,
+        provider=runtime_provider,
+        jsonl_dict_only=True,
+    )
+    if scan.artifact is None and scan.malformed_records and not path_is_terminal:
+        # Decode failure is not proof of a non-session artifact. The normal
+        # decode boundary owns its typed refusal/partial outcome.
+        return None
+    # Samples describe diagnostic schema evidence only. They cannot choose the
+    # provider or overrule the complete candidacy fold.
     try:
-        sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
+        sample_payloads, _sample_failures, malformed_detail = _sample_jsonl_payload_with_detail(
             context.raw_source,
             max_samples=64,
             jsonl_dict_only=True,
-            # The sample probe stays bounded (STRICT widens it). The accurate,
-            # whole-file malformed-line count for the operator-facing surface is
-            # produced by the durable artifact observation
-            # (storage/artifacts/inspection.py full-scan, #1745); this probe
-            # only needs to *detect* malformed presence for the advisory warning
-            # and STRICT failure below, which the bounded sample already does.
-            scan_full=context.validation_mode is ValidationMode.STRICT,
+            max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
         )
-    except Exception:
-        # Sampling helper failed entirely (file I/O, decode, or worse). Logging
-        # this is critical because the caller falls back to a different parser
-        # path on `None`, which can produce different content hashes for the
-        # same input depending on whether the helper happened to succeed.
-        logger.exception(
-            "JSONL sample probe failed for %s; falling back to non-stream parsing",
-            stream_name,
-        )
-        return None
-
-    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
-    if runtime_provider not in STREAM_RECORD_PROVIDERS:
-        detected_provider = detect_provider(sample_payloads)
-        if detected_provider not in STREAM_RECORD_PROVIDERS:
-            return None
-        runtime_provider = detected_provider
-
-    decoded_artifact = classify_artifact(
-        sample_payloads,
-        provider=runtime_provider,
+    except ValueError:
+        sample_payloads, malformed_detail = [], None
+    decoded_artifact = scan.artifact or classify_artifact([], provider=runtime_provider)
+    artifact = (
+        path_artifact
+        if path_is_terminal and path_artifact is not None
+        else (scan.artifact or path_artifact or decoded_artifact)
     )
-    path_artifact = classify_artifact_path(
-        context.raw_record.source_path,
-        provider=runtime_provider,
-    )
-    path_is_terminal = _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider)
-    session_artifact = (
-        jsonl_session_artifact(context.raw_source, provider=runtime_provider, jsonl_dict_only=True)
-        if path_artifact is not None and not path_artifact.parse_as_session and not path_is_terminal
-        else None
-    )
-    if path_is_terminal and path_artifact is not None:
-        artifact = path_artifact
-    else:
-        artifact = session_artifact or (
-            decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
-        )
     return _build_parse_plan(
         provider=runtime_provider,
         payload_provider=str(runtime_provider),
@@ -410,7 +397,7 @@ def _build_stream_parse_plan(
         payload=sample_payloads,
         schema_payload_source=sample_payloads,
         stream_name=stream_name,
-        malformed_jsonl_lines=malformed_lines,
+        malformed_jsonl_lines=scan.malformed_records,
         malformed_jsonl_detail=malformed_detail,
     )
 
@@ -420,94 +407,7 @@ def _build_fast_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
-    if runtime_provider not in STREAM_RECORD_PROVIDERS:
-        return None
-
-    # The validation-off shortcut still has to honor path-declared fact and
-    # raw-only artifacts. Without this check, a workflow journal's JSONL path
-    # is replaced by the generic session classification below before the
-    # payload is decoded, so session-shaped journal records materialize as
-    # conversations even though the same path is classified as evidence by
-    # the ordinary envelope route.
-    path_artifact = classify_artifact_path(
-        context.raw_record.source_path,
-        provider=runtime_provider,
-    )
-    if path_artifact is not None and not path_artifact.parse_as_session:
-        if _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider):
-            return _build_parse_plan(
-                provider=runtime_provider,
-                payload_provider=str(runtime_provider),
-                artifact=path_artifact,
-                source_path=context.raw_record.source_path,
-                mode="stream",
-                schema_payload_source=None,
-                stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-            )
-        try:
-            sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
-                context.raw_source,
-                max_samples=64,
-                jsonl_dict_only=True,
-                scan_full=False,
-            )
-        except Exception:
-            logger.exception(
-                "JSONL sample probe failed for %s; retaining path-declared artifact",
-                context.raw_record.source_path or context.raw_record.raw_id,
-            )
-        else:
-            decoded_artifact = jsonl_session_artifact(
-                context.raw_source,
-                provider=runtime_provider,
-                jsonl_dict_only=True,
-            ) or classify_artifact(sample_payloads, provider=runtime_provider)
-            if decoded_artifact.parse_as_session:
-                return _build_parse_plan(
-                    provider=runtime_provider,
-                    payload_provider=str(runtime_provider),
-                    artifact=decoded_artifact,
-                    source_path=context.raw_record.source_path,
-                    mode="stream",
-                    payload=sample_payloads,
-                    schema_payload_source=sample_payloads,
-                    stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-                    malformed_jsonl_lines=malformed_lines,
-                    malformed_jsonl_detail=malformed_detail,
-                )
-        return _build_parse_plan(
-            provider=runtime_provider,
-            payload_provider=str(runtime_provider),
-            artifact=path_artifact,
-            source_path=context.raw_record.source_path,
-            mode="stream",
-            schema_payload_source=None,
-            stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-        )
-
-    kind = (
-        ArtifactKind.AGENT_TRANSCRIPT
-        if is_subagent_path(context.raw_record.source_path)
-        else ArtifactKind.SESSION_RECORD_STREAM
-    )
-    artifact = ArtifactClassification(
-        provider=runtime_provider,
-        kind=kind,
-        parse_as_session=True,
-        schema_eligible=False,
-        default_priority=90 if kind is ArtifactKind.AGENT_TRANSCRIPT else 120,
-        reason="known JSONL stream provider with validation off",
-    )
-    return _build_parse_plan(
-        provider=runtime_provider,
-        payload_provider=str(runtime_provider),
-        artifact=artifact,
-        source_path=context.raw_record.source_path,
-        mode="stream",
-        schema_payload_source=None,
-        stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-    )
+    return _build_stream_parse_plan(context, payload_provider=payload_provider)
 
 
 def _build_envelope_parse_plan(
@@ -535,8 +435,6 @@ def _validate_parse_plan(
 
     if context.validation_mode is ValidationMode.OFF:
         return _PlanValidation(status=ValidationStatus.SKIPPED)
-    if not plan.artifact.schema_eligible or plan.schema_payload is None:
-        return _PlanValidation(status=ValidationStatus.PASSED)
     if plan.malformed_jsonl_lines:
         malformed_error = _format_malformed_jsonl_error(
             malformed_lines=plan.malformed_jsonl_lines,
@@ -558,6 +456,9 @@ def _validate_parse_plan(
             context.raw_record.source_path or context.raw_record.raw_id,
             malformed_error,
         )
+
+    if not plan.artifact.schema_eligible or plan.schema_payload is None:
+        return _PlanValidation(status=ValidationStatus.PASSED)
 
     try:
         payload_validation = SchemaValidator.validate_payload(
@@ -801,6 +702,7 @@ def _enrich_parsed_sessions(
         provider=plan.provider,
         archive_root=context.archive_root,
         source_path=context.raw_record.source_path,
+        captured_zip_coordinate=context.raw_record.captured_zip_coordinate,
     )
     from polylogue.sources.assembly import close_sidecar_data
     from polylogue.sources.revision_backfill import stamp_enrichment_evidence

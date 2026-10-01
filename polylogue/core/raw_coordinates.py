@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 import zipfile
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from hashlib import sha256
 from math import isqrt
 from pathlib import Path
@@ -39,9 +40,14 @@ class CapturedZipMemberCoordinate:
     entry_ordinal: int
     split_index: int
     addressing_mode: MemberAddressingMode
+    container_blob_hash: str
+    decoder_fingerprint: str
     profile_namespace: str | None = None
 
     def __post_init__(self) -> None:
+        for value in (self.container_blob_hash, self.decoder_fingerprint):
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError("captured ZIP input and decoder require SHA-256 identities")
         if not Path(self.canonical_container).is_absolute() or not Path(self.declared_container).is_absolute():
             raise ValueError("captured ZIP containers require absolute physical and declared coordinates")
         if not self.member_name:
@@ -57,15 +63,69 @@ class CapturedZipMemberCoordinate:
         return zip_member_source_index(entry_ordinal=self.entry_ordinal, split_index=self.split_index)
 
     @property
+    def declared_member(self) -> str:
+        return f"{self.declared_container}:{self.member_name}"
+
+    @property
     def canonical_member(self) -> str:
         return f"{self.canonical_container}:{self.member_name}"
+
+
+def captured_zip_coordinate_receipt(coordinate: CapturedZipMemberCoordinate) -> str:
+    """Serialize the exact acquisition-bound coordinate without filesystem reads."""
+    return json.dumps(asdict(coordinate), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def read_captured_zip_coordinate_receipt(receipt: str) -> CapturedZipMemberCoordinate:
+    """Read a proved coordinate; malformed evidence never falls back to paths."""
+    value = json.loads(receipt)
+    fields = {
+        "canonical_container",
+        "declared_container",
+        "member_name",
+        "entry_ordinal",
+        "split_index",
+        "addressing_mode",
+        "container_blob_hash",
+        "decoder_fingerprint",
+        "profile_namespace",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError("invalid captured ZIP coordinate receipt")
+    if not all(
+        isinstance(value[field], str)
+        for field in (
+            "canonical_container",
+            "declared_container",
+            "member_name",
+            "addressing_mode",
+            "container_blob_hash",
+            "decoder_fingerprint",
+        )
+    ) or not all(type(value[field]) is int for field in ("entry_ordinal", "split_index")):
+        raise ValueError("invalid captured ZIP coordinate receipt fields")
+    if value["profile_namespace"] is not None and not isinstance(value["profile_namespace"], str):
+        raise ValueError("invalid captured ZIP profile namespace")
+    return CapturedZipMemberCoordinate(
+        value["canonical_container"],
+        value["declared_container"],
+        value["member_name"],
+        value["entry_ordinal"],
+        value["split_index"],
+        MemberAddressingMode(value["addressing_mode"]),
+        value["container_blob_hash"],
+        value["decoder_fingerprint"],
+        value["profile_namespace"],
+    )
 
 
 def captured_zip_member_raw_id(coordinate: CapturedZipMemberCoordinate, blob_hash: str) -> str:
     """Identify new ZIP intake from captured physical and semantic evidence."""
     digest = sha256()
-    digest.update(b"polylogue:zip-member-raw:v3\0")
+    digest.update(b"polylogue:zip-member-raw:v4\0")
     for value in (
+        coordinate.container_blob_hash,
+        coordinate.decoder_fingerprint,
         coordinate.canonical_container,
         coordinate.declared_container,
         coordinate.member_name,
@@ -78,6 +138,19 @@ def captured_zip_member_raw_id(coordinate: CapturedZipMemberCoordinate, blob_has
         digest.update(b"\0")
     digest.update(bytes.fromhex(blob_hash))
     return digest.hexdigest()
+
+
+def zip_member_record_coordinate(
+    *,
+    entry_ordinal: int,
+    split_index: int,
+    addressing_mode: MemberAddressingMode,
+) -> str:
+    """Serialize the existing exact central-entry and split membership address."""
+    zip_member_source_index(entry_ordinal=entry_ordinal, split_index=split_index)
+    if addressing_mode is MemberAddressingMode.WHOLE_MEMBER and split_index:
+        raise ValueError("a preserved ZIP member has no element index")
+    return json.dumps(["zip-v2", entry_ordinal, split_index, addressing_mode.value], separators=(",", ":"))
 
 
 def zip_member_source_index(*, entry_ordinal: int, split_index: int) -> int:
@@ -202,6 +275,8 @@ def zip_member_container(source_path: str) -> Path | None:
 
 __all__ = [
     "CapturedZipMemberCoordinate",
+    "captured_zip_coordinate_receipt",
+    "read_captured_zip_coordinate_receipt",
     "captured_zip_member_raw_id",
     "zip_member_container",
     "zip_member_coordinate",

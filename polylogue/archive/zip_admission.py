@@ -85,7 +85,7 @@ class ZipAdmission:
 
     def filter_entries(
         self,
-        entries: list[zipfile.ZipInfo],
+        entries: Iterable[zipfile.ZipInfo],
         *,
         allowed_suffixes: Collection[str] = ZIP_JSON_SUFFIXES,
         allowed_path: Callable[[str], bool] | None = None,

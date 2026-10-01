@@ -465,6 +465,7 @@ def _ingest_append_plans_archive(
                             replay_provider,
                             replay_path,
                             parse_retained_raw_sessions(archive, replay_raw_id),
+                            captured_zip_coordinate=archive.raw_captured_zip_coordinate(replay_raw_id),
                         )
                         if len(replay_sessions) != 1:
                             raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")

@@ -18,7 +18,7 @@ from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.sources.cursor import _record_cursor_failure
 from polylogue.sources.drive.types import DriveUILike
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_acquisition import iter_source_acquisition_records
 from polylogue.sources.source_snapshot import (
     SourceCutPolicy,
     SourceCutResult,
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-__all__ = ["AcquisitionService", "AcquireResult", "iter_source_raw_data"]
+__all__ = ["AcquisitionService", "AcquireResult", "iter_source_acquisition_records"]
 
 
 class AcquisitionService:
@@ -163,6 +163,7 @@ class AcquisitionService:
         progress_label: str = "Scanning",
         on_record: Callable[[RawSessionRecord], Awaitable[None]] | None = None,
         on_source_complete: Callable[[CursorStatePayload], Awaitable[None]] | None = None,
+        before_input_complete: Callable[[], Awaitable[None]] | None = None,
         observation_callback: Callable[[JSONDocument], None] | None = None,
         persist_cursors: bool = True,
         blob_store: BlobStore | None = None,
@@ -192,6 +193,16 @@ class AcquisitionService:
             logger.debug("Scanning source", source=source.name)
             cursor_state: CursorStatePayload = {}
             observations: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]] = {}
+
+            def observe_input(
+                semantic: str,
+                physical: str,
+                observed: tuple[int, int, int, int, int],
+                profile: str | None,
+                captured: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]] = observations,
+            ) -> None:
+                captured[semantic] = (physical, observed, profile)
+
             try:
                 async for record in iter_raw_record_stream(
                     source,
@@ -205,6 +216,9 @@ class AcquisitionService:
                     observation_callback=observation_callback,
                     progress_callback=progress_callback,
                     execution=self.execution,
+                    input_repository=self.repository if before_input_complete is not None else None,
+                    before_input_complete=before_input_complete,
+                    input_observation_callback=observe_input,
                 ):
                     if record.canonical_source_path is not None and record.captured_file_observation is not None:
                         observations[record.source_path] = (
@@ -389,6 +403,7 @@ class AcquisitionService:
                 progress_label="Scanning",
                 on_record=_store,
                 on_source_complete=_complete_source,
+                before_input_complete=_flush_pending,
                 observation_callback=_observe,
                 blob_store=blob_publisher,
             )

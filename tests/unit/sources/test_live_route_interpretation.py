@@ -642,7 +642,9 @@ def test_writer_enrichment_resolves_an_unknown_acquisition_provider(monkeypatch:
     monkeypatch.setattr(revision_backfill, "RetainedSessionEnricher", RecordingEnricher)
     session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="resolved", messages=[])
     archive = SimpleNamespace(archive_root=Path("/nonexistent"), index_connection=None, source_connection=None)
-    revision_backfill.enrich_sessions_from_archive(archive, Provider.UNKNOWN, "/nonexistent/x.jsonl", [session])
+    revision_backfill.enrich_sessions_from_archive(
+        archive, Provider.UNKNOWN, "/nonexistent/x.jsonl", [session], captured_zip_coordinate=None
+    )
     assert seen == [Provider.CLAUDE_CODE]
 
 

@@ -17,7 +17,6 @@ from polylogue.archive.raw_payload.decode import scan_jsonl_session_artifact
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.json import JSONValue
 from polylogue.schemas.observation import schema_cluster_id
-from polylogue.schemas.registry import SchemaRegistry
 from polylogue.storage.artifacts.inspection import (
     _INSPECTION_PREFIX_BYTES,
     inspect_raw_artifact,
@@ -135,7 +134,8 @@ def test_large_codex_stream_is_not_terminalized_from_session_meta_prefix(blob_st
 
     assert observation.parse_as_session is True
     assert observation.artifact_kind == "session_record_stream"
-    assert observation.classification_reason == "parser-supported Codex session record stream"
+    assert observation.parse_as_session
+    assert not observation.schema_eligible
 
 
 def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_store: BlobStore) -> None:
@@ -164,10 +164,10 @@ def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_
     assert observation.wire_format == "jsonl"
     assert observation.decode_error is None
     assert observation.malformed_jsonl_lines == 0
-    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
-    assert observation.resolved_package_version is not None
-    assert SchemaRegistry().get_package("codex", observation.resolved_package_version) is not None
-    assert observation.resolved_element_kind == "session_record_stream"
+    assert observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED
+    assert not observation.schema_eligible
+    assert observation.resolved_package_version is None
+    assert observation.resolved_element_kind is None
     expected_message: JSONValue = {
         "type": "response_item",
         "payload": {
@@ -180,7 +180,7 @@ def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_
     assert observation.cohort_id == schema_cluster_id([expected_message], "session_record_stream")
 
 
-def test_recovery_reader_discards_oversized_record_in_bounded_chunks() -> None:
+def test_complete_candidacy_reader_preserves_large_record_and_late_message() -> None:
     class BoundedReadlineStream(BytesIO):
         def readline(self, size: int | None = -1, /) -> bytes:
             assert isinstance(size, int)
@@ -197,13 +197,12 @@ def test_recovery_reader_discards_oversized_record_in_bounded_chunks() -> None:
         BoundedReadlineStream(oversized + message),
         provider=Provider.CODEX,
         source_path="codex/bounded.jsonl",
-        max_record_bytes=_INSPECTION_PREFIX_BYTES,
     )
 
     assert scan.artifact is not None
     assert scan.artifact.parse_as_session is True
-    assert scan.oversized_records == 1
-    assert len(scan.sample) == 1
+    assert scan.malformed_records == 0
+    assert scan.artifact.schema_eligible is False
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.logging import ERROR, WARNING, emit, get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
@@ -33,7 +34,7 @@ from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .dispatch import ForeignOriginContentError, bound_location_provider, is_jsonl_source_path
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
-from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
+from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
 from .source_staging import SourceInputBinding, bind_source_input
 from .source_walk import _setup_source_walk
@@ -475,7 +476,7 @@ def _parse_one_source_path_bound(
         for session in hermes_state.parse_state_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=hermes_identity.profile_root_for_artifact(snapshot.source_path),
+            profile_root=profile_root_for_artifact(snapshot.source_path),
             profile_identity=snapshot.captured_profile_key,
             immutable=True,
         ):
@@ -514,7 +515,7 @@ def _parse_one_source_path_bound(
         for session in hermes_verification.parse_verification_evidence_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=hermes_identity.profile_root_for_artifact(snapshot.source_path),
+            profile_root=profile_root_for_artifact(snapshot.source_path),
             profile_identity=snapshot.captured_profile_key,
             immutable=True,
         ):

@@ -20,7 +20,7 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES, LiveBatchProcessor
-from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, _parse_path_as_session_artifact
+from polylogue.sources.live.batch_support import _detect_provider_from_path, _parse_path_as_session_artifact
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity, hermes_state, local_agent
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -1367,7 +1367,7 @@ def test_hermes_state_db_live_batch_classifies_as_session_artifact(tmp_path: Pat
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
 
-    assert _detect_provider_from_path_sample(db_path, Provider.UNKNOWN) is Provider.HERMES
+    assert _detect_provider_from_path(db_path, Provider.UNKNOWN) is Provider.HERMES
     assert _parse_path_as_session_artifact(db_path, provider=Provider.HERMES) is True
 
 

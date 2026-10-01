@@ -99,7 +99,7 @@ def hermes_profile_raw_id(
     commit, checkpoint or vacuum; keying identity on those bytes mints a new
     raw revision for a source that did not change.
     """
-    from polylogue.sources.parsers.hermes_identity import profile_root_for_artifact
+    from polylogue.core.provider_identity import profile_root_for_artifact
 
     normalized = identity_path
     if captured_hermes_profile_key(profile_root_for_artifact(normalized)) != profile_identity:

@@ -194,6 +194,7 @@ def pending_pre_parse_raw_admission_request(
         canonical_source_path=record.canonical_source_path,
         captured_profile_key=record.captured_profile_key,
         captured_zip_coordinate=record.captured_zip_coordinate,
+        source_item=record.source_item,
         source_index=record.source_index or 0,
         blob_hash=blob_hash,
         blob_size=record.blob_size,

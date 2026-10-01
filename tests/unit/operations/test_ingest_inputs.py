@@ -54,3 +54,67 @@ def test_file_intake_requires_the_captured_original_declaration(tmp_path: Path) 
     with pytest.raises(ValueError):
         _retain(staged, "/unproved/session.jsonl", tmp_path)
     assert _retain(original, None, tmp_path) == {("input:0", str(original))}
+
+
+def test_machine_zip_enumeration_preserves_the_accepted_decoder_identity(tmp_path: Path) -> None:
+    """Machine preparation carries its accepted decoder into coordinate and raw ID."""
+    import json
+    import zipfile
+
+    from polylogue.core.raw_coordinates import captured_zip_member_raw_id
+    from polylogue.operations.ingest_inputs import PreparedSourceRecord, enumerate_ingest_input
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    source = tmp_path / "export.zip"
+    payload = {
+        "id": "synthetic-conversation",
+        "title": "Synthetic",
+        "mapping": {
+            "message": {
+                "id": "message",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                },
+            }
+        },
+    }
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("conversations.json", json.dumps([payload]))
+    spool = discover_ingest_input_spool(source, source_path=None, check_stop=lambda: None)
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    try:
+        (item,) = retain_input_page(spool, after_coordinate=None, publisher=publisher, check_stop=lambda: None)
+        identities: list[str] = []
+        for fingerprint in ("b" * 64, "c" * 64):
+            records = [
+                record
+                for record in enumerate_ingest_input(
+                    item,
+                    source_generation_id="accepted-machine",
+                    enumeration_fingerprint=fingerprint,
+                    publisher=publisher,
+                    acquired_at_ms=1,
+                    check_stop=lambda: None,
+                )
+                if isinstance(record, PreparedSourceRecord)
+            ]
+            assert len(records) == 1
+            record = records[0]
+            coordinate = record.plan.request.captured_zip_coordinate
+            assert coordinate is not None
+            assert coordinate.decoder_fingerprint == fingerprint
+            assert coordinate.container_blob_hash == item.blob_hash
+            assert item.captured_identity is not None
+            assert coordinate.canonical_container == item.captured_identity.canonical_source_path
+            assert record.plan.raw_id == captured_zip_member_raw_id(coordinate, record.plan.request.blob_hash.hex())
+            identities.append(record.plan.raw_id)
+        assert identities[0] != identities[1]
+    finally:
+        publisher.discard_pending()
+        spool.unlink(missing_ok=True)

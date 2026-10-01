@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from itertools import islice
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
@@ -11,16 +11,16 @@ from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
     looks_like_beads_interaction,
     looks_like_extracted_transcript_corpus,
+    looks_like_extracted_transcript_record,
     looks_like_file_history_snapshot_only_stream,
     looks_like_hook_event,
-    looks_like_hook_event_stream,
     looks_like_record_entry,
-    looks_like_record_stream,
     looks_like_session_document,
     looks_metadataish_dict,
     looks_metadataish_list,
     normalize_source_path,
     path_only_sidecar_reason,
+    record_carries_provider_envelope,
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
@@ -354,7 +354,7 @@ def _extracted_transcript_corpus_classification(
     """
     if not isinstance(payload, Sequence) or isinstance(payload, str | bytes | bytearray):
         return None
-    dict_items = [item for item in (json_document(item) for item in islice(payload, 32)) if item]
+    dict_items = (document for item in payload if (document := json_document(item)))
     if not looks_like_extracted_transcript_corpus(dict_items):
         return None
     return ArtifactClassification(
@@ -370,8 +370,8 @@ def _extracted_transcript_corpus_classification(
 def _is_bare_codex_session_meta_stream(payload: object) -> bool:
     """True when EVERY record of the stream is an exact bare Codex header.
 
-    Deliberately scans the complete payload rather than the shared 32-record
-    prefix the surrounding classifier uses. A positive result admits the stream
+    Like the surrounding stream predicates, this scans the complete payload.
+    A positive result admits the stream
     as a parseable session, so a prefix of bare headers followed by real records
     would let this narrow recovery shape claim a file it was never meant to.
 
@@ -432,6 +432,91 @@ def _file_history_snapshot_override(
     )
 
 
+@dataclass(slots=True)
+class _RecordArtifactEvidence:
+    document_count: int = 0
+    record_count: int = 0
+    all_atof: bool = True
+    all_hooks: bool = True
+    all_beads: bool = True
+    any_session: bool = False
+    extracted: bool = False
+    provider_envelope: bool = False
+    all_checkpoints: bool = True
+
+    def observe(self, item: JSONDocument) -> None:
+        from polylogue.sources.parsers.hermes_spans import looks_like_atof_payload
+
+        if not item:
+            return
+        self.document_count += 1
+        self.record_count += int(looks_like_record_entry(item))
+        self.all_atof = self.all_atof and looks_like_atof_payload(item)
+        self.all_hooks = self.all_hooks and looks_like_hook_event(item)
+        self.all_beads = self.all_beads and looks_like_beads_interaction(item)
+        self.any_session = self.any_session or looks_like_session_document(item)
+        self.extracted = self.extracted or looks_like_extracted_transcript_record(item)
+        self.provider_envelope = self.provider_envelope or record_carries_provider_envelope(item)
+        record_type = item.get("type")
+        self.all_checkpoints = (
+            self.all_checkpoints
+            and isinstance(record_type, str)
+            and record_type in {"file-history-snapshot", "progress"}
+        )
+
+
+def classify_record_candidacy(
+    records: Iterable[JSONValue],
+    *,
+    provider: Provider,
+    source_path: str | Path | None = None,
+) -> ArtifactClassification | None:
+    """Fold complete artifact candidacy without claiming parser/schema support.
+
+    Projected records prove the declared taxonomy predicates. The parser still
+    validates the original full records, including mixed wire generations.
+    """
+    evidence = _RecordArtifactEvidence()
+    specific_document = False
+    for value in records:
+        item = json_document(value)
+        evidence.observe(item)
+        if item:
+            specific_document = (
+                specific_document
+                or _classify_dict(
+                    item,
+                    provider=provider,
+                    source_path=source_path,
+                ).parse_as_session
+            )
+    if not evidence.document_count or (evidence.extracted and not evidence.provider_envelope):
+        return None
+    explicit = strong_path_classification(source_path, provider=provider)
+    if explicit is not None:
+        if not explicit.parse_as_session:
+            return None
+        if provider is Provider.CLAUDE_CODE and evidence.all_checkpoints:
+            return None
+        return replace(explicit, schema_eligible=False)
+    if evidence.all_hooks or evidence.all_beads:
+        return None
+    if provider is Provider.HERMES:
+        positive_record = evidence.all_atof
+    else:
+        positive_record = evidence.record_count * 2 >= evidence.document_count
+    if not positive_record and not (evidence.any_session or specific_document):
+        return None
+    return ArtifactClassification(
+        provider=provider,
+        kind=ArtifactKind.SESSION_RECORD_STREAM if positive_record else ArtifactKind.SESSION_DOCUMENT,
+        parse_as_session=True,
+        schema_eligible=False,
+        default_priority=120,
+        reason="complete artifact candidacy; full-record parser and schema validation remain unmeasured",
+    )
+
+
 def _classify_list(
     payload: Sequence[JSONValue],
     *,
@@ -447,20 +532,13 @@ def _classify_list(
             default_priority=0,
             reason="empty list payload",
         )
-    # ``islice`` bounds consumption directly. ``payload[:32]`` would resolve
-    # slice bounds via ``len(payload)`` first, which for a lazy full-corpus
-    # record stream (``ReplayableRecordSamples``) forces a complete rescan of
-    # the backing file just to take its first 32 items.
-    dict_items = [json_document(item) for item in islice(payload, 32)]
-    dict_items = [item for item in dict_items if item]
-
-    # Hermes ATOF records look superficially like generic hook events, but
-    # carry a producer-defined observer session stream and must be admitted
-    # before the generic hook-sidecar exclusion below.
-    from polylogue.sources.parsers.hermes_spans import looks_like_atof_payload
+    # Fold the complete stream without retaining its decoded records.
+    evidence = _RecordArtifactEvidence()
+    for value in payload:
+        evidence.observe(json_document(value))
 
     if provider is Provider.HERMES:
-        if dict_items and all(looks_like_atof_payload(item) for item in dict_items):
+        if evidence.document_count and evidence.all_atof:
             return ArtifactClassification(
                 provider=provider,
                 kind=ArtifactKind.SESSION_RECORD_STREAM,
@@ -492,7 +570,7 @@ def _classify_list(
             reason="Hermes source has no list-shaped session artifact other than an ATOF event stream",
         )
 
-    if dict_items and looks_like_hook_event_stream(dict_items):
+    if evidence.document_count and evidence.all_hooks:
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.HOOK_EVENT,
@@ -502,7 +580,7 @@ def _classify_list(
             reason="hook event stream",
         )
 
-    if dict_items and all(looks_like_beads_interaction(item) for item in dict_items):
+    if evidence.document_count and evidence.all_beads:
         return ArtifactClassification(
             provider=Provider.UNKNOWN,
             kind=ArtifactKind.UNKNOWN,
@@ -557,7 +635,7 @@ def _classify_list(
     # Keep this before the generic record predicate so the narrow recovery
     # shape reaches schema inference without reopening the generic type-only
     # false-positive class.
-    # Decided on the COMPLETE payload, not the 32-record prefix above: this
+    # Decided on the COMPLETE payload, rather than a record prefix: this
     # branch admits a stream as a session, so a prefix of bare headers followed
     # by any other record would admit a file this rule was never meant to
     # claim. The scan exits on the first non-matching record.
@@ -570,7 +648,7 @@ def _classify_list(
             default_priority=120,
             reason="repeated bare Codex session-meta record stream",
         )
-    if provider is Provider.CODEX and dict_items and any(looks_like_record_entry(item) for item in dict_items):
+    if provider is Provider.CODEX and evidence.record_count:
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.UNKNOWN,
@@ -580,7 +658,7 @@ def _classify_list(
             reason="Codex record stream contains unsupported session records",
         )
 
-    if dict_items and looks_like_record_stream(dict_items):
+    if evidence.document_count and evidence.record_count * 2 >= evidence.document_count:
         subagent = is_subagent_path(source_path)
         kind = ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM
         return ArtifactClassification(
@@ -592,7 +670,7 @@ def _classify_list(
             reason="record-like JSONL stream",
         )
 
-    if dict_items and any(looks_like_session_document(item) for item in dict_items):
+    if evidence.any_session:
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.SESSION_DOCUMENT,
@@ -602,7 +680,7 @@ def _classify_list(
             reason="bundle of session documents",
         )
 
-    if looks_metadataish_list(payload):  # type: ignore[arg-type]
+    if looks_metadataish_list(payload):
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.METADATA_DOCUMENT,
@@ -698,6 +776,19 @@ def _classify_dict(
             default_priority=0,
             reason="Beads interaction-history artifact, not a session record",
         )
+
+    if provider is Provider.GROK:
+        from polylogue.sources.parsers.grok import looks_like_native_bundle
+
+        if looks_like_native_bundle(payload):
+            return ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.SESSION_DOCUMENT,
+                parse_as_session=True,
+                schema_eligible=True,
+                default_priority=120,
+                reason="Grok native conversation endpoint bundle",
+            )
 
     if provider is Provider.GROK and looks_like_grok_export(payload):
         return ArtifactClassification(

@@ -276,13 +276,13 @@ def _prepare_path_snapshot(
 ) -> LivePathPreparation:
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.live.batch_support import (
-        _detect_provider_from_path_sample,
+        _detect_provider_from_path,
         jsonl_complete_prefix_path,
         jsonl_parse_prefix_size,
     )
     from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 
-    provider = _detect_provider_from_path_sample(snapshot, Provider.from_string(provider_value))
+    provider = _detect_provider_from_path(snapshot, Provider.from_string(provider_value))
     boundary = jsonl_complete_prefix_path(snapshot) if is_jsonl_source_path(source_path) else None
     snapshot_size = snapshot.stat().st_size
     parse_prefix_size = jsonl_parse_prefix_size(boundary, snapshot_size) if boundary is not None else None
@@ -308,6 +308,7 @@ def _prepare_path_snapshot(
     with open_retained_session_enricher(
         provider,
         source_path=source_path,
+        captured_zip_coordinate=None,
         source_db_path=evidence.source_db_path,
         index_db_path=evidence.index_db_path,
         blob_root=evidence.blob_root,

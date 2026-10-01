@@ -111,6 +111,13 @@ table/column/index migration requires the authenticated pre-migration package,
 including on an empty fresh archive after Source002. Existing raws keep their
 IDs, byte custody and absent historical receipts; replay reports the explicit
 profile gap instead of discovering a qualifier from current source paths.
+New ingest acceptance stages physical inputs pagewise through
+`prepare_source_manifest` and carries a sealed reference into the audit plan.
+Immutable pending commands retain their original inline evidence for restart;
+the opened single-ZIP acquisition also retains its one-input manifest. Decoder
+completion compares streamed coordinates against the caller's uncommitted
+Source membership using regular indexed rows and a disk journal in a private
+Native-owned scratch database. It never changes the caller's TEMP policy.
 Writable canonical bootstrap admits installed trains before runtime version
 validation. Read-only and acquisition-only opens refuse a baseline Source
 tier without applying migrations. A crash after baseline publication resumes

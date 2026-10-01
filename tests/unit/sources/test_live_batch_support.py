@@ -52,7 +52,7 @@ from polylogue.sources.live.batch_support import (
     _AppendPlan,
     _AppendResult,
     _browser_capture_prefix_probe,
-    _detect_provider_from_path_sample,
+    _detect_provider_from_path,
     _FullIngestResult,
     _parse_path_as_session_artifact,
     _parse_payload_as_session_artifact,
@@ -77,7 +77,12 @@ from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
-from tests.infra.source_builders import ChatGPTExportBuilder, make_chatgpt_node, make_claude_chat_message
+from tests.infra.source_builders import (
+    ChatGPTExportBuilder,
+    live_zip_capture,
+    make_chatgpt_node,
+    make_claude_chat_message,
+)
 
 
 @pytest.mark.parametrize(
@@ -624,14 +629,16 @@ def test_append_debt_lock_failure_keeps_frontier_replayable(
     assert before is not None
     original_record_outcomes = processor._record_convergence_outcomes
 
-    def hold_ops_lock_then_record(outcomes: Iterable[tuple[Path, Iterable[ConvergenceDebt]]]) -> None:
+    def hold_ops_lock_then_record(
+        outcomes: Iterable[tuple[Path, Iterable[ConvergenceDebt]]], settlements: Iterable[object]
+    ) -> None:
         blocker = sqlite3.connect(cursor._ops_db_path, timeout=0.001)
         blocker.execute("BEGIN IMMEDIATE")
         scope_conn = cast(Any, cursor._ops_scope).conn
         assert scope_conn is not None
         scope_conn.execute("PRAGMA busy_timeout = 1")
         try:
-            original_record_outcomes(outcomes)
+            original_record_outcomes(outcomes, settlements)
         finally:
             blocker.rollback()
             blocker.close()
@@ -1037,11 +1044,11 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not classify source-only JSONL")),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.detect_provider_from_path_sample_evidence",
+        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch_support.detect_provider_from_path_sample_evidence",
+        "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
     )
     try:
@@ -1223,7 +1230,7 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     for target in (
         "polylogue.sources.live.batch.iter_zip_entry_raw_data",
         "polylogue.sources.source_acquisition_components.sniff_zip_provider",
-        "polylogue.sources.live.batch.detect_provider_from_path_sample_evidence",
+        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
         "polylogue.sources.source_acquisition_components.iter_entry_payloads",
         "polylogue.sources.source_acquisition_components.classify_artifact",
     ):
@@ -1518,20 +1525,24 @@ def test_zip_duplicate_member_coordinates_match_normal_and_source_only_routes(tm
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
-    blob_store = BlobStore(tmp_path / "blob")
-
-    normal_records, _normal_bytes = processor._extract_zip_member_records(
-        bundle,
-        blob_store=blob_store,
-        fallback_provider=Provider.CODEX,
-        file_mtime="2026-08-13T00:00:00+00:00",
-    )
-    source_only_result = processor._extract_source_only_zip_member_records(
-        bundle,
-        blob_store=blob_store,
-        fallback_provider=Provider.CODEX,
-        file_mtime="2026-08-13T00:00:00+00:00",
-    )
+    with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+        extracted = processor._extract_zip_member_records(
+            bundle,
+            blob_store=publisher,
+            zip_inputs=zip_inputs,
+            fallback_provider=Provider.CODEX,
+            file_mtime="2026-08-13T00:00:00+00:00",
+        )
+        assert extracted is not None
+        normal_records, _normal_bytes = extracted
+    with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+        source_only_result = processor._extract_source_only_zip_member_records(
+            bundle,
+            blob_store=publisher,
+            zip_inputs=zip_inputs,
+            fallback_provider=Provider.CODEX,
+            file_mtime="2026-08-13T00:00:00+00:00",
+        )
 
     assert source_only_result is not None
     source_only_records, _source_only_bytes = source_only_result
@@ -1539,7 +1550,20 @@ def test_zip_duplicate_member_coordinates_match_normal_and_source_only_routes(tm
     source_only_ids = [raw_id for raw_id, _record in source_only_records]
     assert len(normal_ids) == 2
     assert len(set(normal_ids)) == 2
-    assert source_only_ids == normal_ids
+    assert len(set(source_only_ids)) == 2
+    assert set(source_only_ids).isdisjoint(normal_ids)
+    # Both producers prove the same physical members. Their decoder-bound raw
+    # identities remain distinct, while replay preserves the parsed identities.
+    assert [record.blob_hash for _raw_id, record in source_only_records] == [
+        record.blob_hash for _raw_id, record in normal_records
+    ]
+    assert [
+        (record.captured_zip_coordinate.canonical_container, record.captured_zip_coordinate.member_name)
+        for _raw_id, record in source_only_records
+    ] == [
+        (record.captured_zip_coordinate.canonical_container, record.captured_zip_coordinate.member_name)
+        for _raw_id, record in normal_records
+    ]
     assert [record.source_index for _raw_id, record in normal_records] == [1, 3]
     assert [record.source_index for _raw_id, record in source_only_records] == [1, 3]
 
@@ -2589,13 +2613,13 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.detect_provider_from_path_sample_evidence",
+        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("strong sidecar reached JSON provider detection")
         ),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch_support.detect_provider_from_path_sample_evidence",
+        "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("strong sidecar reached JSON provider detection")
         ),
@@ -3017,7 +3041,7 @@ def test_large_browser_capture_prefix_planning_does_not_materialize_payload(
 
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
-    assert _detect_provider_from_path_sample(target, Provider.UNKNOWN) is Provider.CHATGPT
+    assert _detect_provider_from_path(target, Provider.UNKNOWN) is Provider.CHATGPT
     assert _parse_path_as_session_artifact(target, provider=Provider.CHATGPT) is True
 
 
@@ -3192,7 +3216,7 @@ def test_large_non_jsonl_full_ingest_planning_does_not_read_whole_file(
 
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
-    assert _detect_provider_from_path_sample(target, Provider.CHATGPT) is Provider.CHATGPT
+    assert _detect_provider_from_path(target, Provider.CHATGPT) is Provider.CHATGPT
     assert _parse_path_as_session_artifact(target, provider=Provider.CHATGPT) is True
 
 
@@ -3315,12 +3339,16 @@ def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(
 
     monkeypatch.setattr("polylogue.sources.source_acquisition_components.sniff_zip_provider", sniff_provider)
 
-    records, _total_bytes = processor._extract_zip_member_records(
-        bundle,
-        blob_store=BlobStore(tmp_path / "blob"),
-        fallback_provider=Provider.UNKNOWN,
-        file_mtime="2026-09-04T00:00:00+00:00",
-    )
+    with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+        extracted = processor._extract_zip_member_records(
+            bundle,
+            blob_store=publisher,
+            zip_inputs=zip_inputs,
+            fallback_provider=Provider.UNKNOWN,
+            file_mtime="2026-09-04T00:00:00+00:00",
+        )
+        assert extracted is not None
+        records, _total_bytes = extracted
 
     assert {record.source_path.rsplit(":", 1)[-1] for _raw_id, record in records} == {
         "projects/project/tool-results/dump.json",
@@ -3329,12 +3357,14 @@ def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(
     }
     assert sniffed_paths == ["projects/project/session.jsonl", "projects/project/oversized.json"]
 
-    source_only = processor._extract_source_only_zip_member_records(
-        bundle,
-        blob_store=BlobStore(tmp_path / "source-only-blob"),
-        fallback_provider=Provider.UNKNOWN,
-        file_mtime="2026-09-04T00:00:00+00:00",
-    )
+    with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+        source_only = processor._extract_source_only_zip_member_records(
+            bundle,
+            blob_store=publisher,
+            zip_inputs=zip_inputs,
+            fallback_provider=Provider.UNKNOWN,
+            file_mtime="2026-09-04T00:00:00+00:00",
+        )
     assert source_only is not None
     source_only_records, _source_only_bytes = source_only
     assert {record.source_path.rsplit(":", 1)[-1] for _raw_id, record in source_only_records} == {
@@ -3368,12 +3398,14 @@ def test_unknown_inbox_zip_sniffs_all_selected_entries(
 
     monkeypatch.setattr("polylogue.sources.source_acquisition_components.sniff_zip_provider", sniff_provider)
 
-    processor._extract_zip_member_records(
-        bundle,
-        blob_store=BlobStore(tmp_path / "blob"),
-        fallback_provider=Provider.UNKNOWN,
-        file_mtime="2026-09-04T00:00:00+00:00",
-    )
+    with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+        processor._extract_zip_member_records(
+            bundle,
+            blob_store=publisher,
+            zip_inputs=zip_inputs,
+            fallback_provider=Provider.UNKNOWN,
+            file_mtime="2026-09-04T00:00:00+00:00",
+        )
 
     assert sniffed_paths == ["projects/project/session.jsonl", "projects/project/oversized.json"]
 
@@ -3388,12 +3420,16 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
     processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
     processor._cursor = CursorStore(tmp_path / "index.db")
     processor._zip_member_refusals_this_pass = {}
-    records, _total_bytes = processor._extract_zip_member_records(
-        bundle,
-        blob_store=BlobStore(tmp_path / "blob"),
-        fallback_provider=Provider.UNKNOWN,
-        file_mtime="2026-09-04T00:00:00+00:00",
-    )
+    with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+        extracted = processor._extract_zip_member_records(
+            bundle,
+            blob_store=publisher,
+            zip_inputs=zip_inputs,
+            fallback_provider=Provider.UNKNOWN,
+            file_mtime="2026-09-04T00:00:00+00:00",
+        )
+        assert extracted is not None
+        records, _total_bytes = extracted
     assert {record.source_path for _raw_id, record in records} == {
         f"{bundle}:tool-results/one.bin",
         f"{bundle}:brain/one.md",
@@ -5068,7 +5104,7 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
     def replace_after_acquisition(
         paths: list[Path],
         **kwargs: object,
-    ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+    ) -> tuple[set[Path], float, dict[str, float], list[object], list[object]]:
         del kwargs
         nonlocal replaced
         if not replaced:
@@ -5082,7 +5118,7 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
                     ns=(current_stat.st_atime_ns, max(current_stat.st_mtime_ns, original_stat.st_mtime_ns) + 1_000_000),
                 )
             replaced = True
-        return set(paths), 0.0, {}, []
+        return set(paths), 0.0, {}, [], []
 
     monkeypatch.setattr(processor, "_converge_paths", replace_after_acquisition)
 
@@ -5384,7 +5420,7 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     def replace_after_append(
         paths: list[Path],
         **kwargs: object,
-    ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+    ) -> tuple[set[Path], float, dict[str, float], list[object], list[object]]:
         del kwargs
         nonlocal replaced
         if not replaced:
@@ -5406,7 +5442,7 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
                 assert restored_stat.st_mtime_ns == pre_rewrite_stat.st_mtime_ns
                 assert restored_stat.st_ctime_ns != pre_rewrite_stat.st_ctime_ns
             replaced = True
-        return set(paths), 0.0, {}, []
+        return set(paths), 0.0, {}, [], []
 
     monkeypatch.setattr(processor, "_converge_paths", replace_after_append)
 
@@ -8860,9 +8896,9 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
             changed_session_count=0,
         )
 
-    def record_convergence(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+    def record_convergence(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object], list[object]]:
         convergence_calls.append(paths)
-        return set(paths), 0.0, {}, []
+        return set(paths), 0.0, {}, [], []
 
     def fake_append_plan(
         _path: Path,
@@ -8939,10 +8975,10 @@ async def test_live_append_plans_flush_in_bounded_groups(
     monkeypatch.setattr(
         processor,
         "_converge_paths",
-        lambda paths, **kwargs: (paths, 0.0, {}, []),
+        lambda paths, **kwargs: (paths, 0.0, {}, [], []),
     )
     monkeypatch.setattr(processor, "_record_append_cursor", lambda plan: True)
-    monkeypatch.setattr(processor, "_record_convergence_outcomes", lambda outcomes: None)
+    monkeypatch.setattr(processor, "_record_convergence_outcomes", lambda outcomes, settlements: None)
     monkeypatch.setattr("polylogue.sources.live.batch._append_plan_group_ready", lambda plans: len(plans) >= 2)
 
     metrics = await processor.ingest_files(paths, emit_event=False)
@@ -9737,7 +9773,7 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
 
     monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
     monkeypatch.setattr(processor, "_ingest_full_paths", holding_full_ingest)
-    monkeypatch.setattr(processor, "_converge_paths", lambda paths: (set(paths), 0.0, {}, []))
+    monkeypatch.setattr(processor, "_converge_paths", lambda paths: (set(paths), 0.0, {}, [], []))
     monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(processor, "_compact_superseded_raw_snapshots", lambda _paths: None)
     monkeypatch.setattr(processor, "_defer_full_cursor_retry", lambda path, **_kwargs: deferred.append(path))
@@ -10246,3 +10282,40 @@ def test_partial_prefix_count_observes_owner_cancellation() -> None:
 
     with pytest.raises(VerificationCancelledError):
         jsonl_prefix_record_count(io.BytesIO(b'{"a":1}\n'), 8, stop=lambda: True)
+
+
+def test_live_zip_crc_failure_preserves_pending_input_without_prefix_publication(tmp_path: Path) -> None:
+    """A yielded member prefix cannot prove a complete corrupted ZIP group."""
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "inbox"
+    root.mkdir()
+    bundle = root / "bad-crc.zip"
+    with zipfile.ZipFile(bundle, "w") as container:
+        for index in range(2):
+            container.writestr(
+                f"sessions/session-{index}.jsonl",
+                json.dumps({"type": "session_meta", "payload": {"id": f"session-{index}"}}) + "\n",
+            )
+    wire = bytearray(bundle.read_bytes())
+    first_header = wire.index(b"PK\x01\x02")
+    second_header = wire.index(b"PK\x01\x02", first_header + 4)
+    wire[second_header + 16] ^= 1  # Actual member read now fails its central CRC.
+    bundle.write_bytes(wire)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([bundle], source_name="codex")
+
+    assert result.failed == [bundle]
+    assert result.excluded == {}
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT enumerated_at_ms FROM source_items").fetchall() == [(None,)]
+        assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM source_items WHERE blob_hash IS NOT NULL").fetchone()[0] == 1

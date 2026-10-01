@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.core.enums import SOURCE_FIDELITY_STATUS_VALUES
-from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
+from polylogue.core.provider_identity import profile_root_for_artifact
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 
 if TYPE_CHECKING:
     from polylogue.sources.source_staging import SourceInputBinding
@@ -53,7 +54,7 @@ def _inspect_connection(
             conn,
             grouping,
             path,
-            profile_root=hermes_identity.profile_root_for_artifact(path),
+            profile_root=profile_root_for_artifact(path),
             profile_identity=profile_identity,
         )
         return SQLiteInspection(domain, produced, degraded=bool(produced["sessions"]), fidelity=fidelity)
@@ -65,7 +66,7 @@ def _inspect_connection(
             conn,
             grouping,
             path,
-            profile_root=hermes_identity.profile_root_for_artifact(path),
+            profile_root=profile_root_for_artifact(path),
             profile_identity=profile_identity,
         )
         return SQLiteInspection(domain, produced, degraded=bool(produced["sessions"]), fidelity=fidelity)
