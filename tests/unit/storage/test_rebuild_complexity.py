@@ -19,6 +19,7 @@ from polylogue.storage.fts.fts_lifecycle import reset_message_fts_index_sync
 from polylogue.storage.fts.sql import (
     FTS_MESSAGES_IDENTITY_RECIPE_ID,
     insert_all_message_identity_rows_sql,
+    insert_all_message_rows_sql,
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
     repair_message_identity_rows_range_sql,
@@ -197,6 +198,19 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
         "fts-delete-all",
         "delegation-copy",
         "delegation-rebuild",
+        *[
+            f"quoted-{operation}-{quote}"
+            for operation in ("update", "delete", "drop", "control")
+            for quote in ("double", "bracket", "backtick", "single")
+        ],
+        *[
+            f"conflict-{operation}-{mode}"
+            for operation in ("update", "insert")
+            for mode in ("rollback", "abort", "replace", "fail", "ignore")
+        ],
+        "qualified-main",
+        "qualified-temp",
+        "mixed-case",
     ],
 )
 def test_incremental_law_rejects_once_per_pass_archive_refresh(
@@ -218,7 +232,72 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             count = archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0]
             assert count == 9
-            if mutation == "delete":
+            if mutation.startswith("quoted-"):
+                _, operation, quote = mutation.split("-")
+                opening, closing = {
+                    "double": ('"', '"'),
+                    "bracket": ("[", "]"),
+                    "backtick": ("`", "`"),
+                    "single": ("'", "'"),
+                }[quote]
+                table = f"{opening}action_pairs{closing}"
+                changes = archive._conn.total_changes
+                if operation == "update":
+                    assert archive._conn.execute(f"UPDATE {table} SET tool_name=tool_name").rowcount == count
+                    assert archive._conn.total_changes > changes
+                elif operation == "delete":
+                    assert archive._conn.execute(f"DELETE FROM {table}").rowcount == count
+                    assert archive._conn.total_changes > changes
+                    assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+                elif operation == "drop":
+                    archive._conn.execute(f"DROP TABLE main.{table}")
+                    assert (
+                        archive._conn.execute(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE name='action_pairs'"
+                        ).fetchone()[0]
+                        == 0
+                    )
+                else:
+                    assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                    fts = f"{opening}messages_fts{closing}"
+                    archive._conn.execute(f"INSERT INTO main.{fts}({fts}) VALUES('delete-all')")
+                    assert archive._conn.total_changes > changes
+                    assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+            elif mutation.startswith("conflict-"):
+                _, operation, mode = mutation.split("-")
+                changes = archive._conn.total_changes
+                if operation == "update":
+                    assert (
+                        archive._conn.execute(f"UPDATE OR {mode.upper()} action_pairs SET tool_name=tool_name").rowcount
+                        == count
+                    )
+                else:
+                    populated = archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                    assert populated > 0
+                    offset = archive._conn.execute("SELECT MAX(rowid) FROM messages_fts").fetchone()[0] + 1
+                    # Mutate the ordinary archive-wide FTS owner, with fresh
+                    # rowids so every conflict mode performs real writes.
+                    sql = (
+                        insert_all_message_rows_sql()
+                        .replace("INSERT INTO", f"INSERT OR {mode.upper()} INTO", 1)
+                        .replace("SELECT rowid,", f"SELECT rowid + {offset},", 1)
+                    )
+                    assert archive._conn.execute(sql).rowcount > 0
+                    assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > populated
+                assert archive._conn.total_changes > changes
+            elif mutation in {"qualified-main", "qualified-temp", "mixed-case"}:
+                if mutation == "qualified-temp":
+                    # CTAS is fixture preparation, not a counted DML refresh;
+                    # the following UPDATE is the sole global-write witness.
+                    archive._conn.execute("CREATE TEMP TABLE action_pairs AS SELECT * FROM main.action_pairs")
+                    table = "temp.action_pairs"
+                else:
+                    table = "main.action_pairs" if mutation == "qualified-main" else '"MAIN" . "AcTiOn_PaIrS"'
+                assert archive._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == count
+                changes = archive._conn.total_changes
+                assert archive._conn.execute(f"uPdAtE {table} SET tool_name=tool_name").rowcount == count
+                assert archive._conn.total_changes > changes
+            elif mutation == "delete":
                 assert archive._conn.execute("DELETE FROM action_pairs").rowcount == count
             elif mutation == "update":
                 assert archive._conn.execute("UPDATE action_pairs SET tool_name = tool_name").rowcount == count
