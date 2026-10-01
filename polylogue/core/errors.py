@@ -257,6 +257,7 @@ __all__ = [
     "SchemaVersionMismatchError",
     "SchemaSkew",
     "SchemaSkewError",
+    "SessionNotFoundError",
     "UnsupportedInsightFilterError",
     "VectorReadUnavailableError",
     "VectorRuntimeUnavailableError",

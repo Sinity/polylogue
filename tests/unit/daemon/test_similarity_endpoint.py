@@ -751,7 +751,7 @@ def test_similarity_first_publication_checks_seed_on_query_snapshot(
 
     handler.do_GET()
 
-    assert published == [successor.index_path]
+    assert published == [Path(successor.index_path)]
     send_error.assert_called_once_with(HTTPStatus.NOT_FOUND, "not_found")
     send_json.assert_not_called()
     assert closed == [True]
