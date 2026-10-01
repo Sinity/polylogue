@@ -1617,32 +1617,42 @@ def _prepare_sidecar_publications(store: SqliteMessageStore, publisher: ArchiveB
     try:
         while True:
             check_compute_cancelled()
-            page = blocks.fetchmany(128)
-            if not page:
+            row = blocks.fetchone()
+            if row is None:
                 break
-            for ordinal, tool_use_id, text in page:
-                check_compute_cancelled()
-                store.conn.execute(
-                    "UPDATE prepared_sidecar_publication SET captured_text=? WHERE session_ordinal=? AND tool_use_id=?",
-                    (text, ordinal, tool_use_id),
-                )
+            ordinal, tool_use_id, text = row
+            store.conn.execute(
+                "UPDATE prepared_sidecar_publication SET captured_text=? WHERE session_ordinal=? AND tool_use_id=?",
+                (text, ordinal, tool_use_id),
+            )
+            del row, text
     finally:
         blocks.close()
     after = (-1, "")
     while True:
         check_compute_cancelled()
         rows = store.conn.execute(
-            "SELECT session_ordinal,tool_use_id,captured_text FROM prepared_sidecar_publication "
+            "SELECT session_ordinal,tool_use_id FROM prepared_sidecar_publication "
             "WHERE captured_text IS NOT NULL AND (session_ordinal,tool_use_id)>(?,?) ORDER BY session_ordinal,tool_use_id LIMIT 128",
             after,
         ).fetchall()
         if not rows:
             break
-        for ordinal, tool_use_id, text in rows:
+        for ordinal, tool_use_id in rows:
             check_compute_cancelled()
+            # The page carries only coordinates. Variable-size prose is read
+            # and released one value at a time, never accumulated by row count.
+            text_row = store.conn.execute(
+                "SELECT captured_text FROM prepared_sidecar_publication WHERE session_ordinal=? AND tool_use_id=?",
+                (ordinal, tool_use_id),
+            ).fetchone()
+            if text_row is None or text_row[0] is None:
+                raise ValueError("captured sidecar content disappeared during preparation")
+            text = text_row[0]
             blob = publisher.prepare_from_bytes(
                 unicodedata.normalize("NFC", str(text)).encode("utf-8"), staging_directory=directory
             )
+            del text_row, text
             claim = publisher.prepare_claim(blob)
             store.conn.execute(
                 "UPDATE prepared_sidecar_publication SET claim_json=?,already_present=?,captured_text=NULL "

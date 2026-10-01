@@ -96,6 +96,12 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
     artifact = None
     try:
         with PreparedIndexMutation(path, archive_root=root) as seal:
+            source = kwargs.get("source_conn")
+            if source is not None:
+                source_path = next((row[2] for row in source.execute("PRAGMA database_list") if row[1] == "main"), None)
+                if not source_path:
+                    raise ValueError("fixture Source connection must own an archive file")
+                seal.require_source_target(Path(source_path))
             directory = Path(
                 tempfile.mkdtemp(prefix="fixture-ingest-", dir=publisher._prepared_staging_directory(None))
             )
@@ -110,7 +116,8 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
             payload.parsed_session = artifact.session_by_id(payload.session_id)
             index = seal.observer("index")
             index.row_factory = sqlite3.Row
-            kwargs.setdefault("source_conn", seal.observer("source"))
+            if kwargs.get("source_conn") is None:
+                kwargs["source_conn"] = seal.observer("source")
             _prepare_ingest_payloads(index, kwargs["source_conn"], (payload,))
             seal.validate_observers_current()
             with write_lease("test.fixture.ingest", archive_root=root):
