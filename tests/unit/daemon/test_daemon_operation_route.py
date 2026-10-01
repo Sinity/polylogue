@@ -1346,12 +1346,30 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
             from time import monotonic
 
             started = monotonic()
-            timed_out = stack.client.operation(
-                "operation.await",
-                {"request_id": execute_request_id, "after_sequence": status["result"]["sequence"], "timeout_ms": 2_000},
-                archive_root=str(stack.archive_root),
-                deadline_ms=25,
-            )
+            deadline_at = started + 0.025
+            after_sequence = status["result"]["sequence"]
+            after_progress_sequence = status["result"].get("progress_sequence", 0)
+            while True:
+                timed_out = stack.client.operation(
+                    "operation.await",
+                    {
+                        "request_id": execute_request_id,
+                        "after_sequence": after_sequence,
+                        "after_progress_sequence": after_progress_sequence,
+                        "timeout_ms": 2_000,
+                    },
+                    archive_root=str(stack.archive_root),
+                    deadline_ms=max(1, int((deadline_at - monotonic()) * 1000)),
+                )
+                assert timed_out is not None, timed_out
+                if timed_out["outcome"] != "completed":
+                    break
+                # An await may return a new running observation before its
+                # deadline. Consume that cursor before testing an idle wait.
+                state = timed_out["result"]
+                assert state["outcome"] in {"accepted", "running"}, timed_out
+                after_sequence = state["sequence"]
+                after_progress_sequence = state.get("progress_sequence", after_progress_sequence)
             assert timed_out is not None and timed_out["outcome"] == "timed-out", timed_out
             assert monotonic() - started < 1.0
             assert not release_apply.is_set()
@@ -1386,7 +1404,8 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                     "operation.await",
                     {
                         "request_id": execute_request_id,
-                        "after_sequence": status["result"]["sequence"],
+                        "after_sequence": after_sequence,
+                        "after_progress_sequence": after_progress_sequence,
                         "timeout_ms": 30_000,
                     },
                     request_id="disconnected-await",
@@ -2065,7 +2084,7 @@ def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evid
             {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
             archive_root=str(stack.archive_root),
         )
-    assert restored is not None and restored["outcome"] == "failed"
+    assert restored is not None and restored["outcome"] == "failed", restored
     assert restored["error"]["code"] == "restore_io_fault"
     assert restored["error"]["retryable"] is True
     assert restored["error"]["retained_pending_destination"] == str(destination)
@@ -2177,7 +2196,6 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                 assert stack.runtime._terminal_scratch is not None
                 scratch = Path(stack.runtime._terminal_scratch.name)
                 assert len(tuple(scratch.iterdir())) == 1
-            from polylogue.core.enums import PrincipalSurface
             from polylogue.operations.daemon_protocol import DaemonOperationRequest
             from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -2194,17 +2212,21 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                 principal = MutationPrincipal(
                     actor_ref=declared["actor_ref"],
                     capabilities=frozenset(declared["capabilities"]),
-                    surface=PrincipalSurface(declared["surface"]),
+                    surface=declared["surface"],
                     role_label=declared["role_label"],
                 )
                 archive_identity = packet["archive_identity"]
             control_request = DaemonOperationRequest(
                 operation="operation.status", payload={"request_id": request_id}, request_id="inspect-retained-result"
             )
-            with pytest.raises(PermissionError):
-                stack.runtime.control(
-                    control_request, replace(principal, actor_ref="synthetic-unrelated"), archive_identity
-                )
+            for unrelated in (
+                replace(principal, actor_ref="synthetic-unrelated"),
+                replace(principal, capabilities=principal.capabilities | {"synthetic-extra"}),
+                replace(principal, surface="api"),
+                replace(principal, role_label="synthetic-unrelated-role"),
+            ):
+                with pytest.raises(PermissionError):
+                    stack.runtime.control(control_request, unrelated, archive_identity)
             with pytest.raises(ValueError, match="archive_identity_stale"):
                 stack.runtime.control(control_request, principal, "synthetic-different-archive")
             # A result is not a five-minute progress buffer. An identical

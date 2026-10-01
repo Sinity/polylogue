@@ -2880,8 +2880,7 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     with closing(sqlite3.connect(destination / "ops.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0] == 0
     with ArchiveStore.open_existing(destination) as store:
-        assert store._source_conn is not None
-        assert tuple(store._source_conn.execute("SELECT raw_id,native_id FROM raw_sessions").fetchone()) == (
+        assert tuple(store.source_connection.execute("SELECT raw_id,native_id FROM raw_sessions").fetchone()) == (
             raw_id,
             None,
         )

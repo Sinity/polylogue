@@ -495,7 +495,7 @@ class DaemonOperationRuntime:
         return {
             "actor_ref": principal.actor_ref,
             "capabilities": sorted(principal.capabilities),
-            "surface": principal.surface.value,
+            "surface": principal.surface,
             "role_label": principal.role_label,
         }
 
