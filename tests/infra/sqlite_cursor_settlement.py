@@ -2,6 +2,7 @@
 
 import sqlite3
 import threading
+from builtins import BaseExceptionGroup
 from pathlib import Path
 from typing import Any
 
@@ -130,3 +131,80 @@ class InvalidReturnCursor(sqlite3.Cursor):
         self.execute("SELECT 1 UNION ALL SELECT 2")
         next(self)
         return 17  # type: ignore[return-value]  # Deliberate violation of Python's constructor contract.
+
+
+class SettlementConnection(_MeasuredConnection):
+    """Fault the native handle that the production factory actually registers."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.owner = threading.current_thread()
+        self.allow_cleanup = threading.Event()
+        self.allow_cleanup.set()
+        self.cleanup_started = threading.Event()
+        self.continue_cleanup: threading.Event | None = None
+        self.calls: list[tuple[str, threading.Thread]] = []
+
+    def rollback(self) -> None:
+        self.calls.append(("rollback", threading.current_thread()))
+        assert threading.current_thread() is self.owner
+        self.cleanup_started.set()
+        if self.continue_cleanup is not None:
+            self.continue_cleanup.wait()
+        if not self.allow_cleanup.is_set():
+            raise OSError("synthetic rollback remains unsettled")
+        super().rollback()
+
+    def close(self) -> None:
+        self.cleanup_started.set()
+        self.calls.append(("close", threading.current_thread()))
+        assert threading.current_thread() is self.owner
+        if not self.allow_cleanup.is_set():
+            raise OSError("synthetic close remains unsettled")
+        super().close()
+
+
+def arm_settlement(connection: sqlite3.Connection) -> SettlementConnection:
+    """Arm the factory-created connection without replacing its identity."""
+    assert isinstance(connection, SettlementConnection)
+    connection.allow_cleanup.clear()
+    return connection
+
+
+def settle_fault_connections(handles: list[SettlementConnection]) -> None:
+    """Settle only a control's actual registered handles on their creator."""
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_on_current_thread
+
+    for handle in handles:
+        handle.allow_cleanup.set()
+    identities = {id(handle) for handle in handles}
+    attempted: set[int] = set()
+    failures: list[BaseException] = []
+    for owner in retained_native_sql_owners_on_current_thread():
+        if owner._connection_identity not in identities:
+            continue
+        terminal = owner._terminal_parent or owner
+        if id(terminal) not in attempted:
+            attempted.add(id(terminal))
+            try:
+                terminal.close()
+            except BaseException as error:
+                failures.append(error)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Controlled native cleanup failed", failures)
+
+
+@pytest.fixture(autouse=True)
+def native_settlement_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use actual measured subclasses in modules with terminal fault controls."""
+    original = sqlite3.connect
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        factory = kwargs.get("factory", sqlite3.Connection)
+        if factory in (sqlite3.Connection, _MeasuredConnection):
+            kwargs["factory"] = SettlementConnection
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)

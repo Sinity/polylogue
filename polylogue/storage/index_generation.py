@@ -804,6 +804,13 @@ class IndexGenerationStore:
             str, tuple[IndexGeneration, Path, Path, tuple[int, int] | None, tuple[str, ...]]
         ] = {}
         self._active_parent_identity = _stable_directory(self.active_pointer.parent, label="active pointer parent")
+        self._active_parent_link_identity = _configured_link_identity(self.active_pointer.parent)
+        _require_path_identity(
+            self.active_pointer.parent,
+            self._active_parent_identity,
+            label="active pointer parent",
+            link_identity=self._active_parent_link_identity,
+        )
         self._lifecycle_lock_fd: int | None = None
         if self._lifecycle_lock_path.is_symlink():
             raise RuntimeError(f"lifecycle lock is a symlink: {self._lifecycle_lock_path}")
@@ -815,11 +822,19 @@ class IndexGenerationStore:
         if self._lifecycle_lock_fd is not None:
             yield
             return
-        _require_path_identity(self.active_pointer.parent, self._active_parent_identity, label="active pointer parent")
+        _require_path_identity(
+            self.active_pointer.parent,
+            self._active_parent_identity,
+            label="active pointer parent",
+            link_identity=self._active_parent_link_identity,
+        )
         fd = os.open(self._lifecycle_lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             _require_path_identity(
-                self.active_pointer.parent, self._active_parent_identity, label="active pointer parent"
+                self.active_pointer.parent,
+                self._active_parent_identity,
+                label="active pointer parent",
+                link_identity=self._active_parent_link_identity,
             )
             fcntl.flock(fd, fcntl.LOCK_EX)
             self._lifecycle_lock_fd = fd
@@ -1402,6 +1417,13 @@ class IndexGenerationStore:
         reclaimed state after filesystem removal.
         """
         generations_root_identity = _stable_directory(self.generations_root, label="generation root")
+        generations_root_link_identity = _configured_link_identity(self.generations_root)
+        _require_path_identity(
+            self.generations_root,
+            generations_root_identity,
+            label="generation root",
+            link_identity=generations_root_link_identity,
+        )
         active_target = self.active_pointer.resolve(strict=True)
         candidates: list[tuple[int, int, str, Path, IndexGeneration]] = []
         for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
@@ -1497,7 +1519,12 @@ class IndexGenerationStore:
             raise RuntimeError("cannot securely open generation root") from exc
         try:
             for _lifecycle_at_ns, _created_at_ns, generation_id, directory, _generation in eligible:
-                _require_path_identity(self.generations_root, generations_root_identity, label="generation root")
+                _require_path_identity(
+                    self.generations_root,
+                    generations_root_identity,
+                    label="generation root",
+                    link_identity=generations_root_link_identity,
+                )
                 shutil.rmtree(directory.name, dir_fd=generations_fd)
                 reclaimed.append(generation_id)
         finally:
@@ -1518,7 +1545,12 @@ class IndexGenerationStore:
             raise RuntimeError("cannot securely open generation root") from exc
         try:
             for marker in markers[SUPERSEDED_GENERATION_RETENTION:]:
-                _require_path_identity(self.generations_root, generations_root_identity, label="generation root")
+                _require_path_identity(
+                    self.generations_root,
+                    generations_root_identity,
+                    label="generation root",
+                    link_identity=generations_root_link_identity,
+                )
                 shutil.rmtree(marker.name, dir_fd=markers_fd)
                 pruned_markers += 1
         finally:

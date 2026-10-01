@@ -48,6 +48,9 @@ from polylogue.storage.sqlite.write_lease import (
     write_lease,
     write_lease_enforced,
 )
+from tests.infra.sqlite_cursor_settlement import (
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+)
 
 
 @pytest.fixture
@@ -320,7 +323,7 @@ def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(
     from polylogue.storage.io_phase_metrics import connect_measured
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import arm_settlement
 
     root = tmp_path / "archive"
     root.mkdir()
@@ -330,15 +333,17 @@ def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(
     archive._enter_mutation_lease()
     archive._conn.execute("BEGIN IMMEDIATE")
     archive._conn.execute("CREATE TABLE close_probe (value INTEGER)")
-    vector = SettlementHandle(connect_measured(":memory:"))
-    vector.connection.execute("BEGIN")
+    vector = arm_settlement(connect_measured(":memory:"))
+    vector.execute("BEGIN")
     archive.operation_vector_connection = vector  # type: ignore[assignment]
     try:
         with pytest.raises(ArchiveStoreSettlementError) as failure:
             archive.close()
         assert failure.value.store is archive
         assert isinstance(failure.value.failure, NativeConnectionSettlementError)
-        assert isinstance(failure.value.failure.failure, OSError)
+        assert isinstance(failure.value.failure.failure, BaseExceptionGroup)
+        assert len(failure.value.failure.failure.exceptions) == 2
+        assert all(isinstance(error, OSError) for error in failure.value.failure.failure.exceptions)
         assert current_write_lease() is not None
         vector.allow_cleanup.set()
         archive.close()
@@ -499,79 +504,40 @@ def test_archive_insight_rebuild_uses_store_mutation_admission(tmp_path: Path) -
 
 @pytest.mark.uses_real_clock("raw connection cleanup runs on its actual aiosqlite worker")
 def test_async_writer_grant_is_retained_until_worker_connection_closes(
-    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
 ) -> None:
-    """A failed aiosqlite close cannot retire the grant protecting its worker."""
-
-    class FakeGrant:
-        completed = False
-
-        def complete(self) -> None:
-            self.completed = True
-
-    class RawConnection:
-        fail_close = True
-        worker: threading.Thread | None = None
-
-        def set_progress_handler(self, callback: object, steps: int) -> None:
-            assert threading.current_thread() is self.worker
-            assert callback is None and steps == 0
-
-        def rollback(self) -> None:
-            assert threading.current_thread() is self.worker
-
-        def close(self) -> None:
-            assert threading.current_thread() is self.worker
-            if self.fail_close:
-                raise OSError("synthetic worker close failure")
-
-    import aiosqlite
-
+    """The actual worker and grant stay owned through native close failure."""
     from polylogue.storage.sqlite import async_sqlite
-
-    backend = cast(async_sqlite.SQLiteBackend, object())
-    raw = RawConnection()
-
-    def connect() -> RawConnection:
-        raw.worker = threading.current_thread()
-        return raw
-
-    connection = aiosqlite.Connection(connect, iter_chunk_size=64)  # type: ignore[arg-type]
-    grant = FakeGrant()
+    from polylogue.storage.sqlite.write_lease import async_write_lease
+    from tests.infra.sqlite_cursor_settlement import arm_settlement
 
     async def scenario() -> None:
-        monkeypatch.setitem(
-            async_sqlite._BACKEND_CONNECTIONS,
-            id(connection),
-            async_sqlite._BackendConnectionOwner(
-                backend,
-                connection,
-                threading.current_thread(),
-                asyncio.current_task(),
-                os.getpid(),
-                grant,  # type: ignore[arg-type]
-            ),
-        )
-        _ = await connection
-        try:
-            with pytest.raises(OSError, match="synthetic worker close failure"):
+        root = workspace_env["archive_root"]
+        backend = async_sqlite.SQLiteBackend(root / "index.db")
+        async with async_write_lease("test.worker-close", archive_root=root):
+            connection = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+            entry = async_sqlite._BACKEND_CONNECTIONS[id(connection)]
+            grant = entry.grant
+            assert grant is not None
+            raw = await connection._execute(lambda: arm_settlement(connection._conn))
+            try:
+                with pytest.raises(BaseExceptionGroup) as refused:
+                    await async_sqlite._close_backend_connection(connection, rollback=True)
+                assert len(refused.value.exceptions) == 2
+                assert all(isinstance(error, OSError) for error in refused.value.exceptions)
+                assert id(connection) in async_sqlite._BACKEND_CONNECTIONS
+                assert not grant.custody_retired
+                assert connection._connection is raw and connection._running
+                assert connection._thread.is_alive()
+                raw.allow_cleanup.set()
                 await async_sqlite._close_backend_connection(connection, rollback=True)
-            assert id(connection) in async_sqlite._BACKEND_CONNECTIONS
-            assert not grant.completed
-            assert cast(object, connection._connection) is raw
-            assert connection._running
-            assert connection._thread.is_alive()
-            raw.fail_close = False
-            await async_sqlite._close_backend_connection(connection, rollback=True)
-            assert id(connection) not in async_sqlite._BACKEND_CONNECTIONS
-            assert grant.completed
-            assert connection._connection is None
-            connection._thread.join()
-            assert not connection._thread.is_alive()
-        finally:
-            if connection._running:
-                raw.fail_close = False
-                await connection.close()
+                assert id(connection) not in async_sqlite._BACKEND_CONNECTIONS
+                assert grant.custody_retired
+                assert connection._connection is None and not connection._thread.is_alive()
+                assert all(thread is raw.owner for _operation, thread in raw.calls)
+            finally:
+                raw.allow_cleanup.set()
+                await backend.close()
 
     asyncio.run(scenario())
 
@@ -1906,14 +1872,14 @@ def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
     from polylogue.storage.sqlite.archive_tiers import bootstrap
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from tests.infra.archive_custody_probe import archive_custody_available
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     initialize_active_archive_root(tmp_path)
     actual_open = profiles.open_daemon_connection
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
 
     def open_connection(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(actual_open(*args, **kwargs))  # type: ignore[arg-type]
+        handle = arm_settlement(actual_open(*args, **kwargs))  # type: ignore[arg-type]
         handles.append(handle)
         return handle  # type: ignore[return-value]
 
@@ -1931,7 +1897,7 @@ def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
                 bootstrap.open_initialized_tier_connection(tmp_path / "ops.db", ArchiveTier.OPS, archive_root=tmp_path)
             owner = refused.value.owner
             assert cast(object, owner.connection) is handles[0]
-            assert handles[0].connection.in_transaction
+            assert handles[0].in_transaction
         assert not archive_custody_available(tmp_path)
         handles[0].allow_cleanup.set()
         owner.close()

@@ -19,8 +19,11 @@ from polylogue.storage.sqlite.connection_profile import (
     retained_native_sql_owners_for_lifetime,
 )
 from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
-from tests.infra.sqlite_cursor_settlement import ControlledCursor
-from tests.infra.sqlite_settlement_handle import SettlementHandle
+from tests.infra.sqlite_cursor_settlement import (
+    ControlledCursor,
+    arm_settlement,
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="physical descriptor observation uses Linux procfs")
@@ -97,7 +100,7 @@ def test_readonly_artifact_dependency_survives_constructor_or_reader_close_failu
         seed.execute("CREATE TABLE evidence(value TEXT)")
         seed.execute("INSERT INTO evidence VALUES ('retained')")
         seed.commit()
-    handle = SettlementHandle(connect_measured(f"{path.as_uri()}?mode=ro", uri=True))
+    handle = arm_settlement(connect_measured(f"{path.as_uri()}?mode=ro", uri=True))
     monkeypatch.setattr(profiles, "connect_measured", lambda *args, **kwargs: handle)
     primary = ValueError("synthetic read construction failure")
 
@@ -149,11 +152,11 @@ def test_scoped_artifact_survives_failed_close_and_context_reset(tmp_path: Path)
     directory = Path(scratch.name)
     reference = weakref.ref(scratch)
     with retain_native_sql_lifetimes(scratch):
-        handle = SettlementHandle(connect_measured(directory / "artifact.db"))
+        handle = arm_settlement(connect_measured(directory / "artifact.db"))
         owner = NativeSQLCustodyOwner(
             cast(sqlite3.Connection, handle), lifetime_dependencies=current_native_sql_lifetimes()
         )
-        handle.connection.execute("CREATE TABLE evidence(value TEXT)")
+        handle.execute("CREATE TABLE evidence(value TEXT)")
     assert current_native_sql_lifetimes() == ()
     assert retained_native_sql_owners_for_lifetime(scratch) == (owner,)
     with pytest.raises(RuntimeError):
@@ -209,7 +212,7 @@ def test_failed_native_construction_keeps_scoped_artifact_after_context_reset(
     scratch = tempfile.TemporaryDirectory(dir=tmp_path)
     directory = Path(scratch.name)
     reference = weakref.ref(scratch)
-    handle = SettlementHandle(connect_measured(directory / "artifact.db"))
+    handle = arm_settlement(connect_measured(directory / "artifact.db"))
     primary = ValueError("synthetic constructor custody refusal")
 
     def refuse_custody() -> None:

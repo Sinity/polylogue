@@ -124,7 +124,7 @@ async def _settled_connection_operation(
     cancellation = None
     while not task.done():
         try:
-            await asyncio.shield(task)
+            await asyncio.wait((task,))
         except asyncio.CancelledError as exc:
             cancellation = cancellation or exc
         except BaseException:

@@ -1577,11 +1577,11 @@ async def _settle_task(
     *,
     retry: SQLSettlementRetry | None = None,
 ) -> tuple[Any, asyncio.CancelledError | None, BaseException | None]:
-    """Drain a shielded task through repeated caller cancellation requests."""
+    """Drain the retained task without forwarding waiter cancellation."""
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
-            await asyncio.shield(task)
+            await asyncio.wait((task,))
         except asyncio.CancelledError as exc:
             if cancellation is None:
                 cancellation = exc

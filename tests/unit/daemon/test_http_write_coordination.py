@@ -29,6 +29,9 @@ from polylogue.daemon.web_auth import WebCredentialScope
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
 from tests.infra.daemon_operations import running_daemon_operations
+from tests.infra.sqlite_cursor_settlement import (
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+)
 
 
 class _DeleteDaemonClient(DaemonClient):
@@ -1521,20 +1524,19 @@ def test_http_body_retains_failed_sql_cleanup_and_refuses_successor(tmp_path: Pa
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ArchiveStoreSettlementError
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.archive_custody_probe import archive_custody_available
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     initialize_active_archive_root(tmp_path)
     _coordinator, bridge, stop = _loop_owned_bridge(tmp_path)
     handler = _gated_handler(bridge)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
 
     async def mutation(_archive: object) -> None:
         store = ArchiveStore(tmp_path, initialize=False)
-        handle = SettlementHandle(store._conn)
+        handle = arm_settlement(store._conn)
         handles.append(handle)
-        store._conn = handle  # type: ignore[assignment]
         store._enter_mutation_lease()
-        handle.connection.execute("BEGIN IMMEDIATE")
+        handle.execute("BEGIN IMMEDIATE")
         try:
             store.close()
         except ArchiveStoreSettlementError:
@@ -1573,7 +1575,7 @@ def test_inline_ops_failed_close_has_retryable_answer_and_original_worker_cleanu
     from polylogue.storage.sqlite import connection_profile
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.archive_custody_probe import archive_custody_available
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     initialize_active_archive_root(tmp_path)
     monkeypatch.setattr(paths, "archive_root", lambda: tmp_path)
@@ -1595,24 +1597,16 @@ def test_inline_ops_failed_close_has_retryable_answer_and_original_worker_cleanu
     handler.rfile = BytesIO(body)
     replies: list[tuple[object, dict[str, object]]] = []
     object.__setattr__(handler, "_send_json", lambda status, result, **_kwargs: replies.append((status, result)))
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     real_open = connection_profile.open_daemon_connection
     opened = 0
-
-    class TransactionHandle(SettlementHandle):
-        def __enter__(self) -> TransactionHandle:
-            self.connection.__enter__()
-            return self
-
-        def __exit__(self, *args: object) -> object:
-            return self.connection.__exit__(*args)  # type: ignore[arg-type]
 
     def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
         nonlocal opened
         connection = real_open(*args, **kwargs)  # type: ignore[arg-type]
         opened += 1
         if opened == 2:
-            handle = TransactionHandle(connection)
+            handle = arm_settlement(connection)
             handles.append(handle)
             return handle  # type: ignore[return-value]
         return connection

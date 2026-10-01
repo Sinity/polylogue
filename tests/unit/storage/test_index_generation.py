@@ -25,6 +25,9 @@ from polylogue.storage.index_generation import (
     source_revision_snapshot,
 )
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.sqlite_cursor_settlement import (
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+)
 
 # A pid guaranteed to never correspond to a running process: it exceeds any
 # realistic pid_max (Linux defaults to <= 4194304 even with 64-bit pids).
@@ -936,9 +939,9 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
                     "INSERT INTO operation_previews(preview_id, operation_name, operation_version, "
                     "archive_instance_id, archive_identity_digest, plan_hash, parameter_digest, target_digest, "
                     "target_count, destructive_class, required_confirmation, required_capability_count, "
-                    "principal_actor_ref, principal_surface, state, created_at_ms, expires_at_ms, plan_json) "
+                    "principal_actor_ref, principal_surface, state, created_at_ms, expires_at_ms, plan_format, plan_json) "
                     "VALUES ('preview-reference', 'test.reference', 1, 'neutral', 'neutral', 'neutral', 'neutral', "
-                    "'neutral', 1, 'additive', 'role_only', 0, 'user:local', 'internal', 'prepared', 0, 1, '{}')"
+                    "'neutral', 1, 'additive', 'role_only', 0, 'user:local', 'internal', 'prepared', 0, 1, 'polylogue.mutation-plan/v1', '{}')"
                 )
                 audit.execute(
                     "INSERT INTO operation_preview_targets VALUES ('preview-reference', 0, 'message', ?, "
@@ -1093,35 +1096,39 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
         active.close()
 
     candidate = store.create(owner_id="candidate-owner", source_snapshot="snapshot-b")
-    candidate_conn = sqlite3.connect(candidate.index_path)
-    candidate_conn.row_factory = sqlite3.Row
-    try:
-        # The candidate has the same physical target row, but the child has no
-        # composed prefix edge. A global message-id-only guard would accept it.
-        child_without_parent = ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id="composed-child",
-            title="composed-child",
-            messages=[
-                ParsedMessage(
-                    provider_message_id="child-tail",
-                    role=Role.ASSISTANT,
-                    text="tail",
-                    position=1,
-                    variant_index=0,
-                    is_active_path=True,
-                    is_active_leaf=True,
-                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="tail")],
-                )
-            ],
-        )
-        # Parent's target is present in the candidate, but the child's scoped
-        # EvidenceRef must remain composed through the child-parent edge.
-        write_fixture_index_session(candidate_conn, parent)
-        write_fixture_index_session(candidate_conn, child_without_parent)
-        candidate_conn.commit()
-    finally:
-        candidate_conn.close()
+    with write_lease("test.seed-composed-candidate", archive_root=tmp_path):
+        with (
+            ArchiveStore.open_owned_inactive_generation(
+                Path(candidate.index_path).parent,
+                generation_id=candidate.generation_id,
+                owner_id=candidate.owner_id,
+            ) as candidate_archive,
+            candidate_archive.index_mutation_scope(),
+        ):
+            candidate_conn = candidate_archive._conn
+            # The candidate has the same physical target row, but the child has no
+            # composed prefix edge. A global message-id-only guard would accept it.
+            child_without_parent = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="composed-child",
+                title="composed-child",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="child-tail",
+                        role=Role.ASSISTANT,
+                        text="tail",
+                        position=1,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=True,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="tail")],
+                    )
+                ],
+            )
+            # Parent's target is present in the candidate, but the child's scoped
+            # EvidenceRef must remain composed through the child-parent edge.
+            write_fixture_index_session(candidate_conn, parent)
+            write_fixture_index_session(candidate_conn, child_without_parent)
     with pytest.raises(ReferenceSealError, match="promotion would orphan"):
         store.prepare_promotion(candidate)
 
@@ -1467,41 +1474,48 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
     from polylogue.storage.sqlite import connection as cached
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
     from polylogue.storage.sqlite.write_lease import write_lease
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-cache")
-    for path, marker in ((tmp_path / "index.db", "old"), (Path(generation.index_path), "new")):
-        connection = sqlite3.connect(path)
-        try:
-            connection.execute("CREATE TABLE cache_generation_probe(value TEXT NOT NULL)")
-            connection.execute("INSERT INTO cache_generation_probe VALUES (?)", (marker,))
-            connection.commit()
-        finally:
-            connection.close()
+    from tests.infra.index_writer import write_fixture_index_session
+    from tests.infra.reference_sessions import reference_session
+
+    with write_lease("test.seed-promotion-cache", archive_root=tmp_path):
+        for inactive, marker in ((False, "old"), (True, "new")):
+            archive = (
+                ArchiveStore.open_owned_inactive_generation(
+                    Path(generation.index_path).parent,
+                    generation_id=generation.generation_id,
+                    owner_id=generation.owner_id,
+                )
+                if inactive
+                else ArchiveStore.open_existing(tmp_path, read_only=False)
+            )
+            with archive, archive.index_mutation_scope():
+                write_fixture_index_session(archive._conn, reference_session(marker))
     seen: list[str] = []
     actual_materialize = cast(
         Callable[[sqlite3.Connection], object], vars(artifacts)["materialize_artifact_observations"]
     )
 
     def materialize(connection: sqlite3.Connection) -> object:
-        seen.append(connection.execute("SELECT value FROM cache_generation_probe").fetchone()[0])
+        seen.append(connection.execute("SELECT title FROM sessions").fetchone()[0])
         return actual_materialize(connection)
 
     monkeypatch.setattr(artifacts, "materialize_artifact_observations", materialize)
     with write_lease("test.promotion_cache", archive_root=tmp_path):
         with cached.connection_context(tmp_path / "index.db") as old:
-            assert old.execute("SELECT value FROM cache_generation_probe").fetchone()[0] == "old"
+            assert old.execute("SELECT title FROM sessions").fetchone()[0] == "old"
         cache = cached._connection_cache.conns
         owner = cache[str(tmp_path / "index.db")]
-        handle: SettlementHandle | None = None
+        handle: SettlementConnection | None = None
         if pending == "transaction":
             old.execute("BEGIN")
-            old.execute("SELECT * FROM cache_generation_probe").fetchall()
+            old.execute("SELECT * FROM sessions").fetchall()
         elif pending == "failed_close":
-            handle = SettlementHandle(old)
-            owner.connection = handle
+            handle = arm_settlement(old)
         if pending != "idle":
             with pytest.raises(NativeConnectionSettlementError):
                 store.promote(generation)
@@ -1585,7 +1599,8 @@ def test_explicit_offline_generation_uses_owned_archive_siblings(tmp_path: Path)
             connection.close()
         with cached.connection_context(Path(generation.index_path), archive_root=tmp_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM source_tier.raw_sessions").fetchone()[0] == 0
-    assert not (Path(generation.index_path).parent / "source.db").exists()
+    assert (Path(generation.index_path).parent / "source.db").is_symlink()
+    assert (Path(generation.index_path).parent / "source.db").resolve() == (tmp_path / "source.db").resolve()
     assert archive_custody_available(tmp_path)
 
 
@@ -1598,14 +1613,14 @@ def test_generation_native_failed_close_retains_selected_descriptor_and_sql(
     from polylogue.storage import index_generation as generations
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
     from polylogue.storage.sqlite.write_lease import write_lease
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     _archive(tmp_path)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     actual_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
 
     def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(actual_connect(*args, **kwargs))
+        handle = arm_settlement(actual_connect(*args, **kwargs))
         handles.append(handle)
         return handle  # type: ignore[return-value]
 

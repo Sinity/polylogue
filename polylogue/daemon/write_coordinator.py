@@ -492,7 +492,10 @@ class DaemonWriteCoordinator:
         for worker in self._retained_workers():
             attempt = worker.request_settlement()
             try:
-                await asyncio.shield(asyncio.wrap_future(attempt))
+                wrapped = asyncio.wrap_future(attempt)
+                wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+                await asyncio.wait((wrapped,))
+                wrapped.result()
             except BaseException as exc:
                 # Accepted cleanup retains its creator even if this waiter
                 # cancels. Request every other owned terminal child too.
@@ -509,7 +512,8 @@ class DaemonWriteCoordinator:
                 self._terminal_async_attempt = async_attempt
                 async_attempt.add_done_callback(self._async_settlement_completed)
             try:
-                await asyncio.shield(async_attempt)
+                await asyncio.wait((async_attempt,))
+                async_attempt.result()
             except BaseException as exc:
                 errors.append(exc)
         if not self._executions and not self._has_unsettled_sql():
@@ -588,13 +592,15 @@ class DaemonWriteCoordinator:
         )
         self._track_execution(execution, actor=actor, on_complete=on_complete, request=request)
         try:
-            return await asyncio.shield(execution)
+            await asyncio.wait((execution,))
+            return execution.result()
         except asyncio.CancelledError:
             request.caller_cancelled = True
             if not request.acquired:
                 execution.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await asyncio.shield(execution)
+                    await asyncio.wait((execution,))
+                    execution.result()
             raise
 
     async def _execute(
@@ -740,7 +746,8 @@ class DaemonWriteCoordinator:
             name=f"polylogue-prepared-writer:{actor}",
         )
         self._track_execution(task, actor=actor)
-        return await asyncio.shield(task)
+        await asyncio.wait((task,))
+        return task.result()
 
     async def run_sync_with_completion(
         self,
@@ -1315,13 +1322,15 @@ class DaemonWriteThreadBridge:
             name=f"polylogue-writer-staged:{actor}",
         )
         try:
-            return await asyncio.shield(pending)
+            await asyncio.wait((pending,))
+            return pending.result()
         except asyncio.CancelledError:
             # A lifecycle cancellation is not permission to release the
             # writer or abandon the receipt of an admitted callable.
             while not pending.done():
                 try:
-                    await asyncio.shield(pending)
+                    await asyncio.wait((pending,))
+                    pending.result()
                 except asyncio.CancelledError:
                     continue
                 except Exception:

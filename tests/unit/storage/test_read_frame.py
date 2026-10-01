@@ -36,6 +36,9 @@ from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
     read_frame,
 )
+from tests.infra.sqlite_cursor_settlement import (
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+)
 
 
 @pytest.fixture
@@ -511,16 +514,16 @@ def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
     from polylogue.storage.sqlite import connection_profile as profiles
     from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.archive_custody_probe import archive_custody_available
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     original_open = profiles.open_readonly_connection
     original_version = profiles._data_version
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     frames: list[ReadFrame] = []
     fault = failure_point == "initial"
 
     def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(original_open(*args, **kwargs))  # type: ignore[arg-type]
+        handle = arm_settlement(original_open(*args, **kwargs))  # type: ignore[arg-type]
         handles.append(handle)
         return handle  # type: ignore[return-value]
 
@@ -571,7 +574,7 @@ def test_read_frame_retains_actual_handle_until_all_cleanup_settles(
             assert successful.close_attempts == 1
         assert owner.connection is None
         with pytest.raises(sqlite3.ProgrammingError):
-            handles[-1].connection.execute("SELECT 1")
+            handles[-1].execute("SELECT 1")
     finally:
         for handle in handles:
             handle.allow_cleanup.set()
@@ -588,13 +591,13 @@ def test_independent_frame_census_retains_discarded_failed_cleanup(
     import gc
 
     from polylogue.storage.sqlite import connection_profile as profiles
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     actual_open = profiles.open_readonly_connection
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
 
     def controlled_open(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(actual_open(*args, **kwargs))  # type: ignore[arg-type]
+        handle = arm_settlement(actual_open(*args, **kwargs))  # type: ignore[arg-type]
         handles.append(handle)
         return handle  # type: ignore[return-value]
 
