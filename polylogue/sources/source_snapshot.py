@@ -710,7 +710,10 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _fsync_tree(root: Path) -> None:
-    for directory, _children, _files in os.walk(root, topdown=False):
+    def refuse_unreadable_directory(error: OSError) -> None:
+        raise SourceSnapshotError(f"candidate directory sync inventory failed: {root}") from error
+
+    for directory, _children, _files in os.walk(root, topdown=False, onerror=refuse_unreadable_directory):
         _fsync_directory(Path(directory))
 
 

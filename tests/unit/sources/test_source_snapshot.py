@@ -747,6 +747,21 @@ def test_frontier_refuses_whole_root_when_hidden_directory_is_unreadable(tmp_pat
     frontier.verify_integrity()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="requires an unprivileged directory reader")
+def test_candidate_sync_refuses_an_unreadable_nested_directory(tmp_path: Path) -> None:
+    """A walk that silently omits a directory cannot prove the candidate tree synced."""
+    root = tmp_path / "candidate"
+    hidden = root / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "member.jsonl").write_bytes(b"{}\n")
+    hidden.chmod(0)
+    try:
+        with pytest.raises(SourceSnapshotError):
+            source_snapshot._fsync_tree(root)
+    finally:
+        hidden.chmod(0o700)
+
+
 @pytest.mark.parametrize("replacement", ["symlink", "regular", "parent-symlink"])
 def test_frontier_refuses_member_substitution_between_enumeration_and_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: str

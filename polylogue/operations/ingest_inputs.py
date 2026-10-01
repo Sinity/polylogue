@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -145,16 +146,53 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
                     "INSERT INTO paths VALUES (?, ?, ?, NULL)", ("input:0", str(path), source_path or str(path))
                 )
             elif stat.S_ISDIR(mode):
-                for candidate in path.rglob("*"):
+                conn.execute(
+                    "CREATE TABLE directories(relative TEXT PRIMARY KEY, device INTEGER NOT NULL, inode INTEGER NOT NULL) "
+                    "WITHOUT ROWID"
+                )
+                root_info = path.lstat()
+                conn.execute("INSERT INTO directories VALUES ('', ?, ?)", (root_info.st_dev, root_info.st_ino))
+                while True:
                     check_stop()
-                    candidate_mode = candidate.lstat().st_mode
-                    if stat.S_ISDIR(candidate_mode):
-                        continue
-                    if not stat.S_ISREG(candidate_mode):
-                        raise ValueError("ingest inputs must be regular files, not links or special files")
-                    relative = candidate.relative_to(path)
-                    logical = str(Path(source_path) / relative) if source_path is not None else str(candidate)
-                    conn.execute("INSERT INTO paths VALUES (?, ?, ?, NULL)", (str(relative), str(candidate), logical))
+                    with closing(
+                        conn.execute("SELECT relative, device, inode FROM directories ORDER BY relative LIMIT 1")
+                    ) as pending:
+                        directory = pending.fetchone()
+                    if directory is None:
+                        break
+                    relative_directory, device, inode = directory
+                    current_directory = path / relative_directory
+                    descriptor = os.open(current_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    try:
+                        opened = os.fstat(descriptor)
+                        if (opened.st_dev, opened.st_ino) != (device, inode):
+                            raise OSError(
+                                errno.ESTALE, "ingest directory changed during enumeration", str(current_directory)
+                            )
+                        with os.scandir(descriptor) as entries:
+                            for entry in entries:
+                                check_stop()
+                                relative = Path(relative_directory) / entry.name
+                                candidate = path / relative
+                                info = entry.stat(follow_symlinks=False)
+                                if stat.S_ISDIR(info.st_mode):
+                                    conn.execute(
+                                        "INSERT INTO directories VALUES (?, ?, ?)",
+                                        (str(relative), info.st_dev, info.st_ino),
+                                    )
+                                elif stat.S_ISREG(info.st_mode):
+                                    logical = (
+                                        str(Path(source_path) / relative) if source_path is not None else str(candidate)
+                                    )
+                                    conn.execute(
+                                        "INSERT INTO paths VALUES (?, ?, ?, NULL)",
+                                        (str(relative), str(candidate), logical),
+                                    )
+                                else:
+                                    raise ValueError("ingest inputs must be regular files, not links or special files")
+                    finally:
+                        os.close(descriptor)
+                    conn.execute("DELETE FROM directories WHERE relative=?", (relative_directory,))
             else:
                 raise ValueError("ingest input must be a regular file or directory")
             if conn.execute("SELECT 1 FROM paths LIMIT 1").fetchone() is None:

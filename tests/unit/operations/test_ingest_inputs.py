@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,28 @@ def _retain(path: Path, source_path: str | None, tmp_path: Path) -> set[tuple[st
         publisher.discard_pending()
         unlink_spool(spool)
     return {(item.coordinate, item.source_path) for item in page}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="requires an unprivileged directory reader")
+def test_ordinary_directory_intake_refuses_a_denied_hidden_subtree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recursive glob silently publishes only the public part of the input."""
+    original = tmp_path / "exports"
+    hidden = original / "hidden"
+    hidden.mkdir(parents=True)
+    (original / "public.jsonl").write_bytes(b"{}\n")
+    (hidden / "session.jsonl").write_bytes(b"{}\n")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    hidden.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            discover_ingest_input_spool(original, source_path=None, check_stop=lambda: None)
+    finally:
+        hidden.chmod(0o700)
+    assert list(scratch.glob("polylogue-ingest-paths-*.sqlite")) == []
 
 
 def test_staged_directory_members_are_keyed_under_the_callers_path(tmp_path: Path) -> None:
