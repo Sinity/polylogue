@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from polylogue.storage.derivation_identity import (
     DerivationIdentity,
@@ -122,6 +122,85 @@ class EmbeddingRecipe:
             request_options=request_options,
             element_type=element_type,
         )
+
+    def retrieval_compatible(self, other: EmbeddingRecipe) -> bool:
+        """Compare retrieval space without changing either computation identity.
+
+        Voyage's official hosted API declares these three models asymmetric
+        retrieval peers. The provider token here denotes that fixed API, not an
+        arbitrary compatible-JSON endpoint. Nano and contextual models require
+        their own explicit revision/prompt contracts before joining this space.
+        """
+        if self.input_type not in ("document", "query") or other.input_type not in ("document", "query"):
+            return False
+        shared_models = {"voyage-4", "voyage-4-lite", "voyage-4-large"}
+        shared_space = (
+            self.provider == other.provider == "voyage"
+            and self.model_revision == other.model_revision == "provider-model-name"
+            and self.model in shared_models
+            and other.model in shared_models
+        )
+        # Input segmentation, normalization and options remain part of the
+        # contract even when the models share a raw vector space.
+        comparable = replace(other, model=self.model, input_type=self.input_type)
+        return (self.model == other.model or shared_space) and self == comparable
+
+    def stored_output_matches(
+        self,
+        *,
+        model: str,
+        dimension: int,
+        recipe_hash: bytes,
+        output_contract_hash: bytes,
+        vector_hash: bytes,
+        text: str,
+    ) -> bool:
+        """Accept only an exactly proven producer request in the chosen space.
+
+        Stored hashes prove the reconstructed producer fields. Unknown revision,
+        endpoint, prompt or options cannot be inferred from a model label.
+        """
+        producer = self.proven_stored_producer(model=model, dimension=dimension, recipe_hash=recipe_hash)
+        return (
+            producer is not None
+            and self.input_type == "document"
+            and self.retrieval_compatible(replace(producer, input_schema_version=self.input_schema_version))
+            and output_contract_hash == producer.output_contract_hash
+            and vector_hash == EmbeddingRequestSpec(recipe=producer, input_text=text).vector_derivation_hash
+        )
+
+    @classmethod
+    def published_producer(cls, *, model: str, dimensions: int) -> EmbeddingRecipe:
+        """The shipped archive-index-v79 producer, independent of current defaults.
+
+        An opaque persisted hash proves this complete declaration or proves
+        nothing. This retains provenance across bookkeeping label changes;
+        it neither rewrites purchased metadata nor executes a prior adapter.
+        """
+        return cls(
+            canonicalization="ordered-text-block-prose-v1",
+            record_selector="authored-user-assistant-prose-v1",
+            chunking_version="one-vector-per-message-v1",
+            provider="voyage",
+            model=model,
+            model_revision="provider-model-name",
+            dimensions=dimensions,
+            task="retrieval",
+            input_type="document",
+            normalization="provider-default",
+            tool_implementation="polylogue.sqlite-vec-v1",
+            input_schema_version="archive-index-v79",
+            request_options=(),
+            element_type="float32",
+        )
+
+    def proven_stored_producer(self, *, model: str, dimension: int, recipe_hash: bytes) -> EmbeddingRecipe | None:
+        """Resolve exact provenance from the selected or published producer."""
+        candidates = (
+            replace(self, model=model, dimensions=dimension, input_type="document"),
+            self.published_producer(model=model, dimensions=dimension),
+        )
+        return next((candidate for candidate in candidates if candidate.recipe_hash == recipe_hash), None)
 
     def identity(self) -> DerivationIdentity:
         return DerivationIdentity.from_mapping(
@@ -277,6 +356,81 @@ def _vector_derivation_hash_sql(recipe_hash: object, input_text: object) -> byte
     return vector_derivation_hash(recipe=recipe, input_text=str(input_text))
 
 
+def retained_embedding_predicate(
+    *, recipe: EmbeddingRecipe, source: str, refs: str, meta: str, vectors_table: str
+) -> str:
+    """One occurrence/source/output eligibility law for reads and derivation."""
+    return f"""(
+        {refs}.message_id = {source}.message_id
+        AND {refs}.session_id = {source}.session_id
+        AND {refs}.origin = {source}.origin
+        AND {refs}.message_content_hash = {source}.content_hash
+        AND polylogue_embedding_output_matches(
+            X'{recipe.recipe_hash.hex()}', {meta}.model, {meta}.dimension,
+            {meta}.recipe_hash, {meta}.output_contract_hash,
+            {refs}.vector_derivation_hash, {source}.text
+        )
+        AND EXISTS (
+            SELECT 1 FROM {vectors_table} AS retained_vector
+            WHERE retained_vector.vector_derivation_hash = lower(hex({refs}.vector_derivation_hash))
+        )
+    )"""
+
+
+def available_embedding_predicate(
+    *, recipe: EmbeddingRecipe, source: str, refs: str, meta: str, vectors_table: str, meta_table: str
+) -> str:
+    """A valid retained binding or an exact selected-request stored output.
+
+    The latter is output availability, not proof that occurrence publication
+    has settled. It is an indexed lookup by the selected exact address.
+    """
+    retained = retained_embedding_predicate(
+        recipe=recipe,
+        source=source,
+        refs=refs,
+        meta=meta,
+        vectors_table=vectors_table,
+    )
+    return f"""({retained} OR EXISTS (
+        SELECT 1 FROM {meta_table} AS available_meta
+        JOIN {vectors_table} AS available_vector
+          ON available_vector.vector_derivation_hash = lower(hex(available_meta.vector_derivation_hash))
+        WHERE available_meta.vector_derivation_hash = {source}.vector_derivation_hash
+          AND polylogue_embedding_output_matches(
+              X'{recipe.recipe_hash.hex()}', available_meta.model, available_meta.dimension,
+              available_meta.recipe_hash, available_meta.output_contract_hash,
+              available_meta.vector_derivation_hash, {source}.text
+          )
+    ))"""
+
+
+def _stored_output_matches_sql(
+    selected_hash: object,
+    model: object,
+    dimension: object,
+    recipe_hash: object,
+    output_hash: object,
+    vector_hash: object,
+    text: object,
+) -> int:
+    if any(value is None for value in (selected_hash, model, dimension, recipe_hash, output_hash, vector_hash, text)):
+        return 0
+    selected = _SQL_RECIPES_BY_HASH.get(_identity_bytes(selected_hash))
+    if selected is None:
+        raise ValueError("no selected embedding recipe registered")
+    return int(
+        selected.stored_output_matches(
+            model=str(model),
+            dimension=int(str(dimension)),
+            recipe_hash=_identity_bytes(recipe_hash),
+            output_contract_hash=_identity_bytes(output_hash),
+            vector_hash=_identity_bytes(vector_hash),
+            text=str(text),
+        )
+    )
+
+
 def sql_string_literal(value: str) -> str:
     """Escape a Python string as a single-quoted SQL literal."""
 
@@ -345,6 +499,7 @@ def register_embedding_identity_sql(conn: sqlite3.Connection, *, recipe: Embeddi
     if recipe is not None:
         _SQL_RECIPES_BY_HASH[recipe.recipe_hash] = recipe
 
+    conn.create_function("polylogue_embedding_output_matches", 7, _stored_output_matches_sql, deterministic=True)
     # typeshed's _AggregateProtocol.step is narrowly typed for the single-int-arg
     # case; sqlite3 itself accepts any step arity matching n_arg (1 here).
     conn.create_aggregate(EMBEDDING_SOURCE_HASH_SQL_FUNCTION, 1, _EmbeddingSourceHashAggregate)  # type: ignore[arg-type]
@@ -486,5 +641,7 @@ __all__ = [
     "message_embedding_derivation_digest_from_hashes",
     "message_embedding_derivation_key",
     "register_embedding_identity_sql",
+    "retained_embedding_predicate",
+    "available_embedding_predicate",
     "sql_string_literal",
 ]

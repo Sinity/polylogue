@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from polylogue.paths import embeddings_db_path
+from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.search_providers.sqlite_vec_embeddings import SqliteVecEmbeddingMixin
 from polylogue.storage.search_providers.sqlite_vec_queries import SqliteVecQueryMixin
 from polylogue.storage.search_providers.sqlite_vec_runtime import (
@@ -40,7 +41,14 @@ class SqliteVecProvider(
         dimension: int = DEFAULT_DIMENSION,
         archive_root: Path | None = None,
         snapshot_connection: sqlite3.Connection | None = None,
+        query_recipe: EmbeddingRecipe | None = None,
     ) -> None:
+        document_recipe = EmbeddingRecipe.current(model=model, dimensions=dimension)
+        self.query_recipe = query_recipe or EmbeddingRecipe.current(
+            model=model, dimensions=dimension, input_type="query"
+        )
+        if self.query_recipe.input_type != "query" or not document_recipe.retrieval_compatible(self.query_recipe):
+            raise SqliteVecError("query and document recipes do not declare compatible retrieval contracts")
         if snapshot_connection is not None:
             # This provider is an operation-scoped reader. The archive owner
             # opened and pinned the handle; consume its recorded index proof
@@ -66,6 +74,11 @@ class SqliteVecProvider(
         self._vec_available: bool | None = None
         self._tables_ensured: bool = False
         self._snapshot_connection: sqlite3.Connection | None = None
+
+    @property
+    def document_recipe(self) -> EmbeddingRecipe:
+        """The actual document producer's current declared request contract."""
+        return EmbeddingRecipe.current(model=self.model, dimensions=self.dimension)
 
     async def read_session_similarity(
         self,
@@ -104,7 +117,11 @@ class SqliteVecProvider(
                     self
                     if connection is self._snapshot_connection
                     else self.from_vector_read_snapshot(
-                        voyage_key=self.voyage_key, connection=connection, model=self.model, dimension=self.dimension
+                        voyage_key=self.voyage_key,
+                        connection=connection,
+                        model=self.model,
+                        dimension=self.dimension,
+                        query_recipe=self.query_recipe,
                     )
                 )
                 require_vector_seed_session(connection, session_id)
@@ -122,6 +139,7 @@ class SqliteVecProvider(
         connection: sqlite3.Connection,
         model: str = DEFAULT_MODEL,
         dimension: int = DEFAULT_DIMENSION,
+        query_recipe: EmbeddingRecipe | None = None,
     ) -> SqliteVecProvider:
         """Bind reads to a handle returned by ``open_vector_read_snapshot``.
 
@@ -135,6 +153,7 @@ class SqliteVecProvider(
             model=model,
             dimension=dimension,
             snapshot_connection=connection,
+            query_recipe=query_recipe,
         )
 
 

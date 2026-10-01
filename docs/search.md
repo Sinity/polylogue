@@ -1250,3 +1250,15 @@ When a query returns no results:
    query path documented in
    [Searchable Content Coverage](#searchable-content-coverage), such as
    `actions where tool:write AND text:"needle"`.
+
+### Independent query recipes and retained document vectors
+
+The vector provider accepts an explicit `query_recipe` through `create_vector_provider`, `SqliteVecProvider` and `from_vector_read_snapshot`. Its input role must be `query`; the existing configured model continues to select the document producer. Omitting the query recipe uses that document model with the query role. This does not change the configured default or enable acquisition.
+
+Retrieval compatibility is separate from computation identity. The official hosted Voyage API declares `voyage-4`, `voyage-4-lite` and `voyage-4-large` to share a space ([provider contract](https://blog.voyageai.com/2026/01/15/voyage-4/)). Polylogue additionally requires equal dimensions, float32 encoding, normalization, revision, input preparation and request options. The `voyage` provider identity denotes the fixed official API. A different endpoint/provider, unknown model revision, contextual encoder or local Nano prompt contract does not acquire compatibility from a matching model name or dimension.
+
+An unchanged occurrence retains its actual document producer, recipe hash and exact request address across compatible model selection. New document misses use the selected document producer. Retrieval proves the current source input, metadata and physical vector; it never relabels a purchased output with the query model. A current occurrence without a binding can use an exact selected-recipe output by address. The normal message derivation publishes that missing binding without a provider request.
+
+Detailed embedding status separates `compute_missing_messages` from `binding_pending_messages`. Its existing pending counts still include unfinished occurrence binding work, so available vectors do not falsely certify completed convergence. Preflight reports compute-pending counts and binding debt separately; cost estimates exclude free binding updates. Inspection and stored-session similarity do not require acquisition credentials. Text-query acquisition requires credentials and uses the independently selected query recipe. These route tests establish mechanics, not retrieval quality or a model recommendation.
+
+Stored producer provenance is proved from the exact selected recipe or the published `archive-index-v79` producer declaration. A bookkeeping input-schema label change can reuse that proven output without rewriting its metadata. An unknown producer hash or an incompatible output at the same exact request address refuses acquisition; it cannot silently repurchase or relabel the stored row. Mixed compatible model generations retain the exact membership hashes for every producer.

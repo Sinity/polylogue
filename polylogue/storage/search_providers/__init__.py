@@ -20,6 +20,7 @@ from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.core.protocols import VectorProvider
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
 
 logger = get_logger(__name__)
 _sqlite_vec_missing_warned = False
@@ -38,6 +39,7 @@ def create_vector_provider(
     model: str | None = None,
     dimension: int | None = None,
     require_credentials: bool = True,
+    query_recipe: EmbeddingRecipe | None = None,
 ) -> VectorProvider | None:
     """Create a vector provider instance if configured.
 
@@ -120,11 +122,23 @@ def create_vector_provider(
         except ValueError as exc:
             raise SqliteVecError("public vector provider database is outside its trusted archive root") from exc
 
-    kwargs: dict[str, object] = {"voyage_key": voyage_key, "db_path": db_path, "archive_root": archive_root}
+    kwargs: dict[str, object] = {
+        "voyage_key": voyage_key,
+        "db_path": db_path,
+        "archive_root": archive_root,
+        "query_recipe": query_recipe,
+    }
     if model is not None:
         kwargs["model"] = model
     if dimension is not None:
         kwargs["dimension"] = dimension
+
+    if query_recipe is not None:
+        from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
+        document = EmbeddingRecipe.current(model=model, dimensions=dimension)
+        if query_recipe.input_type != "query" or not document.retrieval_compatible(query_recipe):
+            raise SqliteVecError("query and document recipes do not declare compatible retrieval contracts")
 
     try:
         return SqliteVecProvider(**kwargs)  # type: ignore[arg-type]

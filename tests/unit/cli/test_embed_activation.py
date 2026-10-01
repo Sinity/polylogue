@@ -33,7 +33,7 @@ from polylogue.storage.embeddings.preflight import (
     PreflightReport,
     effective_cost_cap,
     message_window_for_cost,
-    read_pending_message_count,
+    read_embedding_work_counts,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -198,7 +198,7 @@ class TestPreflightCommand:
             conn.execute("INSERT INTO messages (message_id, session_id) VALUES ('msg-1', 'conv-1')")
             conn.execute("PRAGMA user_version = 9")
 
-        assert read_pending_message_count(db_path) == (1, 1, 1)
+        assert read_embedding_work_counts(db_path)[:3] == (1, 1, 1)
 
     def test_preflight_count_uses_active_archive_with_index_anchor(
         self,
@@ -247,7 +247,7 @@ class TestPreflightCommand:
                 [("unsupported-msg-1",), ("unsupported-msg-2",), ("unsupported-msg-3",)],
             )
             conn.commit()
-        assert read_pending_message_count(db_anchor) == (1, 1, 1)
+        assert read_embedding_work_counts(db_anchor)[:3] == (1, 1, 1)
 
     def test_preflight_count_honors_archive_window_limits(
         self,
@@ -287,8 +287,8 @@ class TestPreflightCommand:
                 )
 
         db_anchor = tmp_path / "data" / "polylogue" / "custom.sqlite"
-        assert read_pending_message_count(db_anchor, max_sessions=2) == (3, 2, 2)
-        assert read_pending_message_count(db_anchor, max_messages=1) == (3, 1, 1)
+        assert read_embedding_work_counts(db_anchor, max_sessions=2)[:3] == (3, 2, 2)
+        assert read_embedding_work_counts(db_anchor, max_messages=1)[:3] == (3, 1, 1)
 
     def test_preflight_does_not_touch_provider(self, cli_runner: CliRunner, stub_env: Any) -> None:
         report = _make_report(pending_sessions=4, estimated_cost_usd=0.42)

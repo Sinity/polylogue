@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import sqlite3
+import struct
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -39,6 +40,7 @@ from polylogue.storage.embeddings.identity import (
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import (
+    EmbeddingProvenanceError,
     EmbeddingWriteAdmission,
     _should_embed_archive_message,
     archive_embeddable_message_where,
@@ -444,11 +446,14 @@ class EmbeddingDerivationAdapter:
                     if (
                         str(row[0]) == current.session_id
                         and str(row[1]) == current.origin
-                        and bytes(row[2]) == request.vector_derivation_hash
-                        and bytes(row[3]) == request.recipe.recipe_hash
-                        and bytes(row[4]) == request.recipe.output_contract_hash
-                        and str(row[5]) == request.recipe.model
-                        and int(row[6]) == request.recipe.dimensions
+                        and request.recipe.stored_output_matches(
+                            model=str(row[5]),
+                            dimension=int(row[6]),
+                            recipe_hash=bytes(row[3]),
+                            output_contract_hash=bytes(row[4]),
+                            vector_hash=bytes(row[2]),
+                            text=current.text,
+                        )
                         and int(row[8]) == 1
                         and row[7] is not None
                         and bytes(row[7]) == current.message_content_hash
@@ -485,7 +490,12 @@ class EmbeddingDerivationAdapter:
         )
         if reserved is None:
             return EmbeddingMessageReplacement(key=key, input_binding="", payload=None, empty=True)
-        vectors = self._provider._get_embeddings([reserved.text], input_type=reserved.request.recipe.input_type)
+        vector = self._stored_vector(reserved)
+        vectors = (
+            [vector]
+            if vector is not None
+            else self._provider._get_embeddings([reserved.text], input_type=reserved.request.recipe.input_type)
+        )
         if len(vectors) != 1:
             raise RuntimeError("embedding provider returned a mismatched vector count")
         return EmbeddingMessageReplacement(
@@ -494,6 +504,67 @@ class EmbeddingDerivationAdapter:
             payload=reserved,
             vector=vectors[0],
         )
+
+    def _stored_vector(self, reserved: EmbeddingMessageInput) -> list[float] | None:
+        """Read the exact selected output for ref-only publication without spend."""
+        if reserved.binding is None:
+            return None
+        with contextlib.closing(
+            open_readonly_connection(Path(reserved.binding.database_path), validate_schema=False)
+        ) as conn:
+            loaded, error = try_load_sqlite_vec(conn)
+            if not loaded:
+                raise RuntimeError(f"embedding output reuse unavailable: {error}")
+            with contextlib.closing(
+                conn.execute(
+                    """SELECT meta.model, meta.dimension, meta.recipe_hash
+                   FROM message_embedding_refs AS refs
+                   JOIN message_embeddings_meta AS meta ON meta.vector_derivation_hash = refs.vector_derivation_hash
+                   WHERE refs.message_id = ? AND refs.message_content_hash = ?""",
+                    (reserved.message_id, reserved.message_content_hash),
+                )
+            ) as cursor:
+                retained = cursor.fetchone()
+            if (
+                retained is not None
+                and reserved.request.recipe.proven_stored_producer(
+                    model=str(retained[0]), dimension=int(retained[1]), recipe_hash=bytes(retained[2])
+                )
+                is None
+            ):
+                raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
+            row = conn.execute(
+                """SELECT meta.model, meta.dimension, meta.recipe_hash, meta.output_contract_hash, v.embedding
+                   FROM message_embeddings_meta AS meta
+                   LEFT JOIN message_embeddings AS v ON v.vector_derivation_hash = lower(hex(meta.vector_derivation_hash))
+                   WHERE meta.vector_derivation_hash = ?""",
+                (reserved.request.vector_derivation_hash,),
+            ).fetchone()
+            if (
+                row is not None
+                and reserved.request.recipe.proven_stored_producer(
+                    model=str(row[0]), dimension=int(row[1]), recipe_hash=bytes(row[2])
+                )
+                is None
+            ):
+                raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
+            if row is None:
+                return None
+            if not reserved.request.recipe.stored_output_matches(
+                model=str(row[0]),
+                dimension=int(row[1]),
+                recipe_hash=bytes(row[2]),
+                output_contract_hash=bytes(row[3]),
+                vector_hash=reserved.request.vector_derivation_hash,
+                text=reserved.text,
+            ):
+                raise EmbeddingProvenanceError("stored embedding output is incompatible with the selected producer")
+            if row[4] is None:
+                return None
+            blob = bytes(row[4])
+            if len(blob) != reserved.request.recipe.dimensions * 4:
+                raise RuntimeError("stored embedding output has invalid dimensions")
+            return list(struct.unpack(f"<{reserved.request.recipe.dimensions}f", blob))
 
     def publish(self, frame: object, replacement: EmbeddingMessageReplacement) -> bool:
         """Revalidate source/recipe/generation and atomically replace one ref."""
