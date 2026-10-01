@@ -3056,6 +3056,13 @@ def test_source004_indexes_actual_dependency_reader_and_preserves_populated_sour
         ("DROP TABLE items;", False),
         ("DROP VIEW item_view;", False),
         ("DROP TRIGGER item_trigger;", False),
+        ("ALTER TABLE items DROP COLUMN kind;", False),
+        ('ALTER TABLE "items" DROP kind;', False),
+        ("ALTER/* boundary */TABLE items DROP COLUMN kind;", False),
+        (
+            "ALTER TABLE items DROP COLUMN kind; DROP INDEX items_kind; CREATE INDEX items_kind ON items(kind) WHERE kind IN ('new');",
+            False,
+        ),
     ],
 )
 def test_backup_required_mixed_train_classifies_each_drop(
@@ -3097,3 +3104,42 @@ def test_backup_required_mixed_train_classifies_each_drop(
     else:
         with pytest.raises(DurableChangeTrainError, match="unapproved drop"):
             validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((name, sql),))
+
+
+@pytest.mark.parametrize("probe_kind", ["source", "user", "user-file"])
+def test_runtime_consumer_probe_keeps_native_owner_until_creator_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_kind: str
+) -> None:
+    from polylogue.storage.sqlite import connection_profile, managed_connection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+
+    monkeypatch.setattr(managed_connection, "connect_measured", connect)
+    monkeypatch.setattr(connection_profile, "connect_measured", connect)
+    helper = {
+        "source": durable_change_train_module._runtime_probe_source_connection,
+        "user": durable_change_train_module._runtime_probe_user_connection,
+        "user-file": durable_change_train_module._runtime_probe_user_file_connection,
+    }[probe_kind]
+    connection: ControlledConnection | None = None
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as failed:
+        with helper() as actual:
+            assert isinstance(actual, ControlledConnection)
+            connection = actual
+            actual.close_failure = OSError("synthetic probe close remains unsettled")
+    assert connection is not None
+    owner = failed.value.owner
+    directory = Path(owner.scratch_directory.name) if owner.scratch_directory is not None else None
+    try:
+        assert connection.close_attempts == 1
+        if probe_kind == "user-file":
+            assert directory is not None and (directory / "user.db").is_file()
+        assert owner.require_connection() is connection
+    finally:
+        connection.close_failure = None
+        owner.close()
+    assert connection.close_attempts == 2
+    if directory is not None:
+        assert not directory.exists()

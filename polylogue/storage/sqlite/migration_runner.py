@@ -250,6 +250,21 @@ def _requires_migration_backup(path: Path, sql: str) -> bool:
     return False
 
 
+_SQL_SCHEMA_IDENTIFIER = r"""(?:[A-Za-z_][A-Za-z_0-9]*|"(?:[^"]|"")*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\])"""
+_SQL_SCHEMA_TRIVIA = r"(?:\s|/\*.*?\*/|--[^\n]*(?:\n|$))*"
+_SCHEMA_DROP_STATEMENT_RE = re.compile(
+    rf"^(?:DROP\b|ALTER{_SQL_SCHEMA_TRIVIA}TABLE{_SQL_SCHEMA_TRIVIA}"
+    rf"{_SQL_SCHEMA_IDENTIFIER}(?:{_SQL_SCHEMA_TRIVIA}\.{_SQL_SCHEMA_TRIVIA}{_SQL_SCHEMA_IDENTIFIER})?"
+    rf"{_SQL_SCHEMA_TRIVIA}DROP\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _migration_has_schema_drops(sql: str) -> bool:
+    """Classify actual DROP statements and ALTER TABLE DROP, excluding literals."""
+    return any(_SCHEMA_DROP_STATEMENT_RE.match(statement) for statement in _iter_migration_statements(sql))
+
+
 def _index_replacement_pairs(path: Path, sql: str, *, allow_other_statements: bool = False) -> tuple[str, ...]:
     """Classify every drop as an adjacent same-name index replacement.
 
@@ -261,7 +276,7 @@ def _index_replacement_pairs(path: Path, sql: str, *, allow_other_statements: bo
     names: list[str] = []
     identifier = r"[A-Za-z_][A-Za-z_0-9]*"
     for drop in statements:
-        if allow_other_statements and not re.match(r"DROP\b", drop, re.IGNORECASE):
+        if allow_other_statements and not _SCHEMA_DROP_STATEMENT_RE.match(drop):
             continue
         match = re.fullmatch(rf"DROP\s+INDEX\s+({identifier})\s*;", drop, re.IGNORECASE)
         create = next(statements, None)

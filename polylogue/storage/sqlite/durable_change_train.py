@@ -11,7 +11,7 @@ import re
 import sqlite3
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
@@ -79,7 +79,6 @@ DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
 _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _DURABLE_TRAIN_MANIFEST_NAME_RE = re.compile(r"^(?P<tier>source|user|audit)-(?P<slot>\d{3,})\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
-_DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
 
@@ -241,7 +240,11 @@ def _validate_sidecar_binding(
         )
     # The canonical classifier separately proves paired index replacement;
     # destructive drops still require their declared copy-forward constraints.
-    if _DROP_SQL_RE.search(sql) is not None and expected_claim.requires_backup and not train.drop_constraints:
+    if (
+        _migration_runner._migration_has_schema_drops(sql)
+        and expected_claim.requires_backup
+        and not train.drop_constraints
+    ):
         try:
             _migration_runner._index_replacement_pairs(Path(migration_name), sql, allow_other_statements=True)
         except _migration_runner.MigrationError as exc:
@@ -1116,17 +1119,14 @@ def _probe_accepted_marker_input_writer() -> str:
     return "accepted marker replay is immutable and source rollback removes the batch"
 
 
-def _runtime_probe_source_connection() -> sqlite3.Connection:
-    """Create a fresh canonical source-tier probe."""
+@contextmanager
+def _runtime_probe_source_connection() -> Iterator[sqlite3.Connection]:
+    """Own the actual canonical source-tier probe through native settlement."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
-    connection = sqlite3.connect(":memory:")
-    try:
+    with sqlite_connection(":memory:") as connection:
         initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+        yield connection
 
 
 def _probe_source_profile_identity(operation: Callable[..., object], *, writer: bool) -> str:
@@ -1141,7 +1141,7 @@ def _probe_source_profile_identity(operation: Callable[..., object], *, writer: 
     write = operation if writer else record_raw_profile_identity
     read = read_raw_profile_identity if writer else operation
     key = "0123456789ab"
-    with closing(_runtime_probe_source_connection()) as probe:
+    with _runtime_probe_source_connection() as probe:
         for raw_id in ("captured-profile", "historical-profile-gap"):
             write_source_raw_session_blob_ref(
                 probe,
@@ -1191,7 +1191,7 @@ def _probe_captured_source_input(operation: Callable[..., object], *, writer: bo
         profile_source_path=str(root / "sessions/input.jsonl"),
     )
     generation = "durable-change-train-captured-input"
-    with closing(_runtime_probe_source_connection()) as probe:
+    with _runtime_probe_source_connection() as probe:
         publish(
             probe,
             source_generation_id=generation,
@@ -1426,17 +1426,14 @@ def _probe_material_read(get: Callable[..., object]) -> str:
     return f"read back probe material {observation.material_id[:12]}"
 
 
-def _runtime_probe_user_connection() -> sqlite3.Connection:
-    """Create a fresh canonical user-tier probe."""
+@contextmanager
+def _runtime_probe_user_connection() -> Iterator[sqlite3.Connection]:
+    """Own the actual canonical user-tier probe through native settlement."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
-    connection = sqlite3.connect(":memory:")
-    try:
+    with sqlite_connection(":memory:") as connection:
         initialize_runtime_tier_probe(connection, ArchiveTier.USER)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+        yield connection
 
 
 def _probe_query_promotion(promote: Callable[..., object]) -> str:
@@ -1583,17 +1580,13 @@ def _probe_assertion_status_mark(mark: Callable[..., object]) -> str:
 
 @contextmanager
 def _runtime_probe_user_file_connection() -> Iterator[sqlite3.Connection]:
-    """Make a file-backed user tier for cursor transaction probes."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    """Keep the real file probe and directory until native SQL settles."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-user-cursor-probe-") as directory:
-        path = Path(directory) / "user.db"
-        initialize_archive_database(path, ArchiveTier.USER)
-        connection = sqlite3.connect(path)
-        try:
-            yield connection
-        finally:
-            connection.close()
+    with scratch_connection_context(prefix="polylogue-user-cursor-probe-", filename="user.db") as connection:
+        initialize_runtime_tier_probe(connection, ArchiveTier.USER)
+        yield connection
 
 
 def _probe_session_marker_delivery_writer(writer: Callable[..., object]) -> str:
@@ -1952,12 +1945,15 @@ def _open_existing_tier(tier_path: Path) -> Iterator[sqlite3.Connection]:
         raise DurableChangeTrainError(
             "durable tier was replaced by an unsafe file; refusing startup initialization/release"
         )
+    opened = False
     try:
-        connection = sqlite3.connect(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        with sqlite_connection(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True) as connection:
+            opened = True
+            yield connection
     except (OSError, sqlite3.Error) as exc:
+        if opened:
+            raise
         raise DurableChangeTrainError("durable tier could not be opened without initialization") from exc
-    with closing(connection), connection:
-        yield connection
 
 
 def _verify_persisted_live_tier_continuity(
@@ -2063,7 +2059,7 @@ def _canonical_schema_inventory_for_ddl(
     The baseline and complete ordered steps are keys, so neither a different
     baseline nor changed installed SQL can reuse a prior schema inventory.
     """
-    with closing(sqlite3.connect(":memory:")) as fresh:
+    with sqlite_connection(":memory:") as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
         fresh.executescript(archive_ddl)
         fresh.execute(f"PRAGMA user_version = {DURABLE_MIGRATION_ADOPTION_FLOORS[tier]}")
