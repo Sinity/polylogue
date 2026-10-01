@@ -2973,8 +2973,8 @@ async def _run_daemon_services_under_active_writer_lease(
             if not watcher_creation_blocked and intake_scheduled:
                 async with Polylogue() as polylogue:
                     from polylogue.archive.query.execution_control import QueryExecutionContext
+                    from polylogue.core.compute import compute_adapter
                     from polylogue.daemon.drive_catchup import DriveCatchupExecution
-                    from polylogue.daemon.execution import daemon_compute_adapter
                     from polylogue.daemon.intake_adapters import (
                         ColdBuildGeneration,
                         ColdBuildSettlement,
@@ -2989,9 +2989,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     )
                     from polylogue.operations.operation_context import open_operation_read
 
-                    promotion_compute = (
-                        api_server.execution_kernel if api_server is not None else daemon_compute_adapter()
-                    )
+                    promotion_compute = api_server.execution_kernel if api_server is not None else compute_adapter()
 
                     cold_build_promotion_execution = DriveCatchupExecution(
                         write_coordinator,

@@ -1823,7 +1823,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         kernel = getattr(self.server, "execution_kernel", None)
         if isinstance(kernel, BoundedComputeAdapter):
-            from polylogue.daemon.execution import CancellationHandle
+            from polylogue.core.compute import CancellationHandle
 
             cancellation = CancellationHandle()
             with log_span(

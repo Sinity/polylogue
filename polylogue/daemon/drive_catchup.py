@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from typing import TYPE_CHECKING, TypeVar
 
+from polylogue.core import compute
+from polylogue.core.compute import BoundedComputeAdapter, CancellationHandle
 from polylogue.core.compute_cancel import compute_cancel
 from polylogue.core.write_lease import adopt_write_lease, current_write_lease
-from polylogue.daemon.execution import BoundedComputeAdapter, daemon_compute_adapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import propagate
 
@@ -31,10 +33,12 @@ class DriveCatchupExecution:
         compute_adapter: BoundedComputeAdapter | None = None,
     ) -> None:
         self.coordinator = coordinator
-        self._compute_adapter = compute_adapter or daemon_compute_adapter()
+        self._compute_adapter = compute_adapter or compute.compute_adapter()
         self._bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
 
-    async def settle(self, pending: Awaitable[T], *, label: str = "settle") -> T:
+    async def settle(
+        self, pending: Awaitable[T], *, label: str = "settle", cancel_requested: Callable[[], None] | None = None
+    ) -> T:
         """Wait for cancellation to settle before closing operation resources.
 
         The task is named because the supervisor is the daemon's sole *service*
@@ -51,6 +55,8 @@ class DriveCatchupExecution:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
+            if cancel_requested is not None:
+                cancel_requested()
             while not task.done():
                 try:
                     await asyncio.shield(task)
@@ -65,7 +71,13 @@ class DriveCatchupExecution:
     async def prepare(self, operation: Callable[[], T]) -> T:
         if current_write_lease() is not None:
             raise RuntimeError("Drive preparation cannot run inside writer admission")
-        return await self.settle(asyncio.to_thread(operation), label="prepare")
+        cancellation = CancellationHandle()
+        submitted = self._compute_adapter.submit(
+            propagate(operation), admission_class="incremental-background", cancellation=cancellation
+        )
+        return await self.settle(
+            asyncio.wrap_future(submitted.future), label="prepare", cancel_requested=cancellation.cancel
+        )
 
     async def publish(self, actor: str, operation: Callable[[], Awaitable[T]]) -> T:
         return await self.settle(self.coordinator.run(f"maintenance.drive_catchup.{actor}", operation), label=actor)
@@ -107,14 +119,26 @@ class DriveCatchupExecution:
 
             settlement = PreparedSettlement()
             retained_prepared.append(settlement)
-            try:
-                with (
-                    self._bridge.hold(f"maintenance.drive_catchup.{actor}") as delegation,
-                    adopt_write_lease(delegation),
-                ):
-                    return operation(prepared)
-            finally:
-                settlement.close()
+            with (
+                self._bridge.hold(f"maintenance.drive_catchup.{actor}") as delegation,
+                adopt_write_lease(delegation),
+                compute.capture_compute_bridge()(),
+            ):
+                try:
+                    result = operation(prepared)
+                except BaseException as primary:
+                    try:
+                        settlement.close()
+                    except BaseException as cleanup:
+                        raise builtins.BaseExceptionGroup(
+                            "Drive publication and prepared cleanup failed", [primary, cleanup]
+                        ) from None
+                    raise
+                else:
+                    # Terminal parent cleanup and creator-thread native drain
+                    # retain this exact writer delegation through hold exit.
+                    settlement.close()
+                    return result
 
         def settlement_owners() -> tuple[SQLCustodyOwner, ...]:
             # The prepared carrier stays on this worker until close succeeds.
