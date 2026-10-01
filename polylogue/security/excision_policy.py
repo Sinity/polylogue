@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind
-from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -20,6 +19,8 @@ class ExcisionPolicyError(RuntimeError):
 
 
 def _current_schema_identity() -> str:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
+
     return ";".join(
         f"{tier.value}:{archive_tier_spec(tier).version}"
         for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
@@ -78,6 +79,8 @@ def build_excision_policy_snapshot(
     source_generation_id: str | None = None,
 ) -> ExcisionPolicySnapshot:
     """Read canonical user intent and audit continuity into an immutable value."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
+
     user_db = archive_root / archive_tier_spec(ArchiveTier.USER).filename
     audit_db = archive_root / archive_tier_spec(ArchiveTier.AUDIT).filename
     # This is a policy projection, never a bootstrap route. Opening through the

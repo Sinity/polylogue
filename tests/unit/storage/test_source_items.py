@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import sqlite3
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -62,6 +64,35 @@ def _reservation(conn: sqlite3.Connection, receipt_id: str, blob_hash: bytes) ->
         "INSERT INTO blob_publication_reservations VALUES (?, ?, 1, 'synthetic', 1)",
         (receipt_id, blob_hash),
     )
+
+
+def test_cold_archive_initialization_preserves_source_item_and_policy_models() -> None:
+    """Cold archive loading must support raw admission and canonical policy identity."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "\n".join(
+                (
+                    "from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER",
+                    "from polylogue.storage.runtime import RawSessionRecord",
+                    "from polylogue.storage.sqlite.archive_tiers.source_items import SourceItemAdmission",
+                    "from polylogue.security.excision_policy import ExcisionPolicySnapshot",
+                    "from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec",
+                    "from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier",
+                    "member = SourceItemAdmission('generation', 'item', 'record:0')",
+                    "raw = RawSessionRecord(raw_id='raw', source_path='/synthetic/source.json', source_item=member, blob_size=0, acquired_at='2026-01-01T00:00:00Z')",
+                    "assert raw.source_item == member",
+                    "policy = ExcisionPolicySnapshot((), (), 0, 0, 'head', None)",
+                    "assert policy.schema_identity == ';'.join(f'{tier.value}:{archive_tier_spec(tier).version}' for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT))",
+                    "assert ArchiveTier.SOURCE in ARCHIVE_DDL_BY_TIER",
+                )
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_fresh_source_v1_contains_prepared_manifest_tables() -> None:

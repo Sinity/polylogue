@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.core.provider_identity import captured_hermes_profile_key, profile_root_for_artifact
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
-from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 from .common import require_vocabulary
@@ -27,6 +27,9 @@ from .source_attachments import (
     record_source_attachments,
     source_attachment_census,
 )
+
+if TYPE_CHECKING:
+    from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
 
 @dataclass(frozen=True, slots=True)
