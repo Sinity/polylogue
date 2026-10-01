@@ -1676,6 +1676,33 @@ def open_readonly_connection(
     ``check_same_thread=False`` is reserved for a cached handle whose caller
     already serializes access and may close it from a different thread.
     """
+    return _open_readonly_owner(
+        path,
+        timeout=timeout,
+        immutable=immutable,
+        opened_main_fd=opened_main_fd,
+        tier=tier,
+        validate_schema=validate_schema,
+        profile=profile,
+        timeout_class=timeout_class,
+        check_same_thread=check_same_thread,
+    ).handoff()
+
+
+def _open_readonly_owner(
+    path: str | Path,
+    *,
+    timeout: float | None = None,
+    immutable: bool = False,
+    opened_main_fd: int | None = None,
+    tier: ArchiveTier | None = None,
+    validate_schema: bool = True,
+    profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
+    timeout_class: str = "interactive-read",
+    check_same_thread: bool = True,
+    lifetime_dependencies: tuple[object, ...] = (),
+) -> NativeSQLCustodyOwner:
+    """Register read construction and its explicit artifact lifetime before SQL."""
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
     assert_population_admitted(path)
@@ -1715,7 +1742,7 @@ def open_readonly_connection(
             raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
         database_uri = descriptor_uri
     conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
-    owner = NativeSQLCustodyOwner(conn)
+    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=lifetime_dependencies)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
@@ -1727,7 +1754,7 @@ def open_readonly_connection(
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
-    return owner.handoff()
+    return owner
 
 
 def _authorize_read_operation(
@@ -2612,13 +2639,18 @@ def scratch_connection_context(
 
 @contextmanager
 def readonly_connection_context(
-    path: str | Path, *, timeout: float = DB_TIMEOUT, validate_schema: bool = True
+    path: str | Path,
+    *,
+    timeout: float = DB_TIMEOUT,
+    validate_schema: bool = True,
+    lifetime_dependencies: tuple[object, ...] = (),
 ) -> Iterator[sqlite3.Connection]:
     """Close a temporary reader on its creator, retaining a failed close."""
-    connection = open_readonly_connection(path, timeout=timeout, validate_schema=validate_schema)
-    owner = NativeSQLCustodyOwner(connection)
+    owner = _open_readonly_owner(
+        path, timeout=timeout, validate_schema=validate_schema, lifetime_dependencies=lifetime_dependencies
+    )
     try:
-        yield connection
+        yield owner.require_connection()
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise

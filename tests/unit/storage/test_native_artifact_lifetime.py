@@ -4,6 +4,7 @@ import gc
 import sqlite3
 import tempfile
 import weakref
+from contextlib import closing
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +17,66 @@ from polylogue.storage.sqlite.connection_profile import (
     retained_native_sql_owners_for_lifetime,
 )
 from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+
+@pytest.mark.parametrize("construction_failure", [False, True])
+def test_readonly_artifact_dependency_survives_constructor_or_reader_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, construction_failure: bool
+) -> None:
+    from polylogue.storage.sqlite import connection_profile as profiles
+
+    scratch = tempfile.TemporaryDirectory(dir=tmp_path)
+    directory = Path(scratch.name)
+    path = directory / "artifact.db"
+    with closing(sqlite3.connect(path)) as seed:
+        seed.execute("CREATE TABLE evidence(value TEXT)")
+        seed.execute("INSERT INTO evidence VALUES ('retained')")
+        seed.commit()
+    handle = SettlementHandle(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True))
+    monkeypatch.setattr(profiles, "connect_measured", lambda *args, **kwargs: handle)
+    primary = ValueError("synthetic read construction failure")
+
+    def refuse_schema(*args: object, **kwargs: object) -> None:
+        raise primary
+
+    if construction_failure:
+        monkeypatch.setattr(profiles, "_assert_schema_supported", refuse_schema)
+    reference = weakref.ref(scratch)
+    with pytest.raises(NativeConnectionSettlementError) as refused:
+        with profiles.readonly_connection_context(
+            path, validate_schema=construction_failure, lifetime_dependencies=(scratch,)
+        ) as reader:
+            assert not construction_failure
+            assert reader.execute("SELECT value FROM evidence").fetchone()[0] == "retained"
+    owner = refused.value.owner
+    if construction_failure:
+        assert refused.value.__cause__ is primary
+    assert retained_native_sql_owners_for_lifetime(scratch) == (owner,)
+    del scratch
+    gc.collect()
+    assert reference() is not None and directory.exists()
+    handle.allow_cleanup.set()
+    owner.close()
+    retained = reference()
+    if retained is not None:
+        assert retained_native_sql_owners_for_lifetime(retained) == ()
+        retained.cleanup()
+    assert not directory.exists()
+
+
+def test_healthy_readonly_artifact_dependency_retires_without_deleting_sealed_artifact(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+    with tempfile.TemporaryDirectory(dir=tmp_path) as directory:
+        path = Path(directory) / "artifact.db"
+        with closing(sqlite3.connect(path)) as seed:
+            seed.execute("CREATE TABLE evidence(value TEXT)")
+        lifetime = object()
+        with readonly_connection_context(path, validate_schema=False, lifetime_dependencies=(lifetime,)) as reader:
+            assert reader.execute("SELECT count(*) FROM evidence").fetchone()[0] == 0
+            assert len(retained_native_sql_owners_for_lifetime(lifetime)) == 1
+        assert retained_native_sql_owners_for_lifetime(lifetime) == ()
+        assert path.is_file()
 
 
 def test_scoped_artifact_survives_failed_close_and_context_reset(tmp_path: Path) -> None:
