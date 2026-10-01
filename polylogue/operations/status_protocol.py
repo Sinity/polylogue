@@ -29,6 +29,8 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Literal
 
+from polylogue.core.status_error_privacy import redact_status_error
+
 ComponentState = Literal["fresh", "stale", "refreshing", "timed_out", "unavailable", "degraded"]
 
 _POLL_STEP_S = 0.02
@@ -95,6 +97,10 @@ class ComponentSnapshot:
     last_good_at: str | None = None
     completed_at: str | None = None
     collection_duration_s: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.error is not None:
+            object.__setattr__(self, "error", redact_status_error(self.error))
 
     def to_dict(self) -> dict[str, object]:
         return {

@@ -6,11 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.core.types import ConvergenceDebtStatus
 from polylogue.logging import WARNING, emit
@@ -61,6 +62,11 @@ class ConvergenceDebtItem(BaseModel):
     retry_due: bool = False
     last_error: str | None = None
 
+    @field_validator("last_error")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
+
 
 class ConvergenceDebtSummary(BaseModel):
     available: bool = True
@@ -72,6 +78,11 @@ class ConvergenceDebtSummary(BaseModel):
     family_summaries: list[ConvergenceDebtFamilySummary] = Field(default_factory=list)
     recent: list[ConvergenceDebtItem] = Field(default_factory=list)
 
+    @field_validator("error")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
+
 
 class ConvergenceDebtStageCounts(BaseModel):
     """Aggregate-only convergence-debt counts for metric emission."""
@@ -79,6 +90,11 @@ class ConvergenceDebtStageCounts(BaseModel):
     available: bool = True
     error: str | None = None
     counts: list[tuple[str, str, int]] = Field(default_factory=list)
+
+    @field_validator("error")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
 
 
 def convergence_debt_stage_counts_info(dbf: Path, *, ops_db: Path | None = None) -> ConvergenceDebtStageCounts:

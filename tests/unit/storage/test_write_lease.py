@@ -101,7 +101,7 @@ def test_archive_insight_writer_refuses_a_different_archive_root(tmp_path: Path)
     Anti-vacuity: omitting the explicit ``archive_root`` from the convergence
     writer lets this open succeed because the factory has no root to compare.
     """
-    from polylogue.daemon.convergence_stages import _open_archive_insight_write_connection
+    from polylogue.operations.session_profile_convergence import make_session_profile_derivation
 
     owner_root = tmp_path / "owner"
     target_root = tmp_path / "target"
@@ -114,7 +114,7 @@ def test_archive_insight_writer_refuses_a_different_archive_root(tmp_path: Path)
         write_lease("test.owner", archive_root=owner_root),
         pytest.raises(UnleasedWriteError, match="outside the archive"),
     ):
-        _open_archive_insight_write_connection(target_db, archive_root=target_root)
+        make_session_profile_derivation(target_db, archive_root=target_root, now=lambda: 0.0)._write_connection()
 
 
 def test_checkpoint_writer_refuses_a_different_archive_root(tmp_path: Path) -> None:

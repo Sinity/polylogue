@@ -33,6 +33,12 @@ class PolylogueError(Exception):
     http_status_code: int = HTTPStatus.INTERNAL_SERVER_ERROR
 
 
+class SessionNotFoundError(PolylogueError):
+    """A requested session does not exist in the archive."""
+
+    http_status_code = 404
+
+
 class RawCASFrontierError(PolylogueError):
     """Retryable compare-and-swap conflict while advancing raw authority."""
 
@@ -43,6 +49,18 @@ class DatabaseError(PolylogueError):
     """Base class for database errors."""
 
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
+
+
+class VectorReadUnavailableError(DatabaseError):
+    """Retained vector evidence could not answer a read, with its typed reason."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        self.reason = reason
+        super().__init__(message)
+
+
+class VectorRuntimeUnavailableError(DatabaseError):
+    """The local vector extension could not be loaded."""
 
 
 FIRST_RUN_INDEX_GUIDANCE = (
@@ -239,5 +257,8 @@ __all__ = [
     "SchemaVersionMismatchError",
     "SchemaSkew",
     "SchemaSkewError",
+    "SessionNotFoundError",
     "UnsupportedInsightFilterError",
+    "VectorReadUnavailableError",
+    "VectorRuntimeUnavailableError",
 ]

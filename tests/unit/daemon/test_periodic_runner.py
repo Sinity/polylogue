@@ -491,3 +491,16 @@ async def test_repeated_wakeups_on_a_drained_backlog_cannot_spin() -> None:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+def test_periodic_error_serialization_conceals_complete_private_path() -> None:
+    from polylogue.daemon.periodic import PeriodicLoopState
+
+    state = PeriodicLoopState(
+        name="parse", interval_s=1.0, last_error="cannot read '/opt/private space/例.json'", last_error_type="OSError"
+    )
+    payload = state.as_dict()
+    assert payload["last_error_type"] == "OSError"
+    assert "private space" not in str(payload["last_error"])
+    assert "例.json" not in str(payload["last_error"])
+    assert "[redacted]" in str(payload["last_error"])

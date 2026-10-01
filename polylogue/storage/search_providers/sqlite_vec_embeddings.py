@@ -28,7 +28,7 @@ class SqliteVecEmbeddingMixin:
     if TYPE_CHECKING:
         model: str
         dimension: int
-        voyage_key: str
+        voyage_key: str | None
 
     def _get_embeddings(
         self,
@@ -38,6 +38,8 @@ class SqliteVecEmbeddingMixin:
         """Get embeddings from Voyage AI."""
         if not texts:
             return []
+        if not self.voyage_key:
+            raise SqliteVecError("embedding acquisition requires a Voyage API key")
 
         @retry(
             stop=stop_after_attempt(5),

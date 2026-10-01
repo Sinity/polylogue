@@ -1147,25 +1147,51 @@ def test_receiver_refuses_a_body_shorter_than_its_declared_length(tmp_path: Path
     assert not list(tmp_path.rglob(".*.tmp"))
 
 
-def test_receiver_auth_allows_cors_preflight_without_bearer_token(tmp_path: Path) -> None:
-    with _running_receiver(tmp_path, auth_token="secret", extra_origins=(_CHATGPT_ORIGIN,)) as (host, port):
+def test_receiver_auth_allows_extension_contract_preflight_without_bypassing_bearer(tmp_path: Path) -> None:
+    requested_headers = {
+        "authorization",
+        "content-type",
+        "x-request-id",
+        "x-polylogue-client-protocol",
+        "x-polylogue-extension-contract",
+    }
+    with _running_receiver(tmp_path, auth_token="secret") as (host, port):
         conn = HTTPConnection(host, port)
         conn.request(
             "OPTIONS",
             "/v1/browser-captures",
             headers={
-                "Origin": _CHATGPT_ORIGIN,
-                "Access-Control-Request-Headers": "authorization, content-type, x-request-id",
+                "Origin": _EXTENSION_ORIGIN,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": ", ".join(sorted(requested_headers)),
             },
         )
         response = conn.getresponse()
         allow_headers = response.getheader("Access-Control-Allow-Headers")
+        assert response.status == HTTPStatus.NO_CONTENT
+        assert response.getheader("Access-Control-Allow-Origin") == _EXTENSION_ORIGIN
+        assert allow_headers is not None
+        assert requested_headers <= {header.strip().lower() for header in allow_headers.split(",")}
         response.read()
+        headers = {
+            "Origin": _EXTENSION_ORIGIN,
+            "Content-Type": "application/json",
+            "X-Polylogue-Extension-Contract": "1",
+        }
+        conn.request("POST", "/v1/browser-captures", body=json.dumps(_payload()), headers=headers)
+        refused = conn.getresponse()
+        assert refused.status == HTTPStatus.UNAUTHORIZED
+        refused.read()
+        conn.request(
+            "POST",
+            "/v1/browser-captures",
+            body=json.dumps(_payload()),
+            headers={**headers, "Authorization": "Bearer secret"},
+        )
+        accepted = conn.getresponse()
+        assert accepted.status == HTTPStatus.ACCEPTED
+        assert json.loads(accepted.read())["artifact_ref"]
         conn.close()
-
-    assert response.status == HTTPStatus.NO_CONTENT
-    assert allow_headers is not None
-    assert "X-Request-ID" in allow_headers
 
 
 def test_receiver_preflight_grants_private_network_access_when_requested(tmp_path: Path) -> None:

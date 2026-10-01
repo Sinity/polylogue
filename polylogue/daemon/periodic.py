@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.logging import WARNING, emit
 
 #: Fraction of the interval added as random delay before each tick. Sixteen
@@ -112,7 +113,7 @@ class PeriodicLoopState:
             "last_run_started_at": self.last_run_started_at,
             "last_run_completed_at": self.last_run_completed_at,
             "next_run_at": self.next_run_at,
-            "last_error": self.last_error,
+            "last_error": redact_status_error(self.last_error) if self.last_error is not None else None,
             "last_error_type": self.last_error_type,
             "last_error_at": self.last_error_at,
             "runs": self.runs,

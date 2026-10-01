@@ -37,14 +37,14 @@ from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from tests.infra.live_ingest import write_index_session
 
 _TEXT = "This authored prose message is embedded once and reused under a fresh archive root."
-_CONFIGURED_EMBEDDING_MODEL = load_polylogue_config().embedding_model
 
 
 class _CountingFakeVectorProvider:
-    model = _CONFIGURED_EMBEDDING_MODEL
     dimension = 1024
 
     def __init__(self) -> None:
+        # Bind after pytest has installed the isolated configuration.
+        self.model = load_polylogue_config().embedding_model
         self.calls: list[list[str]] = []
 
     def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
@@ -60,6 +60,9 @@ class _CountingFakeVectorProvider:
 
     def query_by_session(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         return []
+
+    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("this fixture does not perform retained-session reads")
 
 
 def _write_session(root: Path, *, native_id: str, message_native_id: str) -> str:
@@ -166,7 +169,7 @@ def test_ref_only_write_refuses_a_missing_vector(tmp_path: Path) -> None:
                         session_id="codex-session:s",
                         origin="codex-session",
                         embedding=[],
-                        model=_CONFIGURED_EMBEDDING_MODEL,
+                        model=load_polylogue_config().embedding_model,
                         embedded_at_ms=0,
                         vector_derivation_hash=b"\x01" * 32,
                     )

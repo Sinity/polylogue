@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import sqlite3
+from contextlib import closing
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING
 
+from polylogue.core.enums import Origin
+from polylogue.core.errors import VectorRuntimeUnavailableError
 from polylogue.core.protocols import VectorProvider
+from polylogue.core.sources import source_name_to_origin
 from polylogue.logging import get_logger
 from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_async
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
+from polylogue.storage.search_providers.sqlite_vec_runtime import require_vector_seed_session
 
 if TYPE_CHECKING:
     import aiosqlite
 
     from polylogue.archive.session.domain_models import Session
     from polylogue.archive.stats import ArchiveStats
+    from polylogue.config import Config
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -36,10 +43,6 @@ def resolve_optional_vector_provider(
 
 
 logger = get_logger(__name__)
-
-
-class _SessionEmbeddingCounter(Protocol):
-    def count_session_embeddings(self, session_id: str) -> int: ...
 
 
 class RepositoryVectorMixin:
@@ -87,8 +90,7 @@ class RepositoryVectorMixin:
         session_id: str,
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
-        provider_db_path: Path | None = None,
-        voyage_api_key: str | None = None,
+        provider_config: Config | None = None,
     ) -> dict[str, object]:
         """Rank sessions from ``query_by_session`` message hits.
 
@@ -96,71 +98,98 @@ class RepositoryVectorMixin:
         resolves each returned message to its session, keeps the closest hit
         per session, and hydrates the metadata needed by read surfaces.
         """
-        vector_provider = resolve_optional_vector_provider(
-            vector_provider,
-            db_path=provider_db_path,
-            voyage_api_key=voyage_api_key,
-        )
         if vector_provider is None:
-            raise ValueError("No vector provider configured")
+            from polylogue.storage.search_providers import create_vector_provider
 
-        source_embedded_messages = await asyncio.to_thread(
-            cast(_SessionEmbeddingCounter, vector_provider).count_session_embeddings,
+            vector_provider = create_vector_provider(
+                provider_config,
+                require_credentials=False,
+            )
+        if vector_provider is None:
+            raise VectorRuntimeUnavailableError("No local vector runtime is available")
+
+        return await vector_provider.read_session_similarity(
             session_id,
-        )
-        results = await asyncio.to_thread(
-            vector_provider.query_by_session,
-            session_id,
+            index_path=self._backend.db_path,
             limit=limit,
+            project=lambda connection, count, hits: self._project_session_similarity(
+                connection, session_id, count, hits, limit=limit
+            ),
         )
-        if not results:
+
+    @staticmethod
+    def _project_session_similarity(
+        connection: sqlite3.Connection,
+        session_id: str,
+        source_embedded_messages: int,
+        results: list[tuple[str, float]],
+        *,
+        limit: int,
+    ) -> dict[str, object]:
+        """Resolve hits and metadata on the same pinned index as vector ranking."""
+        with closing(connection.cursor()) as cursor:
+            cursor.row_factory = sqlite3.Row
+            require_vector_seed_session(connection, session_id)
+            if not results:
+                return {
+                    "source_embedded_messages": source_embedded_messages,
+                    "results": [],
+                    "unresolved_message_hits": 0,
+                }
+
+            message_ids = [message_id for message_id, _ in results]
+            placeholders = ",".join("?" * len(message_ids))
+            rows = cursor.execute(
+                f"SELECT message_id, session_id FROM archive_index.messages WHERE message_id IN ({placeholders})",
+                message_ids,
+            ).fetchall()
+            message_to_session = {str(row["message_id"]): str(row["session_id"]) for row in rows}
+            # A hit whose message id resolves to no row is not "no match" -- it means the
+            # embeddings tier references messages the index does not have, so the ranking
+            # is being computed over a broken join. Count it and report it, rather than
+            # letting it disappear into an ordinary empty result set.
+            unresolved_hits = sum(1 for message_id, _ in results if message_id not in message_to_session)
+            aggregates: dict[str, tuple[float, set[str]]] = {}
+            for message_id, distance in results:
+                candidate_id = message_to_session.get(message_id)
+                if candidate_id is None or candidate_id == session_id:
+                    continue
+                best_distance, matched_messages = aggregates.setdefault(candidate_id, (float("inf"), set()))
+                matched_messages.add(message_id)
+                aggregates[candidate_id] = (min(best_distance, distance), matched_messages)
+
+            ranked = sorted(aggregates.items(), key=lambda item: (item[1][0], item[0]))[:limit]
+            ranked_ids = [candidate_id for candidate_id, _ in ranked]
+            sessions_by_id: dict[str, sqlite3.Row] = {}
+            if ranked_ids:
+                placeholders = ",".join("?" * len(ranked_ids))
+                rows = cursor.execute(
+                    f"SELECT session_id, title, origin FROM archive_index.sessions WHERE session_id IN ({placeholders})",
+                    ranked_ids,
+                ).fetchall()
+                sessions_by_id = {str(row["session_id"]): row for row in rows}
+
+            hits: list[dict[str, object]] = []
+            for candidate_id, (distance, matched_messages) in ranked:
+                candidate = sessions_by_id.get(candidate_id)
+                if candidate is None:
+                    continue
+                score = max(0.0, min(1.0, 1.0 - (distance * distance) / 2.0))
+                hits.append(
+                    {
+                        "session_id": candidate_id,
+                        "score": score,
+                        "distance": distance,
+                        "matched_message_count": len(matched_messages),
+                        "title": candidate["title"],
+                        "origin": str(Origin.from_string(source_name_to_origin(candidate["origin"]))),
+                    }
+                )
             return {
                 "source_embedded_messages": source_embedded_messages,
-                "results": [],
-                "unresolved_message_hits": 0,
+                "results": hits,
+                "unresolved_message_hits": unresolved_hits,
             }
-
-        message_ids = [message_id for message_id, _ in results]
-        message_to_session = await self._get_message_session_mapping(message_ids)
-        # A hit whose message id resolves to no row is not "no match" -- it means the
-        # embeddings tier references messages the index does not have, so the ranking
-        # is being computed over a broken join. Count it and report it, rather than
-        # letting it disappear into an ordinary empty result set.
-        unresolved_hits = sum(1 for message_id, _ in results if message_id not in message_to_session)
-        aggregates: dict[str, tuple[float, set[str]]] = {}
-        for message_id, distance in results:
-            candidate_id = message_to_session.get(message_id)
-            if candidate_id is None or candidate_id == session_id:
-                continue
-            best_distance, matched_messages = aggregates.setdefault(candidate_id, (float("inf"), set()))
-            matched_messages.add(message_id)
-            aggregates[candidate_id] = (min(best_distance, distance), matched_messages)
-
-        ranked = sorted(aggregates.items(), key=lambda item: (item[1][0], item[0]))[:limit]
-        sessions = await self.get_many([candidate_id for candidate_id, _ in ranked])
-        sessions_by_id = {str(session.id): session for session in sessions}
-
-        hits: list[dict[str, object]] = []
-        for candidate_id, (distance, matched_messages) in ranked:
-            candidate = sessions_by_id.get(candidate_id)
-            if candidate is None:
-                continue
-            score = max(0.0, min(1.0, 1.0 - (distance * distance) / 2.0))
-            hits.append(
-                {
-                    "session_id": candidate_id,
-                    "score": score,
-                    "distance": distance,
-                    "matched_message_count": len(matched_messages),
-                    "title": candidate.title,
-                    "origin": str(candidate.origin),
-                }
-            )
-        return {
-            "source_embedded_messages": source_embedded_messages,
-            "results": hits,
-            "unresolved_message_hits": unresolved_hits,
-        }
 
     async def _get_message_session_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
         if not message_ids:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from http import HTTPStatus
 from pathlib import Path
 from typing import cast
@@ -10,13 +11,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon import metrics
+from polylogue.daemon.metrics import handle_metrics
+from polylogue.operations import daemon_metrics as metrics
 from polylogue.operations.storage_io_observation import IoPhaseObservation, StorageIoObservation
 
 
 def _scrape(db: Path) -> str:
     responder = MagicMock()
-    metrics.handle_metrics(responder, db)
+    handle_metrics(responder, db)
     assert responder._send_text.call_args.args[0] == HTTPStatus.OK
     return cast(str, responder._send_text.call_args.args[1])
 
@@ -225,6 +227,42 @@ def test_unreadable_ops_tier_is_not_reported_as_missing_schema(tmp_path: Path) -
     assert 'polylogue_daemon_metrics_collection_reason{group="ops_attempts",reason="archive_unreadable"} 1' in body
 
 
+def test_ops_only_openability_probe_uses_a_closed_query_only_reader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Restoring the hand-built probe bypasses the query-only owner and fails."""
+    from polylogue.storage.sqlite import connection_profile
+
+    ops_db = tmp_path / "ops.db"
+    with closing(sqlite3.connect(ops_db)) as conn:
+        conn.execute("CREATE TABLE sentinel (value INTEGER)")
+        conn.commit()
+    opened: list[sqlite3.Connection] = []
+    original_open = connection_profile.open_readonly_connection
+
+    def observe_open(path: str | Path, *, validate_schema: bool = True) -> sqlite3.Connection:
+        conn = original_open(path, validate_schema=validate_schema)
+        assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute("INSERT INTO sentinel VALUES (1)")
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(connection_profile, "open_readonly_connection", observe_open)
+    assert metrics._format_ops_only_metrics([], ops_db) is None
+    assert opened
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+
+def test_ops_only_missing_tier_is_not_created(tmp_path: Path) -> None:
+    """Opening an absent ops tier as writable would create it and fail."""
+    ops_db = tmp_path / "ops.db"
+    assert metrics._format_ops_only_metrics([], ops_db) is None
+    assert not ops_db.exists()
+
+
 def test_readable_empty_ops_attempt_ledger_keeps_measured_zero(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         conn.execute(
@@ -256,3 +294,60 @@ def test_process_collection_failure_isolated(monkeypatch: pytest.MonkeyPatch, tm
     assert "polylogue_diagnostic_delivery_total" in body
     assert "polylogue_storage_io_phase_observable" not in body
     assert 'polylogue_daemon_metrics_collection_available{group="process_io"} 0' in body
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "fallback", "reason"),
+    [
+        ("_ops_attempt_counts", None, "attempt_counts_unreadable"),
+        ("_ops_recent_attempt_durations", [], "attempt_durations_unreadable"),
+        ("_ops_latest_ingest_memory", [], "ingest_memory_unreadable"),
+        ("_ops_storage_route_counts", None, "storage_route_counts_unreadable"),
+        ("_archive_latest_embedding_run_state", None, "latest_embedding_run_unreadable"),
+    ],
+)
+def test_tier_query_fault_retains_fallback_and_closes_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader_name: str, fallback: object, reason: str
+) -> None:
+    """Removing typed refusal, its diagnostic or finally-close makes this red."""
+    import polylogue.storage.sqlite.connection_profile as profiles
+
+    database = tmp_path / "ops.db"
+    conn = sqlite3.connect(database)
+    conn.set_authorizer(
+        lambda action, *_args: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_SELECT else sqlite3.SQLITE_OK
+    )
+    monkeypatch.setattr(profiles, "open_readonly_connection", lambda *_args, **_kwargs: conn)
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(metrics, "emit", lambda _event, **fields: events.append(fields))
+    try:
+        assert getattr(metrics, reader_name)(database) == fallback
+        assert len(events) == 1
+        assert events[0]["reason"] == reason
+        assert events[0]["outcome"] == "degraded"
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("PRAGMA database_list")
+    finally:
+        conn.close()
+
+
+def test_throughput_query_fault_does_not_append_partial_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed acquisition returns the existing refusal without claiming a rate."""
+    import polylogue.storage.sqlite.connection_profile as profiles
+
+    database = tmp_path / "ops.db"
+    conn = sqlite3.connect(database)
+    conn.set_authorizer(
+        lambda action, *_args: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_SELECT else sqlite3.SQLITE_OK
+    )
+    monkeypatch.setattr(profiles, "open_readonly_connection", lambda *_args, **_kwargs: conn)
+    lines: list[str] = []
+    try:
+        assert metrics._emit_ops_throughput_metrics(lines, database) is False
+        assert lines == []
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("PRAGMA database_list")
+    finally:
+        conn.close()

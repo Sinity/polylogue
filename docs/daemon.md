@@ -1032,6 +1032,8 @@ max_cost_usd = 1.00
 voyage_api_key = "va-..."
 ```
 
+Existing-session similarity reads retained vectors without an API key or provider call. Missing or unreadable vector evidence produces an unavailable state; only a successful count can establish that a session has no vectors. Text-query embedding and acquisition still require credentials.
+
 Without a `voyage_api_key`, the embedding stage reports "disabled" in daemon
 status — this is not an error.
 

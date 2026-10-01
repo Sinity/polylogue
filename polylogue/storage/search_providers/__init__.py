@@ -37,11 +37,13 @@ def create_vector_provider(
     archive_root: Path | None = None,
     model: str | None = None,
     dimension: int | None = None,
+    require_credentials: bool = True,
 ) -> VectorProvider | None:
     """Create a vector provider instance if configured.
 
     Uses sqlite-vec for self-contained vector search with Voyage AI embeddings.
-    Returns None if Voyage API key is not configured or sqlite-vec is unavailable.
+    Returns None if acquisition credentials are required but absent, or sqlite-vec is unavailable.
+    Stored-vector consumers set ``require_credentials=False``; they never embed text.
 
     Args:
         config: Application configuration with optional index_config
@@ -64,7 +66,7 @@ def create_vector_provider(
 
         voyage_key = load_polylogue_config().voyage_api_key
 
-    if not voyage_key:
+    if require_credentials and not voyage_key:
         return None
 
     if config is not None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,11 @@ import pytest
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    ARCHIVE_TIER_SPECS,
+    initialize_archive_database,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
@@ -30,7 +35,7 @@ def _write_tier_version(path: Path, version: int) -> None:
 
 def _write_current_tier_files(root: Path) -> None:
     for spec in ARCHIVE_TIER_SPECS.values():
-        _write_tier_version(root / spec.filename, spec.version)
+        initialize_archive_database(root / spec.filename, spec.tier)
 
 
 def test_archive_debt_reports_missing_required_tiers(tmp_path: Path) -> None:
@@ -694,31 +699,30 @@ def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_
     assert payload.totals.affected_actionable >= 1
 
 
+def _seed_codex_model_usage(index_db: Path, *, input_tokens: int) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+    with closing(sqlite3.connect(index_db)) as conn:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="s1",
+            messages=[],
+            models_used=["gpt-5-codex"],
+        )
+        write_parsed_session_to_archive(conn, session)
+        conn.execute(
+            "UPDATE session_model_usage SET input_tokens = ? WHERE session_id = ? AND model_name = ?",
+            (input_tokens, "codex-session:s1", "gpt-5-codex"),
+        )
+        conn.commit()
+
+
 def test_archive_debt_reports_codex_zero_token_projection_debt(tmp_path: Path) -> None:
     _write_current_tier_files(tmp_path)
     index_db = tmp_path / "index.db"
-    with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL)")
-        conn.execute(
-            """
-            CREATE TABLE session_model_usage (
-                session_id TEXT NOT NULL,
-                model_name TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_write_tokens INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-        conn.execute("INSERT INTO sessions (session_id, origin) VALUES ('codex-session:s1', 'codex-session')")
-        conn.execute(
-            """
-            INSERT INTO session_model_usage (
-                session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-            ) VALUES ('codex-session:s1', 'gpt-5-codex', 0, 0, 0, 0)
-            """
-        )
+    _seed_codex_model_usage(index_db, input_tokens=0)
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("provider-usage",))
 
@@ -736,28 +740,7 @@ def test_archive_debt_reports_codex_zero_token_projection_debt(tmp_path: Path) -
 def test_archive_debt_ignores_codex_usage_rows_with_nonzero_tokens(tmp_path: Path) -> None:
     _write_current_tier_files(tmp_path)
     index_db = tmp_path / "index.db"
-    with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL)")
-        conn.execute(
-            """
-            CREATE TABLE session_model_usage (
-                session_id TEXT NOT NULL,
-                model_name TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_write_tokens INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-        conn.execute("INSERT INTO sessions (session_id, origin) VALUES ('codex-session:s1', 'codex-session')")
-        conn.execute(
-            """
-            INSERT INTO session_model_usage (
-                session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-            ) VALUES ('codex-session:s1', 'gpt-5-codex', 10, 0, 0, 0)
-            """
-        )
+    _seed_codex_model_usage(index_db, input_tokens=10)
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("provider-usage",))
 

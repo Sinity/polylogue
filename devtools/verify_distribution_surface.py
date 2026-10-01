@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Keep the generated work directory for inspection.",
     )
+    parser.add_argument("--installed-smoke-script", type=Path, default=ROOT / "packaging/smoke-installed.py")
     args = parser.parse_args(argv)
 
     if args.work_dir is not None:
@@ -58,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         cleanup = not args.keep_work_dir
 
     try:
-        verify_distribution_surface(work_dir)
+        verify_distribution_surface(work_dir, installed_smoke_script=args.installed_smoke_script)
     except DistributionVerificationError as exc:
         print(f"gate distribution: FAILED: {exc}", file=sys.stderr)
         if not cleanup:
@@ -74,21 +75,36 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def verify_distribution_surface(work_dir: Path) -> None:
+def verify_distribution_surface(
+    work_dir: Path, *, installed_smoke_script: Path = ROOT / "packaging/smoke-installed.py"
+) -> None:
     """Build and smoke installed wheel artifacts from checkout and unpacked sdist."""
     work_dir = work_dir.resolve()
     require_free_threaded_runtime(consumer="distribution verifier")
     managed_python = Path(sys.executable).resolve()
     dist_dir = work_dir / "dist"
     _run(
-        ("uv", "build", "--python", str(managed_python), "--out-dir", str(dist_dir), "--sdist", "--wheel", str(ROOT)),
+        (
+            "uv",
+            "build",
+            "--build-constraints",
+            str(Path(os.environ.get("UV_BUILD_CONSTRAINT", ROOT / "packaging/hatchling.txt"))),
+            "--require-hashes",
+            "--python",
+            str(managed_python),
+            "--out-dir",
+            str(dist_dir),
+            "--sdist",
+            "--wheel",
+            str(ROOT),
+        ),
         cwd=ROOT,
     )
 
     wheel = _single_artifact(dist_dir, "*.whl")
     sdist = _single_artifact(dist_dir, "*.tar.gz")
     _verify_wheel_surface(wheel)
-    _smoke_installed_wheel(wheel, work_dir / "wheel-install", managed_python)
+    _smoke_installed_wheel(wheel, work_dir / "wheel-install", managed_python, installed_smoke_script)
 
     unpacked = _unpack_sdist(sdist, work_dir / "unpacked-sdist")
     if (unpacked / ".git").exists():
@@ -98,12 +114,24 @@ def verify_distribution_surface(work_dir: Path) -> None:
 
     sdist_wheel_dir = work_dir / "sdist-wheel"
     _run(
-        ("uv", "build", "--python", str(managed_python), "--out-dir", str(sdist_wheel_dir), "--wheel", str(unpacked)),
+        (
+            "uv",
+            "build",
+            "--build-constraints",
+            str(Path(os.environ.get("UV_BUILD_CONSTRAINT", ROOT / "packaging/hatchling.txt"))),
+            "--require-hashes",
+            "--python",
+            str(managed_python),
+            "--out-dir",
+            str(sdist_wheel_dir),
+            "--wheel",
+            str(unpacked),
+        ),
         cwd=work_dir,
     )
     sdist_wheel = _single_artifact(sdist_wheel_dir, "*.whl")
     _verify_wheel_surface(sdist_wheel)
-    _smoke_installed_wheel(sdist_wheel, work_dir / "sdist-wheel-install", managed_python)
+    _smoke_installed_wheel(sdist_wheel, work_dir / "sdist-wheel-install", managed_python, installed_smoke_script)
 
 
 def _verify_wheel_surface(wheel: Path) -> None:
@@ -128,7 +156,7 @@ def _read_entry_points(archive: zipfile.ZipFile) -> str:
     return archive.read(matches[0]).decode()
 
 
-def _smoke_installed_wheel(wheel: Path, install_dir: Path, managed_python: Path) -> None:
+def _smoke_installed_wheel(wheel: Path, install_dir: Path, managed_python: Path, installed_smoke_script: Path) -> None:
     wheel = wheel.resolve()
     install_dir = install_dir.resolve()
     install_dir.mkdir(parents=True, exist_ok=True)
@@ -139,14 +167,21 @@ def _smoke_installed_wheel(wheel: Path, install_dir: Path, managed_python: Path)
     env = _smoke_env(install_dir / "archive")
     bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
     _probe_runtime_imports(python, install_dir, env)
-    _run((str(bin_dir / "polylogue"), "--version"), cwd=install_dir, env=env)
-    _run((str(bin_dir / "polylogue"), "--help"), cwd=install_dir, env=env)
-    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), cwd=install_dir, env=env)
-    _run((str(bin_dir / "polylogue"), "--plain", "ops", "diagnostics", "workload", "--json"), cwd=install_dir, env=env)
-    _run((str(bin_dir / "polylogue"), "--plain", "ops", "diagnostics", "space", "--json"), cwd=install_dir, env=env)
-    _run((str(python), "-m", "polylogue", "--version"), cwd=install_dir, env=env)
-    _run((str(bin_dir / "polylogued"), "--help"), cwd=install_dir, env=env)
-    _run((str(bin_dir / "polylogue-mcp"), "--help"), cwd=install_dir, env=env)
+    _run(
+        (
+            str(python),
+            "-I",
+            str(installed_smoke_script),
+            "--python",
+            str(python),
+            "--bin-dir",
+            str(bin_dir),
+            "--work-dir",
+            str(install_dir / "smoke"),
+        ),
+        cwd=install_dir,
+        env=env,
+    )
 
 
 def _probe_runtime_imports(python: Path, install_dir: Path, env: dict[str, str]) -> None:

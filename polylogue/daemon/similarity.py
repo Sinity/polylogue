@@ -10,7 +10,7 @@ Contract:
 - The endpoint never embeds new content. It only reads vectors that have
   already been materialized by the daemon's embedding stage.
 - When the operator has not enabled embeddings (``embedding_enabled`` is
-  false or ``voyage_api_key`` is missing in ``polylogue.toml``), the
+  false in ``polylogue.toml``), the
   endpoint returns ``status="disabled"`` with a machine-readable
   ``reason`` and an empty result list.
 - When embeddings are enabled but the runtime is missing
@@ -41,14 +41,15 @@ its vectors stored. This is the property that lets the reader expose
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Final, cast
 
-from polylogue.config import load_polylogue_config
-from polylogue.core.errors import DatabaseError
+from polylogue.config import Config, load_polylogue_config
+from polylogue.core.errors import SessionNotFoundError, VectorReadUnavailableError
 from polylogue.core.sqlite_introspection import table_exists
-from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
 from polylogue.daemon.status import open_readonly_connection
+from polylogue.operations.vector_reads import read_retained_vectors
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 
@@ -74,19 +75,9 @@ def _confidence_for_score(score: float) -> str:
     return "q-heuristic"
 
 
-def _disabled_reason(*, embedding_enabled: bool, voyage_api_key: str | None) -> str | None:
-    """Return the explicit disabled-state reason, or ``None`` if enabled.
-
-    The two failure modes are kept distinct so the reader can render
-    actionable guidance — "set ``VOYAGE_API_KEY``" vs. "flip
-    ``embedding_enabled`` in polylogue.toml" are different fixes.
-    """
-
-    if not embedding_enabled:
-        return "embeddings_not_enabled"
-    if not voyage_api_key:
-        return "no_voyage_api_key"
-    return None
+def _disabled_reason(*, embedding_enabled: bool) -> str | None:
+    """Retained vector reads depend on policy, never acquisition credentials."""
+    return None if embedding_enabled else "embeddings_not_enabled"
 
 
 def _empty_envelope(status: str, *, reason: str | None) -> dict[str, object]:
@@ -125,109 +116,105 @@ def _build_archive_similar_payload(
     bounded_limit: int,
     disabled_reason: str | None,
     archive_root_path: Path,
+    embedding_model: str,
+    embedding_dimension: int,
 ) -> dict[str, object] | None:
-    index_conn = open_readonly_connection(index_db, timeout_class="interactive-read")
-    try:
-        index_conn.row_factory = sqlite3.Row
-        if not _fetch_archive_session_exists(index_conn, session_id):
-            return None
+    if disabled_reason is not None:
+        with closing(open_readonly_connection(index_db, timeout_class="interactive-read")) as index_conn:
+            if not _fetch_archive_session_exists(index_conn, session_id):
+                return None
+        envelope = _empty_envelope("disabled", reason=disabled_reason)
+        envelope["session_id"] = session_id
+        envelope["limit"] = bounded_limit
+        return envelope
 
-        if disabled_reason is not None:
-            envelope = _empty_envelope("disabled", reason=disabled_reason)
-            envelope["session_id"] = session_id
-            envelope["limit"] = bounded_limit
-            return envelope
-
+    def read() -> dict[str, object]:
         embeddings_db = archive_root_path / "embeddings.db"
         if not embeddings_db.exists():
-            envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
-            envelope["session_id"] = session_id
-            envelope["limit"] = bounded_limit
-            return envelope
-        with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
+            raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
+        with closing(open_readonly_connection(embeddings_db, timeout_class="interactive-read")) as conn:
             if not table_exists(conn, "message_embeddings"):
-                envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
-                envelope["session_id"] = session_id
-                envelope["limit"] = bounded_limit
-                return envelope
+                raise VectorReadUnavailableError("vector table is absent", reason="vec0_table_missing")
 
         from polylogue import Polylogue
         from polylogue.api.sync.bridge import run_coroutine_sync
 
         async def query() -> dict[str, object]:
-            async with Polylogue(archive_root=archive_root_path, db_path=Path(index_db)) as polylogue:
+            config = Config(
+                archive_root=archive_root_path,
+                render_root=archive_root_path / "render",
+                sources=[],
+                db_path=Path(index_db).resolve(strict=True),
+                embedding_model=embedding_model,
+                embedding_dimension=embedding_dimension,
+            )
+            async with Polylogue(config=config) as polylogue:
                 return await polylogue.search_similar_sessions(
                     session_id,
                     limit=bounded_limit,
-                    voyage_api_key=load_polylogue_config().voyage_api_key,
                 )
 
-        try:
-            query_result = run_coroutine_sync(query())
-        except (DatabaseError, ValueError) as exc:
-            # "not_embedded" is a measured negative content fact. Only a
-            # condition that actually proves absence may be reported as one:
-            # retryable contention and unreadable storage are typed
-            # unavailable, because the question was never answered.
-            cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
-            if is_transient_sqlite_lock(exc) or is_transient_sqlite_lock(cause):
-                status, reason = "unavailable", "sqlite_contention"
-            elif is_corrupt_sqlite_database(exc) or is_corrupt_sqlite_database(cause):
-                status, reason = "unavailable", "embeddings_db_unreadable"
-            elif "extension" in str(exc).lower():
-                status, reason = "unavailable", "sqlite_vec_not_loaded"
-            else:
-                status, reason = "not_embedded", None
-            envelope = _empty_envelope(status, reason=reason)
-            envelope["session_id"] = session_id
-            envelope["limit"] = bounded_limit
-            return envelope
+        return run_coroutine_sync(query())
 
-        results = cast(list[dict[str, object]], query_result["results"])
-        hits: list[dict[str, object]] = []
-        for hit in results:
-            score = float(cast(float, hit["score"]))
-            hits.append(
-                {
-                    "session_id": str(hit["session_id"]),
-                    "score": round(score, 4),
-                    "distance": round(float(cast(float, hit["distance"])), 4),
-                    "confidence": _confidence_for_score(score),
-                    "title": hit["title"],
-                    "origin": hit["origin"],
-                    "matched_message_count": int(cast(int, hit["matched_message_count"])),
-                }
-            )
+    try:
+        query_result = read_retained_vectors(read)
+    except SessionNotFoundError:
+        return None
+    except VectorReadUnavailableError as exc:
+        envelope = _empty_envelope("unavailable", reason=exc.reason)
+        envelope["session_id"] = session_id
+        envelope["limit"] = bounded_limit
+        return envelope
 
-        # Vector hits that resolve to no indexed message mean the embeddings tier
-        # references messages this index does not carry -- a stale embedding
-        # generation, or a reindex that changed message-identity derivation. Ranking
-        # over a broken join and answering "ready" with the survivors is indis-
-        # tinguishable from "nothing is similar", so the caller cannot tell a healthy
-        # empty answer from a broken one. Report the discrepancy instead.
-        unresolved = int(cast(int, query_result.get("unresolved_message_hits", 0)))
-        if unresolved and not hits:
-            return {
-                "status": "inconsistent",
-                "reason": "embedded_messages_missing_from_index",
-                "session_id": session_id,
-                "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
-                "limit": bounded_limit,
-                "results": [],
-                "unresolved_message_hits": unresolved,
+    if query_result["source_embedded_messages"] == 0:
+        envelope = _empty_envelope("not_embedded", reason=None)
+        envelope["session_id"] = session_id
+        envelope["limit"] = bounded_limit
+        return envelope
+
+    results = cast(list[dict[str, object]], query_result["results"])
+    hits: list[dict[str, object]] = []
+    for hit in results:
+        score = float(cast(float, hit["score"]))
+        hits.append(
+            {
+                "session_id": str(hit["session_id"]),
+                "score": round(score, 4),
+                "distance": round(float(cast(float, hit["distance"])), 4),
+                "confidence": _confidence_for_score(score),
+                "title": hit["title"],
+                "origin": hit["origin"],
+                "matched_message_count": int(cast(int, hit["matched_message_count"])),
             }
+        )
 
+    # Vector hits that resolve to no indexed message mean the embeddings tier
+    # references messages this index does not carry -- a stale embedding
+    # generation, or a reindex that changed message-identity derivation. Ranking
+    # over a broken join and answering "ready" with the survivors is indis-
+    # tinguishable from "nothing is similar", so the caller cannot tell a healthy
+    # empty answer from a broken one. Report the discrepancy instead.
+    unresolved = int(cast(int, query_result.get("unresolved_message_hits", 0)))
+    if unresolved and not hits:
         return {
-            "status": "ready",
-            "reason": None,
+            "status": "inconsistent",
+            "reason": "embedded_messages_missing_from_index",
             "session_id": session_id,
             "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
             "limit": bounded_limit,
-            "results": hits,
+            "results": [],
             "unresolved_message_hits": unresolved,
         }
-    finally:
-        index_conn.close()
+
+    return {
+        "status": "ready",
+        "reason": None,
+        "session_id": session_id,
+        "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
+        "limit": bounded_limit,
+        "results": hits,
+        "unresolved_message_hits": unresolved,
+    }
 
 
 def build_similar_payload(
@@ -243,7 +230,7 @@ def build_similar_payload(
 
     The envelope ``status`` field is one of:
 
-    - ``"disabled"`` — embeddings not enabled or no Voyage API key.
+    - ``"disabled"`` — embeddings not enabled.
     - ``"unavailable"`` — embeddings are enabled but the ``vec0`` table
       or the ``sqlite-vec`` extension is missing.
     - ``"not_embedded"`` — the source session has no message
@@ -266,7 +253,6 @@ def build_similar_payload(
     cfg = load_polylogue_config()
     disabled_reason = _disabled_reason(
         embedding_enabled=bool(cfg.embedding_enabled),
-        voyage_api_key=cfg.voyage_api_key,
     )
 
     archive_root_path = archive_root()
@@ -283,6 +269,8 @@ def build_similar_payload(
         bounded_limit=bounded_limit,
         disabled_reason=disabled_reason,
         archive_root_path=archive_root_path,
+        embedding_model=cfg.embedding_model,
+        embedding_dimension=cfg.embedding_dimension,
     )
 
 
