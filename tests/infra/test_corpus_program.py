@@ -437,4 +437,7 @@ def test_generated_mutation_transcripts_reach_production(
     result = runtime.converge()
     assert result["parse"].parse_failures == 0
     with sqlite3.connect(runtime.archive_root / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] > 0
+        native_ids = [row[0] for row in conn.execute("SELECT native_id FROM messages ORDER BY position")]
+    # An empty binary append can leave the valid initial turn untouched. The
+    # actual new authored turn must arrive, even in the smallest generated case.
+    assert native_ids == (["message-0", "message-1"] if mutation_type is Append else ["message-1"])

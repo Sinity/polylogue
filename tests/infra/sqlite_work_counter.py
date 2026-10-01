@@ -20,10 +20,10 @@ _DERIVED_SURFACES = (
     "delegation_refresh_scope",
 )
 _SQL_SPACE = re.compile(r"\s+")
+_SQL_LITERAL = re.compile(r"'(?:[^']|'')*'")
 _WRITE_TARGET = re.compile(r"\b(delete from|update|insert(?: or replace)? into|replace into) (\w+)\b")
-_BOUND_VALUE = r"(?:'(?:[^']|'')*'|\?|\d+|(?:new|old)\.\w+)"
+_BOUND_VALUE = r"(?:\?|\d+|(?:new|old)\.\w+)"
 _BOUND_VALUES = rf"{_BOUND_VALUE}(?:\s*,\s*{_BOUND_VALUE})*"
-_SESSION_BOUND = re.compile(rf"\b(?:\w+\.)?(?:session_id|parent_session_id|child_session_id) = {_BOUND_VALUE}(?!\w)")
 
 
 def _scoped_content_mutation(sql: str, table: str) -> bool:
@@ -71,6 +71,9 @@ def _mentions_derived_surface(sql: str) -> bool:
 
 def _is_archive_wide_derived_statement(sql: str) -> bool:
     """Recognize global writes to derived content, excluding scoped work."""
+    # Trace callbacks expand bound values. A value containing SQL-looking
+    # text is not a predicate or write target; neutralize it before matching.
+    sql = _SQL_LITERAL.sub("?", sql)
     if not sql.startswith(("delete ", "update ", "insert ", "replace ", "with ")):
         return False
     target = _WRITE_TARGET.search(sql)
@@ -94,9 +97,14 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
         return False
     if table in {"messages_fts", "messages_fts_identity"}:
         return not (
-            _SESSION_BOUND.search(sql)
-            or ("raw_target_sessions(session_id) as ( values" in sql and "target.session_id = b.session_id" in sql)
-            or "select new.rowid" in sql
+            re.search(rf"from blocks as b where b.session_id = {_BOUND_VALUE} and b.search_text != \?$", sql)
+            or (
+                "raw_target_sessions(session_id) as ( values" in sql
+                and sql.endswith(
+                    "join target_sessions as target on target.session_id = b.session_id where b.search_text != ?"
+                )
+            )
+            or (sql.partition(" select ")[2].startswith("new.rowid, ") and " from " not in sql)
             or re.search(rf"b.rowid > {_BOUND_VALUE} and b.rowid <= {_BOUND_VALUE}", sql)
         )
     if table == "action_pairs":

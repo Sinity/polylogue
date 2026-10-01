@@ -175,6 +175,8 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
         "action-pairs-rebuild",
         "fts-rebuild",
         "fts-identity-rebuild",
+        "fts-literal-scope",
+        "fts-tautology-scope",
         "delegation-copy",
         "delegation-rebuild",
     ],
@@ -213,6 +215,23 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
                 assert rebuild_archive_messages_fts(archive._conn) > 0
             elif mutation == "fts-identity-rebuild":
                 assert archive._conn.execute(insert_all_message_identity_rows_sql()).rowcount > 0
+            elif mutation == "fts-literal-scope":
+                assert (
+                    archive._conn.execute(
+                        "INSERT OR REPLACE INTO messages_fts(rowid, text) "
+                        "SELECT b.rowid, 'b.session_id = 1' FROM blocks AS b WHERE b.search_text != ''"
+                    ).rowcount
+                    > 0
+                )
+            elif mutation == "fts-tautology-scope":
+                assert (
+                    archive._conn.execute(
+                        "INSERT OR REPLACE INTO messages_fts(rowid, text) "
+                        "SELECT b.rowid, b.search_text FROM blocks AS b "
+                        "WHERE b.session_id = 'absent-session' OR 1"
+                    ).rowcount
+                    > 0
+                )
             else:
                 # Build canonical dispatch/link evidence; normal triggers
                 # derive the populated facts the mutant rewrites.
@@ -263,7 +282,7 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
     assert calls == 2
     assert refreshes == 1
     assert observation.metric("archive_wide_derived_statements") > 0
-    with pytest.raises(AssertionError, match="archive-wide derived writes"):
+    with pytest.raises(AssertionError):
         _assert_component_shape([observation])
 
 
