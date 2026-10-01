@@ -1709,10 +1709,12 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
 
 def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
     if ops_db.exists():
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
         # Bounded openability probe: reading the schema cookie touches only the
         # header page and raises DatabaseError for a file that is not a
         # database. Full integrity checks belong to diagnostics, not scrapes.
-        probe = sqlite3.connect(f"{Path(ops_db).absolute().as_uri()}?mode=ro", uri=True)
+        probe = open_readonly_connection(ops_db, validate_schema=False)
         try:
             probe.execute("PRAGMA schema_version").fetchone()
         finally:

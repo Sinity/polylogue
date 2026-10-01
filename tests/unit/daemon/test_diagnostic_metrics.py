@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from http import HTTPStatus
 from pathlib import Path
 from typing import cast
@@ -224,6 +225,42 @@ def test_unreadable_ops_tier_is_not_reported_as_missing_schema(tmp_path: Path) -
     assert 'polylogue_daemon_metrics_collection_available{group="ops_or_discovery"} 0' in body
     assert 'polylogue_daemon_metrics_collection_reason{group="ops_or_discovery",reason="archive_unreadable"} 1' in body
     assert 'polylogue_daemon_metrics_collection_reason{group="ops_attempts",reason="archive_unreadable"} 1' in body
+
+
+def test_ops_only_openability_probe_uses_a_closed_query_only_reader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Restoring the hand-built probe bypasses the query-only owner and fails."""
+    from polylogue.storage.sqlite import connection_profile
+
+    ops_db = tmp_path / "ops.db"
+    with closing(sqlite3.connect(ops_db)) as conn:
+        conn.execute("CREATE TABLE sentinel (value INTEGER)")
+        conn.commit()
+    opened: list[sqlite3.Connection] = []
+    original_open = connection_profile.open_readonly_connection
+
+    def observe_open(path: str | Path, *, validate_schema: bool = True) -> sqlite3.Connection:
+        conn = original_open(path, validate_schema=validate_schema)
+        assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute("INSERT INTO sentinel VALUES (1)")
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(connection_profile, "open_readonly_connection", observe_open)
+    assert metrics._format_ops_only_metrics([], ops_db) is None
+    assert opened
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+
+def test_ops_only_missing_tier_is_not_created(tmp_path: Path) -> None:
+    """Opening an absent ops tier as writable would create it and fail."""
+    ops_db = tmp_path / "ops.db"
+    assert metrics._format_ops_only_metrics([], ops_db) is None
+    assert not ops_db.exists()
 
 
 def test_readable_empty_ops_attempt_ledger_keeps_measured_zero(tmp_path: Path) -> None:
