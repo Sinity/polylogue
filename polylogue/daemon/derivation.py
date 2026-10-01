@@ -47,6 +47,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
 
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind, RetainedRawDecodeRefusalError
 from polylogue.logging import WARNING, emit
 
 __all__ = [
@@ -209,6 +210,8 @@ class KeyOutcome:
     """For ``FAILED``: whether the failure can clear with no change to the
     key's evidence (lock contention, a storage fault). Anything else repeats
     identically on the unchanged key."""
+    terminal_refusal: RawFailureEvidenceKind | None = None
+    """Exact retained input refusal, distinct from a nontransient execution fault."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -950,6 +953,7 @@ class _Pass:
                     outcome=Outcome.FAILED,
                     error=f"compute {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
+                    terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
                     elapsed_s=time.monotonic() - started_key,
                 )
             )
@@ -991,6 +995,7 @@ class _Pass:
                     outcome=Outcome.FAILED,
                     error=f"publish {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
+                    terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
                     elapsed_s=time.monotonic() - started_key,
                 )
             )

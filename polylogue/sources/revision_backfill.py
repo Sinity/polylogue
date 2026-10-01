@@ -1223,6 +1223,7 @@ def _census_historical_revision_evidence(
         if isinstance(outcome, Exception) and _settle_terminal_decode_refusal(
             archive, raw_id, outcome, source_index=source_index, manage_transaction=True
         ):
+            state.quarantined += 1
             commit_unit()
             return
         if isinstance(outcome, Exception):

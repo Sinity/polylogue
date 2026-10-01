@@ -162,7 +162,8 @@ def raw_observation_backlog_snapshot(
         states = adapter.inspect(frame, raw_ids)
     except FileNotFoundError as exc:
         return unavailable(str(exc))
-    pending_ids = tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid")
+    refusals = adapter.terminal_decode_refusals(raw_ids)
+    pending_ids = tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid" and raw_id not in refusals)
     if not pending_ids:
         return {
             "available": True,

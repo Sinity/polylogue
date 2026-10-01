@@ -86,6 +86,8 @@ Hook capture is two ordinary steps, not a route of its own. Producers append one
 
 Fair intake applies a process-local cooldown to repeated retryable failures. A stale cursor refusal remains retryable even when the same batch reports successful files. Terminal refusal isolates only the affected item (`polylogue/daemon/intake.py:456-460`; `polylogue/daemon/intake.py:430-434`; `polylogue/operations/intake_adapters.py:514-522`).
 
+A current retained decode refusal remains a failed derivation outcome. Its exact raw coordinate, parser census, support status and trusted failure carrier are validated by the canonical raw adapter. A later deliberate pass reports that same typed refusal from metadata without parsing the bytes again. Fair intake excludes the exact terminal item and discovery leaves it out of retry backlog; infrastructure failures and unavailable exact-key outcomes remain retryable (`polylogue/storage/derived/raw.py`, `polylogue/daemon/derivation.py`, `polylogue/operations/intake_adapters.py`).
+
 ## Status evidence and diagnostic privacy
 
 `overall_status_ok` in `operations/daemon_status.py` owns the verdict for daemon, pinned, and composed status. An acquired stale or unavailable snapshot refutes health even when the required archive operands are healthy. A refresh may replace the previous stale state with refreshing, but preserves explicit unavailable evidence. A pinned read passes `None` for optional runtime evidence it did not acquire.

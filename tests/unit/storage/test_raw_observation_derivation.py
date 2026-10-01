@@ -708,11 +708,11 @@ def test_publish_rejects_changed_source_or_generation(tmp_path: Path, mutation: 
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
-def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path) -> None:
+def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, ("healthy",), path="healthy.json")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.write_raw_payload(
+        poison = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=b"not json",
             source_path="poison.json",
@@ -722,6 +722,34 @@ def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path) ->
     assert report.done == 1 and report.failed == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
+
+    def refuse_reparse(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("settled terminal evidence must not reparse retained bytes")
+
+    monkeypatch.setattr("polylogue.sources.revision_backfill.prepare_retained_jsonl_artifact", refuse_reparse)
+    repeated = _run(tmp_path)
+    assert repeated.done == 0 and repeated.failed == 1
+    failure = next(outcome for outcome in repeated.outcomes if outcome.key.key == poison)
+    assert failure.transient is False
+    assert failure.terminal_refusal is not None
+
+    from polylogue.daemon.cli import _derivation_admission
+    from polylogue.daemon.intake import AdmissionOutcome
+    from polylogue.operations.intake_adapters import RawMaterializationDiscovery
+
+    assert _derivation_admission(repeated, poison, subject="raw observation").outcome is AdmissionOutcome.EXCLUDED
+    discovery = RawMaterializationDiscovery(tmp_path)
+    assert all(not discovery.discover_pending_raw_ids(8) for _ in range(4))
+    from polylogue.operations.raw_observation_derivation import raw_observation_backlog_snapshot
+
+    assert raw_observation_backlog_snapshot(tmp_path)["candidate_count"] == 0
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_artifacts SET classification_reason='{}' WHERE raw_id=?", (poison,))
+    adapter = RawObservationDerivation(tmp_path)
+    assert adapter.terminal_decode_refusals((poison,)) == {}
+    assert adapter.inspect(raw_observation_frame(tmp_path), (poison,))[poison] == "stale"
+    renewed = RawMaterializationDiscovery(tmp_path)
+    assert poison in {raw_id for _ in range(4) for raw_id, _cost in renewed.discover_pending_raw_ids(8)}
 
 
 def test_zero_output_requires_parser_evidence(tmp_path: Path) -> None:

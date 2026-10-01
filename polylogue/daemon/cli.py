@@ -1243,6 +1243,8 @@ def _derivation_admission(report: DerivationReport, key: str, *, subject: str) -
 
     outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key in (key, "*"))
     failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
+    if failed is not None and failed.key.key == key and failed.terminal_refusal is not None:
+        return AdmissionResult(AdmissionOutcome.EXCLUDED, reason=failed.error or failed.terminal_refusal.value)
     if failed is not None or (report.done == 0 and report.failed > 0):
         return AdmissionResult(
             AdmissionOutcome.RETRYABLE,

@@ -41,6 +41,10 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RAW_FAILURE_VALIDATION_FAILURE_KINDS,
+    RetainedRawDecodeRefusalError,
+    raw_failure_outcome_code,
+    validated_raw_failure_evidence_kind,
 )
 from polylogue.core.sql_settlement import retain_native_sql_lifetimes
 from polylogue.logging import WARNING, emit
@@ -397,6 +401,41 @@ class RawObservationDerivation:
         ).fetchall()
         return bool(unresolved) and not classifier_superseded
 
+    def _decode_refusal(self, conn: sqlite3.Connection, key: str) -> RetainedRawDecodeRefusalError | None:
+        row = conn.execute(
+            f"""SELECT a.artifact_kind, r.parse_error, a.support_status,
+              r.validation_status, a.classification_reason FROM raw_sessions r
+            JOIN raw_authority_parser_census c ON c.raw_id = r.raw_id
+            JOIN raw_artifacts a ON a.raw_id = r.raw_id
+              AND (a.origin IS r.origin OR a.origin IS {raw_provider_origin_sql(table_alias="r")})
+              AND a.source_path IS r.source_path AND a.source_index IS r.source_index
+            WHERE r.raw_id = ? AND c.parser_fingerprint = ? AND c.status = 'complete'
+              AND r.parse_error IS NOT NULL
+              AND a.support_status = 'decode_failed'
+              AND a.artifact_kind IN ({",".join("?" for _ in RAW_FAILURE_VALIDATION_FAILURE_KINDS)})
+            ORDER BY a.artifact_kind LIMIT 1""",
+            (key, self.recipe_version, *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS)),
+        ).fetchone()
+        if row is None:
+            return None
+        kind = validated_raw_failure_evidence_kind(
+            row[0],
+            row[2],
+            validation_failed=row[3] == "failed",
+            classification_reason=row[4],
+            outcome_code=raw_failure_outcome_code(row[4]),
+        )
+        if kind is None:
+            return None
+        return RetainedRawDecodeRefusalError(key, kind, str(row[1]))
+
+    def terminal_decode_refusals(self, keys: Sequence[str]) -> Mapping[str, RetainedRawDecodeRefusalError]:
+        """Read the same exact current receipt used by inspection and compute."""
+        if not keys:
+            return {}
+        with self._read() as conn:
+            return {key: refusal for key in keys if (refusal := self._decode_refusal(conn, key)) is not None}
+
     def _inspect(self, conn: sqlite3.Connection, key: str) -> str:
         from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 
@@ -411,6 +450,30 @@ class RawObservationDerivation:
         # either its ambiguity or its deferral as current evidence.
         census = conn.execute("SELECT * FROM raw_authority_parser_census WHERE raw_id = ?", (key,)).fetchone()
         if census is not None and census["parser_fingerprint"] != self.recipe_version:
+            return "stale"
+        if self._decode_refusal(conn, key) is not None:
+            # Settled failure evidence is not a successfully derived output.
+            # Compute reports the permanent refusal without parsing it again.
+            return "stale"
+        if (
+            raw["parse_error"]
+            and conn.execute(
+                f"""SELECT 1 FROM raw_artifacts WHERE raw_id = ?
+            AND (origin IS ? OR origin IS ?) AND source_path IS ? AND source_index IS ?
+            AND artifact_kind IN ({",".join("?" for _ in RAW_FAILURE_VALIDATION_FAILURE_KINDS)}) LIMIT 1""",
+                (
+                    key,
+                    raw["origin"],
+                    raw["effective_origin"],
+                    raw["source_path"],
+                    raw["source_index"],
+                    *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS),
+                ),
+            ).fetchone()
+            is not None
+        ):
+            # A malformed terminal carrier cannot acquire authority through a
+            # generic validation marker or the older parse-error fast paths.
             return "stale"
         if self._terminal_revision_refusal(conn, key, census["parser_fingerprint"] if census else None) or (
             raw["validation_status"] == "failed"
@@ -644,6 +707,11 @@ class RawObservationDerivation:
             prepare_retained_jsonl_artifact,
         )
         from polylogue.sources.sqlite_export import looks_like_logical_source_path
+
+        with self._read() as conn:
+            refusal = self._decode_refusal(conn, key)
+        if refusal is not None:
+            raise refusal
 
         # One component replay settles every member. The kernel classified the
         # page before it began publishing, so a sibling can still arrive here
@@ -1245,6 +1313,9 @@ class RawObservationDerivation:
                         selected_raw_ids=list(replacement.raw_ids),
                         prepared_inputs=replacement.prepared_inputs,
                     )
+                    refusal = self.terminal_decode_refusals((replacement.key,)).get(replacement.key)
+                    if refusal is not None:
+                        raise refusal
                     return False
                 if replacement.needs_source_classification:
                     if replacement.classification_proofs is None:
@@ -1286,6 +1357,9 @@ class RawObservationDerivation:
                     )
                 except RetainedPreparationRetryableError:
                     return False
+                refusal = self.terminal_decode_refusals((replacement.key,)).get(replacement.key)
+                if refusal is not None:
+                    raise refusal
                 return True
             finally:
                 try:
