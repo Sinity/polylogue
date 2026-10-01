@@ -1434,7 +1434,12 @@ def _authorized_removal_apply(
     # daemon execution borrows that exact physical owner on its creator.
     with (
         write_lease("operation.authorized-removal", archive_root=archive_root),
-        authorized_session_removal(archive_root=archive_root, plan_hash=plan.plan_hash, session_ids=session_ids),
+        authorized_session_removal(
+            archive_root=archive_root,
+            plan_hash=plan.plan_hash,
+            session_ids=session_ids,
+            excise_assertions=plan.operation == "mutate-session-excision",
+        ),
     ):
         yield
 

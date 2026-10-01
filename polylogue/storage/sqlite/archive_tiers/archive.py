@@ -763,6 +763,54 @@ class ArchiveStoreSettlementError(RuntimeError):
         self.failure = failure
 
 
+def stage_index_session_deletions(
+    conn: sqlite3.Connection, mutation_scope: IndexMutationScope, session_ids: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Stage exact session cleanup in the caller's original Index transaction.
+
+    The caller owns admission, original reference proof and final commit. This
+    producer never opens a connection, prepares a new seal or commits SQL.
+    """
+    mutation_scope.require_new_work(conn)
+    if not conn.in_transaction:
+        raise RuntimeError("session deletion staging requires the original Index transaction")
+    deleted_session_ids: list[str] = []
+    for session_id in session_ids:
+        mutation_scope.note_deleted_session(session_id)
+        mutation_scope.note_lineage_change(session_id)
+        # Must run before the blocks rows are removed below.
+        conn.execute(delete_session_rows_sql(1), (session_id,))
+        conn.execute(delete_session_identity_rows_sql(1), (session_id,))
+    conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
+    conn.execute(
+        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+        (FTS_BULK_SESSION_WRITE_GUARD,),
+    )
+    try:
+        for session_id in session_ids:
+            mutation_scope.require_new_work(conn)
+            conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
+            # attachment_refs cascades from sessions, so the refs
+            # vanish with no Python code observing it. Their
+            # attachments rows would survive with a stale ref_count
+            # and no reachable ref -- what archive verification
+            # reports as an error. Read the ids before the delete;
+            # after it there is nothing left to join through.
+            orphan_candidates = session_attachment_ids(conn, session_id)
+            cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            refresh_and_sweep_attachment_rows(conn, orphan_candidates)
+            if int(cursor.rowcount) > 0:
+                deleted_session_ids.append(session_id)
+    finally:
+        conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+        conn.execute(
+            "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+            (FTS_BULK_SESSION_WRITE_GUARD,),
+        )
+    return tuple(deleted_session_ids)
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -807,6 +855,7 @@ class ArchiveStore:
             self._sqlite_owner_task = asyncio.current_task()
         except RuntimeError:
             self._sqlite_owner_task = None
+        self._settlement_callbacks: list[Callable[[], None]] = []
         self._owned_index_connection: sqlite3.Connection | None = None
         self._source_conn: sqlite3.Connection | None = None
         self._operation_vector_connection: sqlite3.Connection | None = None
@@ -2059,6 +2108,13 @@ class ArchiveStore:
         if failures:
             raise BaseExceptionGroup("Archive rollback failed", failures)
 
+    def retain_settlement_callback(self, callback: Callable[[], None]) -> None:
+        """Complete a read receipt only after every owned SQL handle settles."""
+        self._require_sql_owner()
+        if self._owned_index_connection is None:
+            raise RuntimeError("settlement callback requires its existing live ArchiveStore")
+        self._settlement_callbacks.append(callback)
+
     def close(self) -> None:
         self._require_sql_owner(cleanup=True)
         from polylogue.storage.sqlite.connection_profile import request_native_sql_parent_cleanup
@@ -2131,7 +2187,12 @@ class ArchiveStore:
             lease = self._active_writer_lease
             if settle(lease.close):
                 self._active_writer_lease = None
-        if transactions_settled and handles_closed:
+        if handles_closed and self._active_writer_lease is None and not failures:
+            for callback in tuple(self._settlement_callbacks):
+                if settle(callback):
+                    self._settlement_callbacks.remove(callback)
+        callbacks_settled = not self._settlement_callbacks
+        if transactions_settled and handles_closed and callbacks_settled:
             try:
                 self._release_mutation_lease(
                     None if not failures else (type(failures[0]), failures[0], failures[0].__traceback__)
@@ -2140,6 +2201,7 @@ class ArchiveStore:
                 failures.append(exc)
         if (
             handles_closed
+            and callbacks_settled
             and self._active_writer_lease is None
             and self._pending_archive_mutation_lease_context is None
             and self._sql_custody is None
@@ -2147,7 +2209,7 @@ class ArchiveStore:
             settle(lambda: retire_native_sql_parent(self))
         if failures:
             failure = failures[0] if len(failures) == 1 else BaseExceptionGroup("Archive close failed", failures)
-            if not handles_closed:
+            if not handles_closed or not callbacks_settled:
                 raise ArchiveStoreSettlementError(self, failure) from failure
             raise failure
 
@@ -6441,39 +6503,10 @@ class ArchiveStore:
                 ):
                     mutation_scope.authorize_session_removal(resolved_session_ids)
                 try:
-                    for session_id in resolved_session_ids:
-                        mutation_scope.note_deleted_session(session_id)
-                        mutation_scope.note_lineage_change(session_id)
-                        # Must run before the blocks rows are removed below.
-                        conn.execute(delete_session_rows_sql(1), (session_id,))
-                        conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-                    conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-                    conn.execute(
-                        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                        (FTS_BULK_SESSION_WRITE_GUARD,),
+                    deleted_session_ids = list(
+                        stage_index_session_deletions(conn, mutation_scope, resolved_session_ids)
                     )
-                    try:
-                        for session_id in resolved_session_ids:
-                            conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
-                            conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
-                            # attachment_refs cascades from sessions, so the refs
-                            # vanish with no Python code observing it. Their
-                            # attachments rows would survive with a stale ref_count
-                            # and no reachable ref -- what archive verification
-                            # reports as an error. Read the ids before the delete;
-                            # after it there is nothing left to join through.
-                            orphan_candidates = session_attachment_ids(conn, session_id)
-                            cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                            refresh_and_sweep_attachment_rows(conn, orphan_candidates)
-                            if int(cursor.rowcount) > 0:
-                                deleted += int(cursor.rowcount)
-                                deleted_session_ids.append(session_id)
-                    finally:
-                        conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-                        conn.execute(
-                            "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-                            (FTS_BULK_SESSION_WRITE_GUARD,),
-                        )
+                    deleted = len(deleted_session_ids)
                     ArchiveWriteGateway(self.index_db_path).commit_write_sync(
                         write_operation,
                         {

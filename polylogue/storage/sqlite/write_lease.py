@@ -58,6 +58,12 @@ if TYPE_CHECKING:
 
 
 class KnownTierWriteAuthority(Protocol):
+    @property
+    def terminal_parent(self) -> SQLCustodyOwner: ...
+
+    @property
+    def tier(self) -> str: ...
+
     def bind_mutation_connection(self, connection: sqlite3.Connection) -> None: ...
 
     def authorize_tier_sql(
@@ -187,7 +193,7 @@ class ArchiveWriteCustody:
         self._descriptor_cleanup_thread: threading.Thread | None = None
         self._descriptor_cleanup_task: asyncio.Task[Any] | None = None
         self.settlement_retry = settlement_retry
-        self._authorized_removals: list[tuple[str, frozenset[str], threading.Thread, object | None]] = []
+        self._authorized_removals: list[tuple[str, frozenset[str], threading.Thread, object | None, bool]] = []
         _CUSTODIES.add(self)
         try:
             directory = os.fstat(directory_fd)
@@ -1030,14 +1036,16 @@ def current_sql_custody() -> ArchiveWriteCustody | None:
 
 
 @contextmanager
-def authorized_session_removal(*, archive_root: Path, plan_hash: str, session_ids: tuple[str, ...]) -> Iterator[None]:
+def authorized_session_removal(
+    *, archive_root: Path, plan_hash: str, session_ids: tuple[str, ...], excise_assertions: bool = False
+) -> Iterator[None]:
     """Bind validated deletion intent to the existing physical apply custody."""
     require_write_lease("authorized session removal", archive_root=archive_root)
     custody = current_sql_custody()
     if custody is None or custody.archive_root.resolve() != archive_root.resolve():
         raise UnleasedWriteError("authorized removal requires matching physical archive custody")
     custody.assert_namespace()
-    frame = (plan_hash, frozenset(session_ids), threading.current_thread(), _current_task())
+    frame = (plan_hash, frozenset(session_ids), threading.current_thread(), _current_task(), excise_assertions)
     custody._authorized_removals.append(frame)
     try:
         yield
@@ -1050,15 +1058,15 @@ def authorized_session_removal(*, archive_root: Path, plan_hash: str, session_id
                 break
 
 
-def permitted_session_removals(*, archive_root: Path) -> frozenset[str]:
+def permitted_session_removals(*, archive_root: Path, assertion_content: bool = False) -> frozenset[str]:
     require_write_lease("observe authorized session removal", archive_root=archive_root)
     custody = current_sql_custody()
     if custody is None or custody.archive_root.resolve() != archive_root.resolve():
         return frozenset()
     custody.assert_namespace()
-    for _plan_hash, session_ids, thread, task in reversed(custody._authorized_removals):
+    for _plan_hash, session_ids, thread, task, excise_assertions in reversed(custody._authorized_removals):
         if thread is threading.current_thread() and task is _current_task():
-            return session_ids
+            return session_ids if not assertion_content or excise_assertions else frozenset()
     return frozenset()
 
 

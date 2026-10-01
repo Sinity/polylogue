@@ -127,8 +127,10 @@ def __getattr__(name: str) -> Any:
 
 
 @contextmanager
-def authorized_session_removal(*, archive_root: Path, plan_hash: str, session_ids: tuple[str, ...]) -> Iterator[None]:
+def authorized_session_removal(
+    *, archive_root: Path, plan_hash: str, session_ids: tuple[str, ...], excise_assertions: bool = False
+) -> Iterator[None]:
     with _implementation().authorized_session_removal(
-        archive_root=archive_root, plan_hash=plan_hash, session_ids=session_ids
+        archive_root=archive_root, plan_hash=plan_hash, session_ids=session_ids, excise_assertions=excise_assertions
     ):
         yield
