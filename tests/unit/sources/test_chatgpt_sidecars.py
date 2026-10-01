@@ -553,6 +553,45 @@ def test_streamed_sidecar_duplicate_keys_preserve_last_value_and_first_order() -
         index.close()
 
 
+@pytest.mark.parametrize("library", [False, True])
+def test_streamed_sidecar_cancellation_rolls_back_partial_input(monkeypatch: pytest.MonkeyPatch, library: bool) -> None:
+    import json
+    import threading
+    from io import BytesIO
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    index = ChatGPTAssetIndex()
+    baseline = [{"file_id": "file-old", "file_name": "old.txt"}] if library else {"file-old.dat": "old.txt"}
+    assert index.load_stream(BytesIO(json.dumps(baseline).encode()), library=library)
+    cancelled = threading.Event()
+    insert = index._insert_library if library else index._insert_name
+
+    def cancel_after_insert(*args: object) -> None:
+        insert(*args)
+        cancelled.set()
+
+    monkeypatch.setattr(index, "_insert_library" if library else "_insert_name", cancel_after_insert)
+    token = compute_cancel.set(cancelled)
+    try:
+        payload = (
+            [{"file_id": f"file-new-{number}", "file_name": "new.txt"} for number in range(1024)]
+            if library
+            else {f"file-new-{number}.dat": "new.txt" for number in range(1024)}
+        )
+        with pytest.raises(DaemonOperationCancelled):
+            index.load_stream(BytesIO(json.dumps(payload).encode()), library=library)
+        assert cancelled.is_set()
+        cancelled.clear()
+        index.seal()
+        assert index.resolve_dat("file-old").name == "old.txt"
+        assert index.resolve_dat("file-new-0") is None
+    finally:
+        compute_cancel.reset(token)
+        index.close()
+
+
 def test_streamed_sidecar_trailing_error_rolls_back_all_lookup_rows() -> None:
     from io import BytesIO
 

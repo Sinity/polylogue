@@ -18,6 +18,30 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+
+
+def test_asset_discovery_refuses_an_unreadable_subtree(tmp_path: Path) -> None:
+    import os
+
+    from polylogue.storage.blob_store import BlobStore
+
+    if os.geteuid() == 0:
+        pytest.skip("root can read a permission-denied directory")
+    export = tmp_path / "export"
+    export.mkdir()
+    shard = export / "conversations.json"
+    shard.write_text("[]")
+    hidden = export / "hidden"
+    hidden.mkdir()
+    (hidden / "file-hidden.dat").write_bytes(b"synthetic asset")
+    hidden.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            ChatGPTAssemblySpec().discover_sidecars([shard], blob_store=BlobStore(tmp_path / "blobs"))
+    finally:
+        hidden.chmod(0o700)
+
+
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.source_builders import ChatGPTExportBuilder, acquired_payloads, captured_zip_coordinate

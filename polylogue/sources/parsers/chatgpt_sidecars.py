@@ -44,6 +44,8 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
+from polylogue.core.compute_cancel import check_compute_cancelled
+
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
@@ -254,6 +256,7 @@ class ChatGPTAssetIndex:
 
         class Utf8Input:
             def read(self, size: int = -1) -> bytes:
+                check_compute_cancelled()
                 if size == 0:
                     return b""
                 chunk = text.read(16384)
@@ -277,6 +280,7 @@ class ChatGPTAssetIndex:
                         fields={field.name: DetectorProjection() for field in fields(LibraryFileRecord)}
                     )
                     for event, value in events:
+                        check_compute_cancelled()
                         if event == "end_array":
                             break
                         projected = _project(events, event, value, rule, stack)
@@ -287,6 +291,7 @@ class ChatGPTAssetIndex:
                         "CREATE TEMP TABLE raw_names (key BLOB PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT) WITHOUT ROWID"
                     )
                     for ordinal, (event, value) in enumerate(events):
+                        check_compute_cancelled()
                         if event == "end_map":
                             break
                         if event != "map_key" or not isinstance(value, str):
@@ -303,6 +308,7 @@ class ChatGPTAssetIndex:
                     try:
                         while page := cursor.fetchmany(256):
                             for key, value in page:
+                                check_compute_cancelled()
                                 file_id = bytes(key).decode("utf-8", "surrogatepass")
                                 if file_id.endswith(_DAT_SUFFIX):
                                     file_id = file_id[: -len(_DAT_SUFFIX)]
@@ -317,7 +323,7 @@ class ChatGPTAssetIndex:
             # Settles a member's actual CRC even if the tokenizer buffered its
             # last structural token before the underlying stream reached EOF.
             while text.read(16384):
-                pass
+                check_compute_cancelled()
         except BaseException:
             conn.execute("ROLLBACK TO sidecar_input")
             conn.execute("RELEASE sidecar_input")
@@ -344,6 +350,7 @@ class ChatGPTAssetIndex:
         )
 
     def record_asset(self, group: int, asset: str, member: str, blob: tuple[str, int]) -> None:
+        check_compute_cancelled()
         self._connection().execute(
             "INSERT OR IGNORE INTO asset_inputs VALUES (?, ?, ?, ?, ?)",
             (group, self._key(asset), self._key(member), *blob),
@@ -358,6 +365,7 @@ class ChatGPTAssetIndex:
         )
         try:
             for asset, member, digest, size, count in cursor:
+                check_compute_cancelled()
                 key = asset if count == 1 else asset + b"#" + member
                 conn.execute(
                     "INSERT INTO assets VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
@@ -377,6 +385,7 @@ class ChatGPTAssetIndex:
             cursor = conn.execute(sql, parameters)
             try:
                 while page := cursor.fetchmany(256):
+                    check_compute_cancelled()
                     yield from (tuple(row) for row in page)
             finally:
                 cursor.close()
@@ -445,6 +454,7 @@ class ChatGPTAssetIndex:
                 cursor = conn.execute(sql)
                 try:
                     while page := cursor.fetchmany(256):
+                        check_compute_cancelled()
                         for row in page:
                             for value in row:
                                 encoded = (
@@ -468,10 +478,12 @@ class ChatGPTAssetIndex:
         try:
             if isinstance(library_files_payload, list):
                 for entry in library_files_payload:
+                    check_compute_cancelled()
                     for record in parse_library_files([entry]).values():
                         index._insert_library(record)
             if isinstance(asset_file_names_payload, dict):
                 for key, value in asset_file_names_payload.items():
+                    check_compute_cancelled()
                     for file_id, name in parse_asset_file_names({key: value}).items():
                         index._insert_name(file_id, name)
             index.seal()
